@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Panel de Preguntas - MercadoLibre</title>
+  <meta name="theme-color" content="#ffe600">
+  <title>Panel ML</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23ffe600'/><text x='50' y='68' font-size='55' font-weight='bold' text-anchor='middle' fill='%232d3277'>ML</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; color: #333; }
@@ -129,7 +131,8 @@
     }
     .msg-bubble.buyer { background: #f0f2f5; border-bottom-left-radius: 4px; }
     .msg-bubble.seller { background: #3483fa; color: white; margin-left: auto; border-bottom-right-radius: 4px; }
-    .msg-bubble .msg-date { font-size: 11px; opacity: 0.6; margin-top: 4px; }
+    .msg-bubble .msg-date { font-size: 11px; opacity: 0.7; margin-top: 4px; text-align: right; }
+    .msg-bubble.seller .msg-date { color: rgba(255,255,255,0.8); }
 
     /* ACCOUNTS MANAGEMENT */
     .account-card {
