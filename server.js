@@ -574,6 +574,192 @@ route('POST', '/api/messages/reply', async (req, res) => {
   }
 });
 
+// SALES
+route('GET', '/api/sales', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+
+  const url = new URL(req.url, 'http://localhost');
+  const accountFilter = url.searchParams.get('account_id');
+  const statusFilters = url.searchParams.get('status') ? url.searchParams.get('status').split(',') : [];
+  const shippingFilters = url.searchParams.get('shipping') ? url.searchParams.get('shipping').split(',') : [];
+  const dateFrom = url.searchParams.get('date_from');
+  const dateTo = url.searchParams.get('date_to');
+  const db = loadDB();
+  let allSales = [];
+
+  const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
+
+  for (const account of targets) {
+    const token = await getValidToken(account);
+    if (!token) continue;
+    try {
+      const params = { seller: account.seller_id, sort: 'date_desc', limit: 50 };
+      if (dateFrom) params['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
+      if (dateTo) params['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
+      const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+
+      for (const order of (ordersData.results || [])) {
+        // Get shipment details
+        let shipment = null;
+        let labelUrl = '';
+        let shippingType = '';
+        let shippingStatus = '';
+        let shippingSubstatus = '';
+
+        if (order.shipping?.id) {
+          try {
+            shipment = await mlGet(`https://api.mercadolibre.com/shipments/${order.shipping.id}`, token);
+            shippingStatus = shipment.status || '';
+            shippingSubstatus = shipment.substatus || '';
+            const logType = shipment.logistic_type || '';
+            if (logType === 'self_service' || logType === 'xd_drop_off' || shipment.shipping_option?.name?.toLowerCase().includes('flex')) {
+              shippingType = 'flex';
+            } else if (logType === 'drop_off' || logType === 'cross_docking' || logType === 'fulfillment') {
+              shippingType = 'drop_off';
+            } else if (logType === 'custom' || logType === 'not_specified') {
+              shippingType = 'agreement';
+            } else {
+              shippingType = logType || 'other';
+            }
+          } catch (e) {
+            console.error(`Error shipment ${order.shipping.id}:`, e.response?.data?.message || e.message || e);
+          }
+        } else {
+          shippingType = 'agreement';
+        }
+
+        // Map ML status to display status
+        let displayStatus = '';
+        if (order.status === 'cancelled') {
+          displayStatus = 'cancelled';
+        } else if (shippingStatus === 'pending' || shippingStatus === '' || order.status === 'confirmed') {
+          displayStatus = 'pending';
+        } else if (shippingStatus === 'ready_to_ship' && shippingSubstatus === 'ready_to_print') {
+          displayStatus = 'ready_to_print';
+        } else if (shippingStatus === 'ready_to_ship') {
+          displayStatus = 'ready_to_ship';
+        } else if (shippingStatus === 'shipped' || shippingStatus === 'delivering') {
+          displayStatus = 'in_transit';
+        } else if (shippingStatus === 'delivered') {
+          displayStatus = 'delivered';
+        } else if (shippingStatus === 'not_delivered') {
+          displayStatus = 'not_completed';
+        } else if (shippingSubstatus === 'delayed') {
+          displayStatus = 'delayed';
+        } else {
+          displayStatus = shippingStatus || order.status || 'pending';
+        }
+
+        // Apply status filter
+        if (statusFilters.length > 0 && !statusFilters.includes(displayStatus)) continue;
+
+        // Apply shipping filter
+        if (shippingFilters.length > 0 && !shippingFilters.includes(shippingType)) continue;
+
+        // Get item details
+        const items = [];
+        for (const oi of (order.order_items || [])) {
+          let thumbnail = '';
+          let sku = oi.item?.seller_sku || oi.item?.seller_custom_field || '';
+          try {
+            const itemData = await mlGet(`https://api.mercadolibre.com/items/${oi.item.id}`, token);
+            thumbnail = itemData.thumbnail || '';
+            if (!sku) sku = itemData.seller_custom_field || '';
+            if (!sku && itemData.attributes) {
+              const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
+              if (skuAttr) sku = skuAttr.value_name || '';
+            }
+          } catch (e) {}
+
+          items.push({
+            id: oi.item.id,
+            title: oi.item.title || 'Producto',
+            thumbnail,
+            quantity: oi.quantity || 1,
+            unit_price: oi.unit_price || 0,
+            sku,
+            variation_id: oi.item.variation_id || null
+          });
+        }
+
+        allSales.push({
+          order_id: order.id,
+          pack_id: order.pack_id || null,
+          date_created: order.date_created,
+          status: displayStatus,
+          shipping_type: shippingType,
+          shipping_id: order.shipping?.id || null,
+          shipping_status: shippingStatus,
+          total_amount: order.total_amount || 0,
+          currency: order.currency_id || 'ARS',
+          buyer_name: order.buyer?.nickname || 'Comprador',
+          buyer_id: order.buyer?.id || '',
+          account_name: account.name,
+          account_id: account.id,
+          seller_id: account.seller_id,
+          items,
+          affects_reputation: !(shippingStatus === 'cancelled' && shippingSubstatus === 'cancelled_manually'),
+          notes: ''
+        });
+      }
+    } catch (err) {
+      console.error(`Error sales ${account.name}:`, err.response?.data || err.message || err);
+    }
+  }
+
+  // Sort by date, newest first
+  allSales.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
+
+  // Load notes from db
+  const notes = db.sale_notes || {};
+  for (const sale of allSales) {
+    sale.notes = notes[sale.order_id] || '';
+  }
+
+  sendJSON(res, 200, allSales);
+});
+
+// SALE NOTES
+route('POST', '/api/sales/notes', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { order_id, notes } = await parseBody(req);
+  const db = loadDB();
+  if (!db.sale_notes) db.sale_notes = {};
+  db.sale_notes[order_id] = notes || '';
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+// SHIPPING LABEL URL
+route('GET', '/api/sales/label', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const url = new URL(req.url, 'http://localhost');
+  const shipmentId = url.searchParams.get('shipment_id');
+  const accountId = url.searchParams.get('account_id');
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+
+  try {
+    // Get label URL - ML returns a redirect to the PDF
+    const labelRes = await fetch(`https://api.mercadolibre.com/shipment_labels?shipment_ids=${shipmentId}&response_type=pdf`, {
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: 'manual'
+    });
+    const labelUrl = labelRes.headers.get('location') || `https://api.mercadolibre.com/shipment_labels?shipment_ids=${shipmentId}&response_type=pdf&access_token=${token}`;
+    sendJSON(res, 200, { url: labelUrl });
+  } catch (err) {
+    console.error('Error label:', err.message || err);
+    sendJSON(res, 500, { error: 'Error al obtener etiqueta' });
+  }
+});
+
 // STATS
 route('GET', '/api/stats', async (req, res) => {
   const sess = requireAuth(req);
