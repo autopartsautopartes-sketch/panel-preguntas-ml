@@ -303,7 +303,9 @@ route('GET', '/callback', async (req, res) => {
     res.writeHead(302, { Location: '/?error=oauth_failed' });
     res.end();
   }
-});// QUESTIONS
+});
+
+// QUESTIONS
 route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -531,4 +533,66 @@ route('DELETE', '/api/users/delete', async (req, res) => {
   const { id } = await parseBody(req);
   const db = loadDB();
   const idx = db.users.findIndex(u => u.id === parseInt(id));
-  if (idx === -1) return sendJSON(res, 404, { error:
+  if (idx === -1) return sendJSON(res, 404, { error: 'No encontrado' });
+  if (db.users[idx].role === 'admin') return sendJSON(res, 400, { error: 'No se puede eliminar al admin' });
+  db.users.splice(idx, 1);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+// ==================== STATIC FILES ====================
+
+const MIME_TYPES = {
+  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon'
+};
+
+function serveStatic(req, res) {
+  let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+  const ext = path.extname(filePath);
+
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      fs.readFile(path.join(__dirname, 'public', 'index.html'), (err2, data2) => {
+        if (err2) { res.writeHead(404); return res.end('Not found'); }
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(data2);
+      });
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+    res.end(data);
+  });
+}
+
+// ==================== SERVER ====================
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const pathname = url.pathname;
+  const method = req.method;
+
+  const routeKey = `${method}:${pathname}`;
+  if (routes[routeKey]) {
+    try {
+      await routes[routeKey](req, res);
+    } catch (err) {
+      console.error('Server error:', err);
+      sendJSON(res, 500, { error: 'Error interno del servidor' });
+    }
+    return;
+  }
+
+  if (method === 'GET') {
+    serveStatic(req, res);
+    return;
+  }
+
+  sendJSON(res, 404, { error: 'Ruta no encontrada' });
+});
+
+server.listen(PORT, () => {
+  console.log(`Panel de preguntas corriendo en ${BASE_URL}`);
+  console.log(`Puerto: ${PORT}`);
+});
