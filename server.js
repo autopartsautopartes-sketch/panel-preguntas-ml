@@ -328,59 +328,48 @@ route('GET', '/api/questions', async (req, res) => {
       const itemIds = [...new Set(questions.map(q => q.item_id))];
       const itemDetails = {};
 
-      // Fetch items in batches of 20 using multiget
-      for (let i = 0; i < itemIds.length; i += 20) {
-        const batch = itemIds.slice(i, i + 20);
+      // Fetch items one by one using caller.id (no auth needed)
+      for (const itemId of itemIds) {
         try {
-          const multiRes = await fetch(`https://api.mercadolibre.com/items?ids=${batch.join(',')}`, { headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' } });
-          const multiData = await multiRes.json();
+          const itemRes = await fetch(`https://api.mercadolibre.com/items/${itemId}?caller.id=${account.seller_id}`, {
+            headers: { 'Accept': 'application/json' }
+          });
+          if (!itemRes.ok) throw new Error(`HTTP ${itemRes.status}`);
+          const itemData = await itemRes.json();
 
-          for (const entry of multiData) {
-            if (entry.code !== 200 || !entry.body) {
-              console.error(`Error fetching item ${entry.id || 'unknown'}:`, entry);
-              const failId = entry.id || batch[multiData.indexOf(entry)];
-              if (failId) itemDetails[failId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: failId };
-              continue;
+          let sku = itemData.seller_custom_field || '';
+          let mpn = '';
+          if (itemData.attributes) {
+            if (!sku) {
+              const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
+              if (skuAttr) sku = skuAttr.value_name || '';
             }
-            const itemData = entry.body;
-            const itemId = itemData.id;
-
-            let sku = itemData.seller_custom_field || '';
-            let mpn = '';
-            if (itemData.attributes) {
-              if (!sku) {
-                const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
-                if (skuAttr) sku = skuAttr.value_name || '';
-              }
-              const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
-              if (mpnAttr) mpn = mpnAttr.value_name || '';
-            }
-
-            let listingType = '';
-            const lt = itemData.listing_type_id || '';
-            if (lt === 'gold_special' || lt === 'gold_pro') listingType = 'Premium';
-            else if (lt === 'gold') listingType = 'Clasica';
-            else if (lt === 'free') listingType = 'Gratis';
-            else if (lt) listingType = lt;
-
-            itemDetails[itemId] = {
-              title: itemData.title,
-              thumbnail: itemData.thumbnail,
-              permalink: itemData.permalink,
-              price: itemData.price,
-              currency: itemData.currency_id || 'ARS',
-              sku: sku,
-              mpn: mpn,
-              available_quantity: itemData.available_quantity || 0,
-              listing_type: listingType,
-              publication_id: itemData.id || itemId
-            };
+            const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
+            if (mpnAttr) mpn = mpnAttr.value_name || '';
           }
+
+          let listingType = '';
+          const lt = itemData.listing_type_id || '';
+          if (lt === 'gold_special' || lt === 'gold_pro') listingType = 'Premium';
+          else if (lt === 'gold') listingType = 'Clasica';
+          else if (lt === 'free') listingType = 'Gratis';
+          else if (lt) listingType = lt;
+
+          itemDetails[itemId] = {
+            title: itemData.title,
+            thumbnail: itemData.thumbnail,
+            permalink: itemData.permalink,
+            price: itemData.price,
+            currency: itemData.currency_id || 'ARS',
+            sku: sku,
+            mpn: mpn,
+            available_quantity: itemData.available_quantity || 0,
+            listing_type: listingType,
+            publication_id: itemData.id || itemId
+          };
         } catch (e) {
-          console.error('Error fetching items batch:', e.message || e);
-          for (const id of batch) {
-            if (!itemDetails[id]) itemDetails[id] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: id };
-          }
+          console.error(`Error fetching item ${itemId}:`, e.message || e);
+          itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
         }
       }
 
@@ -542,66 +531,4 @@ route('DELETE', '/api/users/delete', async (req, res) => {
   const { id } = await parseBody(req);
   const db = loadDB();
   const idx = db.users.findIndex(u => u.id === parseInt(id));
-  if (idx === -1) return sendJSON(res, 404, { error: 'No encontrado' });
-  if (db.users[idx].role === 'admin') return sendJSON(res, 400, { error: 'No se puede eliminar al admin' });
-  db.users.splice(idx, 1);
-  saveDB(db);
-  sendJSON(res, 200, { ok: true });
-});
-
-// ==================== STATIC FILES ====================
-
-const MIME_TYPES = {
-  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml', '.ico': 'image/x-icon'
-};
-
-function serveStatic(req, res) {
-  let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
-  const ext = path.extname(filePath);
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      fs.readFile(path.join(__dirname, 'public', 'index.html'), (err2, data2) => {
-        if (err2) { res.writeHead(404); return res.end('Not found'); }
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(data2);
-      });
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
-    res.end(data);
-  });
-}
-
-// ==================== SERVER ====================
-
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
-  const pathname = url.pathname;
-  const method = req.method;
-
-  const routeKey = `${method}:${pathname}`;
-  if (routes[routeKey]) {
-    try {
-      await routes[routeKey](req, res);
-    } catch (err) {
-      console.error('Server error:', err);
-      sendJSON(res, 500, { error: 'Error interno del servidor' });
-    }
-    return;
-  }
-
-  if (method === 'GET') {
-    serveStatic(req, res);
-    return;
-  }
-
-  sendJSON(res, 404, { error: 'Ruta no encontrada' });
-});
-
-server.listen(PORT, () => {
-  console.log(`Panel de preguntas corriendo en ${BASE_URL}`);
-  console.log(`Puerto: ${PORT}`);
-});
+  if (idx === -1) return sendJSON(res, 404, { error:
