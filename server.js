@@ -86,6 +86,7 @@ if (db.users.length === 0) {
   });
   saveDB(db);
   console.log('Usuario admin creado: admin / admin123');
+  console.warn('[SEGURIDAD] Estas usando la contraseña por defecto (admin123). Cambiala lo antes posible desde el panel de usuarios.');
 } else {
   saveDB(db); // ensure file exists on disk
 }
@@ -137,10 +138,17 @@ function getSession(req) {
   return null;
 }
 
-function createSession(res) {
+// Detect if the request reached us over HTTPS (Render terminates TLS at its
+// edge proxy, so we check the standard forwarded-proto header it sets).
+function isHttps(req) {
+  return req.headers['x-forwarded-proto'] === 'https' || !!req.socket?.encrypted;
+}
+
+function createSession(req, res) {
   const sid = generateSessionId();
   sessions[sid] = { created: Date.now() };
-  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  const secureFlag = isHttps(req) ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax${secureFlag}`);
   saveSessions();
   return sessions[sid];
 }
@@ -148,7 +156,8 @@ function createSession(res) {
 function destroySession(req, res) {
   const cookies = parseCookies(req);
   if (cookies.sid) delete sessions[cookies.sid];
-  res.setHeader('Set-Cookie', `sid=; HttpOnly; Path=/; Max-Age=0`);
+  const secureFlag = isHttps(req) ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `sid=; HttpOnly; Path=/; Max-Age=0${secureFlag}`);
   saveSessions();
 }
 
@@ -159,6 +168,80 @@ function parseCookies(req) {
     if (key) cookies[key] = vals.join('=');
   });
   return cookies;
+}
+
+// ==================== LOGIN RATE LIMITING (brute force protection) ====================
+
+const loginAttempts = {}; // ip -> { count, firstAttempt, blockedUntil }
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;   // 15 min window to count failed attempts
+const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 min block once exceeded
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return forwarded.split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function checkLoginRateLimit(ip) {
+  const entry = loginAttempts[ip];
+  if (!entry) return { allowed: true };
+  if (entry.blockedUntil) {
+    if (Date.now() < entry.blockedUntil) {
+      return { allowed: false, retryAfter: Math.ceil((entry.blockedUntil - Date.now()) / 1000) };
+    }
+    delete loginAttempts[ip];
+  }
+  return { allowed: true };
+}
+
+function recordFailedLogin(ip) {
+  const now = Date.now();
+  let entry = loginAttempts[ip];
+  if (!entry || (now - entry.firstAttempt) > LOGIN_WINDOW_MS) {
+    entry = { count: 0, firstAttempt: now };
+    loginAttempts[ip] = entry;
+  }
+  entry.count++;
+  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
+    entry.blockedUntil = now + BLOCK_DURATION_MS;
+    console.log(`[SECURITY] IP bloqueada por intentos de login fallidos: ${ip}`);
+  }
+}
+
+function recordSuccessfulLogin(ip) {
+  delete loginAttempts[ip];
+}
+
+// Periodically clean up old rate-limit entries to avoid unbounded memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const ip of Object.keys(loginAttempts)) {
+    const entry = loginAttempts[ip];
+    if (entry.blockedUntil && now > entry.blockedUntil) delete loginAttempts[ip];
+    else if (!entry.blockedUntil && (now - entry.firstAttempt) > LOGIN_WINDOW_MS) delete loginAttempts[ip];
+  }
+}, 10 * 60 * 1000);
+
+// ==================== SECURITY HEADERS ====================
+
+function setSecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: https:; " +
+    "connect-src 'self' https://api.mercadolibre.com; " +
+    "manifest-src 'self'; " +
+    "object-src 'none'; " +
+    "base-uri 'self'; " +
+    "frame-ancestors 'none'"
+  );
 }
 
 // ==================== HTTP HELPERS ====================
@@ -193,12 +276,30 @@ function sendJSON(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
+const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2MB limit to mitigate large-payload DoS
+
 function parseBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    let bytes = 0;
+    let tooLarge = false;
+    req.on('data', chunk => {
+      if (tooLarge) return;
+      bytes += chunk.length;
+      if (bytes > MAX_BODY_BYTES) {
+        tooLarge = true;
+        req.destroy();
+        reject(Object.assign(new Error('Payload demasiado grande'), { statusCode: 413 }));
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
+      if (tooLarge) return;
       try { resolve(JSON.parse(body)); } catch (e) { resolve({}); }
+    });
+    req.on('error', () => {
+      if (!tooLarge) resolve({});
     });
   });
 }
@@ -252,13 +353,22 @@ function route(method, path, handler) {
 
 // AUTH
 route('POST', '/api/login', async (req, res) => {
+  const ip = getClientIp(req);
+  const rl = checkLoginRateLimit(ip);
+  if (!rl.allowed) {
+    res.setHeader('Retry-After', String(rl.retryAfter));
+    return sendJSON(res, 429, { error: `Demasiados intentos fallidos. Intenta de nuevo en ${Math.ceil(rl.retryAfter / 60)} minuto(s).` });
+  }
+
   const { username, password } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.username === username);
   if (!user || !verifyPassword(password, user.password)) {
+    recordFailedLogin(ip);
     return sendJSON(res, 401, { error: 'Usuario o contraseña incorrectos' });
   }
-  const sess = createSession(res);
+  recordSuccessfulLogin(ip);
+  const sess = createSession(req, res);
   sess.userId = user.id;
   sess.username = user.username;
   sess.role = user.role;
@@ -1237,12 +1347,29 @@ const MIME_TYPES = {
 };
 
 function serveStatic(req, res) {
-  let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
-  const ext = path.extname(filePath);
+  const publicDir = path.join(__dirname, 'public');
+  // Decode and normalize the requested path before joining, then verify the
+  // resolved path stays inside publicDir to prevent path traversal
+  // (e.g. /../../.env or %2e%2e%2f tricks).
+  let requestedPath;
+  try {
+    requestedPath = decodeURIComponent(req.url === '/' ? '/index.html' : req.url.split('?')[0]);
+  } catch (e) {
+    requestedPath = '/index.html';
+  }
+  const filePath = path.join(publicDir, requestedPath);
+  const resolved = path.resolve(filePath);
 
-  fs.readFile(filePath, (err, data) => {
+  if (!resolved.startsWith(publicDir + path.sep) && resolved !== publicDir) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+
+  const ext = path.extname(resolved);
+
+  fs.readFile(resolved, (err, data) => {
     if (err) {
-      fs.readFile(path.join(__dirname, 'public', 'index.html'), (err2, data2) => {
+      fs.readFile(path.join(publicDir, 'index.html'), (err2, data2) => {
         if (err2) { res.writeHead(404); return res.end('Not found'); }
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(data2);
@@ -1257,6 +1384,16 @@ function serveStatic(req, res) {
 // ==================== SERVER ====================
 
 const server = http.createServer(async (req, res) => {
+  setSecurityHeaders(res);
+
+  // Force HTTPS in production (Render terminates TLS at its edge proxy and
+  // tells us the original protocol via x-forwarded-proto).
+  if (req.headers['x-forwarded-proto'] === 'http') {
+    const host = req.headers.host || '';
+    res.writeHead(301, { Location: `https://${host}${req.url}` });
+    return res.end();
+  }
+
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
   const method = req.method;
@@ -1266,8 +1403,11 @@ const server = http.createServer(async (req, res) => {
     try {
       await routes[routeKey](req, res);
     } catch (err) {
+      if (err && err.statusCode === 413) {
+        return sendJSON(res, 413, { error: 'Solicitud demasiado grande' });
+      }
       console.error('Server error:', err);
-      sendJSON(res, 500, { error: 'Error interno del servidor' });
+      if (!res.headersSent) sendJSON(res, 500, { error: 'Error interno del servidor' });
     }
     return;
   }
