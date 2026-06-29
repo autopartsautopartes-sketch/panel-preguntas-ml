@@ -134,6 +134,64 @@
     .msg-bubble .msg-date { font-size: 11px; opacity: 0.7; margin-top: 4px; text-align: right; }
     .msg-bubble.seller .msg-date { color: rgba(255,255,255,0.8); }
 
+    /* SALES */
+    .sales-filters { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .sales-filters h4 { font-size: 13px; color: #666; margin-bottom: 8px; }
+    .sales-filters .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .sales-filters label.chip {
+      display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid #ddd;
+      border-radius: 6px; font-size: 12px; cursor: pointer; background: white; transition: all 0.2s;
+    }
+    .sales-filters label.chip:hover { border-color: #3483fa; }
+    .sales-filters label.chip input { width: 14px; height: 14px; cursor: pointer; }
+    .sales-filters label.chip.checked { background: #e8f4fd; border-color: #3483fa; color: #3483fa; }
+    .sale-card {
+      background: white; border-radius: 10px; padding: 16px 20px; margin-bottom: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08); transition: box-shadow 0.2s;
+    }
+    .sale-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+    .sale-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; font-size: 13px; color: #666; }
+    .sale-header .order-id { font-weight: 700; color: #3483fa; }
+    .sale-header .sale-date { color: #666; }
+    .sale-status {
+      display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
+    }
+    .sale-status.pending { background: #fff3cd; color: #856404; }
+    .sale-status.ready_to_print { background: #d4edda; color: #155724; }
+    .sale-status.ready_to_ship { background: #cce5ff; color: #004085; }
+    .sale-status.in_transit { background: #d1ecf1; color: #0c5460; }
+    .sale-status.delivered { background: #d4edda; color: #155724; }
+    .sale-status.cancelled { background: #f8d7da; color: #721c24; }
+    .sale-status.delayed { background: #f8d7da; color: #721c24; }
+    .sale-status.not_completed { background: #f5c6cb; color: #721c24; }
+    .shipping-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700;
+      background: #333; color: white; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .shipping-badge.flex { background: #00a650; }
+    .shipping-badge.drop_off { background: #3483fa; }
+    .shipping-badge.agreement { background: #999; }
+    .sale-item { display: flex; gap: 12px; align-items: center; padding: 8px 0; }
+    .sale-item img { width: 55px; height: 55px; border-radius: 6px; object-fit: cover; border: 1px solid #eee; }
+    .sale-item-info { flex: 1; }
+    .sale-item-title { font-size: 13px; color: #333; }
+    .sale-item-meta { font-size: 12px; color: #999; margin-top: 2px; }
+    .sale-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+    .sale-actions button, .sale-actions a {
+      padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px;
+      cursor: pointer; background: white; color: #333; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .sale-actions button:hover, .sale-actions a:hover { border-color: #3483fa; color: #3483fa; }
+    .sale-actions .btn-print { background: #ff6900; color: white; border-color: #ff6900; font-weight: 600; }
+    .sale-actions .btn-print:hover { background: #e55d00; }
+    .sale-notes { margin-top: 8px; }
+    .sale-notes textarea {
+      width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px;
+      font-size: 12px; resize: vertical; min-height: 36px; font-family: inherit; outline: none;
+    }
+    .sale-notes textarea:focus { border-color: #3483fa; }
+    .sale-notes .notes-saved { font-size: 11px; color: #27ae60; margin-top: 4px; display: none; }
+
     /* ACCOUNTS MANAGEMENT */
     .account-card {
       background: white; border-radius: 10px; padding: 20px; margin-bottom: 12px;
@@ -208,6 +266,9 @@
       </a>
       <a onclick="showSection('messages')" id="nav-messages">
         <span>💬 Mensajes</span>
+      </a>
+      <a onclick="showSection('sales')" id="nav-sales">
+        <span>🛒 Ventas</span>
       </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts">
@@ -302,6 +363,7 @@
       case 'dashboard': loadDashboard(); break;
       case 'questions': loadQuestions(); break;
       case 'messages': loadMessages(); break;
+      case 'sales': loadSales(); break;
       case 'accounts': loadAccountsSection(); break;
       case 'users': loadUsers(); break;
     }
@@ -583,6 +645,195 @@
       btn.disabled = false;
       btn.textContent = 'Enviar';
     }
+  }
+
+  // ==================== SALES SECTION ====================
+
+  let salesStatusFilters = [];
+  let salesShippingFilters = [];
+  let salesDateFrom = '';
+  let salesDateTo = '';
+  let salesAccountFilter = '';
+
+  const STATUS_LABELS = {
+    pending: 'Pendientes para acordar',
+    ready_to_print: 'Etiquetas para imprimir',
+    delayed: 'Demoradas',
+    ready_to_ship: 'Listas para enviar',
+    in_transit: 'En camino',
+    not_completed: 'No concretadas',
+    cancelled: 'Canceladas',
+    delivered: 'Entregadas'
+  };
+
+  const SHIPPING_LABELS = {
+    flex: 'Envíos Flex',
+    drop_off: 'Puntos de despacho',
+    agreement: 'Acuerdo con el comprador'
+  };
+
+  function toggleSalesFilter(type, value) {
+    const arr = type === 'status' ? salesStatusFilters : salesShippingFilters;
+    const idx = arr.indexOf(value);
+    if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
+    loadSales();
+  }
+
+  async function loadSales() {
+    const content = document.getElementById('content');
+    const params = new URLSearchParams();
+    if (salesAccountFilter) params.set('account_id', salesAccountFilter);
+    if (salesStatusFilters.length) params.set('status', salesStatusFilters.join(','));
+    if (salesShippingFilters.length) params.set('shipping', salesShippingFilters.join(','));
+    if (salesDateFrom) params.set('date_from', salesDateFrom);
+    if (salesDateTo) params.set('date_to', salesDateTo);
+
+    try {
+      const res = await fetch(`/api/sales?${params.toString()}`);
+      const sales = await res.json();
+
+      let html = `
+        <h2 style="margin-bottom:20px;color:#2d3277">Ventas</h2>
+        <div class="sales-filters">
+          <div class="filter-row">
+            <select onchange="salesAccountFilter=this.value;loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+              ${accountFilterHTML()}
+            </select>
+            <input type="date" value="${salesDateFrom}" onchange="salesDateFrom=this.value;loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px" title="Desde">
+            <input type="date" value="${salesDateTo}" onchange="salesDateTo=this.value;loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px" title="Hasta">
+            <button onclick="salesDateFrom='';salesDateTo='';salesStatusFilters=[];salesShippingFilters=[];loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:#f0f2f5">Limpiar filtros</button>
+          </div>
+          <h4>Estados</h4>
+          <div class="filter-row">
+            ${Object.entries(STATUS_LABELS).map(([key, label]) => `
+              <label class="chip ${salesStatusFilters.includes(key) ? 'checked' : ''}">
+                <input type="checkbox" ${salesStatusFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilter('status','${key}')">
+                ${label}
+              </label>
+            `).join('')}
+          </div>
+          <h4>Formas de entrega</h4>
+          <div class="filter-row">
+            ${Object.entries(SHIPPING_LABELS).map(([key, label]) => `
+              <label class="chip ${salesShippingFilters.includes(key) ? 'checked' : ''}">
+                <input type="checkbox" ${salesShippingFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilter('shipping','${key}')">
+                ${label}
+              </label>
+            `).join('')}
+          </div>
+        </div>
+      `;
+
+      if (sales.length === 0) {
+        html += '<div class="empty"><p>No hay ventas para los filtros seleccionados</p></div>';
+      } else {
+        html += `<p style="color:#999;font-size:13px;margin-bottom:12px">${sales.length} venta${sales.length !== 1 ? 's' : ''}</p>`;
+        for (const sale of sales) {
+          const statusLabel = STATUS_LABELS[sale.status] || sale.status;
+          const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'MERCADO ENVÍOS' : sale.shipping_type === 'agreement' ? 'ACORDAR' : sale.shipping_type.toUpperCase();
+          const saleDate = new Date(sale.date_created);
+          const dateStr = saleDate.toLocaleDateString('es-AR', {day:'2-digit',month:'short'}) + ' ' + saleDate.toLocaleTimeString('es-AR', {hour:'2-digit',minute:'2-digit'});
+          const reputationText = sale.affects_reputation ? '' : '<span style="color:#27ae60;font-size:12px">No afecta tu reputación</span>';
+
+          html += `
+            <div class="sale-card">
+              <div class="sale-header">
+                <span class="sale-status ${sale.status}">${statusLabel}</span>
+                <span class="order-id">#${sale.order_id}</span>
+                <span class="sale-date">${dateStr}</span>
+                ${reputationText}
+                <span class="shipping-badge ${sale.shipping_type}">${shippingLabel}</span>
+                <span style="margin-left:auto;font-size:12px;color:#3483fa;font-weight:600">${sale.account_name}</span>
+                <span style="font-size:12px;color:#666">${sale.buyer_name}</span>
+              </div>
+              ${sale.items.map(item => `
+                <div class="sale-item">
+                  ${item.thumbnail ? `<img src="${item.thumbnail}" alt="">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
+                  <div class="sale-item-info">
+                    <div class="sale-item-title">${item.title}</div>
+                    <div class="sale-item-meta">
+                      $ ${Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2})}
+                      &nbsp;&middot;&nbsp; ${item.quantity} unidad${item.quantity !== 1 ? 'es' : ''}
+                      ${item.sku ? '&nbsp;&middot;&nbsp; SKU: ' + item.sku : ''}
+                    </div>
+                  </div>
+                  <div style="text-align:right">
+                    <div style="font-weight:700;color:#2d3277;font-size:16px">$ ${Number(item.unit_price * item.quantity).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
+                  </div>
+                </div>
+              `).join('')}
+              <div class="sale-actions">
+                ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
+                <button onclick="openSaleMessages(${sale.order_id}, ${sale.account_id})">💬 Mensajes</button>
+                <button onclick="openSaleQuestions('${sale.items[0]?.id || ''}')">❓ Preguntas</button>
+                <button onclick="toggleNotes('notes-${sale.order_id}')">📝 Notas</button>
+              </div>
+              <div class="sale-notes" id="notes-${sale.order_id}" style="display:${sale.notes ? 'block' : 'none'}">
+                <textarea placeholder="Agregar nota..." onblur="saveNote(${sale.order_id}, this.value)">${sale.notes || ''}</textarea>
+                <div class="notes-saved" id="notes-saved-${sale.order_id}">✓ Nota guardada</div>
+              </div>
+            </div>
+          `;
+        }
+      }
+      content.innerHTML = html;
+
+      // Restore select value
+      if (salesAccountFilter) {
+        const sel = content.querySelector('select');
+        if (sel) sel.value = salesAccountFilter;
+      }
+    } catch (e) {
+      content.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
+    }
+  }
+
+  async function printLabel(shipmentId, accountId) {
+    try {
+      const res = await fetch(`/api/sales/label?shipment_id=${shipmentId}&account_id=${accountId}`);
+      const data = await res.json();
+      if (data.url) {
+        window.open(data.url, '_blank');
+      } else {
+        showToast('No se pudo obtener la etiqueta', 'error');
+      }
+    } catch (e) {
+      showToast('Error al obtener etiqueta', 'error');
+    }
+  }
+
+  function openSaleMessages(orderId, accountId) {
+    messageStatus = 'unread';
+    showSection('messages');
+  }
+
+  function openSaleQuestions(itemId) {
+    questionStatus = 'UNANSWERED';
+    showSection('questions');
+  }
+
+  function toggleNotes(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+      if (el.style.display === 'block') el.querySelector('textarea').focus();
+    }
+  }
+
+  let noteTimeout = null;
+  async function saveNote(orderId, text) {
+    clearTimeout(noteTimeout);
+    noteTimeout = setTimeout(async () => {
+      try {
+        await fetch('/api/sales/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_id: orderId, notes: text })
+        });
+        const saved = document.getElementById('notes-saved-' + orderId);
+        if (saved) { saved.style.display = 'block'; setTimeout(() => saved.style.display = 'none', 2000); }
+      } catch (e) {}
+    }, 500);
   }
 
   // ==================== ACCOUNTS SECTION ====================
