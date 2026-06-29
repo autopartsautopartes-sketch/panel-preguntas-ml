@@ -838,6 +838,36 @@ route('POST', '/api/sales/notes', async (req, res) => {
   }
 });
 
+// DEBUG NOTES - endpoint to see raw ML response
+route('GET', '/api/sales/debug-notes', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const url = new URL(req.url, 'http://localhost');
+  const orderId = url.searchParams.get('order_id');
+  const accountId = url.searchParams.get('account_id');
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+
+  try {
+    const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const noteBody = await noteRes.text();
+    sendJSON(res, 200, {
+      order_id: orderId,
+      ml_status: noteRes.status,
+      ml_raw_response: noteBody,
+      ml_headers: Object.fromEntries(noteRes.headers.entries())
+    });
+  } catch (e) {
+    sendJSON(res, 500, { error: e.message });
+  }
+});
+
 // SHIPPING LABEL URL
 route('GET', '/api/sales/label', async (req, res) => {
   const sess = requireAuth(req);
