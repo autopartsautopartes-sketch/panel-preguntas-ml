@@ -325,22 +325,28 @@
         }
         loadAccounts();
         // Check URL params for deep linking (e.g. from sales buttons)
-        const urlParams = new URLSearchParams(location.search);
-        const targetSection = urlParams.get('section');
-        const urlBuyerId = urlParams.get('buyer_id');
-        const urlAccountId = urlParams.get('account_id');
-        if (targetSection === 'messages' && urlBuyerId) {
-          showSection('messages');
-          // Load messages filtered by buyer
-          loadMessagesForBuyer(urlBuyerId, urlAccountId);
-        } else if (targetSection === 'questions' && urlBuyerId) {
-          showSection('questions');
-          loadQuestionsForBuyer(urlBuyerId, urlAccountId);
-        } else {
-          showSection('dashboard');
-        }
+        handleDeepLink();
       }
     } catch (e) {}
+  }
+
+  function handleDeepLink() {
+    const urlParams = new URLSearchParams(location.search);
+    const targetSection = urlParams.get('section');
+    const urlBuyerId = urlParams.get('buyer_id');
+    const urlOrderId = urlParams.get('order_id');
+    const urlAccountId = urlParams.get('account_id');
+    if (targetSection === 'messages' && (urlBuyerId || urlOrderId)) {
+      showSection('messages');
+      loadMessagesForBuyer(urlBuyerId, urlAccountId, urlOrderId);
+    } else if (targetSection === 'questions' && urlBuyerId) {
+      showSection('questions');
+      loadQuestionsForBuyer(urlBuyerId, urlAccountId);
+    } else if (targetSection === 'sales') {
+      showSection('sales');
+    } else {
+      showSection('dashboard');
+    }
   }
 
   async function doLogin() {
@@ -363,20 +369,7 @@
           document.getElementById('nav-users').style.display = '';
         }
         loadAccounts();
-        // Check URL params for deep linking
-        const urlParams = new URLSearchParams(location.search);
-        const targetSection = urlParams.get('section');
-        const urlBuyerId = urlParams.get('buyer_id');
-        const urlAccountId = urlParams.get('account_id');
-        if (targetSection === 'messages' && urlBuyerId) {
-          showSection('messages');
-          loadMessagesForBuyer(urlBuyerId, urlAccountId);
-        } else if (targetSection === 'questions' && urlBuyerId) {
-          showSection('questions');
-          loadQuestionsForBuyer(urlBuyerId, urlAccountId);
-        } else {
-          showSection('dashboard');
-        }
+        handleDeepLink();
       } else {
         errorEl.textContent = 'Usuario o contraseña incorrectos';
         errorEl.style.display = 'block';
@@ -787,7 +780,7 @@
                 <span class="card-date">Comprador: ${conv.buyer_name}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
+                📦 ${conv.item_title} &nbsp; <a href="https://www.mercadolibre.com.ar/ventas/${conv.order_id}/detalle" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta en MercadoLibre">Orden #${conv.order_id}</a>
               </div>
               <div class="msg-conversation">
                 ${(function(){
@@ -860,12 +853,13 @@
 
   // ==================== BUYER-FILTERED VIEWS ====================
 
-  async function loadMessagesForBuyer(buyerId, accountId) {
+  async function loadMessagesForBuyer(buyerId, accountId, orderId) {
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando mensajes del comprador...</p></div>';
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando mensajes...</p></div>';
     try {
       const params = new URLSearchParams();
       if (buyerId) params.set('buyer_id', buyerId);
+      if (orderId) params.set('order_id', orderId);
       if (accountId) params.set('account_id', accountId);
       const res = await fetch(`/api/messages?${params.toString()}`);
       const conversations = await res.json();
@@ -886,7 +880,7 @@
                 <span class="card-date">Comprador: ${conv.buyer_name}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
+                📦 ${conv.item_title} &nbsp; <a href="https://www.mercadolibre.com.ar/ventas/${conv.order_id}/detalle" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta en MercadoLibre">Orden #${conv.order_id}</a>
               </div>
               <div class="msg-conversation">
                 ${(function(){
@@ -1186,7 +1180,7 @@
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">
                 <div class="sale-actions" style="margin-top:0">
                   ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
-                  <a href="/?section=messages&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
+                  <a href="/?section=messages&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
                   <a href="/?section=questions&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">❓ Preguntas</a>
                 </div>
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
