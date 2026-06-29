@@ -380,8 +380,11 @@ route('GET', '/api/questions', async (req, res) => {
 
           let listingType = '';
           const lt = itemData.listing_type_id || '';
+          console.log(`Item ${itemId} listing_type_id: ${lt}`);
           if (lt === 'gold_special' || lt === 'gold_pro') listingType = 'Premium';
           else if (lt === 'gold') listingType = 'Clasica';
+          else if (lt === 'bronze') listingType = 'Clasica';
+          else if (lt === 'silver') listingType = 'Clasica';
           else if (lt === 'free') listingType = 'Gratis';
           else if (lt) listingType = lt;
 
