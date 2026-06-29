@@ -342,6 +342,9 @@
     } else if (targetSection === 'questions' && urlBuyerId) {
       showSection('questions');
       loadQuestionsForBuyer(urlBuyerId, urlAccountId);
+    } else if (targetSection === 'sales' && urlOrderId) {
+      showSection('sales');
+      loadSalesForOrder(urlOrderId, urlAccountId);
     } else if (targetSection === 'sales') {
       showSection('sales');
     } else {
@@ -780,7 +783,7 @@
                 <span class="card-date">Comprador: ${conv.buyer_name}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${conv.item_title} &nbsp; <a href="https://www.mercadolibre.com.ar/ventas/${conv.order_id}/detalle" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta en MercadoLibre">Orden #${conv.order_id}</a>
+                📦 ${conv.item_title} &nbsp; <a href="/?section=sales&order_id=${conv.order_id}&account_id=${conv.account_id}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${conv.order_id}</a>
               </div>
               <div class="msg-conversation">
                 ${(function(){
@@ -880,7 +883,7 @@
                 <span class="card-date">Comprador: ${conv.buyer_name}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${conv.item_title} &nbsp; <a href="https://www.mercadolibre.com.ar/ventas/${conv.order_id}/detalle" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta en MercadoLibre">Orden #${conv.order_id}</a>
+                📦 ${conv.item_title} &nbsp; <a href="/?section=sales&order_id=${conv.order_id}&account_id=${conv.account_id}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${conv.order_id}</a>
               </div>
               <div class="msg-conversation">
                 ${(function(){
@@ -1213,6 +1216,76 @@
       // Keep filters, show error below
       const loadingEl = content.querySelector('.loading');
       if (loadingEl) loadingEl.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
+    }
+  }
+
+  async function loadSalesForOrder(orderId, accountId) {
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando venta...</p></div>';
+    try {
+      const params = new URLSearchParams();
+      if (orderId) params.set('order_id', orderId);
+      if (accountId) params.set('account_id', accountId);
+      const res = await fetch('/api/sales?' + params.toString());
+      const sales = await res.json();
+
+      let html = '<h2 style="margin-bottom:20px;color:#2d3277">Venta - Orden #' + orderId + '</h2>';
+      html += '<a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">&larr; Volver al panel</a>';
+
+      if (sales.length === 0) {
+        html += '<div class="empty"><p>Venta no encontrada</p></div>';
+      } else {
+        for (const sale of sales) {
+          const statusLabel = STATUS_LABELS[sale.status] || sale.status;
+          const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'PUNTO DESPACHO' : sale.shipping_type === 'agreement' ? 'ACORDAR' : sale.shipping_type.toUpperCase();
+          const dateStr = formatSaleDate(sale.date_created);
+          const saleOrderId = sale.pack_id ? sale.pack_id : sale.order_id;
+          const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+          const orderIdsJson = JSON.stringify(sale.order_ids || [sale.order_id]).replace(/"/g, '&quot;');
+
+          let itemsHtml = '';
+          for (const item of sale.items) {
+            itemsHtml += '<div class="sale-item">';
+            itemsHtml += item.thumbnail ? '<img src="' + item.thumbnail + '" alt="">' : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>';
+            itemsHtml += '<div class="sale-item-info">';
+            itemsHtml += '<div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/' + item.id + '" target="_blank" style="color:#3483fa;text-decoration:none">' + item.title + '</a></div>';
+            itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
+            itemsHtml += ' &middot; ' + item.quantity + ' unidad' + (item.quantity !== 1 ? 'es' : '');
+            if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku;
+            itemsHtml += '</div></div></div>';
+          }
+
+          html += '<div class="sale-card">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+          html += '<span class="card-account">' + sale.account_name + '</span>';
+          html += '<span style="font-size:13px;color:#333;font-weight:600">' + sale.buyer_name + '</span></div>';
+          html += '<div class="sale-header">';
+          html += '<span class="sale-status ' + sale.status + '">' + statusLabel + '</span>';
+          html += '<span class="order-id">#' + saleOrderId + '</span>';
+          html += '<span class="sale-date">' + dateStr + '</span>';
+          html += '<span class="shipping-badge ' + sale.shipping_type + '">' + shippingLabel + '</span></div>';
+          html += itemsHtml;
+          html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">';
+          html += '<div class="sale-actions" style="margin-top:0">';
+          if (sale.shipping_id) html += '<button class="btn-print" onclick="printLabel(' + sale.shipping_id + ', ' + sale.account_id + ')">&#128424; Imprimir etiqueta</button>';
+          html += '<a href="/?section=messages&order_id=' + firstOrderId + '&account_id=' + sale.account_id + '" target="_blank">&#128172; Mensajes</a>';
+          html += '<a href="/?section=questions&buyer_id=' + sale.buyer_id + '&account_id=' + sale.account_id + '" target="_blank">&#10067; Preguntas</a>';
+          html += '</div>';
+          html += '<div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ' + Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2}) + '</div></div>';
+          html += '<div class="sale-notes" id="sale-notes-' + firstOrderId + '" data-order-id="' + firstOrderId + '" data-account-id="' + sale.account_id + '" data-order-ids="' + orderIdsJson + '" style="margin-top:8px;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#f8f9fa;border-radius:6px;border:1px solid #eee;min-height:40px">';
+          html += '<div id="note-text-' + firstOrderId + '" style="flex:1;font-size:13px;color:#999;line-height:1.4">Cargando nota...</div>';
+          html += '<div style="display:flex;gap:4px;flex-shrink:0">';
+          html += '<button onclick="addEditNote(\'' + firstOrderId + '\')" title="Agregar/Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">+</button>';
+          html += '<button onclick="editNote(\'' + firstOrderId + '\')" id="btn-edit-' + firstOrderId + '" title="Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center">&#9999;&#65039;</button>';
+          html += '<button onclick="deleteNote(\'' + firstOrderId + '\')" id="btn-del-' + firstOrderId + '" title="Eliminar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center;color:#e74c3c">&#128465;&#65039;</button>';
+          html += '</div></div>';
+          html += '</div>';
+        }
+      }
+      content.innerHTML = html;
+      fetchSalesNotes(sales);
+    } catch(e) {
+      content.innerHTML = '<div class="empty"><p>Error al cargar venta</p></div>';
     }
   }
 
