@@ -186,12 +186,7 @@
     .sale-actions .btn-print { background: #ff6900; color: white; border-color: #ff6900; font-weight: 600; }
     .sale-actions .btn-print:hover { background: #e55d00; }
     .sale-notes { margin-top: 8px; }
-    .sale-notes textarea {
-      width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px;
-      font-size: 12px; resize: vertical; min-height: 36px; font-family: inherit; outline: none;
-    }
-    .sale-notes textarea:focus { border-color: #3483fa; }
-    .sale-notes .notes-saved { font-size: 11px; color: #27ae60; margin-top: 4px; display: none; }
+    .sale-notes button:hover { border-color: #3483fa !important; background: #f0f7ff !important; }
 
     /* ACCOUNTS MANAGEMENT */
     .account-card {
@@ -1013,9 +1008,20 @@
                 </div>
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
-              <div class="sale-notes" style="margin-top:8px">
-                <textarea id="note-${firstOrderId}" placeholder="Cargando nota..." data-order-id="${firstOrderId}" data-account-id="${sale.account_id}" data-note-id="" data-order-ids="${orderIdsJson}" oninput="saveNoteML(this)" disabled style="background:#f8f9fa"></textarea>
-                <div class="notes-saved" id="notes-saved-${firstOrderId}">✓ Nota guardada en MercadoLibre</div>
+              <div class="sale-notes" id="sale-notes-${firstOrderId}" data-order-id="${firstOrderId}" data-account-id="${sale.account_id}" data-order-ids="${orderIdsJson}" style="margin-top:8px;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#f8f9fa;border-radius:6px;border:1px solid #eee;min-height:40px">
+                <div id="note-text-${firstOrderId}" style="flex:1;font-size:13px;color:#999;line-height:1.4">Cargando nota...</div>
+                <div style="display:flex;gap:4px;flex-shrink:0">
+                  <button onclick="addEditNote('${firstOrderId}')" title="Agregar/Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">+</button>
+                  <button onclick="editNote('${firstOrderId}')" id="btn-edit-${firstOrderId}" title="Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center">✏️</button>
+                  <button onclick="deleteNote('${firstOrderId}')" id="btn-del-${firstOrderId}" title="Eliminar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center;color:#e74c3c">🗑️</button>
+                </div>
+              </div>
+              <div id="note-editor-${firstOrderId}" style="display:none;margin-top:4px">
+                <textarea id="note-input-${firstOrderId}" placeholder="Escribí tu nota..." style="width:100%;padding:8px 12px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none"></textarea>
+                <div style="display:flex;gap:8px;margin-top:6px">
+                  <button onclick="saveNote('${firstOrderId}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar</button>
+                  <button onclick="cancelNote('${firstOrderId}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
+                </div>
               </div>
             </div>
           `;
@@ -1034,7 +1040,6 @@
   }
 
   async function fetchSalesNotes(sales) {
-    // Build batch request
     const orders = sales.map(s => ({
       order_ids: s.order_ids || [s.order_id],
       account_id: s.account_id
@@ -1048,31 +1053,137 @@
       });
       const notesMap = await res.json();
 
-      // Fill in each textarea
       for (const s of sales) {
         const firstOrderId = s.order_ids ? s.order_ids[0] : s.order_id;
-        const textarea = document.getElementById('note-' + firstOrderId);
-        if (!textarea) continue;
+        const noteTextEl = document.getElementById('note-text-' + firstOrderId);
+        const container = document.getElementById('sale-notes-' + firstOrderId);
+        if (!noteTextEl || !container) continue;
 
         const noteData = notesMap[firstOrderId];
         if (noteData && noteData.notes) {
-          textarea.value = noteData.notes;
-          textarea.dataset.noteId = noteData.note_id || '';
-          textarea.dataset.orderId = noteData.note_order_id || firstOrderId;
+          noteTextEl.textContent = noteData.notes;
+          noteTextEl.style.color = '#333';
+          container.dataset.noteId = noteData.note_id || '';
+          container.dataset.noteOrderId = noteData.note_order_id || firstOrderId;
+          // Show edit/delete buttons, hide add button
+          const btnEdit = document.getElementById('btn-edit-' + firstOrderId);
+          const btnDel = document.getElementById('btn-del-' + firstOrderId);
+          if (btnEdit) btnEdit.style.display = 'flex';
+          if (btnDel) btnDel.style.display = 'flex';
+        } else {
+          noteTextEl.textContent = 'Sin notas';
+          noteTextEl.style.color = '#bbb';
         }
-        textarea.placeholder = 'Agregar nota...';
-        textarea.disabled = false;
-        textarea.style.background = '';
       }
     } catch (e) {
       console.error('Error fetching notes batch:', e);
-      // Enable textareas anyway so user can still write notes
-      const textareas = document.querySelectorAll('.sale-notes textarea');
-      for (const ta of textareas) {
-        ta.placeholder = 'Agregar nota...';
-        ta.disabled = false;
-        ta.style.background = '';
+      document.querySelectorAll('[id^="note-text-"]').forEach(el => {
+        el.textContent = 'Sin notas';
+        el.style.color = '#bbb';
+      });
+    }
+  }
+
+  function addEditNote(orderId) {
+    const container = document.getElementById('sale-notes-' + orderId);
+    const editor = document.getElementById('note-editor-' + orderId);
+    const input = document.getElementById('note-input-' + orderId);
+    const noteTextEl = document.getElementById('note-text-' + orderId);
+    if (!editor) return;
+    // Pre-fill with existing note if any
+    const currentText = noteTextEl?.textContent || '';
+    input.value = (currentText === 'Sin notas' || currentText === 'Cargando nota...') ? '' : currentText;
+    editor.style.display = 'block';
+    input.focus();
+  }
+
+  function editNote(orderId) {
+    addEditNote(orderId);
+  }
+
+  function cancelNote(orderId) {
+    const editor = document.getElementById('note-editor-' + orderId);
+    if (editor) editor.style.display = 'none';
+  }
+
+  async function saveNote(orderId) {
+    const container = document.getElementById('sale-notes-' + orderId);
+    const editor = document.getElementById('note-editor-' + orderId);
+    const input = document.getElementById('note-input-' + orderId);
+    const noteTextEl = document.getElementById('note-text-' + orderId);
+    if (!container || !input) return;
+
+    const text = input.value.trim();
+    const accountId = container.dataset.accountId;
+    const noteId = container.dataset.noteId || '';
+    const noteOrderId = container.dataset.noteOrderId || container.dataset.orderId;
+
+    try {
+      const res = await fetch('/api/sales/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: noteOrderId, account_id: accountId, note_id: noteId || null, notes: text })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        if (data.note_id) container.dataset.noteId = data.note_id;
+        if (text) {
+          noteTextEl.textContent = text;
+          noteTextEl.style.color = '#333';
+          const btnEdit = document.getElementById('btn-edit-' + orderId);
+          const btnDel = document.getElementById('btn-del-' + orderId);
+          if (btnEdit) btnEdit.style.display = 'flex';
+          if (btnDel) btnDel.style.display = 'flex';
+        } else {
+          noteTextEl.textContent = 'Sin notas';
+          noteTextEl.style.color = '#bbb';
+          const btnEdit = document.getElementById('btn-edit-' + orderId);
+          const btnDel = document.getElementById('btn-del-' + orderId);
+          if (btnEdit) btnEdit.style.display = 'none';
+          if (btnDel) btnDel.style.display = 'none';
+        }
+        editor.style.display = 'none';
+        showToast('Nota guardada en MercadoLibre', 'success');
+      } else {
+        showToast(data.error || 'Error al guardar nota', 'error');
       }
+    } catch (e) {
+      showToast('Error al guardar nota', 'error');
+    }
+  }
+
+  async function deleteNote(orderId) {
+    const container = document.getElementById('sale-notes-' + orderId);
+    const noteTextEl = document.getElementById('note-text-' + orderId);
+    if (!container) return;
+
+    const accountId = container.dataset.accountId;
+    const noteId = container.dataset.noteId || '';
+    const noteOrderId = container.dataset.noteOrderId || container.dataset.orderId;
+
+    if (!noteId) return;
+
+    try {
+      const res = await fetch('/api/sales/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: noteOrderId, account_id: accountId, note_id: noteId, notes: '' })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        noteTextEl.textContent = 'Sin notas';
+        noteTextEl.style.color = '#bbb';
+        container.dataset.noteId = '';
+        const btnEdit = document.getElementById('btn-edit-' + orderId);
+        const btnDel = document.getElementById('btn-del-' + orderId);
+        if (btnEdit) btnEdit.style.display = 'none';
+        if (btnDel) btnDel.style.display = 'none';
+        showToast('Nota eliminada', 'success');
+      } else {
+        showToast(data.error || 'Error al eliminar', 'error');
+      }
+    } catch (e) {
+      showToast('Error al eliminar nota', 'error');
     }
   }
 
@@ -1088,37 +1199,6 @@
     } catch (e) {
       showToast('Error al obtener etiqueta', 'error');
     }
-  }
-
-  // Mensajes y Preguntas ahora abren en nueva pestaña de ML directamente
-
-  let noteTimeout = null;
-  async function saveNoteML(textarea) {
-    clearTimeout(noteTimeout);
-    const orderId = textarea.dataset.orderId;
-    const accountId = textarea.dataset.accountId;
-    const noteId = textarea.dataset.noteId;
-    const text = textarea.value;
-    noteTimeout = setTimeout(async () => {
-      try {
-        const res = await fetch('/api/sales/notes', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ order_id: orderId, account_id: accountId, note_id: noteId || null, notes: text })
-        });
-        const data = await res.json();
-        if (data.ok) {
-          // Update note_id if it was created
-          if (data.note_id) textarea.dataset.noteId = data.note_id;
-          const saved = document.getElementById('notes-saved-' + orderId);
-          if (saved) { saved.style.display = 'block'; setTimeout(() => saved.style.display = 'none', 2000); }
-        } else {
-          showToast(data.error || 'Error al guardar nota', 'error');
-        }
-      } catch (e) {
-        showToast('Error al guardar nota', 'error');
-      }
-    }, 1200);
   }
 
   // ==================== ACCOUNTS SECTION ====================
