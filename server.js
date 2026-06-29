@@ -346,6 +346,7 @@ route('GET', '/api/questions', async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const status = url.searchParams.get('status') || 'UNANSWERED';
   const accountFilter = url.searchParams.get('account_id');
+  const buyerFilter = url.searchParams.get('buyer_id');
   const db = loadDB();
   let allQuestions = [];
 
@@ -355,10 +356,19 @@ route('GET', '/api/questions', async (req, res) => {
     const token = await getValidToken(account);
     if (!token) continue;
     try {
-      const data = await mlGet('https://api.mercadolibre.com/questions/search', token, {
-        seller_id: account.seller_id, status, sort_fields: 'date_created', sort_types: 'DESC', limit: 50
-      });
-      const questions = data.questions || [];
+      // If filtering by buyer, search both UNANSWERED and ANSWERED
+      const statuses = buyerFilter ? ['UNANSWERED', 'ANSWERED'] : [status];
+      let questions = [];
+      for (const st of statuses) {
+        const data = await mlGet('https://api.mercadolibre.com/questions/search', token, {
+          seller_id: account.seller_id, status: st, sort_fields: 'date_created', sort_types: 'DESC', limit: 50
+        });
+        questions.push(...(data.questions || []));
+      }
+      // If buyer filter, only keep questions from that buyer
+      if (buyerFilter) {
+        questions = questions.filter(q => q.from?.id?.toString() === buyerFilter);
+      }
 
       const itemIds = [...new Set(questions.map(q => q.item_id))];
       const itemDetails = {};
@@ -490,6 +500,8 @@ route('GET', '/api/messages', async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
   const statusFilter = url.searchParams.get('status') || 'unread'; // unread or answered
+  const orderFilter = url.searchParams.get('order_id'); // filter by specific order
+  const buyerFilter = url.searchParams.get('buyer_id'); // filter by buyer
   const db = loadDB();
   let allMessages = [];
 
@@ -499,12 +511,27 @@ route('GET', '/api/messages', async (req, res) => {
     const token = await getValidToken(account);
     if (!token) continue;
     try {
-      const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
-        seller: account.seller_id, sort: 'date_desc', limit: 20
-      });
+      // If filtering by specific order, fetch just that order
+      let ordersResults;
+      if (orderFilter) {
+        try {
+          const singleOrder = await mlGet(`https://api.mercadolibre.com/orders/${orderFilter}`, token);
+          ordersResults = [singleOrder];
+        } catch (e) { ordersResults = []; }
+      } else if (buyerFilter) {
+        const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
+          seller: account.seller_id, buyer: buyerFilter, sort: 'date_desc', limit: 50
+        });
+        ordersResults = ordersData.results || [];
+      } else {
+        const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
+          seller: account.seller_id, sort: 'date_desc', limit: 20
+        });
+        ordersResults = ordersData.results || [];
+      }
 
       const seenPacks = new Set();
-      for (const order of (ordersData.results || [])) {
+      for (const order of ordersResults) {
         const packId = order.pack_id || order.id;
         if (seenPacks.has(packId)) continue;
         seenPacks.add(packId);
@@ -516,9 +543,6 @@ route('GET', '/api/messages', async (req, res) => {
           const messages = msgData.messages || [];
           if (messages.length === 0) continue;
 
-          // Debug: log first message structure to find date field
-          if (messages[0]) console.log('MSG STRUCTURE:', JSON.stringify(Object.keys(messages[0])), 'date fields:', JSON.stringify({ date: messages[0].date, date_created: messages[0].date_created, created_at: messages[0].created_at, date_received: messages[0].date_received, message_date: messages[0].message_date }));
-
           const mappedMessages = messages.map(m => ({
             id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
             text: m.text || m.plain?.content || '', date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || ''
@@ -528,11 +552,15 @@ route('GET', '/api/messages', async (req, res) => {
           const lastMsg = mappedMessages[mappedMessages.length - 1];
           const isUnread = lastMsg.from === 'buyer';
 
-          if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) continue;
+          // When filtering by buyer or order, show ALL messages regardless of status
+          if (!buyerFilter && !orderFilter) {
+            if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) continue;
+          }
 
           allMessages.push({
             order_id: order.id, pack_id: packId, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
+            buyer_id: order.buyer?.id?.toString() || '',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
             messages: mappedMessages, is_unread: isUnread,
             last_message_date: messages[messages.length - 1]?.date_created || messages[messages.length - 1]?.date || order.date_created
@@ -708,23 +736,36 @@ route('GET', '/api/sales', async (req, res) => {
   for (const sale of allSales) {
     const orderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
     const account = targets.find(a => a.id === sale.account_id) || targets[0];
-    if (!account) continue;
+    if (!account) { sale.notes = ''; sale.note_id = null; continue; }
     try {
       const token = await getValidToken(account);
-      if (!token) continue;
-      const notesData = await mlGet(`https://api.mercadolibre.com/orders/${orderId}/notes`, token);
-      // ML returns an array of notes, get the first (seller note)
-      if (Array.isArray(notesData) && notesData.length > 0) {
-        sale.notes = notesData[0].note || '';
-        sale.note_id = notesData[0].id || null;
-      } else if (notesData.note) {
-        sale.notes = notesData.note || '';
-        sale.note_id = notesData.id || null;
+      if (!token) { sale.notes = ''; sale.note_id = null; continue; }
+      // ML notes endpoint - fetch raw to handle different response formats
+      const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const noteBody = await noteRes.text();
+      console.log(`NOTES order ${orderId}: status=${noteRes.status} body=${noteBody.substring(0, 300)}`);
+
+      if (noteRes.ok && noteBody) {
+        const notesData = JSON.parse(noteBody);
+        // ML can return: array of notes, single note object, or {note:"", id:""}
+        if (Array.isArray(notesData) && notesData.length > 0) {
+          sale.notes = notesData[0].note || notesData[0].text || '';
+          sale.note_id = notesData[0].id || null;
+        } else if (notesData && typeof notesData === 'object' && !Array.isArray(notesData)) {
+          sale.notes = notesData.note || notesData.text || '';
+          sale.note_id = notesData.id || null;
+        } else {
+          sale.notes = '';
+          sale.note_id = null;
+        }
       } else {
         sale.notes = '';
         sale.note_id = null;
       }
     } catch (e) {
+      console.error(`Error fetching notes for order ${orderId}:`, e.message || e);
       sale.notes = '';
       sale.note_id = null;
     }
@@ -754,6 +795,7 @@ route('POST', '/api/sales/notes', async (req, res) => {
         body: JSON.stringify({ note: notes })
       });
       const data = await updateRes.json();
+      console.log(`NOTE UPDATE order ${order_id}:`, JSON.stringify(data).substring(0, 300));
       if (!updateRes.ok) throw { response: { data } };
       sendJSON(res, 200, { ok: true, note_id });
     } else {
