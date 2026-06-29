@@ -70,6 +70,24 @@
     /* CONTENT */
     .content { flex: 1; padding: 24px; overflow-y: auto; }
 
+    /* QUICK REPLIES PANEL */
+    .quick-replies-panel {
+      width: 200px; min-width: 200px; background: #f3f0ff; border-left: 1px solid #e0d8f0;
+      padding: 12px; overflow-y: auto; display: none; flex-direction: column; gap: 6px;
+    }
+    .quick-replies-panel.visible { display: flex; }
+    .quick-replies-panel h4 { text-align: center; color: #5a3e8e; font-size: 13px; margin: 0 0 8px; }
+    .qr-btn {
+      background: #b39ddb; color: white; border: none; border-radius: 16px; padding: 7px 12px;
+      font-size: 12px; cursor: pointer; text-align: center; transition: background 0.2s; font-weight: 600;
+    }
+    .qr-btn:hover { background: #9575cd; }
+    .qr-admin-btn {
+      background: white; border: 1px solid #b39ddb; border-radius: 16px; padding: 5px 12px;
+      font-size: 11px; cursor: pointer; color: #5a3e8e; margin-bottom: 6px; text-align: center;
+    }
+    .qr-admin-btn:hover { background: #ede7f6; }
+
     /* STATS */
     .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
     .stat-card {
@@ -225,6 +243,7 @@
       .sidebar a span, .sidebar .section-title, .sidebar .badge { display: none; }
       .content { padding: 16px; }
       .stats { grid-template-columns: 1fr; }
+      .quick-replies-panel { display: none !important; }
     }
   </style>
 </head>
@@ -277,6 +296,11 @@
     </nav>
     <div class="content" id="content">
       <!-- Dynamic content loads here -->
+    </div>
+    <div class="quick-replies-panel" id="quickRepliesPanel">
+      <h4>Respuestas rápidas</h4>
+      <button class="qr-admin-btn" onclick="openQuickRepliesAdmin()">✏️ Administrar</button>
+      <div id="quickRepliesList"></div>
     </div>
   </div>
 </div>
@@ -382,6 +406,15 @@
 
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+
+    // Show quick replies panel on questions and messages
+    const qrPanel = document.getElementById('quickRepliesPanel');
+    if (section === 'questions' || section === 'messages') {
+      qrPanel.classList.add('visible');
+      loadQuickReplies();
+    } else {
+      qrPanel.classList.remove('visible');
+    }
 
     switch (section) {
       case 'dashboard': loadDashboard(); break;
@@ -599,6 +632,128 @@
       showToast('Error de conexión', 'error');
       btn.disabled = false;
       btn.textContent = 'Responder';
+    }
+  }
+
+  // ==================== QUICK REPLIES ====================
+
+  let quickRepliesData = [];
+
+  async function loadQuickReplies() {
+    try {
+      const res = await fetch('/api/quick-replies');
+      quickRepliesData = await res.json();
+      renderQuickReplies();
+    } catch (e) {}
+  }
+
+  function renderQuickReplies() {
+    const list = document.getElementById('quickRepliesList');
+    if (!list) return;
+    if (quickRepliesData.length === 0) {
+      list.innerHTML = '<p style="text-align:center;color:#999;font-size:12px;margin-top:8px">No hay respuestas rápidas.<br>Hacé click en Administrar para agregar.</p>';
+      return;
+    }
+    list.innerHTML = quickRepliesData.map((r, i) =>
+      `<button class="qr-btn" onclick="insertQuickReply(${i})" title="${r.text}">${r.label}</button>`
+    ).join('');
+  }
+
+  function insertQuickReply(index) {
+    const reply = quickRepliesData[index];
+    if (!reply) return;
+    // Find textareas in both questions and messages
+    const textareas = document.querySelectorAll('.reply-box textarea, .card textarea, textarea[id^="reply-"], textarea[id^="msg-reply-"]');
+    let target = null;
+    for (const ta of textareas) {
+      if (ta === document.activeElement) { target = ta; break; }
+    }
+    if (!target) {
+      for (const ta of textareas) {
+        if (!ta.value.trim()) { target = ta; break; }
+      }
+    }
+    if (!target && textareas.length > 0) target = textareas[0];
+
+    if (target) {
+      // Insert at cursor position or append
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      const current = target.value;
+      if (current.length === 0) {
+        target.value = reply.text;
+      } else {
+        target.value = current.substring(0, start) + reply.text + current.substring(end);
+      }
+      target.focus();
+      showToast('Respuesta insertada', 'success');
+    } else {
+      showToast('No hay pregunta abierta para responder', 'error');
+    }
+  }
+
+  function openQuickRepliesAdmin() {
+    const panel = document.getElementById('quickRepliesList');
+    let html = '<div style="display:flex;flex-direction:column;gap:6px">';
+    html += '<p style="font-size:11px;color:#5a3e8e;text-align:center;margin:4px 0">Nombre del botón y texto de respuesta</p>';
+
+    for (let i = 0; i < quickRepliesData.length; i++) {
+      const r = quickRepliesData[i];
+      html += `
+        <div style="background:white;border-radius:8px;padding:6px;border:1px solid #ddd">
+          <input type="text" value="${r.label.replace(/"/g, '&quot;')}" placeholder="Nombre" id="qr-label-${i}"
+            style="width:100%;border:1px solid #ddd;border-radius:4px;padding:4px 6px;font-size:11px;margin-bottom:4px;box-sizing:border-box">
+          <textarea id="qr-text-${i}" placeholder="Texto de respuesta" style="width:100%;border:1px solid #ddd;border-radius:4px;padding:4px 6px;font-size:11px;resize:vertical;min-height:40px;box-sizing:border-box">${r.text}</textarea>
+          <button onclick="removeQuickReply(${i})" style="background:#e74c3c;color:white;border:none;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;margin-top:2px">Eliminar</button>
+        </div>`;
+    }
+
+    html += `
+      <button onclick="addQuickReply()" style="background:#27ae60;color:white;border:none;border-radius:12px;padding:6px;font-size:11px;cursor:pointer;font-weight:600">+ Agregar</button>
+      <div style="display:flex;gap:4px">
+        <button onclick="saveQuickReplies()" style="flex:1;background:#3483fa;color:white;border:none;border-radius:12px;padding:6px;font-size:11px;cursor:pointer;font-weight:600">Guardar</button>
+        <button onclick="renderQuickReplies()" style="flex:1;background:#999;color:white;border:none;border-radius:12px;padding:6px;font-size:11px;cursor:pointer">Cancelar</button>
+      </div>
+    </div>`;
+    panel.innerHTML = html;
+  }
+
+  function addQuickReply() {
+    quickRepliesData.push({ label: '', text: '' });
+    openQuickRepliesAdmin();
+    // Focus the new label input
+    const newInput = document.getElementById('qr-label-' + (quickRepliesData.length - 1));
+    if (newInput) newInput.focus();
+  }
+
+  function removeQuickReply(index) {
+    quickRepliesData.splice(index, 1);
+    openQuickRepliesAdmin();
+  }
+
+  async function saveQuickReplies() {
+    // Read values from inputs
+    const updated = [];
+    for (let i = 0; i < quickRepliesData.length; i++) {
+      const labelEl = document.getElementById('qr-label-' + i);
+      const textEl = document.getElementById('qr-text-' + i);
+      if (labelEl && textEl) {
+        const label = labelEl.value.trim();
+        const text = textEl.value.trim();
+        if (label && text) updated.push({ label, text });
+      }
+    }
+    try {
+      await fetch('/api/quick-replies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ replies: updated })
+      });
+      quickRepliesData = updated;
+      renderQuickReplies();
+      showToast('Respuestas rápidas guardadas', 'success');
+    } catch (e) {
+      showToast('Error al guardar', 'error');
     }
   }
 
