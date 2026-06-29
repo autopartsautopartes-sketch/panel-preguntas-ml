@@ -616,18 +616,47 @@
 
       for (const u of users) {
         html += `
-          <div class="account-card">
-            <div class="account-info">
+          <div class="account-card" style="flex-wrap:wrap;gap:12px">
+            <div class="account-info" style="flex:1;min-width:200px">
               <h3>${u.username} ${u.role === 'admin' ? '<span style="font-size:12px;color:#3483fa">(Admin)</span>' : ''}</h3>
               <p>Creado: ${formatDate(u.created_at)}</p>
             </div>
-            ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:6px 12px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
+            <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" ${u.alerts_questions ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_questions', this.checked)" style="width:18px;height:18px;cursor:pointer">
+                Alertas preguntas
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" ${u.alerts_messages ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_messages', this.checked)" style="width:18px;height:18px;cursor:pointer">
+                Alertas mensajes
+              </label>
+              ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:6px 12px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
+            </div>
           </div>
         `;
       }
       document.getElementById('content').innerHTML = html;
     } catch (e) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar usuarios</p></div>';
+    }
+  }
+
+  async function toggleAlert(userId, field, value) {
+    try {
+      const body = { id: userId };
+      body[field] = value;
+      const res = await fetch('/api/users/alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        showToast(value ? 'Alerta activada' : 'Alerta desactivada', 'success');
+      } else {
+        showToast('Error al cambiar alerta', 'error');
+      }
+    } catch(e) {
+      showToast('Error de conexión', 'error');
     }
   }
 
@@ -700,13 +729,13 @@
   // ==================== NOTIFICATIONS ====================
 
   let lastQuestionIds = [];
-  let notificationsEnabled = false;
+  let lastMessageIds = [];
+  let notificationsReady = false;
 
   // Create notification sound using Web Audio API
   function playNotificationSound() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      // First beep
       const o1 = ctx.createOscillator();
       const g1 = ctx.createGain();
       o1.connect(g1); g1.connect(ctx.destination);
@@ -714,7 +743,6 @@
       g1.gain.value = 0.3;
       g1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
       o1.start(ctx.currentTime); o1.stop(ctx.currentTime + 0.3);
-      // Second beep
       const o2 = ctx.createOscillator();
       const g2 = ctx.createGain();
       o2.connect(g2); g2.connect(ctx.destination);
@@ -725,59 +753,77 @@
     } catch(e) {}
   }
 
-  function showNotification(count) {
-    // Remove existing notification if any
-    const existing = document.getElementById('newQuestionsNotif');
+  function showNotification(count, type) {
+    const notifId = type === 'questions' ? 'newQuestionsNotif' : 'newMessagesNotif';
+    const existing = document.getElementById(notifId);
     if (existing) existing.remove();
 
+    const isQ = type === 'questions';
+    const icon = isQ ? '❓' : '💬';
+    const title = isQ
+      ? (count === 1 ? '¡Nueva pregunta!' : `¡${count} preguntas nuevas!`)
+      : (count === 1 ? '¡Nuevo mensaje!' : `¡${count} mensajes nuevos!`);
+    const topPos = isQ ? '20px' : '90px';
+
     const notif = document.createElement('div');
-    notif.id = 'newQuestionsNotif';
-    notif.style.cssText = 'position:fixed;top:20px;right:20px;background:#2d3277;color:white;padding:16px 24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:9999;animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:center;gap:12px;font-size:15px;max-width:400px';
+    notif.id = notifId;
+    notif.style.cssText = `position:fixed;top:${topPos};right:20px;background:${isQ ? '#2d3277' : '#27ae60'};color:white;padding:16px 24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:9999;animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:center;gap:12px;font-size:15px;max-width:400px`;
     notif.innerHTML = `
-      <span style="font-size:28px">🔔</span>
+      <span style="font-size:28px">${icon}</span>
       <div>
-        <div style="font-weight:700">${count === 1 ? '¡Nueva pregunta!' : `¡${count} preguntas nuevas!`}</div>
+        <div style="font-weight:700">${title}</div>
         <div style="font-size:12px;opacity:0.8;margin-top:2px">Hacé click para ver</div>
       </div>
       <span onclick="event.stopPropagation();this.parentElement.remove()" style="margin-left:auto;opacity:0.6;cursor:pointer;font-size:18px">✕</span>
     `;
-    notif.onclick = () => { notif.remove(); showSection('questions'); questionStatus='UNANSWERED'; };
+    notif.onclick = () => { notif.remove(); showSection(type); };
     document.body.appendChild(notif);
-
-    // Auto-remove after 10 seconds
     setTimeout(() => { if (notif.parentElement) notif.remove(); }, 10000);
   }
 
   async function checkNewQuestions() {
+    if (!currentUser?.alerts_questions) return;
     try {
       const res = await fetch('/api/questions?status=UNANSWERED&account_id=');
       if (!res.ok) return;
       const questions = await res.json();
       const currentIds = questions.map(q => q.id);
 
-      // Update badge
       const badge = document.getElementById('badge-unanswered');
-      if (questions.length > 0) {
-        badge.textContent = questions.length;
-        badge.style.display = '';
-      } else {
-        badge.style.display = 'none';
-      }
+      if (questions.length > 0) { badge.textContent = questions.length; badge.style.display = ''; }
+      else { badge.style.display = 'none'; }
 
-      // Check for new questions (only after first load)
-      if (notificationsEnabled && lastQuestionIds.length > 0) {
+      if (notificationsReady && lastQuestionIds.length > 0) {
         const newIds = currentIds.filter(id => !lastQuestionIds.includes(id));
         if (newIds.length > 0) {
           playNotificationSound();
-          showNotification(newIds.length);
-          // Update current section if viewing questions
+          showNotification(newIds.length, 'questions');
           if (currentSection === 'questions') loadQuestions();
           if (currentSection === 'dashboard') loadDashboard();
         }
       }
-
       lastQuestionIds = currentIds;
-      if (!notificationsEnabled) notificationsEnabled = true;
+    } catch(e) {}
+  }
+
+  async function checkNewMessages() {
+    if (!currentUser?.alerts_messages) return;
+    try {
+      const res = await fetch('/api/messages?account_id=');
+      if (!res.ok) return;
+      const conversations = await res.json();
+      // Track by last message id of each conversation
+      const currentIds = conversations.map(c => c.messages?.[c.messages.length - 1]?.id).filter(Boolean);
+
+      if (notificationsReady && lastMessageIds.length > 0) {
+        const newIds = currentIds.filter(id => !lastMessageIds.includes(id));
+        if (newIds.length > 0) {
+          playNotificationSound();
+          showNotification(newIds.length, 'messages');
+          if (currentSection === 'messages') loadMessages();
+        }
+      }
+      lastMessageIds = currentIds;
     } catch(e) {}
   }
 
@@ -786,8 +832,12 @@
   style.textContent = '@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }';
   document.head.appendChild(style);
 
-  // Check for new questions every 15 seconds
-  setInterval(checkNewQuestions, 15000);
+  // Check every 15 seconds
+  setInterval(() => {
+    checkNewQuestions();
+    checkNewMessages();
+    if (!notificationsReady) notificationsReady = true;
+  }, 15000);
 
   // Also refresh the current view every 15 seconds
   setInterval(() => {
