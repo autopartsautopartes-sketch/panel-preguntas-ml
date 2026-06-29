@@ -4,8 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#ffe600">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AUTOCHAP">
   <title>AUTOCHAP VENTAS</title>
+  <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23ffe600'/><text x='50' y='68' font-size='55' font-weight='bold' text-anchor='middle' fill='%232d3277'>ML</text></svg>">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; color: #333; }
@@ -238,16 +243,64 @@
     .toast.error { background: #e74c3c; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
+    /* MOBILE BOTTOM NAV */
+    .mobile-nav {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      background: #2d3277; padding: 0; justify-content: space-around; align-items: stretch;
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.15);
+    }
+    .mobile-nav a {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 8px 4px; color: rgba(255,255,255,0.6); text-decoration: none; font-size: 10px;
+      flex: 1; gap: 2px; position: relative; transition: color 0.2s;
+    }
+    .mobile-nav a.active { color: #ffe600; }
+    .mobile-nav a .nav-icon { font-size: 20px; }
+    .mobile-nav .badge {
+      position: absolute; top: 4px; right: calc(50% - 18px);
+      background: #e74c3c; color: white; font-size: 9px; padding: 1px 5px;
+      border-radius: 8px; min-width: 16px; text-align: center;
+    }
+
     @media (max-width: 768px) {
-      .sidebar { width: 60px; }
-      .sidebar a span, .sidebar .section-title, .sidebar .badge { display: none; }
-      .content { padding: 16px; }
-      .stats { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .mobile-nav { display: flex; }
+      .header h1 { font-size: 16px; }
+      .header { padding: 10px 16px; }
+      .main { min-height: calc(100vh - 46px - 58px); }
+      .content { padding: 14px 10px 70px 10px; }
+      .stats { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .stat-card { padding: 14px; }
+      .stat-card .value { font-size: 22px; }
+      .stat-card .label { font-size: 11px; }
       .quick-replies-panel { display: none !important; }
+      .card { padding: 14px; }
+      .card-header { flex-direction: column; gap: 4px; }
+      .reply-box { flex-direction: column; }
+      .reply-box button { width: 100%; }
+      .msg-bubble { max-width: 85%; }
+      .sale-card { padding: 12px; }
+      .sale-header { font-size: 12px; gap: 6px; }
+      .sale-item img { width: 45px; height: 45px; }
+      .sale-actions { gap: 6px; }
+      .sale-actions button, .sale-actions a { font-size: 11px; padding: 5px 10px; }
+      .sales-filters { padding: 12px; }
+      .sales-filters .filter-row { gap: 6px; }
+      .sales-filters label.chip { font-size: 11px; padding: 3px 8px; }
+      .filters { gap: 8px; }
+      .filters select, .filters button { padding: 6px 12px; font-size: 13px; }
+      .login-box { margin: 16px; padding: 24px; }
+      .account-card { flex-direction: column; gap: 12px; text-align: center; }
+      .user-form { flex-direction: column; }
+    }
+
+    @media (max-width: 400px) {
+      .stats { grid-template-columns: 1fr; }
+      .content { padding: 10px 8px 70px 8px; }
     }
   </style>
 </head>
-<body>
+<body spellcheck="true">
 
 <!-- LOGIN -->
 <div class="login-container" id="loginScreen">
@@ -267,6 +320,7 @@
     <h1>AUTOCHAP VENTAS</h1>
     <div class="header-right">
       <span id="currentUser"></span>
+      <button id="btnBackup" onclick="doBackup()" style="background:#27ae60;display:none" title="Guardar backup antes de hacer deploy">💾 Backup</button>
       <button onclick="doLogout()">Salir</button>
     </div>
   </div>
@@ -303,6 +357,31 @@
       <div id="quickRepliesList"></div>
     </div>
   </div>
+  <!-- Mobile Bottom Navigation -->
+  <div class="mobile-nav" id="mobileNav">
+    <a onclick="showSection('dashboard')" id="mob-dashboard" class="active">
+      <span class="nav-icon">📊</span>
+      Dashboard
+    </a>
+    <a onclick="showSection('questions')" id="mob-questions">
+      <span class="nav-icon">❓</span>
+      Preguntas
+      <span class="badge" id="mob-badge-unanswered" style="display:none">0</span>
+    </a>
+    <a onclick="showSection('messages')" id="mob-messages">
+      <span class="nav-icon">💬</span>
+      Mensajes
+      <span class="badge" id="mob-badge-unread-messages" style="display:none">0</span>
+    </a>
+    <a onclick="showSection('sales')" id="mob-sales">
+      <span class="nav-icon">🛒</span>
+      Ventas
+    </a>
+    <a onclick="showSection('accounts')" id="mob-accounts">
+      <span class="nav-icon">🏪</span>
+      Cuentas
+    </a>
+  </div>
 </div>
 
 <script>
@@ -322,6 +401,7 @@
         document.getElementById('currentUser').textContent = currentUser.username;
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
+          document.getElementById('btnBackup').style.display = '';
         }
         loadAccounts();
         // Check URL params for deep linking (e.g. from sales buttons)
@@ -370,6 +450,7 @@
         document.getElementById('currentUser').textContent = currentUser.username;
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
+          document.getElementById('btnBackup').style.display = '';
         }
         loadAccounts();
         handleDeepLink();
@@ -392,6 +473,26 @@
     location.reload();
   }
 
+  async function doBackup() {
+    try {
+      const res = await fetch('/api/backup/env');
+      if (!res.ok) { showToast('Error al generar backup', 'error'); return; }
+      const data = await res.json();
+      // Copy base64 to clipboard
+      await navigator.clipboard.writeText(data.base64);
+      showToast('Backup copiado al portapapeles. Pegalo en Render > Environment > DB_BACKUP (' + data.users + ' usuarios, ' + data.accounts + ' cuentas, ' + data.quick_replies + ' resp. rapidas, ' + data.sessions + ' sesiones)', 'success');
+    } catch (e) {
+      // Fallback: show in prompt if clipboard fails
+      try {
+        const res = await fetch('/api/backup/env');
+        const data = await res.json();
+        prompt('Copia este texto y pegalo en Render > Environment > DB_BACKUP:', data.base64);
+      } catch (e2) {
+        showToast('Error al generar backup', 'error');
+      }
+    }
+  }
+
   // ==================== NAVIGATION ====================
 
   function showSection(section, skipLoad) {
@@ -399,6 +500,11 @@
     document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
     const nav = document.getElementById('nav-' + section);
     if (nav) nav.classList.add('active');
+
+    // Update mobile nav active state
+    document.querySelectorAll('.mobile-nav a').forEach(a => a.classList.remove('active'));
+    const mobNav = document.getElementById('mob-' + section);
+    if (mobNav) mobNav.classList.add('active');
 
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
@@ -1724,8 +1830,26 @@
       ? (count === 1 ? '¡Nueva pregunta!' : `¡${count} preguntas nuevas!`)
       : (count === 1 ? '¡Nuevo mensaje!' : `¡${count} mensajes nuevos!`);
 
-    // Desktop notification (near the clock)
-    if ('Notification' in window && Notification.permission === 'granted') {
+    // Vibrate on mobile
+    if ('vibrate' in navigator) {
+      navigator.vibrate([200, 100, 200]);
+    }
+
+    // Try service worker notification first (works in PWA/background)
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready.then(reg => {
+        reg.showNotification('AUTOCHAP VENTAS', {
+          body: title,
+          icon: '/icon-192.png',
+          badge: '/icon-192.png',
+          tag: type,
+          vibrate: [200, 100, 200],
+          data: { section: type },
+          requireInteraction: false
+        });
+      }).catch(() => {});
+    } else if ('Notification' in window && Notification.permission === 'granted') {
+      // Fallback: regular desktop notification
       const desktopNotif = new Notification('AUTOCHAP VENTAS', {
         body: title,
         icon: isQ ? 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">❓</text></svg>'
@@ -1794,8 +1918,14 @@
       const currentIds = questions.map(q => q.id);
 
       const badge = document.getElementById('badge-unanswered');
-      if (questions.length > 0) { badge.textContent = questions.length; badge.style.display = ''; }
-      else { badge.style.display = 'none'; }
+      const mobBadge = document.getElementById('mob-badge-unanswered');
+      if (questions.length > 0) {
+        badge.textContent = questions.length; badge.style.display = '';
+        if (mobBadge) { mobBadge.textContent = questions.length; mobBadge.style.display = ''; }
+      } else {
+        badge.style.display = 'none';
+        if (mobBadge) { mobBadge.style.display = 'none'; }
+      }
 
       if (notificationsReady && lastQuestionIds.length > 0) {
         const newIds = currentIds.filter(id => !lastQuestionIds.includes(id));
@@ -1829,10 +1959,16 @@
       const conversations = await res.json();
       const currentIds = conversations.map(c => c.messages?.[c.messages.length - 1]?.id).filter(Boolean);
 
-      // Update message badge in sidebar
+      // Update message badge in sidebar and mobile nav
       const msgBadge = document.getElementById('badge-unread-messages');
-      if (conversations.length > 0) { msgBadge.textContent = conversations.length; msgBadge.style.display = ''; }
-      else { msgBadge.style.display = 'none'; }
+      const mobMsgBadge = document.getElementById('mob-badge-unread-messages');
+      if (conversations.length > 0) {
+        msgBadge.textContent = conversations.length; msgBadge.style.display = '';
+        if (mobMsgBadge) { mobMsgBadge.textContent = conversations.length; mobMsgBadge.style.display = ''; }
+      } else {
+        msgBadge.style.display = 'none';
+        if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
+      }
 
       if (notificationsReady && lastMessageIds.length > 0) {
         const newIds = currentIds.filter(id => !lastMessageIds.includes(id));
@@ -1866,6 +2002,20 @@
     if (currentSection === 'messages') loadMessages();
     if (currentSection === 'dashboard') loadDashboard();
   }, 15000);
+
+  // Register Service Worker for PWA
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').then(reg => {
+      console.log('[SW] Service Worker registrado');
+    }).catch(err => console.log('[SW] Error:', err));
+
+    // Handle notification click navigation from SW
+    navigator.serviceWorker.addEventListener('message', event => {
+      if (event.data?.action === 'navigate') {
+        showSection(event.data.section);
+      }
+    });
+  }
 
   // Init
   checkAuth();
