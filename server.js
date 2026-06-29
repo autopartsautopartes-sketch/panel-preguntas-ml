@@ -36,15 +36,16 @@ function verifyPassword(password, stored) {
   return hash === testHash;
 }
 
-// ==================== JSON DATABASE ====================
+// ==================== JSON DATABASE (persistent across deploys) ====================
 
 const DB_PATH = path.join(__dirname, 'data.json');
+const DB_BACKUP_ENV = process.env.DB_BACKUP; // base64-encoded backup from env var
 
 function loadDB() {
   try {
     return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
   } catch (e) {
-    return { users: [], ml_accounts: [], nextUserId: 1, nextAccountId: 1 };
+    return null;
   }
 }
 
@@ -52,11 +53,29 @@ function saveDB(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
-// Init admin
-const dbInit = loadDB();
-if (dbInit.users.length === 0) {
-  dbInit.users.push({
-    id: dbInit.nextUserId++,
+// On startup: restore from DB_BACKUP env var if data.json doesn't exist or is empty
+let db = loadDB();
+if (!db || !db.users || db.users.length === 0) {
+  if (DB_BACKUP_ENV) {
+    try {
+      const restored = JSON.parse(Buffer.from(DB_BACKUP_ENV, 'base64').toString('utf8'));
+      if (restored.users && restored.users.length > 0) {
+        saveDB(restored);
+        db = restored;
+        console.log('[STARTUP] Base de datos restaurada desde DB_BACKUP env var (' + restored.users.length + ' usuarios, ' + (restored.ml_accounts || []).length + ' cuentas ML)');
+      }
+    } catch (e) {
+      console.error('[STARTUP] Error restaurando DB_BACKUP:', e.message);
+    }
+  }
+}
+
+if (!db) db = { users: [], ml_accounts: [], nextUserId: 1, nextAccountId: 1 };
+
+// Init admin if no users exist
+if (db.users.length === 0) {
+  db.users.push({
+    id: db.nextUserId++,
     username: 'admin',
     password: hashPassword('admin123'),
     role: 'admin',
@@ -65,9 +84,12 @@ if (dbInit.users.length === 0) {
     view_dashboard: true,
     created_at: new Date().toISOString()
   });
-  saveDB(dbInit);
+  saveDB(db);
   console.log('Usuario admin creado: admin / admin123');
+} else {
+  saveDB(db); // ensure file exists on disk
 }
+
 // Migrate existing users: add alert fields if missing
 const dbMigrate = loadDB();
 let migrated = false;
@@ -78,9 +100,24 @@ for (const u of dbMigrate.users) {
 }
 if (migrated) saveDB(dbMigrate);
 
-// ==================== SESSION STORE ====================
+// ==================== SESSION STORE (persistent) ====================
 
-const sessions = {};
+const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
+
+function loadSessions() {
+  try {
+    return JSON.parse(fs.readFileSync(SESSIONS_PATH, 'utf8'));
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveSessions() {
+  try { fs.writeFileSync(SESSIONS_PATH, JSON.stringify(sessions, null, 2)); } catch(e) {}
+}
+
+let sessions = loadSessions();
+console.log(`[STARTUP] Sesiones restauradas: ${Object.keys(sessions).length}`);
 
 function generateSessionId() {
   return crypto.randomBytes(32).toString('hex');
@@ -95,8 +132,9 @@ function getSession(req) {
 
 function createSession(res) {
   const sid = generateSessionId();
-  sessions[sid] = {};
-  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; Path=/; Max-Age=86400; SameSite=Lax`);
+  sessions[sid] = { created: Date.now() };
+  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  saveSessions();
   return sessions[sid];
 }
 
@@ -104,6 +142,7 @@ function destroySession(req, res) {
   const cookies = parseCookies(req);
   if (cookies.sid) delete sessions[cookies.sid];
   res.setHeader('Set-Cookie', `sid=; HttpOnly; Path=/; Max-Age=0`);
+  saveSessions();
 }
 
 function parseCookies(req) {
@@ -603,13 +642,13 @@ route('POST', '/api/messages/reply', async (req, res) => {
 
     console.log('[MSG REPLY] pack:', packId, 'seller:', sellerId, 'buyer:', buyerId);
 
-    // ML messages API requires numeric seller_id and specific format
-    const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}`;
+    // ML messages API requires application_id param and x-client-id header
+    const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?application_id=${ML_CLIENT_ID}`;
     console.log('[MSG REPLY] POST to:', msgUrl);
 
     const msgBody = {
-      from: { user_id: sellerId },
-      to: { user_id: buyerId },
+      from: { user_id: String(sellerId), email: "test" },
+      to: { user_id: String(buyerId) },
       text: text
     };
 
@@ -617,7 +656,8 @@ route('POST', '/api/messages/reply', async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        Authorization: `Bearer ${token}`,
+        'x-client-id': ML_CLIENT_ID
       },
       body: JSON.stringify(msgBody)
     });
@@ -1099,6 +1139,47 @@ route('DELETE', '/api/users/delete', async (req, res) => {
   sendJSON(res, 200, { ok: true });
 });
 
+// ==================== BACKUP / RESTORE ====================
+
+// GET backup - returns current data.json as downloadable JSON (admin only)
+route('GET', '/api/backup', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const db = loadDB();
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Content-Disposition': 'attachment; filename="autochap_backup.json"'
+  });
+  res.end(JSON.stringify(db, null, 2));
+});
+
+// GET backup as base64 - returns the string you need to paste in Render DB_BACKUP env var
+route('GET', '/api/backup/env', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const db = loadDB();
+  const b64 = Buffer.from(JSON.stringify(db)).toString('base64');
+  sendJSON(res, 200, {
+    instructions: 'Copia este valor y pegalo en Render > Environment > DB_BACKUP. Asi tus datos se restauran automaticamente en cada deploy.',
+    base64: b64,
+    users: db.users.length,
+    accounts: (db.ml_accounts || []).length
+  });
+});
+
+// POST restore - restores data.json from uploaded JSON (admin only)
+route('POST', '/api/restore', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  if (!body.users || !Array.isArray(body.users)) {
+    return sendJSON(res, 400, { error: 'JSON invalido - debe contener users[]' });
+  }
+  saveDB(body);
+  console.log('[RESTORE] Base de datos restaurada:', body.users.length, 'usuarios,', (body.ml_accounts || []).length, 'cuentas ML');
+  sendJSON(res, 200, { ok: true, users: body.users.length, accounts: (body.ml_accounts || []).length });
+});
+
 // ==================== STATIC FILES ====================
 
 const MIME_TYPES = {
@@ -1154,4 +1235,13 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`AUTOCHAP VENTAS corriendo en ${BASE_URL}`);
   console.log(`Puerto: ${PORT}`);
+});
+
+// Graceful shutdown: save sessions before Render kills the process
+process.on('SIGTERM', () => {
+  console.log('[SHUTDOWN] Guardando sesiones...');
+  saveSessions();
+  console.log('[SHUTDOWN] Listo. Cerrando servidor.');
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000);
 });
