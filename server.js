@@ -117,7 +117,14 @@ function saveSessions() {
 }
 
 let sessions = loadSessions();
-console.log(`[STARTUP] Sesiones restauradas: ${Object.keys(sessions).length}`);
+// If sessions.json was empty but DB_BACKUP had sessions, restore them
+if (Object.keys(sessions).length === 0 && db.sessions && Object.keys(db.sessions).length > 0) {
+  sessions = db.sessions;
+  saveSessions();
+  console.log(`[STARTUP] Sesiones restauradas desde DB_BACKUP: ${Object.keys(sessions).length}`);
+} else {
+  console.log(`[STARTUP] Sesiones restauradas: ${Object.keys(sessions).length}`);
+}
 
 function generateSessionId() {
   return crypto.randomBytes(32).toString('hex');
@@ -569,9 +576,32 @@ route('GET', '/api/messages', async (req, res) => {
         ordersResults = ordersData.results || [];
       }
 
+      // Fetch open claims for this seller (one call per account, not per order)
+      let claimedOrderIds = new Set();
+      try {
+        const claimsData = await mlGet('https://api.mercadolibre.com/post-purchase/v1/claims/search', token, {
+          seller_id: account.seller_id, status: 'opened', limit: 50
+        });
+        const claimsList = claimsData.data || claimsData.results || claimsData.claims || [];
+        for (const claim of claimsList) {
+          if (claim.resource_id) claimedOrderIds.add(String(claim.resource_id));
+          if (claim.order_id) claimedOrderIds.add(String(claim.order_id));
+        }
+      } catch (e) {
+        // Claims API might fail or require special permissions, continue without filter
+        console.log(`[MESSAGES] No se pudo obtener reclamos para ${account.name}:`, e.response?.data?.message || e.message || '');
+      }
+
       const seenPacks = new Set();
       const uniqueOrders = [];
       for (const order of ordersResults) {
+        // Skip cancelled orders and orders with open claims
+        if (order.status === 'cancelled') continue;
+        if (claimedOrderIds.has(String(order.id))) continue;
+        // Also check order tags for mediations/claims
+        const tags = order.tags || [];
+        if (tags.includes('mediations') || tags.includes('claim')) continue;
+
         const packId = order.pack_id || order.id;
         if (seenPacks.has(packId)) continue;
         seenPacks.add(packId);
@@ -1159,6 +1189,7 @@ route('GET', '/api/backup', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
+  db.sessions = sessions; // Include sessions in backup
   res.writeHead(200, {
     'Content-Type': 'application/json',
     'Content-Disposition': 'attachment; filename="autochap_backup.json"'
@@ -1171,12 +1202,16 @@ route('GET', '/api/backup/env', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
+  // Include sessions in backup so logins persist across deploys
+  db.sessions = sessions;
   const b64 = Buffer.from(JSON.stringify(db)).toString('base64');
   sendJSON(res, 200, {
     instructions: 'Copia este valor y pegalo en Render > Environment > DB_BACKUP. Asi tus datos se restauran automaticamente en cada deploy.',
     base64: b64,
     users: db.users.length,
-    accounts: (db.ml_accounts || []).length
+    accounts: (db.ml_accounts || []).length,
+    quick_replies: (db.quick_replies || []).length,
+    sessions: Object.keys(sessions).length
   });
 });
 
@@ -1252,8 +1287,13 @@ server.listen(PORT, () => {
 
 // Graceful shutdown: save sessions before Render kills the process
 process.on('SIGTERM', () => {
-  console.log('[SHUTDOWN] Guardando sesiones...');
+  console.log('[SHUTDOWN] Guardando datos y sesiones...');
+  // Save sessions to sessions.json
   saveSessions();
+  // Also save sessions inside data.json so DB_BACKUP includes them
+  const currentDb = loadDB();
+  currentDb.sessions = sessions;
+  saveDB(currentDb);
   console.log('[SHUTDOWN] Listo. Cerrando servidor.');
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000);
