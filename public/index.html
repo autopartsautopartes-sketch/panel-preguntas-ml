@@ -1003,9 +1003,6 @@
                       ${item.sku ? '&nbsp;&middot;&nbsp; SKU: ' + item.sku : ''}
                     </div>
                   </div>
-                  <div style="text-align:right">
-                    <div style="font-weight:700;color:#2d3277;font-size:16px">$ ${Number(item.unit_price * item.quantity).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
-                  </div>
                 </div>
               `).join('')}
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">
@@ -1017,7 +1014,7 @@
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
               <div class="sale-notes" style="margin-top:8px">
-                <textarea id="note-${firstOrderId}" placeholder="Agregar nota..." data-order-id="${firstOrderId}" data-account-id="${sale.account_id}" data-note-id="${noteId}" oninput="saveNoteML(this)">${sale.notes || ''}</textarea>
+                <textarea id="note-${firstOrderId}" placeholder="Agregar nota..." data-order-id="${sale.note_order_id || firstOrderId}" data-account-id="${sale.account_id}" data-note-id="${noteId}" oninput="saveNoteML(this)">${sale.notes || ''}</textarea>
                 <div class="notes-saved" id="notes-saved-${firstOrderId}">✓ Nota guardada en MercadoLibre</div>
               </div>
             </div>
