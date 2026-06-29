@@ -175,6 +175,7 @@
     .sale-item img { width: 55px; height: 55px; border-radius: 6px; object-fit: cover; border: 1px solid #eee; }
     .sale-item-info { flex: 1; }
     .sale-item-title { font-size: 13px; color: #333; }
+    .sale-item-title a:hover { text-decoration: underline; }
     .sale-item-meta { font-size: 12px; color: #999; margin-top: 2px; }
     .sale-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
     .sale-actions button, .sale-actions a {
@@ -658,7 +659,9 @@
   let salesShippingFilters = [];
   let salesDateFrom = '';
   let salesDateTo = '';
+  let salesTimeCut = '';
   let salesAccountFilter = '';
+  let salesLoaded = false;
 
   const STATUS_LABELS = {
     pending: 'Pendientes para acordar',
@@ -677,42 +680,127 @@
     agreement: 'Acuerdo con el comprador'
   };
 
-  function toggleSalesFilter(type, value) {
+  function toggleSalesFilterNoLoad(type, value) {
     const arr = type === 'status' ? salesStatusFilters : salesShippingFilters;
     const idx = arr.indexOf(value);
     if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
-    loadSales();
+    // Update chip visual
+    const el = event.target.closest('.chip');
+    if (el) el.classList.toggle('checked');
   }
 
-  async function loadSales() {
+  function applySalesFilters() {
+    // Read values from DOM before fetching
+    const accSel = document.getElementById('salesAccountSel');
+    const dateFromEl = document.getElementById('salesDateFrom');
+    const dateToEl = document.getElementById('salesDateTo');
+    const timeCutEl = document.getElementById('salesTimeCut');
+    if (accSel) salesAccountFilter = accSel.value;
+    if (dateFromEl) salesDateFrom = dateFromEl.value;
+    if (dateToEl) salesDateTo = dateToEl.value;
+    if (timeCutEl) salesTimeCut = timeCutEl.value;
+    loadSales(true);
+  }
+
+  function clearSalesFilters() {
+    salesDateFrom = ''; salesDateTo = ''; salesTimeCut = '';
+    salesStatusFilters = []; salesShippingFilters = [];
+    salesAccountFilter = '';
+    loadSales(true);
+  }
+
+  async function loadSales(doFetch = false) {
     const content = document.getElementById('content');
+
+    // Build filter panel HTML (always shown)
+    let html = `
+      <h2 style="margin-bottom:20px;color:#2d3277">Ventas</h2>
+      <div class="sales-filters">
+        <div class="filter-row">
+          <select id="salesAccountSel" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            ${accountFilterHTML()}
+          </select>
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="salesDateFrom" value="${salesDateFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="salesDateTo" value="${salesDateTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px" title="Horario de corte: mostrar ventas hasta esta hora">🕐 Corte <input type="time" id="salesTimeCut" value="${salesTimeCut}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+        </div>
+        <h4>Estados</h4>
+        <div class="filter-row">
+          ${Object.entries(STATUS_LABELS).map(([key, label]) => `
+            <label class="chip ${salesStatusFilters.includes(key) ? 'checked' : ''}">
+              <input type="checkbox" ${salesStatusFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilterNoLoad('status','${key}')">
+              ${label}
+            </label>
+          `).join('')}
+        </div>
+        <h4>Formas de entrega</h4>
+        <div class="filter-row">
+          ${Object.entries(SHIPPING_LABELS).map(([key, label]) => `
+            <label class="chip ${salesShippingFilters.includes(key) ? 'checked' : ''}">
+              <input type="checkbox" ${salesShippingFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilterNoLoad('shipping','${key}')">
+              ${label}
+            </label>
+          `).join('')}
+        </div>
+        <div class="filter-row" style="margin-top:8px">
+          <button onclick="applySalesFilters()" style="padding:8px 24px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔍 Filtrar</button>
+          <button onclick="clearSalesFilters()" style="padding:8px 16px;border:1px solid #ddd;border-radius:6px;font-size:13px;cursor:pointer;background:#f0f2f5">Limpiar filtros</button>
+        </div>
+      </div>
+    `;
+
+    if (!doFetch && !salesLoaded) {
+      html += '<div class="empty"><p>Seleccioná los filtros y hacé click en "Filtrar" para ver las ventas</p></div>';
+      content.innerHTML = html;
+      if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
+      return;
+    }
+
+    // Show loading
+    html += '<div class="loading"><div class="spinner"></div><p>Cargando ventas...</p></div>';
+    content.innerHTML = html;
+    if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
+
     const params = new URLSearchParams();
     if (salesAccountFilter) params.set('account_id', salesAccountFilter);
     if (salesStatusFilters.length) params.set('status', salesStatusFilters.join(','));
     if (salesShippingFilters.length) params.set('shipping', salesShippingFilters.join(','));
     if (salesDateFrom) params.set('date_from', salesDateFrom);
     if (salesDateTo) params.set('date_to', salesDateTo);
+    if (salesTimeCut) params.set('time_cut', salesTimeCut);
 
     try {
       const res = await fetch(`/api/sales?${params.toString()}`);
-      const sales = await res.json();
+      let sales = await res.json();
+      salesLoaded = true;
 
-      let html = `
+      // Client-side time cut filter
+      if (salesTimeCut) {
+        const [cutH, cutM] = salesTimeCut.split(':').map(Number);
+        sales = sales.filter(s => {
+          const d = new Date(s.date_created);
+          return d.getHours() < cutH || (d.getHours() === cutH && d.getMinutes() <= cutM);
+        });
+      }
+
+      // Remove loading, rebuild with filters + results
+      // Re-render entire content to keep filters
+      let fullHtml = `
         <h2 style="margin-bottom:20px;color:#2d3277">Ventas</h2>
         <div class="sales-filters">
           <div class="filter-row">
-            <select onchange="salesAccountFilter=this.value;loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            <select id="salesAccountSel" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
               ${accountFilterHTML()}
             </select>
-            <input type="date" value="${salesDateFrom}" onchange="salesDateFrom=this.value;loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px" title="Desde">
-            <input type="date" value="${salesDateTo}" onchange="salesDateTo=this.value;loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px" title="Hasta">
-            <button onclick="salesDateFrom='';salesDateTo='';salesStatusFilters=[];salesShippingFilters=[];loadSales()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:#f0f2f5">Limpiar filtros</button>
+            <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="salesDateFrom" value="${salesDateFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+            <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="salesDateTo" value="${salesDateTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+            <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px" title="Mostrar ventas hasta esta hora">🕐 Corte <input type="time" id="salesTimeCut" value="${salesTimeCut}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
           </div>
           <h4>Estados</h4>
           <div class="filter-row">
             ${Object.entries(STATUS_LABELS).map(([key, label]) => `
               <label class="chip ${salesStatusFilters.includes(key) ? 'checked' : ''}">
-                <input type="checkbox" ${salesStatusFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilter('status','${key}')">
+                <input type="checkbox" ${salesStatusFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilterNoLoad('status','${key}')">
                 ${label}
               </label>
             `).join('')}
@@ -721,29 +809,34 @@
           <div class="filter-row">
             ${Object.entries(SHIPPING_LABELS).map(([key, label]) => `
               <label class="chip ${salesShippingFilters.includes(key) ? 'checked' : ''}">
-                <input type="checkbox" ${salesShippingFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilter('shipping','${key}')">
+                <input type="checkbox" ${salesShippingFilters.includes(key) ? 'checked' : ''} onchange="toggleSalesFilterNoLoad('shipping','${key}')">
                 ${label}
               </label>
             `).join('')}
+          </div>
+          <div class="filter-row" style="margin-top:8px">
+            <button onclick="applySalesFilters()" style="padding:8px 24px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔍 Filtrar</button>
+            <button onclick="clearSalesFilters()" style="padding:8px 16px;border:1px solid #ddd;border-radius:6px;font-size:13px;cursor:pointer;background:#f0f2f5">Limpiar filtros</button>
           </div>
         </div>
       `;
 
       if (sales.length === 0) {
-        html += '<div class="empty"><p>No hay ventas para los filtros seleccionados</p></div>';
+        fullHtml += '<div class="empty"><p>No hay ventas para los filtros seleccionados</p></div>';
       } else {
-        html += `<p style="color:#999;font-size:13px;margin-bottom:12px">${sales.length} venta${sales.length !== 1 ? 's' : ''}</p>`;
+        fullHtml += `<p style="color:#999;font-size:13px;margin-bottom:12px">${sales.length} venta${sales.length !== 1 ? 's' : ''}</p>`;
         for (const sale of sales) {
           const statusLabel = STATUS_LABELS[sale.status] || sale.status;
           const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'PUNTO DESPACHO' : sale.shipping_type === 'agreement' ? 'ACORDAR' : sale.shipping_type.toUpperCase();
           const dateStr = formatSaleDate(sale.date_created);
           const reputationText = sale.affects_reputation ? '' : '<span style="color:#27ae60;font-size:11px;margin-left:8px">No afecta tu reputación</span>';
-          const saleKey = sale.pack_id || sale.order_id;
           const orderId = sale.pack_id ? sale.pack_id : sale.order_id;
+          const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
           const totalItems = sale.items.reduce((sum, i) => sum + i.quantity, 0);
           const isPackage = sale.items.length > 1;
+          const noteId = sale.note_id || '';
 
-          html += `
+          fullHtml += `
             <div class="sale-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
                 <span class="card-account">${sale.account_name}</span>
@@ -763,7 +856,7 @@
                 <div class="sale-item">
                   ${item.thumbnail ? `<img src="${item.thumbnail}" alt="">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
                   <div class="sale-item-info">
-                    <div class="sale-item-title">${item.title}</div>
+                    <div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:#3483fa;text-decoration:none">${item.title}</a></div>
                     <div class="sale-item-meta">
                       $ ${Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2})}
                       &nbsp;&middot;&nbsp; ${item.quantity} unidad${item.quantity !== 1 ? 'es' : ''}
@@ -778,28 +871,25 @@
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">
                 <div class="sale-actions" style="margin-top:0">
                   ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
-                  <button onclick="openSaleMessages(${sale.order_ids ? sale.order_ids[0] : sale.order_id}, ${sale.account_id})">💬 Mensajes</button>
-                  <button onclick="openSaleQuestions('${sale.items[0]?.id || ''}')">❓ Preguntas</button>
+                  <a href="https://www.mercadolibre.com.ar/ventas/${sale.pack_id || firstOrderId}/detalle" target="_blank">💬 Mensajes</a>
+                  <a href="https://www.mercadolibre.com.ar/preguntas/producto/${sale.items[0]?.id || ''}" target="_blank">❓ Preguntas</a>
                 </div>
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
               <div class="sale-notes" style="margin-top:8px">
-                <textarea placeholder="Agregar nota..." oninput="saveNote('${saleKey}', this.value)">${sale.notes || ''}</textarea>
-                <div class="notes-saved" id="notes-saved-${saleKey}">✓ Nota guardada</div>
+                <textarea id="note-${firstOrderId}" placeholder="Agregar nota..." data-order-id="${firstOrderId}" data-account-id="${sale.account_id}" data-note-id="${noteId}" oninput="saveNoteML(this)">${sale.notes || ''}</textarea>
+                <div class="notes-saved" id="notes-saved-${firstOrderId}">✓ Nota guardada en MercadoLibre</div>
               </div>
             </div>
           `;
         }
       }
-      content.innerHTML = html;
-
-      // Restore select value
-      if (salesAccountFilter) {
-        const sel = content.querySelector('select');
-        if (sel) sel.value = salesAccountFilter;
-      }
+      content.innerHTML = fullHtml;
+      if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
     } catch (e) {
-      content.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
+      // Keep filters, show error below
+      const loadingEl = content.querySelector('.loading');
+      if (loadingEl) loadingEl.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
     }
   }
 
@@ -817,30 +907,35 @@
     }
   }
 
-  function openSaleMessages(orderId, accountId) {
-    messageStatus = 'unread';
-    showSection('messages');
-  }
-
-  function openSaleQuestions(itemId) {
-    questionStatus = 'UNANSWERED';
-    showSection('questions');
-  }
+  // Mensajes y Preguntas ahora abren en nueva pestaña de ML directamente
 
   let noteTimeout = null;
-  async function saveNote(saleKey, text) {
+  async function saveNoteML(textarea) {
     clearTimeout(noteTimeout);
+    const orderId = textarea.dataset.orderId;
+    const accountId = textarea.dataset.accountId;
+    const noteId = textarea.dataset.noteId;
+    const text = textarea.value;
     noteTimeout = setTimeout(async () => {
       try {
-        await fetch('/api/sales/notes', {
+        const res = await fetch('/api/sales/notes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sale_key: saleKey, notes: text })
+          body: JSON.stringify({ order_id: orderId, account_id: accountId, note_id: noteId || null, notes: text })
         });
-        const saved = document.getElementById('notes-saved-' + saleKey);
-        if (saved) { saved.style.display = 'block'; setTimeout(() => saved.style.display = 'none', 2000); }
-      } catch (e) {}
-    }, 800);
+        const data = await res.json();
+        if (data.ok) {
+          // Update note_id if it was created
+          if (data.note_id) textarea.dataset.noteId = data.note_id;
+          const saved = document.getElementById('notes-saved-' + orderId);
+          if (saved) { saved.style.display = 'block'; setTimeout(() => saved.style.display = 'none', 2000); }
+        } else {
+          showToast(data.error || 'Error al guardar nota', 'error');
+        }
+      } catch (e) {
+        showToast('Error al guardar nota', 'error');
+      }
+    }, 1200);
   }
 
   // ==================== ACCOUNTS SECTION ====================
