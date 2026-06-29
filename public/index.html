@@ -336,6 +336,24 @@
         badge.style.display = 'none';
       }
 
+      const salesHTML = stats.can_view_dashboard ? `
+        <h3 style="margin:24px 0 12px;color:#2d3277">Ventas del día</h3>
+        <div class="stats">
+          <div class="stat-card">
+            <div class="label">Ventas hoy</div>
+            <div class="value" style="color:#3483fa">${stats.sales_today}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Dinero transaccionado</div>
+            <div class="value" style="color:#27ae60;font-size:22px">$ ${Number(stats.revenue_today).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Unidades vendidas</div>
+            <div class="value" style="color:#f5a623">${stats.units_sold_today}</div>
+          </div>
+        </div>
+      ` : '';
+
       document.getElementById('content').innerHTML = `
         <h2 style="margin-bottom:20px;color:#2d3277">Dashboard</h2>
         <div class="stats">
@@ -352,6 +370,7 @@
             <div class="value" style="color:#27ae60">${stats.answered}</div>
           </div>
         </div>
+        ${salesHTML}
         <div style="margin-top:20px">
           <h3 style="margin-bottom:12px;color:#2d3277">Cuentas conectadas</h3>
           ${accounts.length === 0 ? '<p style="color:#999">No hay cuentas conectadas. Ve a "Cuentas ML" para agregar una.</p>' :
@@ -464,21 +483,25 @@
 
   // ==================== MESSAGES ====================
 
+  let messageStatus = 'unread';
+
   async function loadMessages(accountId = '') {
     const content = document.getElementById('content');
     try {
-      const res = await fetch(`/api/messages?account_id=${accountId}`);
+      const res = await fetch(`/api/messages?account_id=${accountId}&status=${messageStatus}`);
       const conversations = await res.json();
 
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Mensajes de compras</h2>
         <div class="filters">
+          <button class="${messageStatus === 'unread' ? 'active' : ''}" onclick="messageStatus='unread';loadMessages()">Sin leer</button>
+          <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="messageStatus='answered';loadMessages()">Respondidos</button>
           <select onchange="loadMessages(this.value)">${accountFilterHTML()}</select>
         </div>
       `;
 
       if (conversations.length === 0) {
-        html += '<div class="empty"><p>No hay mensajes recientes</p></div>';
+        html += `<div class="empty"><p>${messageStatus === 'unread' ? 'No hay mensajes sin leer' : 'No hay mensajes respondidos'}</p></div>`;
       } else {
         for (const conv of conversations) {
           html += `
@@ -629,6 +652,10 @@
               <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
                 <input type="checkbox" ${u.alerts_messages ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_messages', this.checked)" style="width:18px;height:18px;cursor:pointer">
                 Alertas mensajes
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" ${u.view_dashboard ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'view_dashboard', this.checked)" style="width:18px;height:18px;cursor:pointer">
+                Ver ventas
               </label>
               ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:6px 12px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
             </div>
@@ -781,8 +808,34 @@
     setTimeout(() => { if (notif.parentElement) notif.remove(); }, 10000);
   }
 
+  // Check if user is typing in any textarea
+  function isUserTyping() {
+    const active = document.activeElement;
+    if (active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')) return true;
+    // Also check if any textarea has content
+    const textareas = document.querySelectorAll('textarea');
+    for (const ta of textareas) {
+      if (ta.value.trim().length > 0) return true;
+    }
+    return false;
+  }
+
+  let pendingNewQuestions = 0;
+
+  function showNewQuestionsBanner(count) {
+    let banner = document.getElementById('newQuestionsBanner');
+    if (banner) { banner.querySelector('span').textContent = `${count} pregunta${count > 1 ? 's' : ''} nueva${count > 1 ? 's' : ''} — hacé click para actualizar`; return; }
+    banner = document.createElement('div');
+    banner.id = 'newQuestionsBanner';
+    banner.style.cssText = 'background:#3483fa;color:white;padding:10px 20px;border-radius:8px;margin-bottom:16px;cursor:pointer;text-align:center;font-size:14px;font-weight:600;animation:slideIn 0.3s ease';
+    banner.innerHTML = `<span>${count} pregunta${count > 1 ? 's' : ''} nueva${count > 1 ? 's' : ''} — hacé click para actualizar</span>`;
+    banner.onclick = () => { pendingNewQuestions = 0; banner.remove(); loadQuestions(); };
+    const content = document.getElementById('content');
+    const filters = content.querySelector('.filters');
+    if (filters) { filters.after(banner); } else { content.prepend(banner); }
+  }
+
   async function checkNewQuestions() {
-    if (!currentUser?.alerts_questions) return;
     try {
       const res = await fetch('/api/questions?status=UNANSWERED&account_id=');
       if (!res.ok) return;
@@ -796,9 +849,21 @@
       if (notificationsReady && lastQuestionIds.length > 0) {
         const newIds = currentIds.filter(id => !lastQuestionIds.includes(id));
         if (newIds.length > 0) {
-          playNotificationSound();
-          showNotification(newIds.length, 'questions');
-          if (currentSection === 'questions') loadQuestions();
+          // Sound + popup notification (if user has alerts enabled)
+          if (currentUser?.alerts_questions) {
+            playNotificationSound();
+            showNotification(newIds.length, 'questions');
+          }
+
+          if (currentSection === 'questions') {
+            if (isUserTyping()) {
+              // User is typing — don't refresh, show banner instead
+              pendingNewQuestions += newIds.length;
+              showNewQuestionsBanner(pendingNewQuestions);
+            } else {
+              loadQuestions();
+            }
+          }
           if (currentSection === 'dashboard') loadDashboard();
         }
       }
@@ -807,20 +872,19 @@
   }
 
   async function checkNewMessages() {
-    if (!currentUser?.alerts_messages) return;
     try {
-      const res = await fetch('/api/messages?account_id=');
+      const res = await fetch('/api/messages?account_id=&status=unread');
       if (!res.ok) return;
       const conversations = await res.json();
-      // Track by last message id of each conversation
       const currentIds = conversations.map(c => c.messages?.[c.messages.length - 1]?.id).filter(Boolean);
 
       if (notificationsReady && lastMessageIds.length > 0) {
         const newIds = currentIds.filter(id => !lastMessageIds.includes(id));
-        if (newIds.length > 0) {
+        if (newIds.length > 0 && currentUser?.alerts_messages) {
           playNotificationSound();
           showNotification(newIds.length, 'messages');
-          if (currentSection === 'messages') loadMessages();
+          // Don't auto-refresh messages if user is typing
+          if (currentSection === 'messages' && !isUserTyping()) loadMessages();
         }
       }
       lastMessageIds = currentIds;
@@ -839,9 +903,11 @@
     if (!notificationsReady) notificationsReady = true;
   }, 15000);
 
-  // Also refresh the current view every 15 seconds
+  // Auto-refresh current view every 15 seconds ONLY if not typing
   setInterval(() => {
+    if (isUserTyping()) return;
     if (currentSection === 'questions') loadQuestions();
+    if (currentSection === 'messages') loadMessages();
     if (currentSection === 'dashboard') loadDashboard();
   }, 15000);
 
