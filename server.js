@@ -360,7 +360,7 @@ route('GET', '/api/questions', async (req, res) => {
             listing_type: listingType,
             publication_id: itemData.id || itemId
           };
-        } catch (e) {
+        } catch (e){console.error(`Error fetching item ${itemId}:`, e.response?.data || e.message || e);
           itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
         }
       }
