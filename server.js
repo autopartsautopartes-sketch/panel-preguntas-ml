@@ -62,6 +62,7 @@ if (dbInit.users.length === 0) {
     role: 'admin',
     alerts_questions: true,
     alerts_messages: true,
+    view_dashboard: true,
     created_at: new Date().toISOString()
   });
   saveDB(dbInit);
@@ -73,6 +74,7 @@ let migrated = false;
 for (const u of dbMigrate.users) {
   if (u.alerts_questions === undefined) { u.alerts_questions = true; migrated = true; }
   if (u.alerts_messages === undefined) { u.alerts_messages = true; migrated = true; }
+  if (u.view_dashboard === undefined) { u.view_dashboard = true; migrated = true; }
 }
 if (migrated) saveDB(dbMigrate);
 
@@ -230,7 +232,8 @@ route('GET', '/api/me', async (req, res) => {
   sendJSON(res, 200, {
     username: sess.username, role: sess.role,
     alerts_questions: user?.alerts_questions ?? true,
-    alerts_messages: user?.alerts_messages ?? true
+    alerts_messages: user?.alerts_messages ?? true,
+    view_dashboard: user?.view_dashboard !== false
   });
 });
 
@@ -239,18 +242,19 @@ route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
-  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, created_at: u.created_at })));
+  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, view_dashboard: u.view_dashboard !== false, created_at: u.created_at })));
 });
 
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
   if (alerts_questions !== undefined) user.alerts_questions = !!alerts_questions;
   if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
+  if (view_dashboard !== undefined) user.view_dashboard = !!view_dashboard;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -262,7 +266,7 @@ route('POST', '/api/users', async (req, res) => {
   if (!username || !password) return sendJSON(res, 400, { error: 'Faltan datos' });
   const db = loadDB();
   if (db.users.find(u => u.username === username)) return sendJSON(res, 400, { error: 'El usuario ya existe' });
-  db.users.push({ id: db.nextUserId++, username, password: hashPassword(password), role: 'user', alerts_questions: true, alerts_messages: true, created_at: new Date().toISOString() });
+  db.users.push({ id: db.nextUserId++, username, password: hashPassword(password), role: 'user', alerts_questions: true, alerts_messages: true, view_dashboard: true, created_at: new Date().toISOString() });
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -485,6 +489,7 @@ route('GET', '/api/messages', async (req, res) => {
 
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
+  const statusFilter = url.searchParams.get('status') || 'unread'; // unread or answered
   const db = loadDB();
   let allMessages = [];
 
@@ -494,13 +499,10 @@ route('GET', '/api/messages', async (req, res) => {
     const token = await getValidToken(account);
     if (!token) continue;
     try {
-      console.log(`Fetching orders for ${account.name} (seller: ${account.seller_id})...`);
       const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
         seller: account.seller_id, sort: 'date_desc', limit: 20
       });
-      console.log(`Orders found: ${ordersData.results?.length || 0}, total: ${ordersData.total || 0}`);
 
-      // Group by pack_id to avoid duplicate message threads
       const seenPacks = new Set();
       for (const order of (ordersData.results || [])) {
         const packId = order.pack_id || order.id;
@@ -508,22 +510,28 @@ route('GET', '/api/messages', async (req, res) => {
         seenPacks.add(packId);
 
         try {
-          // Use messages/packs endpoint (correct ML API)
           const msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
             tag: 'post_sale', limit: 15
           });
           const messages = msgData.messages || [];
-          console.log(`Pack ${packId} (order ${order.id}): ${messages.length} messages`);
           if (messages.length === 0) continue;
+
+          const mappedMessages = messages.map(m => ({
+            id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
+            text: m.text || m.plain?.content || '', date: m.date_created || m.date
+          }));
+
+          // Determine if last message is from buyer (unread) or seller (answered)
+          const lastMsg = mappedMessages[mappedMessages.length - 1];
+          const isUnread = lastMsg.from === 'buyer';
+
+          if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) continue;
 
           allMessages.push({
             order_id: order.id, pack_id: packId, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
-            messages: messages.map(m => ({
-              id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
-              text: m.text || m.plain?.content || '', date: m.date_created || m.date
-            })),
+            messages: mappedMessages, is_unread: isUnread,
             last_message_date: messages[messages.length - 1]?.date_created || messages[messages.length - 1]?.date || order.date_created
           });
         } catch (e) {
@@ -568,7 +576,13 @@ route('GET', '/api/stats', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
   let totalUnanswered = 0, totalAnswered = 0;
+  let salesToday = 0, revenueToday = 0, unitsSoldToday = 0;
+
+  // Today's date range (UTC)
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
   for (const account of db.ml_accounts) {
     const token = await getValidToken(account);
@@ -579,9 +593,35 @@ route('GET', '/api/stats', async (req, res) => {
       const a = await mlGet('https://api.mercadolibre.com/questions/search', token, { seller_id: account.seller_id, status: 'ANSWERED', limit: 0 });
       totalAnswered += a.total || 0;
     } catch (e) {}
+
+    // Fetch today's sales if user has dashboard permission
+    if (user?.view_dashboard !== false) {
+      try {
+        const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
+          seller: account.seller_id, sort: 'date_desc',
+          'order.date_created.from': todayStart,
+          limit: 50
+        });
+        for (const order of (ordersData.results || [])) {
+          // Only count active orders (not cancelled)
+          if (order.status === 'cancelled') continue;
+          salesToday++;
+          revenueToday += order.total_amount || 0;
+          for (const item of (order.order_items || [])) {
+            unitsSoldToday += item.quantity || 0;
+          }
+        }
+      } catch (e) {
+        console.error(`Error fetching sales for ${account.name}:`, e.response?.data || e.message || e);
+      }
+    }
   }
 
-  sendJSON(res, 200, { accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered: totalAnswered });
+  sendJSON(res, 200, {
+    accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered: totalAnswered,
+    sales_today: salesToday, revenue_today: revenueToday, units_sold_today: unitsSoldToday,
+    can_view_dashboard: user?.view_dashboard !== false
+  });
 });
 
 // DELETE ACCOUNT
