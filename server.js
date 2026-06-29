@@ -687,6 +687,7 @@ route('GET', '/api/sales', async (req, res) => {
 
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
+  const orderIdFilter = url.searchParams.get('order_id');
   const statusFilters = url.searchParams.get('status') ? url.searchParams.get('status').split(',') : [];
   const shippingFilters = url.searchParams.get('shipping') ? url.searchParams.get('shipping').split(',') : [];
   const dateFrom = url.searchParams.get('date_from');
@@ -701,10 +702,21 @@ route('GET', '/api/sales', async (req, res) => {
     const token = await getValidToken(account);
     if (!token) return;
     try {
-      const params = { seller: account.seller_id, sort: 'date_desc', limit: 50 };
-      if (dateFrom) params['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
-      if (dateTo) params['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
-      const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+      let ordersData;
+      if (orderIdFilter) {
+        // Fetch single order by ID
+        try {
+          const singleOrder = await mlGet(`https://api.mercadolibre.com/orders/${orderIdFilter}`, token);
+          ordersData = { results: [singleOrder] };
+        } catch(e) {
+          ordersData = { results: [] };
+        }
+      } else {
+        const params = { seller: account.seller_id, sort: 'date_desc', limit: 50 };
+        if (dateFrom) params['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
+        if (dateTo) params['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
+        ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+      }
       const orders = ordersData.results || [];
 
       // Step 1: Fetch all unique shipments in parallel
