@@ -876,31 +876,37 @@ route('GET', '/api/sales/note', async (req, res) => {
   const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
 
-  const token = await getValidToken(account);
+  // Re-read account from DB to get the freshest token
+  const freshDb = loadDB();
+  const freshAccount = freshDb.ml_accounts.find(a => a.id === parseInt(accountId));
+  const token = await getValidToken(freshAccount || account);
   if (!token) {
     console.error('[NOTE] No valid token for account', accountId);
     return sendJSON(res, 500, { error: 'Token invalido' });
   }
 
   try {
-    console.log('[NOTE] Fetching ML notes for order', orderId, 'with token', token.substring(0, 10) + '...');
+    console.log('[NOTE] Fetching ML notes for order', orderId, 'token starts:', token.substring(0, 15));
     const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     const noteBody = await noteRes.text();
-    console.log('[NOTE] ML response for order', orderId, '- status:', noteRes.status, '- body:', noteBody.substring(0, 200));
+    console.log('[NOTE] Order', orderId, 'ML status:', noteRes.status, 'body:', noteBody.substring(0, 300));
 
+    // Always include ml_status so frontend can debug
     if (noteRes.status !== 200) {
-      return sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, ml_status: noteRes.status, ml_error: noteBody });
+      return sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, ml_status: noteRes.status, ml_body: noteBody.substring(0, 500) });
     }
     const noteData = JSON.parse(noteBody);
-    if (noteData.results && noteData.results.length > 0) {
-      const n = noteData.results[0];
-      return sendJSON(res, 200, { order_id: orderId, note: n.note, note_id: n.id });
+    // ML returns an ARRAY: [{"results":[...],"order_id":N}]
+    const entry = Array.isArray(noteData) ? noteData[0] : noteData;
+    if (entry && entry.results && entry.results.length > 0) {
+      const n = entry.results[0];
+      return sendJSON(res, 200, { order_id: orderId, note: n.note, note_id: n.id, ml_status: 200 });
     }
-    sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
+    sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, ml_status: 200, ml_results_count: 0 });
   } catch (e) {
-    console.error('[NOTE] Error fetching note for order', orderId, e.message);
+    console.error('[NOTE] Error for order', orderId, e.message);
     sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, error: e.message });
   }
 });
