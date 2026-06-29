@@ -1040,29 +1040,37 @@
   }
 
   async function fetchSalesNotes(sales) {
-    // Use the working GET debug endpoint per sale (batch POST doesn't work)
+    console.log('[NOTES] fetchSalesNotes called, sales count:', sales.length);
+    // Fetch notes one by one using the clean GET endpoint
+    const promises = [];
     for (const s of sales) {
       const firstOrderId = s.order_ids ? s.order_ids[0] : s.order_id;
-      const noteTextEl = document.getElementById('note-text-' + firstOrderId);
-      const container = document.getElementById('sale-notes-' + firstOrderId);
-      if (!noteTextEl || !container) continue;
-
-      const accountId = s.account_id;
-      // Try each order_id until we find one with notes
       const orderIds = s.order_ids || [s.order_id];
-      let foundNote = false;
+      const accountId = s.account_id;
+      console.log('[NOTES] Sale:', firstOrderId, 'account:', accountId, 'orderIds:', orderIds);
 
-      for (const oid of orderIds) {
-        try {
-          const res = await fetch('/api/sales/debug-notes?order_id=' + oid + '&account_id=' + accountId);
-          const data = await res.json();
-          if (data.ml_status === 200 && data.ml_raw_response) {
-            const mlData = JSON.parse(data.ml_raw_response);
-            if (mlData.results && mlData.results.length > 0) {
-              const note = mlData.results[0];
-              noteTextEl.textContent = note.note;
+      // Launch all note fetches in parallel for speed
+      promises.push((async () => {
+        const noteTextEl = document.getElementById('note-text-' + firstOrderId);
+        const container = document.getElementById('sale-notes-' + firstOrderId);
+        if (!noteTextEl || !container) {
+          console.log('[NOTES] No DOM elements for', firstOrderId);
+          return;
+        }
+
+        let foundNote = false;
+        for (const oid of orderIds) {
+          try {
+            const url = '/api/sales/note?order_id=' + oid + '&account_id=' + accountId;
+            console.log('[NOTES] Fetching:', url);
+            const res = await fetch(url);
+            const data = await res.json();
+            console.log('[NOTES] Response for', oid, ':', JSON.stringify(data));
+
+            if (data.note) {
+              noteTextEl.textContent = data.note;
               noteTextEl.style.color = '#333';
-              container.dataset.noteId = note.id || '';
+              container.dataset.noteId = data.note_id || '';
               container.dataset.noteOrderId = oid;
               const btnEdit = document.getElementById('btn-edit-' + firstOrderId);
               const btnDel = document.getElementById('btn-del-' + firstOrderId);
@@ -1071,17 +1079,19 @@
               foundNote = true;
               break;
             }
+          } catch (e) {
+            console.error('[NOTES] Error fetching note for order', oid, e);
           }
-        } catch (e) {
-          console.error('Error fetching note for order', oid, e);
         }
-      }
 
-      if (!foundNote) {
-        noteTextEl.textContent = 'Sin notas';
-        noteTextEl.style.color = '#bbb';
-      }
+        if (!foundNote) {
+          noteTextEl.textContent = 'Sin notas';
+          noteTextEl.style.color = '#bbb';
+        }
+      })());
     }
+    await Promise.all(promises);
+    console.log('[NOTES] All notes fetched');
   }
 
   function addEditNote(orderId) {
