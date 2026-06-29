@@ -637,88 +637,36 @@ route('POST', '/api/messages/reply', async (req, res) => {
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
     const buyerId = orderData.buyer.id;
+    const packId = orderData.pack_id || order_id;
     const sellerId = parseInt(account.seller_id);
 
-    console.log('[MSG REPLY] order:', order_id, 'pack_id from order:', orderData.pack_id, 'seller:', sellerId, 'buyer:', buyerId);
+    console.log('[MSG REPLY] order:', order_id, 'pack_id from order:', orderData.pack_id, 'using pack:', packId, 'seller:', sellerId, 'buyer:', buyerId);
 
-    // First: try to find the correct pack_id by reading existing messages for this order
-    let packId = orderData.pack_id;
-    if (!packId) {
-      // When pack_id is null, try using order_id as pack resource
-      // But first verify the message resource exists by doing a GET
-      try {
-        const existingMsgs = await mlGet(`https://api.mercadolibre.com/messages/packs/${order_id}/sellers/${sellerId}`, token, {
-          tag: 'post_sale', limit: 1
-        });
-        packId = order_id; // GET worked, so we can use order_id
-        console.log('[MSG REPLY] GET with order_id as pack succeeded, using pack:', packId);
-      } catch (e) {
-        console.log('[MSG REPLY] GET with order_id failed:', e.response?.data || e.message);
-        // Try searching for the pack via messages/orders endpoint
-        try {
-          const orderMsgs = await mlGet(`https://api.mercadolibre.com/messages/orders/${order_id}`, token);
-          if (orderMsgs && orderMsgs.messages && orderMsgs.messages.length > 0) {
-            // Extract pack_id from message resource
-            const firstMsg = orderMsgs.messages[0];
-            if (firstMsg.message_resources) {
-              const packRes = firstMsg.message_resources.find(r => r.name === 'packs');
-              if (packRes) {
-                packId = packRes.id;
-                console.log('[MSG REPLY] Found pack from messages/orders:', packId);
-              }
-            }
-          }
-          if (!packId) packId = order_id; // fallback
-        } catch (e2) {
-          console.log('[MSG REPLY] messages/orders also failed:', e2.response?.data || e2.message);
-          packId = order_id; // final fallback
-        }
-      }
-    }
-
-    console.log('[MSG REPLY] Using pack:', packId);
-
-    // Try multiple URL formats for POST
-    const urls = [
-      `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?access_token=${token}&application_id=${ML_CLIENT_ID}`,
-      `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}`,
-    ];
+    // ML messages POST requires: tag=post_sale, application_id, Bearer token
+    const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&application_id=${ML_CLIENT_ID}`;
+    console.log('[MSG REPLY] POST to:', msgUrl);
 
     const msgBody = {
-      from: { user_id: String(sellerId), email: "test" },
+      from: { user_id: String(sellerId) },
       to: { user_id: String(buyerId) },
       text: text
     };
+    console.log('[MSG REPLY] Body:', JSON.stringify(msgBody));
 
-    let lastStatus = 0;
-    let lastBody = '';
-    let success = false;
+    const msgRes = await fetch(msgUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(msgBody)
+    });
+    const msgData = await msgRes.text();
+    console.log('[MSG REPLY] Response status:', msgRes.status, 'body:', msgData.substring(0, 500));
 
-    for (const msgUrl of urls) {
-      const safeUrl = msgUrl.replace(token, 'TOKEN_HIDDEN');
-      console.log('[MSG REPLY] Trying POST to:', safeUrl);
-
-      const msgRes = await fetch(msgUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(msgBody)
-      });
-      lastBody = await msgRes.text();
-      lastStatus = msgRes.status;
-      console.log('[MSG REPLY] Response status:', lastStatus, 'body:', lastBody.substring(0, 500));
-
-      if (msgRes.ok) {
-        success = true;
-        break;
-      }
-    }
-
-    if (!success) {
-      const parsed = JSON.parse(lastBody);
-      return sendJSON(res, 500, { error: parsed.message || parsed.error || 'Error de ML: ' + lastStatus });
+    if (!msgRes.ok) {
+      const parsed = JSON.parse(msgData);
+      return sendJSON(res, 500, { error: parsed.message || parsed.error || 'Error de ML: ' + msgRes.status });
     }
     sendJSON(res, 200, { ok: true });
   } catch (err) {
