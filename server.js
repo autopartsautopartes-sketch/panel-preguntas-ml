@@ -4,6 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
+// ==================== CONFIG ====================
+
 const CONFIG_PATH = path.join(__dirname, '.env');
 const config = {};
 try {
@@ -20,6 +22,8 @@ const ML_CLIENT_ID = config.ML_CLIENT_ID || process.env.ML_CLIENT_ID;
 const ML_CLIENT_SECRET = config.ML_CLIENT_SECRET || process.env.ML_CLIENT_SECRET;
 const SESSION_SECRET = config.SESSION_SECRET || process.env.SESSION_SECRET || 'panel-secret-key';
 
+// ==================== PASSWORD HASHING ====================
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -31,6 +35,8 @@ function verifyPassword(password, stored) {
   const testHash = crypto.scryptSync(password, salt, 64).toString('hex');
   return hash === testHash;
 }
+
+// ==================== JSON DATABASE ====================
 
 const DB_PATH = path.join(__dirname, 'data.json');
 
@@ -46,6 +52,7 @@ function saveDB(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
+// Init admin
 const dbInit = loadDB();
 if (dbInit.users.length === 0) {
   dbInit.users.push({
@@ -58,6 +65,8 @@ if (dbInit.users.length === 0) {
   saveDB(dbInit);
   console.log('Usuario admin creado: admin / admin123');
 }
+
+// ==================== SESSION STORE ====================
 
 const sessions = {};
 
@@ -92,7 +101,11 @@ function parseCookies(req) {
     if (key) cookies[key] = vals.join('=');
   });
   return cookies;
-}async function mlGet(url, token, params = {}) {
+}
+
+// ==================== HTTP HELPERS ====================
+
+async function mlGet(url, token, params = {}) {
   const qs = new URLSearchParams(params).toString();
   const fullUrl = qs ? `${url}?${qs}` : url;
   const res = await fetch(fullUrl, {
@@ -137,6 +150,8 @@ function requireAuth(req) {
   return sess && sess.userId ? sess : null;
 }
 
+// ==================== TOKEN REFRESH ====================
+
 async function refreshToken(account) {
   try {
     const data = await mlPost('https://api.mercadolibre.com/oauth/token', {
@@ -169,11 +184,16 @@ async function getValidToken(account) {
   return account.access_token;
 }
 
+// ==================== ROUTE HANDLERS ====================
+
 const routes = {};
 
 function route(method, path, handler) {
   routes[`${method}:${path}`] = handler;
-}route('POST', '/api/login', async (req, res) => {
+}
+
+// AUTH
+route('POST', '/api/login', async (req, res) => {
   const { username, password } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.username === username);
@@ -198,6 +218,7 @@ route('GET', '/api/me', async (req, res) => {
   sendJSON(res, 200, { username: sess.username, role: sess.role });
 });
 
+// USERS
 route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -217,6 +238,7 @@ route('POST', '/api/users', async (req, res) => {
   sendJSON(res, 200, { ok: true });
 });
 
+// ACCOUNTS
 route('GET', '/api/accounts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -227,19 +249,19 @@ route('GET', '/api/accounts', async (req, res) => {
 route('GET', '/auth/mercadolibre', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-  const url = new URL(req.url, 'http://localhost');
+  const url = new URL(req.url, `http://localhost`);
   const name = url.searchParams.get('name') || 'Cuenta ML';
   sess.pendingAccountName = name;
   const authUrl = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${ML_CLIENT_ID}&redirect_uri=${encodeURIComponent(BASE_URL + '/callback')}`;
   res.writeHead(302, { Location: authUrl });
   res.end();
-});
-
-route('GET', '/callback', async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+});route('GET', '/callback', async (req, res) => {
+  const url = new URL(req.url, `http://localhost`);
   const code = url.searchParams.get('code');
   if (!code) { res.writeHead(302, { Location: '/?error=no_code' }); return res.end(); }
+
   const sess = getSession(req);
+
   try {
     const tokenData = await mlPost('https://api.mercadolibre.com/oauth/token', {
       grant_type: 'authorization_code',
@@ -248,11 +270,14 @@ route('GET', '/callback', async (req, res) => {
       code,
       redirect_uri: BASE_URL + '/callback'
     });
+
     const { access_token, refresh_token, expires_in } = tokenData;
     const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
+
     const userData = await mlGet('https://api.mercadolibre.com/users/me', access_token);
     const sellerId = userData.id.toString();
     const nickname = userData.nickname || (sess && sess.pendingAccountName) || 'Cuenta ML';
+
     const db = loadDB();
     const existing = db.ml_accounts.find(a => a.seller_id === sellerId);
     if (existing) {
@@ -268,6 +293,7 @@ route('GET', '/callback', async (req, res) => {
       });
     }
     saveDB(db);
+
     res.writeHead(302, { Location: '/?success=account_added' });
     res.end();
   } catch (err) {
@@ -275,15 +301,21 @@ route('GET', '/callback', async (req, res) => {
     res.writeHead(302, { Location: '/?error=oauth_failed' });
     res.end();
   }
-});route('GET', '/api/questions', async (req, res) => {
+});
+
+// QUESTIONS
+route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+
   const url = new URL(req.url, 'http://localhost');
   const status = url.searchParams.get('status') || 'UNANSWERED';
   const accountFilter = url.searchParams.get('account_id');
   const db = loadDB();
   let allQuestions = [];
+
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
+
   for (const account of targets) {
     const token = await getValidToken(account);
     if (!token) continue;
@@ -292,28 +324,69 @@ route('GET', '/callback', async (req, res) => {
         seller_id: account.seller_id, status, sort_fields: 'date_created', sort_types: 'DESC', limit: 50
       });
       const questions = data.questions || [];
+
       const itemIds = [...new Set(questions.map(q => q.item_id))];
       const itemDetails = {};
       for (const itemId of itemIds) {
         try {
-          const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token);
-          itemDetails[itemId] = { title: itemData.title, thumbnail: itemData.thumbnail, permalink: itemData.permalink };
+          const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, {
+            attributes: 'id,title,thumbnail,permalink,price,currency_id,seller_custom_field,attributes,available_quantity,listing_type_id'
+          });
+          let sku = itemData.seller_custom_field || '';
+          let mpn = '';
+          if (itemData.attributes) {
+            if (!sku) {
+              const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
+              if (skuAttr) sku = skuAttr.value_name || '';
+            }
+            const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
+            if (mpnAttr) mpn = mpnAttr.value_name || '';
+          }
+          // Determine listing type label
+          let listingType = '';
+          const lt = itemData.listing_type_id || '';
+          if (lt === 'gold_special' || lt === 'gold_pro') listingType = 'Premium';
+          else if (lt === 'gold') listingType = 'Clásica';
+          else if (lt === 'free') listingType = 'Gratis';
+          else if (lt) listingType = lt;
+
+          itemDetails[itemId] = {
+            title: itemData.title,
+            thumbnail: itemData.thumbnail,
+            permalink: itemData.permalink,
+            price: itemData.price,
+            currency: itemData.currency_id || 'ARS',
+            sku: sku,
+            mpn: mpn,
+            available_quantity: itemData.available_quantity || 0,
+            listing_type: listingType,
+            publication_id: itemData.id || itemId
+          };
         } catch (e) {
-          itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '' };
+          itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
         }
       }
+
       for (const q of questions) {
         allQuestions.push({
           ...q, account_name: account.name, account_id: account.id,
           item_title: itemDetails[q.item_id]?.title || '',
           item_thumbnail: itemDetails[q.item_id]?.thumbnail || '',
-          item_permalink: itemDetails[q.item_id]?.permalink || ''
+          item_permalink: itemDetails[q.item_id]?.permalink || '',
+          item_price: itemDetails[q.item_id]?.price || 0,
+          item_currency: itemDetails[q.item_id]?.currency || 'ARS',
+          item_sku: itemDetails[q.item_id]?.sku || '',
+          item_mpn: itemDetails[q.item_id]?.mpn || '',
+          item_available_quantity: itemDetails[q.item_id]?.available_quantity || 0,
+          item_listing_type: itemDetails[q.item_id]?.listing_type || '',
+          item_publication_id: itemDetails[q.item_id]?.publication_id || ''
         });
       }
     } catch (err) {
       console.error(`Error questions ${account.name}:`, err.response?.data || err.message || err);
     }
   }
+
   allQuestions.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
   sendJSON(res, 200, allQuestions);
 });
@@ -325,8 +398,10 @@ route('POST', '/api/questions/answer', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token inválido' });
+
   try {
     await mlPost('https://api.mercadolibre.com/answers', { question_id: parseInt(question_id), text }, token);
     sendJSON(res, 200, { ok: true });
@@ -336,14 +411,18 @@ route('POST', '/api/questions/answer', async (req, res) => {
   }
 });
 
+// MESSAGES
 route('GET', '/api/messages', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
   const db = loadDB();
   let allMessages = [];
+
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
+
   for (const account of targets) {
     const token = await getValidToken(account);
     if (!token) continue;
@@ -351,6 +430,7 @@ route('GET', '/api/messages', async (req, res) => {
       const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
         seller: account.seller_id, sort: 'date_desc', limit: 20
       });
+
       for (const order of (ordersData.results || [])) {
         try {
           const msgData = await mlGet(`https://api.mercadolibre.com/messages/orders/${order.id}`, token, {
@@ -358,6 +438,7 @@ route('GET', '/api/messages', async (req, res) => {
           });
           const messages = msgData.messages || [];
           if (messages.length === 0) continue;
+
           allMessages.push({
             order_id: order.id, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
@@ -374,6 +455,7 @@ route('GET', '/api/messages', async (req, res) => {
       console.error(`Error messages ${account.name}:`, err.response?.data || err.message || err);
     }
   }
+
   allMessages.sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
   sendJSON(res, 200, allMessages);
 });
@@ -385,8 +467,10 @@ route('POST', '/api/messages/reply', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token inválido' });
+
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
     const buyerId = orderData.buyer.id;
@@ -400,11 +484,13 @@ route('POST', '/api/messages/reply', async (req, res) => {
   }
 });
 
+// STATS
 route('GET', '/api/stats', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
   let totalUnanswered = 0, totalAnswered = 0;
+
   for (const account of db.ml_accounts) {
     const token = await getValidToken(account);
     if (!token) continue;
@@ -415,9 +501,11 @@ route('GET', '/api/stats', async (req, res) => {
       totalAnswered += a.total || 0;
     } catch (e) {}
   }
+
   sendJSON(res, 200, { accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered: totalAnswered });
 });
 
+// DELETE ACCOUNT
 route('DELETE', '/api/accounts/delete', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -430,6 +518,7 @@ route('DELETE', '/api/accounts/delete', async (req, res) => {
   sendJSON(res, 200, { ok: true });
 });
 
+// DELETE USER
 route('DELETE', '/api/users/delete', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -443,6 +532,8 @@ route('DELETE', '/api/users/delete', async (req, res) => {
   sendJSON(res, 200, { ok: true });
 });
 
+// ==================== STATIC FILES ====================
+
 const MIME_TYPES = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
   '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
@@ -452,8 +543,10 @@ const MIME_TYPES = {
 function serveStatic(req, res) {
   let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url.split('?')[0]);
   const ext = path.extname(filePath);
+
   fs.readFile(filePath, (err, data) => {
     if (err) {
+      // Serve index.html for SPA routes
       fs.readFile(path.join(__dirname, 'public', 'index.html'), (err2, data2) => {
         if (err2) { res.writeHead(404); return res.end('Not found'); }
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -466,10 +559,14 @@ function serveStatic(req, res) {
   });
 }
 
+// ==================== SERVER ====================
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
   const method = req.method;
+
+  // Match route
   const routeKey = `${method}:${pathname}`;
   if (routes[routeKey]) {
     try {
@@ -480,10 +577,13 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+
+  // Static files
   if (method === 'GET') {
     serveStatic(req, res);
     return;
   }
+
   sendJSON(res, 404, { error: 'Ruta no encontrada' });
 });
 
