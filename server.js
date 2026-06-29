@@ -704,26 +704,73 @@ route('GET', '/api/sales', async (req, res) => {
   const allSales = [...Object.values(packMap), ...singles];
   allSales.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
 
-  // Load notes from db
-  const notes = db.sale_notes || {};
+  // Fetch notes from ML API for each sale
   for (const sale of allSales) {
-    const noteKey = sale.pack_id || sale.order_id;
-    sale.notes = notes[noteKey] || '';
+    const orderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+    const account = targets.find(a => a.id === sale.account_id) || targets[0];
+    if (!account) continue;
+    try {
+      const token = await getValidToken(account);
+      if (!token) continue;
+      const notesData = await mlGet(`https://api.mercadolibre.com/orders/${orderId}/notes`, token);
+      // ML returns an array of notes, get the first (seller note)
+      if (Array.isArray(notesData) && notesData.length > 0) {
+        sale.notes = notesData[0].note || '';
+        sale.note_id = notesData[0].id || null;
+      } else if (notesData.note) {
+        sale.notes = notesData.note || '';
+        sale.note_id = notesData.id || null;
+      } else {
+        sale.notes = '';
+        sale.note_id = null;
+      }
+    } catch (e) {
+      sale.notes = '';
+      sale.note_id = null;
+    }
   }
 
   sendJSON(res, 200, allSales);
 });
 
-// SALE NOTES
+// SALE NOTES - sync with ML API
 route('POST', '/api/sales/notes', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-  const { sale_key, notes } = await parseBody(req);
+  const { order_id, account_id, note_id, notes } = await parseBody(req);
   const db = loadDB();
-  if (!db.sale_notes) db.sale_notes = {};
-  db.sale_notes[sale_key] = notes || '';
-  saveDB(db);
-  sendJSON(res, 200, { ok: true });
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+
+  try {
+    if (note_id) {
+      // Update existing note in ML
+      const updateRes = await fetch(`https://api.mercadolibre.com/orders/${order_id}/notes/${note_id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ note: notes })
+      });
+      const data = await updateRes.json();
+      if (!updateRes.ok) throw { response: { data } };
+      sendJSON(res, 200, { ok: true, note_id });
+    } else {
+      // Create new note in ML
+      const createRes = await fetch(`https://api.mercadolibre.com/orders/${order_id}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ note: notes })
+      });
+      const data = await createRes.json();
+      if (!createRes.ok) throw { response: { data } };
+      sendJSON(res, 200, { ok: true, note_id: data.id || null });
+    }
+  } catch (err) {
+    console.error('Error saving note:', err.response?.data || err.message || err);
+    sendJSON(res, 500, { error: err.response?.data?.message || 'Error al guardar nota' });
+  }
 });
 
 // SHIPPING LABEL URL
