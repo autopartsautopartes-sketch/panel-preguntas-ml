@@ -465,15 +465,18 @@ route('GET', '/api/messages', async (req, res) => {
     const token = await getValidToken(account);
     if (!token) continue;
     try {
+      console.log(`Fetching orders for ${account.name} (seller: ${account.seller_id})...`);
       const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
         seller: account.seller_id, sort: 'date_desc', limit: 20
       });
+      console.log(`Orders found: ${ordersData.results?.length || 0}, total: ${ordersData.total || 0}`);
 
       for (const order of (ordersData.results || [])) {
         try {
           const msgData = await mlGet(`https://api.mercadolibre.com/messages/orders/${order.id}`, token, {
             seller: account.seller_id, limit: 10
           });
+          console.log(`Order ${order.id}: ${msgData.messages?.length || 0} messages`);
           const messages = msgData.messages || [];
           if (messages.length === 0) continue;
 
@@ -487,7 +490,9 @@ route('GET', '/api/messages', async (req, res) => {
             })),
             last_message_date: messages[messages.length - 1]?.date || order.date_created
           });
-        } catch (e) {}
+        } catch (e) {
+          console.error(`Error messages order ${order.id}:`, e.response?.data || e.message || e);
+        }
       }
     } catch (err) {
       console.error(`Error messages ${account.name}:`, err.response?.data || err.message || err);
