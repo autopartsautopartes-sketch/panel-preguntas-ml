@@ -262,6 +262,7 @@
       </a>
       <a onclick="showSection('messages')" id="nav-messages">
         <span>💬 Mensajes</span>
+        <span class="badge" id="badge-unread-messages" style="display:none">0</span>
       </a>
       <a onclick="showSection('sales')" id="nav-sales">
         <span>🛒 Ventas</span>
@@ -416,12 +417,22 @@
       const res = await fetch('/api/stats');
       const stats = await res.json();
 
+      // Update question badge
       const badge = document.getElementById('badge-unanswered');
       if (stats.unanswered > 0) {
         badge.textContent = stats.unanswered;
         badge.style.display = '';
       } else {
         badge.style.display = 'none';
+      }
+
+      // Update message badge
+      const msgBadge = document.getElementById('badge-unread-messages');
+      if (stats.unread_messages > 0) {
+        msgBadge.textContent = stats.unread_messages;
+        msgBadge.style.display = '';
+      } else {
+        msgBadge.style.display = 'none';
       }
 
       const salesHTML = stats.can_view_dashboard ? `
@@ -440,6 +451,19 @@
             <div class="value" style="color:#f5a623">${stats.units_sold_today}</div>
           </div>
         </div>
+        ${(stats.sales_by_account && stats.sales_by_account.length > 0) ? `
+          <div style="margin-top:16px">
+            <h4 style="margin-bottom:8px;color:#666;font-size:13px">Detalle por cuenta</h4>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+              ${stats.sales_by_account.map(sa => `
+                <div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 14px;font-size:12px;min-width:180px">
+                  <div style="font-weight:700;color:#2d3277;margin-bottom:4px">${sa.name}</div>
+                  <div style="color:#666">${sa.sales} venta${sa.sales !== 1 ? 's' : ''} · ${sa.units} unid. · <span style="color:#27ae60;font-weight:600">$ ${Number(sa.revenue).toLocaleString('es-AR', {minimumFractionDigits:2})}</span></div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
       ` : '';
 
       document.getElementById('content').innerHTML = `
@@ -454,8 +478,12 @@
             <div class="value" style="color:#e74c3c">${stats.unanswered}</div>
           </div>
           <div class="stat-card">
-            <div class="label">Preguntas respondidas</div>
-            <div class="value" style="color:#27ae60">${stats.answered}</div>
+            <div class="label">Respondidas hoy</div>
+            <div class="value" style="color:#27ae60">${stats.answered_today}</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Mensajes sin leer</div>
+            <div class="value" style="color:#3483fa">${stats.unread_messages}</div>
           </div>
         </div>
         ${salesHTML}
@@ -1442,18 +1470,40 @@
     } catch(e) {}
   }
 
-  function showNotification(count, type) {
-    const notifId = type === 'questions' ? 'newQuestionsNotif' : 'newMessagesNotif';
-    const existing = document.getElementById(notifId);
-    if (existing) existing.remove();
+  // Request desktop notification permission on first user interaction
+  document.addEventListener('click', function requestNotifPerm() {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    document.removeEventListener('click', requestNotifPerm);
+  }, { once: true });
 
+  function showNotification(count, type) {
     const isQ = type === 'questions';
     const icon = isQ ? '❓' : '💬';
     const title = isQ
       ? (count === 1 ? '¡Nueva pregunta!' : `¡${count} preguntas nuevas!`)
       : (count === 1 ? '¡Nuevo mensaje!' : `¡${count} mensajes nuevos!`);
-    const topPos = isQ ? '20px' : '90px';
 
+    // Desktop notification (near the clock)
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const desktopNotif = new Notification('AUTOCHAP VENTAS', {
+        body: title,
+        icon: isQ ? 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">❓</text></svg>'
+              : 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">💬</text></svg>',
+        tag: type,
+        requireInteraction: false
+      });
+      desktopNotif.onclick = () => { window.focus(); showSection(type); desktopNotif.close(); };
+      setTimeout(() => desktopNotif.close(), 10000);
+    }
+
+    // Also show in-page notification as fallback
+    const notifId = type === 'questions' ? 'newQuestionsNotif' : 'newMessagesNotif';
+    const existing = document.getElementById(notifId);
+    if (existing) existing.remove();
+
+    const topPos = isQ ? '20px' : '90px';
     const notif = document.createElement('div');
     notif.id = notifId;
     notif.style.cssText = `position:fixed;top:${topPos};right:20px;background:${isQ ? '#2d3277' : '#27ae60'};color:white;padding:16px 24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:9999;animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:center;gap:12px;font-size:15px;max-width:400px`;
@@ -1539,6 +1589,11 @@
       if (!res.ok) return;
       const conversations = await res.json();
       const currentIds = conversations.map(c => c.messages?.[c.messages.length - 1]?.id).filter(Boolean);
+
+      // Update message badge in sidebar
+      const msgBadge = document.getElementById('badge-unread-messages');
+      if (conversations.length > 0) { msgBadge.textContent = conversations.length; msgBadge.style.display = ''; }
+      else { msgBadge.style.display = 'none'; }
 
       if (notificationsReady && lastMessageIds.length > 0) {
         const newIds = currentIds.filter(id => !lastMessageIds.includes(id));
