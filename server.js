@@ -732,75 +732,65 @@ route('GET', '/api/sales', async (req, res) => {
   const allSales = [...Object.values(packMap), ...singles];
   allSales.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
 
-  // Fetch notes from ML API for each sale (try all order_ids for packs)
-  for (const sale of allSales) {
-    const orderIds = sale.order_ids || [sale.order_id];
-    const account = targets.find(a => a.id === sale.account_id) || targets[0];
-    if (!account) { sale.notes = ''; sale.note_id = null; sale.note_order_id = null; continue; }
+  // Notes are fetched client-side to avoid token/timeout issues
+  sendJSON(res, 200, allSales);
+});
+
+// FETCH NOTES for multiple orders (called by frontend after sales load)
+route('POST', '/api/sales/notes/batch', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { orders } = await parseBody(req); // [{order_ids: [...], account_id: N}, ...]
+  if (!orders || !Array.isArray(orders)) return sendJSON(res, 400, { error: 'Missing orders' });
+
+  const results = {};
+  const db = loadDB();
+
+  for (const item of orders) {
+    const orderIds = item.order_ids || [];
+    const account = db.ml_accounts.find(a => a.id === parseInt(item.account_id));
+    if (!account) continue;
+
+    const token = await getValidToken(account);
+    if (!token) continue;
 
     let foundNote = false;
-    try {
-      const token = await getValidToken(account);
-      if (!token) { sale.notes = ''; sale.note_id = null; sale.note_order_id = null; continue; }
+    for (const orderId of orderIds) {
+      if (foundNote) break;
+      try {
+        const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!noteRes.ok) continue;
+        const noteBody = await noteRes.text();
+        if (!noteBody) continue;
 
-      // Try each order_id (in packs, notes may be on any of the orders)
-      for (const orderId of orderIds) {
-        if (foundNote) break;
-        try {
-          const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          const noteBody = await noteRes.text();
-          console.log(`NOTES order ${orderId}: status=${noteRes.status} body=${noteBody.substring(0, 500)}`);
+        let notesData;
+        try { notesData = JSON.parse(noteBody); } catch(e) { continue; }
 
-          if (noteRes.ok && noteBody) {
-            let notesData;
-            try { notesData = JSON.parse(noteBody); } catch(pe) { continue; }
-
-            // Extract notes array from different possible response formats
-            let notesArray = [];
-            if (Array.isArray(notesData)) {
-              notesArray = notesData;
-            } else if (notesData && typeof notesData === 'object') {
-              // ML might wrap in {results: [...]} or {notes: [...]}
-              if (Array.isArray(notesData.results)) notesArray = notesData.results;
-              else if (Array.isArray(notesData.notes)) notesArray = notesData.notes;
-              else if (notesData.note || notesData.text) notesArray = [notesData];
-            }
-
-            if (notesArray.length > 0) {
-              const firstNote = notesArray[0];
-              const noteText = firstNote.note || firstNote.text || firstNote.body || firstNote.content || '';
-              if (noteText || notesArray.length > 0) {
-                sale.notes = noteText;
-                sale.note_id = firstNote.id || null;
-                sale.note_order_id = orderId;
-                foundNote = true;
-              }
-            }
-          }
-        } catch (innerE) {
-          console.error(`Error fetching notes for order ${orderId}:`, innerE.message || innerE);
+        let notesArray = [];
+        if (Array.isArray(notesData)) notesArray = notesData;
+        else if (notesData && typeof notesData === 'object') {
+          if (Array.isArray(notesData.results)) notesArray = notesData.results;
+          else if (notesData.note || notesData.text) notesArray = [notesData];
         }
+
+        if (notesArray.length > 0) {
+          const first = notesArray[0];
+          results[orderIds[0]] = {
+            notes: first.note || first.text || '',
+            note_id: first.id || null,
+            note_order_id: orderId
+          };
+          foundNote = true;
+        }
+      } catch (e) {
+        console.error(`Error batch notes order ${orderId}:`, e.message || e);
       }
-    } catch (e) {
-      console.error(`Error fetching notes for sale:`, e.message || e);
-    }
-
-    if (!foundNote) {
-      sale.notes = '';
-      sale.note_id = null;
-      sale.note_order_id = orderIds[0];
     }
   }
 
-  // Debug: log notes found before sending response
-  for (const sale of allSales) {
-    const oid = sale.order_ids ? sale.order_ids[0] : sale.order_id;
-    console.log(`FINAL SALE ${oid}: notes="${sale.notes}", note_id=${sale.note_id}, note_order_id=${sale.note_order_id}`);
-  }
-
-  sendJSON(res, 200, allSales);
+  sendJSON(res, 200, results);
 });
 
 // SALE NOTES - sync with ML API
