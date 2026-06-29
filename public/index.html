@@ -523,16 +523,20 @@
               </div>
               <div class="msg-conversation">
                 ${(function(){
-                  const sorted = [...conv.messages].sort((a,b) => new Date(a.date) - new Date(b.date));
-                  return sorted.map(m => {
+                  const msgs = conv.messages || [];
+                  // Reverse array: ML API returns newest first, we want oldest first (buyer on top, seller below)
+                  const ordered = [...msgs].reverse();
+                  return ordered.map(m => {
                     let dateStr = '';
-                    try {
-                      if (m.date) {
+                    if (m.date && m.date !== '') {
+                      try {
                         const dd = new Date(m.date);
-                        dateStr = dd.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}) + ' ' + dd.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
-                      }
-                    } catch(e) { dateStr = ''; }
-                    return '<div class="msg-bubble ' + m.from + '">' + (m.text||'') + '<div class="msg-date">' + dateStr + '</div></div>';
+                        if (!isNaN(dd.getTime())) {
+                          dateStr = dd.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}) + ' ' + dd.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+                        }
+                      } catch(e) {}
+                    }
+                    return '<div class="msg-bubble ' + m.from + '">' + (m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
                   }).join('');
                 })()}
               </div>
