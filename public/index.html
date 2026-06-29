@@ -914,6 +914,12 @@
       let sales = await res.json();
       salesLoaded = true;
 
+      // Debug: log notes received from server
+      for (const s of sales) {
+        const oid = s.order_ids ? s.order_ids[0] : s.order_id;
+        console.log('SALE NOTES DEBUG:', oid, 'notes="' + (s.notes||'') + '"', 'note_id=' + (s.note_id||'null'), 'note_order_id=' + (s.note_order_id||'null'));
+      }
+
       // Client-side time cut filter
       if (salesTimeCut) {
         const [cutH, cutM] = salesTimeCut.split(':').map(Number);
