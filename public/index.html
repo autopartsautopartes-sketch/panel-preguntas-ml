@@ -337,13 +337,13 @@
     const urlOrderId = urlParams.get('order_id');
     const urlAccountId = urlParams.get('account_id');
     if (targetSection === 'messages' && (urlBuyerId || urlOrderId)) {
-      showSection('messages');
+      showSection('messages', true);
       loadMessagesForBuyer(urlBuyerId, urlAccountId, urlOrderId);
     } else if (targetSection === 'questions' && urlBuyerId) {
-      showSection('questions');
+      showSection('questions', true);
       loadQuestionsForBuyer(urlBuyerId, urlAccountId);
     } else if (targetSection === 'sales' && urlOrderId) {
-      showSection('sales');
+      showSection('sales', true);
       loadSalesForOrder(urlOrderId, urlAccountId);
     } else if (targetSection === 'sales') {
       showSection('sales');
@@ -394,7 +394,7 @@
 
   // ==================== NAVIGATION ====================
 
-  function showSection(section) {
+  function showSection(section, skipLoad) {
     currentSection = section;
     document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
     const nav = document.getElementById('nav-' + section);
@@ -411,6 +411,8 @@
     } else {
       qrPanel.classList.remove('visible');
     }
+
+    if (skipLoad) return; // deep link will handle loading
 
     switch (section) {
       case 'dashboard': loadDashboard(); break;
@@ -999,6 +1001,13 @@
     agreement: 'Acuerdo con el comprador'
   };
 
+  function searchByOrderId() {
+    const input = document.getElementById('salesOrderIdFilter');
+    const orderId = (input ? input.value : '').trim();
+    if (!orderId) { showToast('Ingresá un número de orden', 'error'); return; }
+    loadSalesForOrder(orderId);
+  }
+
   function toggleSalesFilterNoLoad(type, value) {
     const arr = type === 'status' ? salesStatusFilters : salesShippingFilters;
     const idx = arr.indexOf(value);
@@ -1042,6 +1051,10 @@
           <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="salesDateFrom" value="${salesDateFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
           <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="salesDateTo" value="${salesDateTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
           <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px" title="Horario de corte: mostrar ventas hasta esta hora">🕐 Corte <input type="time" id="salesTimeCut" value="${salesTimeCut}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+        </div>
+        <div class="filter-row" style="margin-top:6px">
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">N° Orden <input type="text" id="salesOrderIdFilter" placeholder="Ej: 2000017151998008" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px;width:220px"></label>
+          <button onclick="searchByOrderId()" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">Buscar orden</button>
         </div>
         <h4>Estados</h4>
         <div class="filter-row">
@@ -1110,6 +1123,10 @@
             <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="salesDateFrom" value="${salesDateFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
             <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="salesDateTo" value="${salesDateTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
             <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px" title="Mostrar ventas hasta esta hora">🕐 Corte <input type="time" id="salesTimeCut" value="${salesTimeCut}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          </div>
+          <div class="filter-row" style="margin-top:6px">
+            <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">N° Orden <input type="text" id="salesOrderIdFilter" placeholder="Ej: 2000017151998008" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px;width:220px"></label>
+            <button onclick="searchByOrderId()" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">Buscar orden</button>
           </div>
           <h4>Estados</h4>
           <div class="filter-row">
