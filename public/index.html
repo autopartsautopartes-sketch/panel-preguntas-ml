@@ -594,7 +594,12 @@
                       try {
                         const dd = new Date(m.date);
                         if (!isNaN(dd.getTime())) {
-                          dateStr = dd.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}) + ' ' + dd.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+                          const dy = dd.getDate().toString().padStart(2,'0');
+                          const mo = (dd.getMonth()+1).toString().padStart(2,'0');
+                          const yr = dd.getFullYear().toString().slice(2);
+                          const hh = dd.getHours().toString().padStart(2,'0');
+                          const mm = dd.getMinutes().toString().padStart(2,'0');
+                          dateStr = dy+'/'+mo+'/'+yr+' '+hh+':'+mm+' hs';
                         }
                       } catch(e) {}
                     }
@@ -730,21 +735,29 @@
         html += `<p style="color:#999;font-size:13px;margin-bottom:12px">${sales.length} venta${sales.length !== 1 ? 's' : ''}</p>`;
         for (const sale of sales) {
           const statusLabel = STATUS_LABELS[sale.status] || sale.status;
-          const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'MERCADO ENVÍOS' : sale.shipping_type === 'agreement' ? 'ACORDAR' : sale.shipping_type.toUpperCase();
-          const saleDate = new Date(sale.date_created);
-          const dateStr = saleDate.toLocaleDateString('es-AR', {day:'2-digit',month:'short'}) + ' ' + saleDate.toLocaleTimeString('es-AR', {hour:'2-digit',minute:'2-digit'});
-          const reputationText = sale.affects_reputation ? '' : '<span style="color:#27ae60;font-size:12px">No afecta tu reputación</span>';
+          const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'PUNTO DESPACHO' : sale.shipping_type === 'agreement' ? 'ACORDAR' : sale.shipping_type.toUpperCase();
+          const dateStr = formatSaleDate(sale.date_created);
+          const reputationText = sale.affects_reputation ? '' : '<span style="color:#27ae60;font-size:11px;margin-left:8px">No afecta tu reputación</span>';
+          const saleKey = sale.pack_id || sale.order_id;
+          const orderId = sale.pack_id ? sale.pack_id : sale.order_id;
+          const totalItems = sale.items.reduce((sum, i) => sum + i.quantity, 0);
+          const isPackage = sale.items.length > 1;
 
           html += `
             <div class="sale-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <span class="card-account">${sale.account_name}</span>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font-size:13px;color:#333;font-weight:600">${sale.buyer_name}</span>
+                </div>
+              </div>
               <div class="sale-header">
                 <span class="sale-status ${sale.status}">${statusLabel}</span>
-                <span class="order-id">#${sale.order_id}</span>
+                <span class="order-id">#${orderId}</span>
                 <span class="sale-date">${dateStr}</span>
                 ${reputationText}
                 <span class="shipping-badge ${sale.shipping_type}">${shippingLabel}</span>
-                <span style="margin-left:auto;font-size:12px;color:#3483fa;font-weight:600">${sale.account_name}</span>
-                <span style="font-size:12px;color:#666">${sale.buyer_name}</span>
+                ${isPackage ? '<span style="font-size:12px;color:#666;font-weight:600">Paquete de ' + totalItems + ' productos</span>' : ''}
               </div>
               ${sale.items.map(item => `
                 <div class="sale-item">
@@ -762,15 +775,17 @@
                   </div>
                 </div>
               `).join('')}
-              <div class="sale-actions">
-                ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
-                <button onclick="openSaleMessages(${sale.order_id}, ${sale.account_id})">💬 Mensajes</button>
-                <button onclick="openSaleQuestions('${sale.items[0]?.id || ''}')">❓ Preguntas</button>
-                <button onclick="toggleNotes('notes-${sale.order_id}')">📝 Notas</button>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">
+                <div class="sale-actions" style="margin-top:0">
+                  ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
+                  <button onclick="openSaleMessages(${sale.order_ids ? sale.order_ids[0] : sale.order_id}, ${sale.account_id})">💬 Mensajes</button>
+                  <button onclick="openSaleQuestions('${sale.items[0]?.id || ''}')">❓ Preguntas</button>
+                </div>
+                <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
-              <div class="sale-notes" id="notes-${sale.order_id}" style="display:${sale.notes ? 'block' : 'none'}">
-                <textarea placeholder="Agregar nota..." onblur="saveNote(${sale.order_id}, this.value)">${sale.notes || ''}</textarea>
-                <div class="notes-saved" id="notes-saved-${sale.order_id}">✓ Nota guardada</div>
+              <div class="sale-notes" style="margin-top:8px">
+                <textarea placeholder="Agregar nota..." oninput="saveNote('${saleKey}', this.value)">${sale.notes || ''}</textarea>
+                <div class="notes-saved" id="notes-saved-${saleKey}">✓ Nota guardada</div>
               </div>
             </div>
           `;
@@ -812,28 +827,20 @@
     showSection('questions');
   }
 
-  function toggleNotes(id) {
-    const el = document.getElementById(id);
-    if (el) {
-      el.style.display = el.style.display === 'none' ? 'block' : 'none';
-      if (el.style.display === 'block') el.querySelector('textarea').focus();
-    }
-  }
-
   let noteTimeout = null;
-  async function saveNote(orderId, text) {
+  async function saveNote(saleKey, text) {
     clearTimeout(noteTimeout);
     noteTimeout = setTimeout(async () => {
       try {
         await fetch('/api/sales/notes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ order_id: orderId, notes: text })
+          body: JSON.stringify({ sale_key: saleKey, notes: text })
         });
-        const saved = document.getElementById('notes-saved-' + orderId);
+        const saved = document.getElementById('notes-saved-' + saleKey);
         if (saved) { saved.style.display = 'block'; setTimeout(() => saved.style.display = 'none', 2000); }
       } catch (e) {}
-    }, 500);
+    }, 800);
   }
 
   // ==================== ACCOUNTS SECTION ====================
@@ -1001,13 +1008,32 @@
     if (diff < 60000) return 'Hace un momento';
     if (diff < 3600000) return `Hace ${Math.floor(diff / 60000)} min`;
     if (diff < 86400000) return `Hace ${Math.floor(diff / 3600000)} hs`;
-    return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const day = d.getDate().toString().padStart(2,'0');
+    const mon = d.toLocaleDateString('es-AR',{month:'short'});
+    const h = d.getHours().toString().padStart(2,'0');
+    const m = d.getMinutes().toString().padStart(2,'0');
+    return `${day} ${mon} ${h}:${m} hs`;
   }
 
   function formatDateTime(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
-    return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+    const day = d.getDate().toString().padStart(2,'0');
+    const mon = (d.getMonth()+1).toString().padStart(2,'0');
+    const yr = d.getFullYear().toString().slice(2);
+    const h = d.getHours().toString().padStart(2,'0');
+    const m = d.getMinutes().toString().padStart(2,'0');
+    return `${day}/${mon}/${yr} ${h}:${m} hs`;
+  }
+
+  function formatSaleDate(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    const day = d.getDate().toString().padStart(2,'0');
+    const mon = d.toLocaleDateString('es-AR',{month:'short'});
+    const h = d.getHours().toString().padStart(2,'0');
+    const m = d.getMinutes().toString().padStart(2,'0');
+    return `${day} ${mon} ${h}:${m} hs`;
   }
 
   function showToast(msg, type = 'success') {
