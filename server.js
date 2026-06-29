@@ -1072,6 +1072,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Panel de preguntas corriendo en ${BASE_URL}`);
+  console.log(`AUTOCHAP VENTAS corriendo en ${BASE_URL}`);
   console.log(`Puerto: ${PORT}`);
 });
