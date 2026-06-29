@@ -255,7 +255,9 @@ route('GET', '/auth/mercadolibre', async (req, res) => {
   const authUrl = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${ML_CLIENT_ID}&redirect_uri=${encodeURIComponent(BASE_URL + '/callback')}`;
   res.writeHead(302, { Location: authUrl });
   res.end();
-});route('GET', '/callback', async (req, res) => {
+});
+
+route('GET', '/callback', async (req, res) => {
   const url = new URL(req.url, `http://localhost`);
   const code = url.searchParams.get('code');
   if (!code) { res.writeHead(302, { Location: '/?error=no_code' }); return res.end(); }
@@ -301,9 +303,7 @@ route('GET', '/auth/mercadolibre', async (req, res) => {
     res.writeHead(302, { Location: '/?error=oauth_failed' });
     res.end();
   }
-});
-
-// QUESTIONS
+});// QUESTIONS
 route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -327,41 +327,60 @@ route('GET', '/api/questions', async (req, res) => {
 
       const itemIds = [...new Set(questions.map(q => q.item_id))];
       const itemDetails = {};
-      for (const itemId of itemIds) {
-        try {
-      const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`);
-          let sku = itemData.seller_custom_field || '';
-          let mpn = '';
-          if (itemData.attributes) {
-            if (!sku) {
-              const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
-              if (skuAttr) sku = skuAttr.value_name || '';
-            }
-            const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
-            if (mpnAttr) mpn = mpnAttr.value_name || '';
-          }
-          // Determine listing type label
-          let listingType = '';
-          const lt = itemData.listing_type_id || '';
-          if (lt === 'gold_special' || lt === 'gold_pro') listingType = 'Premium';
-          else if (lt === 'gold') listingType = 'Clásica';
-          else if (lt === 'free') listingType = 'Gratis';
-          else if (lt) listingType = lt;
 
-          itemDetails[itemId] = {
-            title: itemData.title,
-            thumbnail: itemData.thumbnail,
-            permalink: itemData.permalink,
-            price: itemData.price,
-            currency: itemData.currency_id || 'ARS',
-            sku: sku,
-            mpn: mpn,
-            available_quantity: itemData.available_quantity || 0,
-            listing_type: listingType,
-            publication_id: itemData.id || itemId
-          };
-        } catch (e){console.error(`Error fetching item ${itemId}:`, e.response?.data || e.message || e);
-          itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
+      // Fetch items in batches of 20 using multiget
+      for (let i = 0; i < itemIds.length; i += 20) {
+        const batch = itemIds.slice(i, i + 20);
+        try {
+          const multiRes = await fetch(`https://api.mercadolibre.com/items?ids=${batch.join(',')}`);
+          const multiData = await multiRes.json();
+
+          for (const entry of multiData) {
+            if (entry.code !== 200 || !entry.body) {
+              console.error(`Error fetching item ${entry.id || 'unknown'}:`, entry);
+              const failId = entry.id || batch[multiData.indexOf(entry)];
+              if (failId) itemDetails[failId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: failId };
+              continue;
+            }
+            const itemData = entry.body;
+            const itemId = itemData.id;
+
+            let sku = itemData.seller_custom_field || '';
+            let mpn = '';
+            if (itemData.attributes) {
+              if (!sku) {
+                const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
+                if (skuAttr) sku = skuAttr.value_name || '';
+              }
+              const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
+              if (mpnAttr) mpn = mpnAttr.value_name || '';
+            }
+
+            let listingType = '';
+            const lt = itemData.listing_type_id || '';
+            if (lt === 'gold_special' || lt === 'gold_pro') listingType = 'Premium';
+            else if (lt === 'gold') listingType = 'Clasica';
+            else if (lt === 'free') listingType = 'Gratis';
+            else if (lt) listingType = lt;
+
+            itemDetails[itemId] = {
+              title: itemData.title,
+              thumbnail: itemData.thumbnail,
+              permalink: itemData.permalink,
+              price: itemData.price,
+              currency: itemData.currency_id || 'ARS',
+              sku: sku,
+              mpn: mpn,
+              available_quantity: itemData.available_quantity || 0,
+              listing_type: listingType,
+              publication_id: itemData.id || itemId
+            };
+          }
+        } catch (e) {
+          console.error('Error fetching items batch:', e.message || e);
+          for (const id of batch) {
+            if (!itemDetails[id]) itemDetails[id] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: id };
+          }
         }
       }
 
@@ -398,7 +417,7 @@ route('POST', '/api/questions/answer', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
 
   const token = await getValidToken(account);
-  if (!token) return sendJSON(res, 500, { error: 'Token inválido' });
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
 
   try {
     await mlPost('https://api.mercadolibre.com/answers', { question_id: parseInt(question_id), text }, token);
@@ -467,7 +486,7 @@ route('POST', '/api/messages/reply', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
 
   const token = await getValidToken(account);
-  if (!token) return sendJSON(res, 500, { error: 'Token inválido' });
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
 
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
@@ -544,7 +563,6 @@ function serveStatic(req, res) {
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      // Serve index.html for SPA routes
       fs.readFile(path.join(__dirname, 'public', 'index.html'), (err2, data2) => {
         if (err2) { res.writeHead(404); return res.end('Not found'); }
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -564,7 +582,6 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   const method = req.method;
 
-  // Match route
   const routeKey = `${method}:${pathname}`;
   if (routes[routeKey]) {
     try {
@@ -576,7 +593,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Static files
   if (method === 'GET') {
     serveStatic(req, res);
     return;
