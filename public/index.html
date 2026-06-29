@@ -1040,47 +1040,47 @@
   }
 
   async function fetchSalesNotes(sales) {
-    const orders = sales.map(s => ({
-      order_ids: s.order_ids || [s.order_id],
-      account_id: s.account_id
-    }));
+    // Use the working GET debug endpoint per sale (batch POST doesn't work)
+    for (const s of sales) {
+      const firstOrderId = s.order_ids ? s.order_ids[0] : s.order_id;
+      const noteTextEl = document.getElementById('note-text-' + firstOrderId);
+      const container = document.getElementById('sale-notes-' + firstOrderId);
+      if (!noteTextEl || !container) continue;
 
-    try {
-      const res = await fetch('/api/sales/notes/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orders })
-      });
-      const notesMap = await res.json();
+      const accountId = s.account_id;
+      // Try each order_id until we find one with notes
+      const orderIds = s.order_ids || [s.order_id];
+      let foundNote = false;
 
-      for (const s of sales) {
-        const firstOrderId = s.order_ids ? s.order_ids[0] : s.order_id;
-        const noteTextEl = document.getElementById('note-text-' + firstOrderId);
-        const container = document.getElementById('sale-notes-' + firstOrderId);
-        if (!noteTextEl || !container) continue;
-
-        const noteData = notesMap[firstOrderId];
-        if (noteData && noteData.notes) {
-          noteTextEl.textContent = noteData.notes;
-          noteTextEl.style.color = '#333';
-          container.dataset.noteId = noteData.note_id || '';
-          container.dataset.noteOrderId = noteData.note_order_id || firstOrderId;
-          // Show edit/delete buttons, hide add button
-          const btnEdit = document.getElementById('btn-edit-' + firstOrderId);
-          const btnDel = document.getElementById('btn-del-' + firstOrderId);
-          if (btnEdit) btnEdit.style.display = 'flex';
-          if (btnDel) btnDel.style.display = 'flex';
-        } else {
-          noteTextEl.textContent = 'Sin notas';
-          noteTextEl.style.color = '#bbb';
+      for (const oid of orderIds) {
+        try {
+          const res = await fetch('/api/sales/debug-notes?order_id=' + oid + '&account_id=' + accountId);
+          const data = await res.json();
+          if (data.ml_status === 200 && data.ml_raw_response) {
+            const mlData = JSON.parse(data.ml_raw_response);
+            if (mlData.results && mlData.results.length > 0) {
+              const note = mlData.results[0];
+              noteTextEl.textContent = note.note;
+              noteTextEl.style.color = '#333';
+              container.dataset.noteId = note.id || '';
+              container.dataset.noteOrderId = oid;
+              const btnEdit = document.getElementById('btn-edit-' + firstOrderId);
+              const btnDel = document.getElementById('btn-del-' + firstOrderId);
+              if (btnEdit) btnEdit.style.display = 'flex';
+              if (btnDel) btnDel.style.display = 'flex';
+              foundNote = true;
+              break;
+            }
+          }
+        } catch (e) {
+          console.error('Error fetching note for order', oid, e);
         }
       }
-    } catch (e) {
-      console.error('Error fetching notes batch:', e);
-      document.querySelectorAll('[id^="note-text-"]').forEach(el => {
-        el.textContent = 'Sin notas';
-        el.style.color = '#bbb';
-      });
+
+      if (!foundNote) {
+        noteTextEl.textContent = 'Sin notas';
+        noteTextEl.style.color = '#bbb';
+      }
     }
   }
 
