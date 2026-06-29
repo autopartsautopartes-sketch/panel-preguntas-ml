@@ -516,9 +516,12 @@ route('GET', '/api/messages', async (req, res) => {
           const messages = msgData.messages || [];
           if (messages.length === 0) continue;
 
+          // Debug: log first message structure to find date field
+          if (messages[0]) console.log('MSG STRUCTURE:', JSON.stringify(Object.keys(messages[0])), 'date fields:', JSON.stringify({ date: messages[0].date, date_created: messages[0].date_created, created_at: messages[0].created_at, date_received: messages[0].date_received, message_date: messages[0].message_date }));
+
           const mappedMessages = messages.map(m => ({
             id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
-            text: m.text || m.plain?.content || '', date: m.date_created || m.date
+            text: m.text || m.plain?.content || '', date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || ''
           }));
 
           // Determine if last message is from buyer (unread) or seller (answered)
