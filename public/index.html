@@ -385,6 +385,18 @@
 </div>
 
 <script>
+  // Escape untrusted text before inserting into innerHTML (prevents XSS from
+  // buyer/comprador data coming from MercadoLibre - names, messages, questions)
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   let currentSection = 'dashboard';
   let currentUser = null;
   let accounts = [];
@@ -668,7 +680,7 @@
           html += `
             <div class="card">
               <div class="card-header">
-                <span class="card-account">${q.account_name}</span>
+                <span class="card-account">${escapeHtml(q.account_name)}</span>
                 <span class="card-date">${formatDate(q.date_created)}</span>
               </div>
               <div class="card-item">
@@ -676,7 +688,7 @@
                 <div class="card-item-title" style="flex:1">
                   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                     ${q.item_listing_type ? `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;color:white;background:${q.item_listing_type === 'Premium' ? '#f5a623' : q.item_listing_type === 'Gratis' ? '#27ae60' : '#3483fa'}">${q.item_listing_type}</span>` : ''}
-                    ${q.item_permalink ? `<a href="${q.item_permalink}" target="_blank" style="font-size:14px">${q.item_title || 'Ver producto'}</a>` : (q.item_title || 'Producto no disponible')}
+                    ${q.item_permalink ? `<a href="${escapeHtml(q.item_permalink)}" target="_blank" style="font-size:14px">${escapeHtml(q.item_title || 'Ver producto')}</a>` : escapeHtml(q.item_title || 'Producto no disponible')}
                   </div>
                   ${q.item_price ? `<div style="font-weight:700;color:#2d3277;font-size:16px;margin-top:4px">$ ${Number(q.item_price).toLocaleString('es-AR')}${q.item_available_quantity ? ` <span style="font-weight:400;font-size:13px;color:#666">x ${q.item_available_quantity} disponibles</span>` : ''}</div>` : ''}
                   <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
@@ -686,8 +698,8 @@
                   </div>
                 </div>
               </div>
-              <div class="card-question">${q.text}</div>
-              ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${q.answer.text}</div>` : `
+              <div class="card-question">${escapeHtml(q.text)}</div>
+              ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   <textarea id="reply-${q.id}" placeholder="Escribí tu respuesta..."></textarea>
                   <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
@@ -759,7 +771,7 @@
       return;
     }
     list.innerHTML = quickRepliesData.map((r, i) =>
-      `<button class="qr-btn" onclick="insertQuickReply(${i})" title="${r.text}">${r.label}</button>`
+      `<button class="qr-btn" onclick="insertQuickReply(${i})" title="${escapeHtml(r.text)}">${escapeHtml(r.label)}</button>`
     ).join('');
   }
 
@@ -807,7 +819,7 @@
         <div style="background:white;border-radius:8px;padding:6px;border:1px solid #ddd">
           <input type="text" value="${r.label.replace(/"/g, '&quot;')}" placeholder="Nombre" id="qr-label-${i}"
             style="width:100%;border:1px solid #ddd;border-radius:4px;padding:4px 6px;font-size:11px;margin-bottom:4px;box-sizing:border-box">
-          <textarea id="qr-text-${i}" placeholder="Texto de respuesta" style="width:100%;border:1px solid #ddd;border-radius:4px;padding:4px 6px;font-size:11px;resize:vertical;min-height:40px;box-sizing:border-box">${r.text}</textarea>
+          <textarea id="qr-text-${i}" placeholder="Texto de respuesta" style="width:100%;border:1px solid #ddd;border-radius:4px;padding:4px 6px;font-size:11px;resize:vertical;min-height:40px;box-sizing:border-box">${escapeHtml(r.text)}</textarea>
           <button onclick="removeQuickReply(${i})" style="background:#e74c3c;color:white;border:none;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;margin-top:2px">Eliminar</button>
         </div>`;
     }
@@ -887,11 +899,11 @@
           html += `
             <div class="card">
               <div class="card-header">
-                <span class="card-account">${conv.account_name}</span>
-                <span class="card-date">Comprador: ${conv.buyer_name}</span>
+                <span class="card-account">${escapeHtml(conv.account_name)}</span>
+                <span class="card-date">Comprador: ${escapeHtml(conv.buyer_name)}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${conv.item_title} &nbsp; <a href="/?section=sales&order_id=${conv.order_id}&account_id=${conv.account_id}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${conv.order_id}</a>
+                📦 ${escapeHtml(conv.item_title)} &nbsp; <a href="/?section=sales&order_id=${encodeURIComponent(conv.order_id)}&account_id=${encodeURIComponent(conv.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${escapeHtml(conv.order_id)}</a>
               </div>
               <div class="msg-conversation">
                 ${(function(){
@@ -913,7 +925,7 @@
                         }
                       } catch(e) {}
                     }
-                    return '<div class="msg-bubble ' + m.from + '">' + (m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
+                    return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
                   }).join('');
                 })()}
               </div>
@@ -987,11 +999,11 @@
           html += `
             <div class="card">
               <div class="card-header">
-                <span class="card-account">${conv.account_name}</span>
-                <span class="card-date">Comprador: ${conv.buyer_name}</span>
+                <span class="card-account">${escapeHtml(conv.account_name)}</span>
+                <span class="card-date">Comprador: ${escapeHtml(conv.buyer_name)}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${conv.item_title} &nbsp; <a href="/?section=sales&order_id=${conv.order_id}&account_id=${conv.account_id}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${conv.order_id}</a>
+                📦 ${escapeHtml(conv.item_title)} &nbsp; <a href="/?section=sales&order_id=${encodeURIComponent(conv.order_id)}&account_id=${encodeURIComponent(conv.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${escapeHtml(conv.order_id)}</a>
               </div>
               <div class="msg-conversation">
                 ${(function(){
@@ -1012,7 +1024,7 @@
                         }
                       } catch(e) {}
                     }
-                    return '<div class="msg-bubble ' + m.from + '">' + (m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
+                    return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
                   }).join('');
                 })()}
               </div>
@@ -1052,19 +1064,19 @@
           html += `
             <div class="card">
               <div class="card-header">
-                <span class="card-account">${q.account_name}</span>
+                <span class="card-account">${escapeHtml(q.account_name)}</span>
                 <span class="card-date">${formatDate(q.date_created)}</span>
               </div>
               <div class="card-item">
                 ${q.item_thumbnail ? `<img src="${q.item_thumbnail}" alt="">` : ''}
                 <div class="card-item-title" style="flex:1">
                   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                    ${q.item_permalink ? `<a href="${q.item_permalink}" target="_blank" style="font-size:14px">${q.item_title || 'Ver producto'}</a>` : (q.item_title || 'Producto no disponible')}
+                    ${q.item_permalink ? `<a href="${escapeHtml(q.item_permalink)}" target="_blank" style="font-size:14px">${escapeHtml(q.item_title || 'Ver producto')}</a>` : escapeHtml(q.item_title || 'Producto no disponible')}
                   </div>
                 </div>
               </div>
-              <div class="card-question">${q.text}</div>
-              ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${q.answer.text}</div>` : `
+              <div class="card-question">${escapeHtml(q.text)}</div>
+              ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   <textarea id="reply-${q.id}" placeholder="Escribí tu respuesta..."></textarea>
                   <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
@@ -1277,9 +1289,9 @@
           fullHtml += `
             <div class="sale-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <span class="card-account">${sale.account_name}</span>
+                <span class="card-account">${escapeHtml(sale.account_name)}</span>
                 <div style="display:flex;align-items:center;gap:8px">
-                  <span style="font-size:13px;color:#333;font-weight:600">${sale.buyer_name}</span>
+                  <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(sale.buyer_name)}</span>
                 </div>
               </div>
               <div class="sale-header">
@@ -1294,7 +1306,7 @@
                 <div class="sale-item">
                   ${item.thumbnail ? `<img src="${item.thumbnail}" alt="">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
                   <div class="sale-item-info">
-                    <div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:#3483fa;text-decoration:none">${item.title}</a></div>
+                    <div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/${encodeURIComponent(item.id)}" target="_blank" style="color:#3483fa;text-decoration:none">${escapeHtml(item.title)}</a></div>
                     <div class="sale-item-meta">
                       $ ${Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2})}
                       &nbsp;&middot;&nbsp; ${item.quantity} unidad${item.quantity !== 1 ? 'es' : ''}
@@ -1371,7 +1383,7 @@
             itemsHtml += '<div class="sale-item">';
             itemsHtml += item.thumbnail ? '<img src="' + item.thumbnail + '" alt="">' : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>';
             itemsHtml += '<div class="sale-item-info">';
-            itemsHtml += '<div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/' + item.id + '" target="_blank" style="color:#3483fa;text-decoration:none">' + item.title + '</a></div>';
+            itemsHtml += '<div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/' + encodeURIComponent(item.id) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
             itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
             itemsHtml += ' &middot; ' + item.quantity + ' unidad' + (item.quantity !== 1 ? 'es' : '');
             if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku;
@@ -1380,8 +1392,8 @@
 
           html += '<div class="sale-card">';
           html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
-          html += '<span class="card-account">' + sale.account_name + '</span>';
-          html += '<span style="font-size:13px;color:#333;font-weight:600">' + sale.buyer_name + '</span></div>';
+          html += '<span class="card-account">' + escapeHtml(sale.account_name) + '</span>';
+          html += '<span style="font-size:13px;color:#333;font-weight:600">' + escapeHtml(sale.buyer_name) + '</span></div>';
           html += '<div class="sale-header">';
           html += '<span class="sale-status ' + sale.status + '">' + statusLabel + '</span>';
           html += '<span class="order-id">#' + saleOrderId + '</span>';
