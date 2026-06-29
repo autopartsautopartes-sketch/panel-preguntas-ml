@@ -864,6 +864,40 @@ route('GET', '/api/sales/debug-notes', async (req, res) => {
   }
 });
 
+// GET NOTE for a single order (clean endpoint for frontend)
+route('GET', '/api/sales/note', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const url = new URL(req.url, 'http://localhost');
+  const orderId = url.searchParams.get('order_id');
+  const accountId = url.searchParams.get('account_id');
+  if (!orderId || !accountId) return sendJSON(res, 400, { error: 'Faltan parametros' });
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+
+  try {
+    const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (noteRes.status !== 200) {
+      return sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
+    }
+    const noteData = await noteRes.json();
+    if (noteData.results && noteData.results.length > 0) {
+      const n = noteData.results[0];
+      return sendJSON(res, 200, { order_id: orderId, note: n.note, note_id: n.id });
+    }
+    sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
+  } catch (e) {
+    console.error('Error fetching note for order', orderId, e.message);
+    sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
+  }
+});
+
 // SHIPPING LABEL URL
 route('GET', '/api/sales/label', async (req, res) => {
   const sess = requireAuth(req);
