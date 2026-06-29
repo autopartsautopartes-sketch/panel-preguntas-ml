@@ -594,7 +594,8 @@ route('GET', '/api/messages', async (req, res) => {
             text: m.text || m.plain?.content || '', date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || ''
           }));
 
-          const lastMsg = mappedMessages[mappedMessages.length - 1];
+          // ML returns messages newest first, so [0] is the most recent message
+          const lastMsg = mappedMessages[0];
           const isUnread = lastMsg.from === 'buyer';
 
           if (!buyerFilter && !orderFilter) {
