@@ -522,12 +522,19 @@
                 📦 ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
               </div>
               <div class="msg-conversation">
-                ${[...conv.messages].sort((a,b) => new Date(a.date) - new Date(b.date)).map(m => `
-                  <div class="msg-bubble ${m.from}">
-                    ${m.text}
-                    <div class="msg-date">${formatDateTime(m.date)}</div>
-                  </div>
-                `).join('')}
+                ${(function(){
+                  const sorted = [...conv.messages].sort((a,b) => new Date(a.date) - new Date(b.date));
+                  return sorted.map(m => {
+                    let dateStr = '';
+                    try {
+                      if (m.date) {
+                        const dd = new Date(m.date);
+                        dateStr = dd.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit'}) + ' ' + dd.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+                      }
+                    } catch(e) { dateStr = ''; }
+                    return '<div class="msg-bubble ' + m.from + '">' + (m.text||'') + '<div class="msg-date">' + dateStr + '</div></div>';
+                  }).join('');
+                })()}
               </div>
               <div class="reply-box">
                 <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
