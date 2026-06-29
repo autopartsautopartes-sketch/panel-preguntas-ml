@@ -467,12 +467,17 @@
       });
       if (res.ok) {
         showToast('Respuesta enviada', 'success');
+        // Clear textarea before reloading so isUserTyping() doesn't block
+        textarea.value = '';
+        textarea.blur();
         loadQuestions();
       } else {
         const data = await res.json();
         showToast(data.error || 'Error al responder', 'error');
-        btn.disabled = false;
-        btn.textContent = 'Responder';
+        // If question was already answered, reload to remove it from list
+        textarea.value = '';
+        textarea.blur();
+        loadQuestions();
       }
     } catch (e) {
       showToast('Error de conexión', 'error');
