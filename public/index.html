@@ -188,7 +188,7 @@
 <!-- APP -->
 <div class="app" id="app">
   <div class="header">
-    <h1>Panel de Preguntas</h1>
+    <h1>📋 Panel de Preguntas</h1>
     <div class="header-right">
       <span id="currentUser"></span>
       <button onclick="doLogout()">Salir</button>
@@ -197,27 +197,30 @@
   <div class="main">
     <nav class="sidebar">
       <a class="active" onclick="showSection('dashboard')" id="nav-dashboard">
-        <span>Dashboard</span>
+        <span>📊 Dashboard</span>
       </a>
       <a onclick="showSection('questions')" id="nav-questions">
-        <span>Preguntas</span>
+        <span>❓ Preguntas</span>
         <span class="badge" id="badge-unanswered" style="display:none">0</span>
       </a>
       <a onclick="showSection('messages')" id="nav-messages">
-        <span>Mensajes</span>
+        <span>💬 Mensajes</span>
       </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts">
-        <span>Cuentas ML</span>
+        <span>🏪 Cuentas ML</span>
       </a>
       <a onclick="showSection('users')" id="nav-users" style="display:none">
-        <span>Usuarios</span>
+        <span>👥 Usuarios</span>
       </a>
     </nav>
     <div class="content" id="content">
+      <!-- Dynamic content loads here -->
     </div>
   </div>
-</div><script>
+</div>
+
+<script>
   let currentSection = 'dashboard';
   let currentUser = null;
   let accounts = [];
@@ -387,7 +390,7 @@
       `;
 
       if (questions.length === 0) {
-        html += `<div class="empty"><p>${questionStatus === 'UNANSWERED' ? 'No hay preguntas pendientes!' : 'No hay preguntas respondidas'}</p></div>`;
+        html += `<div class="empty"><p>${questionStatus === 'UNANSWERED' ? '¡No hay preguntas pendientes!' : 'No hay preguntas respondidas'}</p></div>`;
       } else {
         for (const q of questions) {
           html += `
@@ -405,16 +408,16 @@
                   </div>
                   ${q.item_price ? `<div style="font-weight:700;color:#2d3277;font-size:16px;margin-top:4px">$ ${Number(q.item_price).toLocaleString('es-AR')}${q.item_available_quantity ? ` <span style="font-weight:400;font-size:13px;color:#666">x ${q.item_available_quantity} disponibles</span>` : ''}</div>` : ''}
                   <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
-                    ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicacion #${q.item_publication_id.replace('MLA','')}</span>` : ''}
+                    ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicación #${q.item_publication_id.replace('MLA','')}</span>` : ''}
                     ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${q.item_sku}</span>` : ''}
-                    ${q.item_mpn ? `<span style="font-size:12px;color:#999">Codigo: ${q.item_mpn}</span>` : ''}
+                    ${q.item_mpn ? `<span style="font-size:12px;color:#999">Código: ${q.item_mpn}</span>` : ''}
                   </div>
                 </div>
               </div>
               <div class="card-question">${q.text}</div>
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${q.answer.text}</div>` : `
                 <div class="reply-box">
-                  <textarea id="reply-${q.id}" placeholder="Escribi tu respuesta..."></textarea>
+                  <textarea id="reply-${q.id}" placeholder="Escribí tu respuesta..."></textarea>
                   <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
                 </div>
               `}
@@ -453,7 +456,7 @@
         btn.textContent = 'Responder';
       }
     } catch (e) {
-      showToast('Error de conexion', 'error');
+      showToast('Error de conexión', 'error');
       btn.disabled = false;
       btn.textContent = 'Responder';
     }
@@ -485,7 +488,7 @@
                 <span class="card-date">Comprador: ${conv.buyer_name}</span>
               </div>
               <div class="card-item-title" style="margin-bottom:12px">
-                ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
+                📦 ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
               </div>
               <div class="msg-conversation">
                 ${conv.messages.map(m => `
@@ -496,7 +499,7 @@
                 `).join('')}
               </div>
               <div class="reply-box">
-                <textarea id="msg-${conv.order_id}" placeholder="Escribi tu mensaje..."></textarea>
+                <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
                 <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
               </div>
             </div>
@@ -534,7 +537,7 @@
         btn.textContent = 'Enviar';
       }
     } catch (e) {
-      showToast('Error de conexion', 'error');
+      showToast('Error de conexión', 'error');
       btn.disabled = false;
       btn.textContent = 'Enviar';
     }
@@ -550,7 +553,7 @@
         <input type="text" id="accountName" placeholder="Nombre de la cuenta (ej: Tienda 1)" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;flex:1;max-width:300px">
         <button class="btn-success" onclick="addAccount()">+ Agregar cuenta</button>
       </div>
-      <p style="color:#999;font-size:13px;margin-bottom:20px">Al agregar una cuenta se abrira MercadoLibre para que autorices el acceso. Inicia sesion con la cuenta que queres conectar.</p>
+      <p style="color:#999;font-size:13px;margin-bottom:20px">Al agregar una cuenta se abrirá MercadoLibre para que autorices el acceso. Iniciá sesión con la cuenta que querés conectar.</p>
     `;
 
     if (accounts.length === 0) {
@@ -585,7 +588,7 @@
   }
 
   async function removeAccount(id) {
-    if (!confirm('Seguro que queres eliminar esta cuenta?')) return;
+    if (!confirm('¿Seguro que querés eliminar esta cuenta?')) return;
     try {
       await fetch('/api/accounts/delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       showToast('Cuenta eliminada', 'success');
@@ -603,10 +606,10 @@
       const users = await res.json();
 
       let html = `
-        <h2 style="margin-bottom:20px;color:#2d3277">Gestion de Usuarios</h2>
+        <h2 style="margin-bottom:20px;color:#2d3277">Gestión de Usuarios</h2>
         <div class="user-form">
           <input type="text" id="newUsername" placeholder="Nombre de usuario">
-          <input type="password" id="newPassword" placeholder="Contrasena">
+          <input type="password" id="newPassword" placeholder="Contraseña">
           <button class="btn-success" onclick="addUser()">Crear usuario</button>
         </div>
       `;
@@ -631,7 +634,7 @@
   async function addUser() {
     const username = document.getElementById('newUsername').value.trim();
     const password = document.getElementById('newPassword').value;
-    if (!username || !password) return showToast('Completa usuario y contrasena', 'error');
+    if (!username || !password) return showToast('Completá usuario y contraseña', 'error');
 
     try {
       const res = await fetch('/api/users', {
@@ -647,12 +650,12 @@
         showToast(data.error || 'Error al crear usuario', 'error');
       }
     } catch (e) {
-      showToast('Error de conexion', 'error');
+      showToast('Error de conexión', 'error');
     }
   }
 
   async function removeUser(id) {
-    if (!confirm('Seguro que queres eliminar este usuario?')) return;
+    if (!confirm('¿Seguro que querés eliminar este usuario?')) return;
     try {
       await fetch('/api/users/delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       showToast('Usuario eliminado', 'success');
