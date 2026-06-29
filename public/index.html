@@ -519,10 +519,10 @@
                 📦 ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
               </div>
               <div class="msg-conversation">
-                ${conv.messages.map(m => `
+                ${[...conv.messages].sort((a,b) => new Date(a.date) - new Date(b.date)).map(m => `
                   <div class="msg-bubble ${m.from}">
                     ${m.text}
-                    <div class="msg-date">${formatDate(m.date)}</div>
+                    <div class="msg-date">${formatDateTime(m.date)}</div>
                   </div>
                 `).join('')}
               </div>
@@ -737,6 +737,12 @@
     if (diff < 3600000) return `Hace ${Math.floor(diff / 60000)} min`;
     if (diff < 86400000) return `Hace ${Math.floor(diff / 3600000)} hs`;
     return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function formatDateTime(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' + d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
   }
 
   function showToast(msg, type = 'success') {
