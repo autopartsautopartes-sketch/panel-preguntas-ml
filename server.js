@@ -330,14 +330,42 @@ route('GET', '/api/questions', async (req, res) => {
       const itemIds = [...new Set(questions.map(q => q.item_id))];
       const itemDetails = {};
 
-      // Fetch items one by one using caller.id (no auth needed)
+      // Fetch items using OAuth token (own items)
       for (const itemId of itemIds) {
         try {
-          const itemRes = await fetch(`https://api.mercadolibre.com/items/${itemId}?caller.id=${account.seller_id}`, {
-            headers: { 'Accept': 'application/json' }
-          });
-          if (!itemRes.ok) throw new Error(`HTTP ${itemRes.status}`);
-          const itemData = await itemRes.json();
+          // Method 1: with OAuth token
+          let itemData = null;
+          try {
+            const itemRes1 = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+              headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+            });
+            if (itemRes1.ok) {
+              itemData = await itemRes1.json();
+            } else {
+              const errBody = await itemRes1.text();
+              console.log(`Item ${itemId} method1 failed (${itemRes1.status}): ${errBody.substring(0, 200)}`);
+            }
+          } catch (e1) {
+            console.log(`Item ${itemId} method1 error: ${e1.message}`);
+          }
+
+          // Method 2: public API with caller.id
+          if (!itemData) {
+            try {
+              const itemRes2 = await fetch(`https://api.mercadolibre.com/items/${itemId}?caller.id=${account.seller_id}`, {
+                headers: { 'Accept': 'application/json' }
+              });
+              if (itemRes2.ok) {
+                itemData = await itemRes2.json();
+              } else {
+                console.log(`Item ${itemId} method2 failed: HTTP ${itemRes2.status}`);
+              }
+            } catch (e2) {
+              console.log(`Item ${itemId} method2 error: ${e2.message}`);
+            }
+          }
+
+          if (!itemData) throw new Error('All methods failed');
 
           let sku = itemData.seller_custom_field || '';
           let mpn = '';
