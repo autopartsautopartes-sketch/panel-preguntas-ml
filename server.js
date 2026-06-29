@@ -642,9 +642,9 @@ route('POST', '/api/messages/reply', async (req, res) => {
 
     console.log('[MSG REPLY] pack:', packId, 'seller:', sellerId, 'buyer:', buyerId);
 
-    // ML messages API requires application_id param and x-client-id header
-    const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?application_id=${ML_CLIENT_ID}`;
-    console.log('[MSG REPLY] POST to:', msgUrl);
+    // ML messages POST requires access_token and application_id as QUERY PARAMS (not Bearer header)
+    const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?access_token=${token}&application_id=${ML_CLIENT_ID}`;
+    console.log('[MSG REPLY] POST to:', msgUrl.replace(token, 'TOKEN_HIDDEN'));
 
     const msgBody = {
       from: { user_id: String(sellerId), email: "test" },
@@ -656,8 +656,7 @@ route('POST', '/api/messages/reply', async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        'x-client-id': ML_CLIENT_ID
+        'cache-control': 'no-cache'
       },
       body: JSON.stringify(msgBody)
     });
