@@ -329,7 +329,7 @@ route('GET', '/api/questions', async (req, res) => {
       const itemDetails = {};
       for (const itemId of itemIds) {
         try {
-          const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token);
+      const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`);
           let sku = itemData.seller_custom_field || '';
           let mpn = '';
           if (itemData.attributes) {
