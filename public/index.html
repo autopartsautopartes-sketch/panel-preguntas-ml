@@ -914,12 +914,6 @@
       let sales = await res.json();
       salesLoaded = true;
 
-      // Debug: log notes received from server
-      for (const s of sales) {
-        const oid = s.order_ids ? s.order_ids[0] : s.order_id;
-        console.log('SALE NOTES DEBUG:', oid, 'notes="' + (s.notes||'') + '"', 'note_id=' + (s.note_id||'null'), 'note_order_id=' + (s.note_order_id||'null'));
-      }
-
       // Client-side time cut filter
       if (salesTimeCut) {
         const [cutH, cutM] = salesTimeCut.split(':').map(Number);
@@ -980,7 +974,7 @@
           const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
           const totalItems = sale.items.reduce((sum, i) => sum + i.quantity, 0);
           const isPackage = sale.items.length > 1;
-          const noteId = sale.note_id || '';
+          const orderIdsJson = JSON.stringify(sale.order_ids || [sale.order_id]).replace(/"/g, '&quot;');
 
           fullHtml += `
             <div class="sale-card">
@@ -1020,7 +1014,7 @@
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
               <div class="sale-notes" style="margin-top:8px">
-                <textarea id="note-${firstOrderId}" placeholder="Agregar nota..." data-order-id="${sale.note_order_id || firstOrderId}" data-account-id="${sale.account_id}" data-note-id="${noteId}" oninput="saveNoteML(this)">${sale.notes || ''}</textarea>
+                <textarea id="note-${firstOrderId}" placeholder="Cargando nota..." data-order-id="${firstOrderId}" data-account-id="${sale.account_id}" data-note-id="" data-order-ids="${orderIdsJson}" oninput="saveNoteML(this)" disabled style="background:#f8f9fa"></textarea>
                 <div class="notes-saved" id="notes-saved-${firstOrderId}">✓ Nota guardada en MercadoLibre</div>
               </div>
             </div>
@@ -1029,10 +1023,56 @@
       }
       content.innerHTML = fullHtml;
       if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
+
+      // Fetch notes from ML after sales are rendered
+      fetchSalesNotes(sales);
     } catch (e) {
       // Keep filters, show error below
       const loadingEl = content.querySelector('.loading');
       if (loadingEl) loadingEl.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
+    }
+  }
+
+  async function fetchSalesNotes(sales) {
+    // Build batch request
+    const orders = sales.map(s => ({
+      order_ids: s.order_ids || [s.order_id],
+      account_id: s.account_id
+    }));
+
+    try {
+      const res = await fetch('/api/sales/notes/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orders })
+      });
+      const notesMap = await res.json();
+
+      // Fill in each textarea
+      for (const s of sales) {
+        const firstOrderId = s.order_ids ? s.order_ids[0] : s.order_id;
+        const textarea = document.getElementById('note-' + firstOrderId);
+        if (!textarea) continue;
+
+        const noteData = notesMap[firstOrderId];
+        if (noteData && noteData.notes) {
+          textarea.value = noteData.notes;
+          textarea.dataset.noteId = noteData.note_id || '';
+          textarea.dataset.orderId = noteData.note_order_id || firstOrderId;
+        }
+        textarea.placeholder = 'Agregar nota...';
+        textarea.disabled = false;
+        textarea.style.background = '';
+      }
+    } catch (e) {
+      console.error('Error fetching notes batch:', e);
+      // Enable textareas anyway so user can still write notes
+      const textareas = document.querySelectorAll('.sale-notes textarea');
+      for (const ta of textareas) {
+        ta.placeholder = 'Agregar nota...';
+        ta.disabled = false;
+        ta.style.background = '';
+      }
     }
   }
 
