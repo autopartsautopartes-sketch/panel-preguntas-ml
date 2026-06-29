@@ -877,24 +877,31 @@ route('GET', '/api/sales/note', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
 
   const token = await getValidToken(account);
-  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+  if (!token) {
+    console.error('[NOTE] No valid token for account', accountId);
+    return sendJSON(res, 500, { error: 'Token invalido' });
+  }
 
   try {
+    console.log('[NOTE] Fetching ML notes for order', orderId, 'with token', token.substring(0, 10) + '...');
     const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
       headers: { Authorization: `Bearer ${token}` }
     });
+    const noteBody = await noteRes.text();
+    console.log('[NOTE] ML response for order', orderId, '- status:', noteRes.status, '- body:', noteBody.substring(0, 200));
+
     if (noteRes.status !== 200) {
-      return sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
+      return sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, ml_status: noteRes.status, ml_error: noteBody });
     }
-    const noteData = await noteRes.json();
+    const noteData = JSON.parse(noteBody);
     if (noteData.results && noteData.results.length > 0) {
       const n = noteData.results[0];
       return sendJSON(res, 200, { order_id: orderId, note: n.note, note_id: n.id });
     }
     sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
   } catch (e) {
-    console.error('Error fetching note for order', orderId, e.message);
-    sendJSON(res, 200, { order_id: orderId, note: null, note_id: null });
+    console.error('[NOTE] Error fetching note for order', orderId, e.message);
+    sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, error: e.message });
   }
 });
 
