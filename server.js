@@ -794,6 +794,12 @@ route('GET', '/api/sales', async (req, res) => {
     }
   }
 
+  // Debug: log notes found before sending response
+  for (const sale of allSales) {
+    const oid = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+    console.log(`FINAL SALE ${oid}: notes="${sale.notes}", note_id=${sale.note_id}, note_order_id=${sale.note_order_id}`);
+  }
+
   sendJSON(res, 200, allSales);
 });
 
