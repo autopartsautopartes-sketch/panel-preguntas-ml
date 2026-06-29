@@ -332,7 +332,7 @@ route('GET', '/api/questions', async (req, res) => {
       for (let i = 0; i < itemIds.length; i += 20) {
         const batch = itemIds.slice(i, i + 20);
         try {
-          const multiRes = await fetch(`https://api.mercadolibre.com/items?ids=${batch.join(',')}`);
+          const multiRes = await fetch(`https://api.mercadolibre.com/items?ids=${batch.join(',')}`, { headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' } });
           const multiData = await multiRes.json();
 
           for (const entry of multiData) {
