@@ -732,42 +732,65 @@ route('GET', '/api/sales', async (req, res) => {
   const allSales = [...Object.values(packMap), ...singles];
   allSales.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
 
-  // Fetch notes from ML API for each sale
+  // Fetch notes from ML API for each sale (try all order_ids for packs)
   for (const sale of allSales) {
-    const orderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+    const orderIds = sale.order_ids || [sale.order_id];
     const account = targets.find(a => a.id === sale.account_id) || targets[0];
-    if (!account) { sale.notes = ''; sale.note_id = null; continue; }
+    if (!account) { sale.notes = ''; sale.note_id = null; sale.note_order_id = null; continue; }
+
+    let foundNote = false;
     try {
       const token = await getValidToken(account);
-      if (!token) { sale.notes = ''; sale.note_id = null; continue; }
-      // ML notes endpoint - fetch raw to handle different response formats
-      const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const noteBody = await noteRes.text();
-      console.log(`NOTES order ${orderId}: status=${noteRes.status} body=${noteBody.substring(0, 300)}`);
+      if (!token) { sale.notes = ''; sale.note_id = null; sale.note_order_id = null; continue; }
 
-      if (noteRes.ok && noteBody) {
-        const notesData = JSON.parse(noteBody);
-        // ML can return: array of notes, single note object, or {note:"", id:""}
-        if (Array.isArray(notesData) && notesData.length > 0) {
-          sale.notes = notesData[0].note || notesData[0].text || '';
-          sale.note_id = notesData[0].id || null;
-        } else if (notesData && typeof notesData === 'object' && !Array.isArray(notesData)) {
-          sale.notes = notesData.note || notesData.text || '';
-          sale.note_id = notesData.id || null;
-        } else {
-          sale.notes = '';
-          sale.note_id = null;
+      // Try each order_id (in packs, notes may be on any of the orders)
+      for (const orderId of orderIds) {
+        if (foundNote) break;
+        try {
+          const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const noteBody = await noteRes.text();
+          console.log(`NOTES order ${orderId}: status=${noteRes.status} body=${noteBody.substring(0, 500)}`);
+
+          if (noteRes.ok && noteBody) {
+            let notesData;
+            try { notesData = JSON.parse(noteBody); } catch(pe) { continue; }
+
+            // Extract notes array from different possible response formats
+            let notesArray = [];
+            if (Array.isArray(notesData)) {
+              notesArray = notesData;
+            } else if (notesData && typeof notesData === 'object') {
+              // ML might wrap in {results: [...]} or {notes: [...]}
+              if (Array.isArray(notesData.results)) notesArray = notesData.results;
+              else if (Array.isArray(notesData.notes)) notesArray = notesData.notes;
+              else if (notesData.note || notesData.text) notesArray = [notesData];
+            }
+
+            if (notesArray.length > 0) {
+              const firstNote = notesArray[0];
+              const noteText = firstNote.note || firstNote.text || firstNote.body || firstNote.content || '';
+              if (noteText || notesArray.length > 0) {
+                sale.notes = noteText;
+                sale.note_id = firstNote.id || null;
+                sale.note_order_id = orderId;
+                foundNote = true;
+              }
+            }
+          }
+        } catch (innerE) {
+          console.error(`Error fetching notes for order ${orderId}:`, innerE.message || innerE);
         }
-      } else {
-        sale.notes = '';
-        sale.note_id = null;
       }
     } catch (e) {
-      console.error(`Error fetching notes for order ${orderId}:`, e.message || e);
+      console.error(`Error fetching notes for sale:`, e.message || e);
+    }
+
+    if (!foundNote) {
       sale.notes = '';
       sale.note_id = null;
+      sale.note_order_id = orderIds[0];
     }
   }
 
