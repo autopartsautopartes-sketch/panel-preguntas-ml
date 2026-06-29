@@ -945,12 +945,15 @@ route('GET', '/api/stats', async (req, res) => {
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
   const user = db.users.find(u => u.id === sess.userId);
-  let totalUnanswered = 0, totalAnswered = 0;
+  let totalUnanswered = 0, totalAnsweredToday = 0;
   let salesToday = 0, revenueToday = 0, unitsSoldToday = 0;
+  let totalUnreadMessages = 0;
+  const salesByAccount = [];
 
-  // Today's date range (UTC)
+  // Today's date range in Argentina time (UTC-3)
   const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const argNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  const todayStart = new Date(Date.UTC(argNow.getUTCFullYear(), argNow.getUTCMonth(), argNow.getUTCDate(), 3, 0, 0)).toISOString();
 
   for (const account of db.ml_accounts) {
     const token = await getValidToken(account);
@@ -958,12 +961,23 @@ route('GET', '/api/stats', async (req, res) => {
     try {
       const u = await mlGet('https://api.mercadolibre.com/questions/search', token, { seller_id: account.seller_id, status: 'UNANSWERED', limit: 0 });
       totalUnanswered += u.total || 0;
-      const a = await mlGet('https://api.mercadolibre.com/questions/search', token, { seller_id: account.seller_id, status: 'ANSWERED', limit: 0 });
-      totalAnswered += a.total || 0;
+      // Only today's answered questions
+      const a = await mlGet('https://api.mercadolibre.com/questions/search', token, { seller_id: account.seller_id, status: 'ANSWERED', limit: 50 });
+      const todayAnswered = (a.questions || []).filter(q => q.date_created && q.date_created >= todayStart).length;
+      totalAnsweredToday += todayAnswered;
+    } catch (e) {}
+
+    // Count unread messages
+    try {
+      const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
+        seller: account.seller_id, tag: 'unread', limit: 0
+      });
+      totalUnreadMessages += msgData.paging?.total || 0;
     } catch (e) {}
 
     // Fetch today's sales if user has dashboard permission
     if (user?.view_dashboard !== false) {
+      let accountSales = 0, accountRevenue = 0, accountUnits = 0;
       try {
         const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
           seller: account.seller_id, sort: 'date_desc',
@@ -971,23 +985,27 @@ route('GET', '/api/stats', async (req, res) => {
           limit: 50
         });
         for (const order of (ordersData.results || [])) {
-          // Only count active orders (not cancelled)
           if (order.status === 'cancelled') continue;
-          salesToday++;
+          salesToday++; accountSales++;
           revenueToday += order.total_amount || 0;
+          accountRevenue += order.total_amount || 0;
           for (const item of (order.order_items || [])) {
             unitsSoldToday += item.quantity || 0;
+            accountUnits += item.quantity || 0;
           }
         }
       } catch (e) {
         console.error(`Error fetching sales for ${account.name}:`, e.response?.data || e.message || e);
       }
+      salesByAccount.push({ name: account.name, sales: accountSales, revenue: accountRevenue, units: accountUnits });
     }
   }
 
   sendJSON(res, 200, {
-    accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered: totalAnswered,
+    accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered_today: totalAnsweredToday,
+    unread_messages: totalUnreadMessages,
     sales_today: salesToday, revenue_today: revenueToday, units_sold_today: unitsSoldToday,
+    sales_by_account: salesByAccount,
     can_view_dashboard: user?.view_dashboard !== false
   });
 });
