@@ -60,11 +60,21 @@ if (dbInit.users.length === 0) {
     username: 'admin',
     password: hashPassword('admin123'),
     role: 'admin',
+    alerts_questions: true,
+    alerts_messages: true,
     created_at: new Date().toISOString()
   });
   saveDB(dbInit);
   console.log('Usuario admin creado: admin / admin123');
 }
+// Migrate existing users: add alert fields if missing
+const dbMigrate = loadDB();
+let migrated = false;
+for (const u of dbMigrate.users) {
+  if (u.alerts_questions === undefined) { u.alerts_questions = true; migrated = true; }
+  if (u.alerts_messages === undefined) { u.alerts_messages = true; migrated = true; }
+}
+if (migrated) saveDB(dbMigrate);
 
 // ==================== SESSION STORE ====================
 
@@ -215,7 +225,13 @@ route('POST', '/api/logout', async (req, res) => {
 route('GET', '/api/me', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-  sendJSON(res, 200, { username: sess.username, role: sess.role });
+  const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
+  sendJSON(res, 200, {
+    username: sess.username, role: sess.role,
+    alerts_questions: user?.alerts_questions ?? true,
+    alerts_messages: user?.alerts_messages ?? true
+  });
 });
 
 // USERS
@@ -223,7 +239,20 @@ route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
-  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, created_at: u.created_at })));
+  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, created_at: u.created_at })));
+});
+
+route('POST', '/api/users/alerts', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { id, alerts_questions, alerts_messages } = await parseBody(req);
+  const db = loadDB();
+  const user = db.users.find(u => u.id === parseInt(id));
+  if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
+  if (alerts_questions !== undefined) user.alerts_questions = !!alerts_questions;
+  if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
 });
 
 route('POST', '/api/users', async (req, res) => {
@@ -233,7 +262,7 @@ route('POST', '/api/users', async (req, res) => {
   if (!username || !password) return sendJSON(res, 400, { error: 'Faltan datos' });
   const db = loadDB();
   if (db.users.find(u => u.username === username)) return sendJSON(res, 400, { error: 'El usuario ya existe' });
-  db.users.push({ id: db.nextUserId++, username, password: hashPassword(password), role: 'user', created_at: new Date().toISOString() });
+  db.users.push({ id: db.nextUserId++, username, password: hashPassword(password), role: 'user', alerts_questions: true, alerts_messages: true, created_at: new Date().toISOString() });
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -471,27 +500,34 @@ route('GET', '/api/messages', async (req, res) => {
       });
       console.log(`Orders found: ${ordersData.results?.length || 0}, total: ${ordersData.total || 0}`);
 
+      // Group by pack_id to avoid duplicate message threads
+      const seenPacks = new Set();
       for (const order of (ordersData.results || [])) {
+        const packId = order.pack_id || order.id;
+        if (seenPacks.has(packId)) continue;
+        seenPacks.add(packId);
+
         try {
-          const msgData = await mlGet(`https://api.mercadolibre.com/messages/orders/${order.id}`, token, {
-            seller: account.seller_id, limit: 10
+          // Use messages/packs endpoint (correct ML API)
+          const msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
+            tag: 'post_sale', limit: 15
           });
-          console.log(`Order ${order.id}: ${msgData.messages?.length || 0} messages`);
           const messages = msgData.messages || [];
+          console.log(`Pack ${packId} (order ${order.id}): ${messages.length} messages`);
           if (messages.length === 0) continue;
 
           allMessages.push({
-            order_id: order.id, account_name: account.name, account_id: account.id,
+            order_id: order.id, pack_id: packId, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
             messages: messages.map(m => ({
               id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
-              text: m.text, date: m.date
+              text: m.text || m.plain?.content || '', date: m.date_created || m.date
             })),
-            last_message_date: messages[messages.length - 1]?.date || order.date_created
+            last_message_date: messages[messages.length - 1]?.date_created || messages[messages.length - 1]?.date || order.date_created
           });
         } catch (e) {
-          console.error(`Error messages order ${order.id}:`, e.response?.data || e.message || e);
+          console.error(`Error messages pack ${packId}:`, e.response?.data || e.message || e);
         }
       }
     } catch (err) {
