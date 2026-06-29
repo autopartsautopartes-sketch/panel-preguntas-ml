@@ -304,7 +304,21 @@
           document.getElementById('nav-users').style.display = '';
         }
         loadAccounts();
-        showSection('dashboard');
+        // Check URL params for deep linking (e.g. from sales buttons)
+        const urlParams = new URLSearchParams(location.search);
+        const targetSection = urlParams.get('section');
+        const urlBuyerId = urlParams.get('buyer_id');
+        const urlAccountId = urlParams.get('account_id');
+        if (targetSection === 'messages' && urlBuyerId) {
+          showSection('messages');
+          // Load messages filtered by buyer
+          loadMessagesForBuyer(urlBuyerId, urlAccountId);
+        } else if (targetSection === 'questions' && urlBuyerId) {
+          showSection('questions');
+          loadQuestionsForBuyer(urlBuyerId, urlAccountId);
+        } else {
+          showSection('dashboard');
+        }
       }
     } catch (e) {}
   }
@@ -329,7 +343,20 @@
           document.getElementById('nav-users').style.display = '';
         }
         loadAccounts();
-        showSection('dashboard');
+        // Check URL params for deep linking
+        const urlParams = new URLSearchParams(location.search);
+        const targetSection = urlParams.get('section');
+        const urlBuyerId = urlParams.get('buyer_id');
+        const urlAccountId = urlParams.get('account_id');
+        if (targetSection === 'messages' && urlBuyerId) {
+          showSection('messages');
+          loadMessagesForBuyer(urlBuyerId, urlAccountId);
+        } else if (targetSection === 'questions' && urlBuyerId) {
+          showSection('questions');
+          loadQuestionsForBuyer(urlBuyerId, urlAccountId);
+        } else {
+          showSection('dashboard');
+        }
       } else {
         errorEl.textContent = 'Usuario o contraseña incorrectos';
         errorEl.style.display = 'block';
@@ -653,6 +680,123 @@
     }
   }
 
+  // ==================== BUYER-FILTERED VIEWS ====================
+
+  async function loadMessagesForBuyer(buyerId, accountId) {
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando mensajes del comprador...</p></div>';
+    try {
+      const params = new URLSearchParams();
+      if (buyerId) params.set('buyer_id', buyerId);
+      if (accountId) params.set('account_id', accountId);
+      const res = await fetch(`/api/messages?${params.toString()}`);
+      const conversations = await res.json();
+
+      let html = `
+        <h2 style="margin-bottom:20px;color:#2d3277">Mensajes del comprador</h2>
+        <a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">← Volver al panel</a>
+      `;
+
+      if (conversations.length === 0) {
+        html += '<div class="empty"><p>No hay mensajes con este comprador</p></div>';
+      } else {
+        for (const conv of conversations) {
+          html += `
+            <div class="card">
+              <div class="card-header">
+                <span class="card-account">${conv.account_name}</span>
+                <span class="card-date">Comprador: ${conv.buyer_name}</span>
+              </div>
+              <div class="card-item-title" style="margin-bottom:12px">
+                📦 ${conv.item_title} &nbsp; <span style="color:#999;font-size:12px">Orden #${conv.order_id}</span>
+              </div>
+              <div class="msg-conversation">
+                ${(function(){
+                  const msgs = conv.messages || [];
+                  const ordered = [...msgs].reverse();
+                  return ordered.map(m => {
+                    let dateStr = '';
+                    if (m.date && m.date !== '') {
+                      try {
+                        const dd = new Date(m.date);
+                        if (!isNaN(dd.getTime())) {
+                          const dy = dd.getDate().toString().padStart(2,'0');
+                          const mo = (dd.getMonth()+1).toString().padStart(2,'0');
+                          const yr = dd.getFullYear().toString().slice(2);
+                          const hh = dd.getHours().toString().padStart(2,'0');
+                          const mm = dd.getMinutes().toString().padStart(2,'0');
+                          dateStr = dy+'/'+mo+'/'+yr+' '+hh+':'+mm+' hs';
+                        }
+                      } catch(e) {}
+                    }
+                    return '<div class="msg-bubble ' + m.from + '">' + (m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
+                  }).join('');
+                })()}
+              </div>
+              <div class="reply-box">
+                <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
+                <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
+              </div>
+            </div>
+          `;
+        }
+      }
+      content.innerHTML = html;
+    } catch (e) {
+      content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
+    }
+  }
+
+  async function loadQuestionsForBuyer(buyerId, accountId) {
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando preguntas del comprador...</p></div>';
+    try {
+      const params = new URLSearchParams();
+      if (buyerId) params.set('buyer_id', buyerId);
+      if (accountId) params.set('account_id', accountId);
+      const res = await fetch(`/api/questions?${params.toString()}`);
+      const questions = await res.json();
+
+      let html = `
+        <h2 style="margin-bottom:20px;color:#2d3277">Preguntas del comprador</h2>
+        <a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">← Volver al panel</a>
+      `;
+
+      if (questions.length === 0) {
+        html += '<div class="empty"><p>Este comprador no tiene preguntas anteriores</p></div>';
+      } else {
+        for (const q of questions) {
+          html += `
+            <div class="card">
+              <div class="card-header">
+                <span class="card-account">${q.account_name}</span>
+                <span class="card-date">${formatDate(q.date_created)}</span>
+              </div>
+              <div class="card-item">
+                ${q.item_thumbnail ? `<img src="${q.item_thumbnail}" alt="">` : ''}
+                <div class="card-item-title" style="flex:1">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    ${q.item_permalink ? `<a href="${q.item_permalink}" target="_blank" style="font-size:14px">${q.item_title || 'Ver producto'}</a>` : (q.item_title || 'Producto no disponible')}
+                  </div>
+                </div>
+              </div>
+              <div class="card-question">${q.text}</div>
+              ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${q.answer.text}</div>` : `
+                <div class="reply-box">
+                  <textarea id="reply-${q.id}" placeholder="Escribí tu respuesta..."></textarea>
+                  <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
+                </div>
+              `}
+            </div>
+          `;
+        }
+      }
+      content.innerHTML = html;
+    } catch (e) {
+      content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
+    }
+  }
+
   // ==================== SALES SECTION ====================
 
   let salesStatusFilters = [];
@@ -749,12 +893,8 @@
       </div>
     `;
 
-    if (!doFetch && !salesLoaded) {
-      html += '<div class="empty"><p>Seleccioná los filtros y hacé click en "Filtrar" para ver las ventas</p></div>';
-      content.innerHTML = html;
-      if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
-      return;
-    }
+    // Always fetch sales when entering the section
+    if (!doFetch) doFetch = true;
 
     // Show loading
     html += '<div class="loading"><div class="spinner"></div><p>Cargando ventas...</p></div>';
@@ -871,8 +1011,8 @@
               <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">
                 <div class="sale-actions" style="margin-top:0">
                   ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
-                  <a href="https://www.mercadolibre.com.ar/ventas/${sale.pack_id || firstOrderId}/detalle" target="_blank">💬 Mensajes</a>
-                  <a href="https://www.mercadolibre.com.ar/preguntas/producto/${sale.items[0]?.id || ''}" target="_blank">❓ Preguntas</a>
+                  <a href="/?section=messages&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
+                  <a href="/?section=questions&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">❓ Preguntas</a>
                 </div>
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
