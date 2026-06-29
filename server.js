@@ -499,19 +499,19 @@ route('GET', '/api/messages', async (req, res) => {
 
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
-  const statusFilter = url.searchParams.get('status') || 'unread'; // unread or answered
-  const orderFilter = url.searchParams.get('order_id'); // filter by specific order
-  const buyerFilter = url.searchParams.get('buyer_id'); // filter by buyer
+  const statusFilter = url.searchParams.get('status') || 'unread';
+  const orderFilter = url.searchParams.get('order_id');
+  const buyerFilter = url.searchParams.get('buyer_id');
   const db = loadDB();
   let allMessages = [];
 
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
 
-  for (const account of targets) {
+  // Fetch accounts in parallel
+  await Promise.all(targets.map(async (account) => {
     const token = await getValidToken(account);
-    if (!token) continue;
+    if (!token) return;
     try {
-      // If filtering by specific order, fetch just that order
       let ordersResults;
       if (orderFilter) {
         try {
@@ -531,48 +531,54 @@ route('GET', '/api/messages', async (req, res) => {
       }
 
       const seenPacks = new Set();
+      const uniqueOrders = [];
       for (const order of ordersResults) {
         const packId = order.pack_id || order.id;
         if (seenPacks.has(packId)) continue;
         seenPacks.add(packId);
+        uniqueOrders.push(order);
+      }
 
-        try {
+      // Fetch message packs in parallel (batches of 5 to avoid rate limits)
+      for (let i = 0; i < uniqueOrders.length; i += 5) {
+        const batch = uniqueOrders.slice(i, i + 5);
+        const results = await Promise.allSettled(batch.map(async (order) => {
+          const packId = order.pack_id || order.id;
           const msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
             tag: 'post_sale', limit: 15
           });
           const messages = msgData.messages || [];
-          if (messages.length === 0) continue;
+          if (messages.length === 0) return null;
 
           const mappedMessages = messages.map(m => ({
             id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
             text: m.text || m.plain?.content || '', date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || ''
           }));
 
-          // Determine if last message is from buyer (unread) or seller (answered)
           const lastMsg = mappedMessages[mappedMessages.length - 1];
           const isUnread = lastMsg.from === 'buyer';
 
-          // When filtering by buyer or order, show ALL messages regardless of status
           if (!buyerFilter && !orderFilter) {
-            if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) continue;
+            if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) return null;
           }
 
-          allMessages.push({
+          return {
             order_id: order.id, pack_id: packId, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
             buyer_id: order.buyer?.id?.toString() || '',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
             messages: mappedMessages, is_unread: isUnread,
             last_message_date: messages[messages.length - 1]?.date_created || messages[messages.length - 1]?.date || order.date_created
-          });
-        } catch (e) {
-          console.error(`Error messages pack ${packId}:`, e.response?.data || e.message || e);
+          };
+        }));
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value) allMessages.push(r.value);
         }
       }
     } catch (err) {
       console.error(`Error messages ${account.name}:`, err.response?.data || err.message || err);
     }
-  }
+  }));
 
   allMessages.sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
   sendJSON(res, 200, allMessages);
@@ -603,6 +609,10 @@ route('POST', '/api/messages/reply', async (req, res) => {
 });
 
 // SALES
+// In-memory caches to speed up repeated requests
+const itemCache = {}; // cache item thumbnail/sku by item id (rarely changes)
+const shipmentCacheGlobal = {}; // cache shipment info by shipping_id
+
 route('GET', '/api/sales', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -617,50 +627,67 @@ route('GET', '/api/sales', async (req, res) => {
   let rawOrders = [];
 
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
-  const shipmentCache = {}; // cache shipment info by shipping_id
 
-  for (const account of targets) {
+  // Fetch all accounts in parallel
+  await Promise.all(targets.map(async (account) => {
     const token = await getValidToken(account);
-    if (!token) continue;
+    if (!token) return;
     try {
       const params = { seller: account.seller_id, sort: 'date_desc', limit: 50 };
       if (dateFrom) params['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
       if (dateTo) params['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
       const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+      const orders = ordersData.results || [];
 
-      for (const order of (ordersData.results || [])) {
-        // Get shipment details (cached by shipping id to avoid duplicate calls for packs)
-        let shippingType = 'agreement';
-        let shippingStatus = '';
-        let shippingSubstatus = '';
-        let shippingId = order.shipping?.id || null;
+      // Step 1: Fetch all unique shipments in parallel
+      const uniqueShipIds = [...new Set(orders.map(o => o.shipping?.id).filter(Boolean))];
+      const newShipIds = uniqueShipIds.filter(id => !shipmentCacheGlobal[id]);
+      if (newShipIds.length > 0) {
+        const shipResults = await Promise.allSettled(newShipIds.map(async (sid) => {
+          const shipment = await mlGet(`https://api.mercadolibre.com/shipments/${sid}`, token);
+          const logType = shipment.logistic_type || '';
+          const shippingName = (shipment.shipping_option?.name || '').toLowerCase();
+          let sType = 'other';
+          if (logType === 'self_service' || shippingName.includes('flex')) sType = 'flex';
+          else if (logType === 'drop_off' || logType === 'xd_drop_off' || logType === 'cross_docking' || logType === 'fulfillment') sType = 'drop_off';
+          else if (logType === 'custom' || logType === 'not_specified' || logType === '') sType = 'agreement';
+          return { id: sid, type: sType, status: shipment.status || '', substatus: shipment.substatus || '' };
+        }));
+        for (const r of shipResults) {
+          if (r.status === 'fulfilled') shipmentCacheGlobal[r.value.id] = r.value;
+        }
+      }
 
-        if (shippingId) {
-          if (!shipmentCache[shippingId]) {
-            try {
-              const shipment = await mlGet(`https://api.mercadolibre.com/shipments/${shippingId}`, token);
-              const logType = shipment.logistic_type || '';
-              const shippingName = (shipment.shipping_option?.name || '').toLowerCase();
-              let sType = 'other';
-              if (logType === 'self_service' || shippingName.includes('flex')) {
-                sType = 'flex';
-              } else if (logType === 'drop_off' || logType === 'xd_drop_off' || logType === 'cross_docking' || logType === 'fulfillment') {
-                sType = 'drop_off';
-              } else if (logType === 'custom' || logType === 'not_specified' || logType === '') {
-                sType = 'agreement';
-              }
-              shipmentCache[shippingId] = { type: sType, status: shipment.status || '', substatus: shipment.substatus || '' };
-            } catch (e) {
-              shipmentCache[shippingId] = { type: 'other', status: '', substatus: '' };
-            }
+      // Step 2: Fetch all unique items in parallel
+      const allItemIds = [...new Set(orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id)).filter(Boolean))];
+      const newItemIds = allItemIds.filter(id => !itemCache[id]);
+      if (newItemIds.length > 0) {
+        const itemResults = await Promise.allSettled(newItemIds.map(async (itemId) => {
+          const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token);
+          let sku = itemData.seller_custom_field || '';
+          if (!sku && itemData.attributes) {
+            const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
+            if (skuAttr) sku = skuAttr.value_name || '';
           }
-          const cached = shipmentCache[shippingId];
+          return { id: itemId, thumbnail: itemData.thumbnail || '', sku };
+        }));
+        for (const r of itemResults) {
+          if (r.status === 'fulfilled') itemCache[r.value.id] = r.value;
+        }
+      }
+
+      // Step 3: Build orders using cached data (no more API calls)
+      for (const order of orders) {
+        let shippingType = 'agreement', shippingStatus = '', shippingSubstatus = '';
+        const shippingId = order.shipping?.id || null;
+
+        if (shippingId && shipmentCacheGlobal[shippingId]) {
+          const cached = shipmentCacheGlobal[shippingId];
           shippingType = cached.type;
           shippingStatus = cached.status;
           shippingSubstatus = cached.substatus;
         }
 
-        // Map ML status to display status
         let displayStatus = '';
         if (order.status === 'cancelled') displayStatus = 'cancelled';
         else if (shippingSubstatus === 'delayed') displayStatus = 'delayed';
@@ -672,26 +699,15 @@ route('GET', '/api/sales', async (req, res) => {
         else if (shippingStatus === 'not_delivered') displayStatus = 'not_completed';
         else displayStatus = shippingStatus || order.status || 'pending';
 
-        // Apply filters
         if (statusFilters.length > 0 && !statusFilters.includes(displayStatus)) continue;
         if (shippingFilters.length > 0 && !shippingFilters.includes(shippingType)) continue;
 
-        // Get item details
         const items = [];
         for (const oi of (order.order_items || [])) {
-          let thumbnail = '';
-          let sku = oi.item?.seller_sku || oi.item?.seller_custom_field || '';
-          try {
-            const itemData = await mlGet(`https://api.mercadolibre.com/items/${oi.item.id}`, token);
-            thumbnail = itemData.thumbnail || '';
-            if (!sku) sku = itemData.seller_custom_field || '';
-            if (!sku && itemData.attributes) {
-              const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
-              if (skuAttr) sku = skuAttr.value_name || '';
-            }
-          } catch (e) {}
+          const cached = itemCache[oi.item?.id] || {};
+          let sku = oi.item?.seller_sku || oi.item?.seller_custom_field || cached.sku || '';
           items.push({
-            id: oi.item.id, title: oi.item.title || 'Producto', thumbnail,
+            id: oi.item.id, title: oi.item.title || 'Producto', thumbnail: cached.thumbnail || '',
             quantity: oi.quantity || 1, unit_price: oi.unit_price || 0, sku
           });
         }
@@ -709,7 +725,7 @@ route('GET', '/api/sales', async (req, res) => {
     } catch (err) {
       console.error(`Error sales ${account.name}:`, err.response?.data || err.message || err);
     }
-  }
+  }));
 
   // Group orders by pack_id (packs = multiple orders with same pack_id = ONE shipment)
   const packMap = {};
@@ -937,6 +953,25 @@ route('GET', '/api/sales/label', async (req, res) => {
     console.error('Error label:', err.message || err);
     sendJSON(res, 500, { error: 'Error al obtener etiqueta' });
   }
+});
+
+// QUICK REPLIES
+route('GET', '/api/quick-replies', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  sendJSON(res, 200, db.quick_replies || []);
+});
+
+route('POST', '/api/quick-replies', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { replies } = await parseBody(req);
+  if (!Array.isArray(replies)) return sendJSON(res, 400, { error: 'Formato invalido' });
+  const db = loadDB();
+  db.quick_replies = replies;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
 });
 
 // STATS
