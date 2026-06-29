@@ -598,13 +598,40 @@ route('POST', '/api/messages/reply', async (req, res) => {
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
     const buyerId = orderData.buyer.id;
-    await mlPost(`https://api.mercadolibre.com/messages/packs/${orderData.pack_id || order_id}/sellers/${account.seller_id}`, {
-      from: { user_id: account.seller_id }, to: { user_id: buyerId }, text
-    }, token);
+    const packId = orderData.pack_id || order_id;
+    const sellerId = parseInt(account.seller_id);
+
+    console.log('[MSG REPLY] pack:', packId, 'seller:', sellerId, 'buyer:', buyerId);
+
+    // ML messages API requires numeric seller_id and specific format
+    const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}`;
+    console.log('[MSG REPLY] POST to:', msgUrl);
+
+    const msgBody = {
+      from: { user_id: sellerId },
+      to: { user_id: buyerId },
+      text: text
+    };
+
+    const msgRes = await fetch(msgUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(msgBody)
+    });
+    const msgData = await msgRes.text();
+    console.log('[MSG REPLY] Response status:', msgRes.status, 'body:', msgData.substring(0, 500));
+
+    if (!msgRes.ok) {
+      const parsed = JSON.parse(msgData);
+      return sendJSON(res, 500, { error: parsed.message || parsed.error || 'Error de ML: ' + msgRes.status });
+    }
     sendJSON(res, 200, { ok: true });
   } catch (err) {
     console.error('Error sending message:', err.response?.data || err.message || err);
-    sendJSON(res, 500, { error: err.response?.data?.message || 'Error al enviar mensaje' });
+    sendJSON(res, 500, { error: err.response?.data?.message || err.message || 'Error al enviar mensaje' });
   }
 });
 
