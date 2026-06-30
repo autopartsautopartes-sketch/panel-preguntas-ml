@@ -362,7 +362,7 @@
         <span>📦 Preparación</span>
       </a>
       <div class="section-title">Configuración</div>
-      <a onclick="showSection('accounts')" id="nav-accounts">
+      <a onclick="showSection('accounts')" id="nav-accounts" style="display:none">
         <span>🏪 Cuentas ML</span>
       </a>
       <a onclick="showSection('users')" id="nav-users" style="display:none">
@@ -398,7 +398,7 @@
       <span class="nav-icon">🛒</span>
       Ventas
     </a>
-    <a onclick="showSection('accounts')" id="mob-accounts">
+    <a onclick="showSection('accounts')" id="mob-accounts" style="display:none">
       <span class="nav-icon">🏪</span>
       Cuentas
     </a>
@@ -438,7 +438,10 @@
         document.getElementById('currentUser').textContent = currentUser.username;
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
+          document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+          const mobAcc = document.getElementById('mob-accounts');
+          if (mobAcc) mobAcc.style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
@@ -504,7 +507,10 @@
         document.getElementById('currentUser').textContent = currentUser.username;
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
+          document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+          const mobAcc = document.getElementById('mob-accounts');
+          if (mobAcc) mobAcc.style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
@@ -1734,6 +1740,10 @@
   // ==================== ACCOUNTS SECTION ====================
 
   async function loadAccountsSection() {
+    if (currentUser?.role !== 'admin') {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>Solo el administrador puede acceder a esta sección.</p></div>';
+      return;
+    }
     await loadAccounts();
     let html = `
       <h2 style="margin-bottom:20px;color:#2d3277">Cuentas de MercadoLibre</h2>
