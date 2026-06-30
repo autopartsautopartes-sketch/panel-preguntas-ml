@@ -756,9 +756,19 @@ route('GET', '/api/messages', async (req, res) => {
         const batch = uniqueOrders.slice(i, i + 5);
         const results = await Promise.allSettled(batch.map(async (order) => {
           const packId = order.pack_id || order.id;
-          const msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
-            tag: 'post_sale', limit: 15
-          });
+          let msgData;
+          try {
+            msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
+              tag: 'post_sale', limit: 15
+            });
+          } catch (e) {
+            // Retry once after a short delay — avoids transient rate-limit/network blips
+            // causing a conversation to flicker in/out of the unread list between polls
+            await new Promise(r => setTimeout(r, 400));
+            msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
+              tag: 'post_sale', limit: 15
+            });
+          }
           const messages = msgData.messages || [];
           if (messages.length === 0) return null;
 
