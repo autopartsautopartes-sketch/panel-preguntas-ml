@@ -120,6 +120,16 @@ for (const u of dbMigrate3.users) {
 }
 if (migrated3) saveDB(dbMigrate3);
 
+// Migrate: add section visibility permissions (default true = keeps existing behavior for current users)
+const dbMigrate4 = loadDB();
+let migrated4 = false;
+for (const u of dbMigrate4.users) {
+  if (u.can_view_questions === undefined) { u.can_view_questions = true; migrated4 = true; }
+  if (u.can_view_messages === undefined) { u.can_view_messages = true; migrated4 = true; }
+  if (u.can_view_sales === undefined) { u.can_view_sales = true; migrated4 = true; }
+}
+if (migrated4) saveDB(dbMigrate4);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -421,12 +431,16 @@ route('GET', '/api/me', async (req, res) => {
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
   const user = db.users.find(u => u.id === sess.userId);
+  const isAdmin = sess.role === 'admin';
   sendJSON(res, 200, {
     username: sess.username, role: sess.role,
     alerts_questions: user?.alerts_questions ?? true,
     alerts_messages: user?.alerts_messages ?? true,
     view_dashboard: user?.view_dashboard !== false,
-    can_view_dashboard: sess.role === 'admin' || user?.can_view_dashboard === true,
+    can_view_dashboard: isAdmin || user?.can_view_dashboard === true,
+    can_view_questions: isAdmin || user?.can_view_questions !== false,
+    can_view_messages: isAdmin || user?.can_view_messages !== false,
+    can_view_sales: isAdmin || user?.can_view_sales !== false,
     can_prep_manage: user?.can_prep_manage === true,
     can_prep_operate: user?.can_prep_operate === true
   });
@@ -437,13 +451,25 @@ route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
-  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, view_dashboard: u.view_dashboard !== false, can_view_dashboard: u.role === 'admin' || u.can_view_dashboard === true, can_prep_manage: u.can_prep_manage === true, can_prep_operate: u.can_prep_operate === true, created_at: u.created_at })));
+  sendJSON(res, 200, db.users.map(u => ({
+    id: u.id, username: u.username, role: u.role,
+    alerts_questions: u.alerts_questions ?? true,
+    alerts_messages: u.alerts_messages ?? true,
+    view_dashboard: u.view_dashboard !== false,
+    can_view_dashboard: u.role === 'admin' || u.can_view_dashboard === true,
+    can_view_questions: u.role === 'admin' || u.can_view_questions !== false,
+    can_view_messages: u.role === 'admin' || u.can_view_messages !== false,
+    can_view_sales: u.role === 'admin' || u.can_view_sales !== false,
+    can_prep_manage: u.can_prep_manage === true,
+    can_prep_operate: u.can_prep_operate === true,
+    created_at: u.created_at
+  })));
 });
 
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_prep_manage, can_prep_operate } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -451,6 +477,9 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
   if (view_dashboard !== undefined) user.view_dashboard = !!view_dashboard;
   if (can_view_dashboard !== undefined) user.can_view_dashboard = !!can_view_dashboard;
+  if (can_view_questions !== undefined) user.can_view_questions = !!can_view_questions;
+  if (can_view_messages !== undefined) user.can_view_messages = !!can_view_messages;
+  if (can_view_sales !== undefined) user.can_view_sales = !!can_view_sales;
   if (can_prep_manage !== undefined) user.can_prep_manage = !!can_prep_manage;
   if (can_prep_operate !== undefined) user.can_prep_operate = !!can_prep_operate;
   saveDB(db);
