@@ -602,22 +602,21 @@
       const res = await fetch('/api/stats');
       const stats = await res.json();
 
-      // Update question badge
+      // Update question badge (defer to checkNewQuestions for sticky logic; only update upward here)
       const badge = document.getElementById('badge-unanswered');
       if (stats.unanswered > 0) {
-        badge.textContent = stats.unanswered;
+        qBadgeCount = stats.unanswered; qZeroStreak = 0;
+        badge.textContent = qBadgeCount;
         badge.style.display = '';
-      } else {
-        badge.style.display = 'none';
       }
+      // Note: hiding is handled by checkNewQuestions sticky logic to avoid transient flicker
 
-      // Update message badge
+      // Update message badge (defer to checkNewMessages for sticky logic; only update upward here)
       const msgBadge = document.getElementById('badge-unread-messages');
       if (stats.unread_messages > 0) {
-        msgBadge.textContent = stats.unread_messages;
+        msgBadgeCount = stats.unread_messages; msgZeroStreak = 0;
+        msgBadge.textContent = msgBadgeCount;
         msgBadge.style.display = '';
-      } else {
-        msgBadge.style.display = 'none';
       }
 
       const salesHTML = stats.can_view_dashboard ? `
@@ -993,6 +992,7 @@
             <div class="reply-box">
               <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
               <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
+              ${messageStatus === 'unread' ? `<button onclick="dismissMessage('${conv.pack_id}', this)" style="background:#6c757d;margin-left:6px" title="Marcar como respondido y mover a Respondidos">✓ Respondido</button>` : ''}
             </div>
           </div>
         `;
@@ -1032,6 +1032,36 @@
       showToast('Error de conexión', 'error');
       btn.disabled = false;
       btn.textContent = 'Enviar';
+    }
+  }
+
+  async function dismissMessage(packId, btn) {
+    if (!packId || packId === 'null' || packId === 'undefined') {
+      showToast('No se pudo identificar el pack de mensajes', 'error');
+      return;
+    }
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const res = await fetch('/api/messages/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pack_id: packId })
+      });
+      if (res.ok) {
+        showToast('Movido a Respondidos', 'success');
+        loadMessages();
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'Error al marcar como respondido', 'error');
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    } catch (e) {
+      showToast('Error de conexión', 'error');
+      btn.disabled = false;
+      btn.textContent = orig;
     }
   }
 
@@ -1942,18 +1972,21 @@
       if (prepSalesDateFrom) params.set('date_from', prepSalesDateFrom);
       if (prepSalesDateTo) params.set('date_to', prepSalesDateTo);
 
-      const [salesRes, prepRes] = await Promise.all([
+      const [salesRes, prepRes, claimsRes] = await Promise.all([
         fetch('/api/sales?' + params.toString()),
-        fetch('/api/prep/list')
+        fetch('/api/prep/list'),
+        fetch('/api/prep/claims')
       ]);
       const allSales = await salesRes.json();
       const prepOrders = await prepRes.json();
+      const claimsMap = claimsRes.ok ? await claimsRes.json() : {};
       prepOrdersCache = prepOrders;
 
       const inPrepIds = new Set();
       for (const p of prepOrders) inPrepIds.add(String(p.order_id));
 
       const pendingSales = allSales.filter(sale => {
+        if (sale.status === 'cancelled') return false; // Never show cancelled
         const key = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
         return !inPrepIds.has(key);
       });
@@ -1991,11 +2024,18 @@
           date_created: sale.date_created
         }).replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
+        const claimStatus = claimsMap[String(sale.order_id)] || claimsMap[String(sale.pack_id)] || null;
+        const claimBadge = claimStatus === 'open'
+          ? '<span style="padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#f8d7da;color:#721c24;border:1px solid #f5c6cb">⚠️ Reclamo abierto</span>'
+          : claimStatus === 'closed'
+          ? '<span style="padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#d4edda;color:#155724;border:1px solid #c3e6cb">✅ Reclamo cerrado</span>'
+          : '';
         salesHtml += `
-          <div class="sale-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="sale-card"${claimStatus === 'open' ? ' style="border-left:4px solid #e74c3c"' : ''}>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">
               <span class="card-account">${escapeHtml(sale.account_name)}</span>
-              <div style="display:flex;align-items:center;gap:8px">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                ${claimBadge}
                 <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(sale.buyer_name)}</span>
               </div>
             </div>
@@ -2049,6 +2089,7 @@
   }
 
   async function fetchPrepNotes(sales) {
+    const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     for (const sale of sales) {
       const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
       const el = document.getElementById('prep-note-display-' + firstOrderId);
@@ -2061,15 +2102,54 @@
           const res = await fetch('/api/sales/note?order_id=' + oid + '&account_id=' + sale.account_id);
           const data = await res.json();
           if (data.note) {
-            el.innerHTML = `<div style="font-size:13px;color:#333;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623"><strong>Nota:</strong> ${escapeHtml(data.note)}</div>`;
+            // Store on parent for pasarAPreparacion/finalizarDirecto to read
             el.dataset.noteText = data.note;
             el.dataset.noteId = data.note_id || '';
+            if (can_manage) {
+              el.innerHTML = `
+                <div id="pnc-${firstOrderId}" data-order-id="${oid}" data-account-id="${sale.account_id}" data-note-id="${escapeHtml(data.note_id||'')}" data-note-order-id="${oid}" style="padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #eee">
+                  <div style="display:flex;align-items:flex-start;gap:8px">
+                    <div id="pnt-${firstOrderId}" style="flex:1;font-size:13px;line-height:1.5"><span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(data.note)}</span></div>
+                    <button onclick="editPrepNote('${firstOrderId}')" title="Editar nota" style="flex-shrink:0;width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">✏️</button>
+                  </div>
+                  <div id="pne-${firstOrderId}" style="display:none;margin-top:8px">
+                    <textarea id="pni-${firstOrderId}" placeholder="Escribí la nota..." style="width:100%;padding:8px 10px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>
+                    <div style="display:flex;gap:8px;margin-top:6px">
+                      <button onclick="savePrepNote('${firstOrderId}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar en ML</button>
+                      <button onclick="cancelPrepNote('${firstOrderId}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
+                    </div>
+                  </div>
+                </div>`;
+            } else {
+              el.innerHTML = `<div style="font-size:13px;color:#333;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623"><span style="font-weight:700;color:#c67b00">📝 Nota:</span> ${escapeHtml(data.note)}</div>`;
+            }
             foundNote = true;
             break;
           }
         } catch(e) {}
       }
-      if (!foundNote) el.innerHTML = '<div style="font-size:12px;color:#bbb;padding:6px 10px">Sin notas</div>';
+      if (!foundNote) {
+        el.dataset.noteText = '';
+        el.dataset.noteId = '';
+        if (can_manage) {
+          el.innerHTML = `
+            <div id="pnc-${firstOrderId}" data-order-id="${orderIds[0]}" data-account-id="${sale.account_id}" data-note-id="" data-note-order-id="${orderIds[0]}" style="padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #eee">
+              <div style="display:flex;align-items:flex-start;gap:8px">
+                <div id="pnt-${firstOrderId}" style="flex:1;font-size:13px;color:#bbb;line-height:1.5">Sin notas</div>
+                <button onclick="editPrepNote('${firstOrderId}')" title="Agregar nota" style="flex-shrink:0;width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;color:#3483fa">+</button>
+              </div>
+              <div id="pne-${firstOrderId}" style="display:none;margin-top:8px">
+                <textarea id="pni-${firstOrderId}" placeholder="Escribí la nota..." style="width:100%;padding:8px 10px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>
+                <div style="display:flex;gap:8px;margin-top:6px">
+                  <button onclick="savePrepNote('${firstOrderId}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar en ML</button>
+                  <button onclick="cancelPrepNote('${firstOrderId}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
+                </div>
+              </div>
+            </div>`;
+        } else {
+          el.innerHTML = '<div style="font-size:12px;color:#bbb;padding:6px 10px">Sin notas</div>';
+        }
+      }
     }
   }
 
@@ -2491,6 +2571,10 @@
           body: JSON.stringify({ order_id: orderId, notes: text })
         }).catch(() => {}); // Fire and forget — ML is the source of truth
 
+        // 3. Keep prep-note-display- parent dataset in sync (used by pasarAPreparacion)
+        const parentNoteEl = document.getElementById('prep-note-display-' + orderId);
+        if (parentNoteEl) { parentNoteEl.dataset.noteText = text; if (data.note_id) parentNoteEl.dataset.noteId = data.note_id; }
+
         showToast('Nota guardada en MercadoLibre ✓', 'success');
       } else {
         showToast(data.error || 'Error al guardar nota', 'error');
@@ -2589,6 +2673,11 @@
   let lastQuestionIds = [];
   let lastMessageIds = [];
   let notificationsReady = false;
+  // Sticky badge counts: only hide badge after 2 consecutive zero-polls (avoids transient API blips)
+  let msgBadgeCount = 0;
+  let qBadgeCount = 0;
+  let msgZeroStreak = 0;
+  let qZeroStreak = 0;
 
   // Create notification sound using Web Audio API
   function playNotificationSound() {
@@ -2716,11 +2805,17 @@
       const badge = document.getElementById('badge-unanswered');
       const mobBadge = document.getElementById('mob-badge-unanswered');
       if (questions.length > 0) {
-        badge.textContent = questions.length; badge.style.display = '';
-        if (mobBadge) { mobBadge.textContent = questions.length; mobBadge.style.display = ''; }
+        qBadgeCount = questions.length;
+        qZeroStreak = 0;
+        badge.textContent = qBadgeCount; badge.style.display = '';
+        if (mobBadge) { mobBadge.textContent = qBadgeCount; mobBadge.style.display = ''; }
       } else {
-        badge.style.display = 'none';
-        if (mobBadge) { mobBadge.style.display = 'none'; }
+        qZeroStreak++;
+        if (qZeroStreak >= 2) {
+          qBadgeCount = 0;
+          badge.style.display = 'none';
+          if (mobBadge) { mobBadge.style.display = 'none'; }
+        }
       }
 
       if (notificationsReady && lastQuestionIds.length > 0) {
@@ -2756,15 +2851,21 @@
       // messages[0] = newest message (ML returns newest-first) — use this for new-message detection
       const currentIds = conversations.map(c => c.messages?.[0]?.id).filter(Boolean);
 
-      // Update message badge in sidebar and mobile nav
+      // Update message badge in sidebar and mobile nav (sticky: only hide after 2 consecutive zero polls)
       const msgBadge = document.getElementById('badge-unread-messages');
       const mobMsgBadge = document.getElementById('mob-badge-unread-messages');
       if (conversations.length > 0) {
-        msgBadge.textContent = conversations.length; msgBadge.style.display = '';
-        if (mobMsgBadge) { mobMsgBadge.textContent = conversations.length; mobMsgBadge.style.display = ''; }
+        msgBadgeCount = conversations.length;
+        msgZeroStreak = 0;
+        msgBadge.textContent = msgBadgeCount; msgBadge.style.display = '';
+        if (mobMsgBadge) { mobMsgBadge.textContent = msgBadgeCount; mobMsgBadge.style.display = ''; }
       } else {
-        msgBadge.style.display = 'none';
-        if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
+        msgZeroStreak++;
+        if (msgZeroStreak >= 2) {
+          msgBadgeCount = 0;
+          msgBadge.style.display = 'none';
+          if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
+        }
       }
 
       if (notificationsReady && lastMessageIds.length > 0) {
