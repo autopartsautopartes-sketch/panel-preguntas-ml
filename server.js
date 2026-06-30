@@ -712,7 +712,7 @@ route('GET', '/api/messages', async (req, res) => {
         ordersResults = ordersData.results || [];
       } else {
         const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
-          seller: account.seller_id, sort: 'date_desc', limit: 20
+          seller: account.seller_id, sort: 'date_desc', limit: 50
         });
         ordersResults = ordersData.results || [];
       }
@@ -760,14 +760,27 @@ route('GET', '/api/messages', async (req, res) => {
           const messages = msgData.messages || [];
           if (messages.length === 0) return null;
 
-          const mappedMessages = messages.map(m => ({
-            id: m.id, from: m.from?.user_id?.toString() === account.seller_id ? 'seller' : 'buyer',
-            text: m.text || m.plain?.content || '', date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || ''
-          }));
+          const sellerId = account.seller_id?.toString();
+          const mappedMessages = messages.map(m => {
+            const fromSeller = m.from?.user_id?.toString() === sellerId;
+            const fromRole = fromSeller ? 'seller' : 'buyer';
+            // message_date.read === null means the RECIPIENT hasn't read it yet
+            // For buyer messages: null read means seller (us) hasn't read it → genuinely unread
+            const mlUnread = !fromSeller && !m.message_date?.read;
+            return {
+              id: m.id,
+              from: fromRole,
+              text: m.text || m.plain?.content || '',
+              date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || '',
+              mlUnread
+            };
+          });
 
           // ML returns messages newest first, so [0] is the most recent message
           const lastMsg = mappedMessages[0];
-          const isUnread = lastMsg.from === 'buyer';
+          // "Sin leer" = last msg from buyer (we haven't replied) OR ML marks any buyer msg as unread
+          const hasMLUnread = mappedMessages.some(m => m.from === 'buyer' && m.mlUnread);
+          const isUnread = lastMsg.from === 'buyer' || hasMLUnread;
 
           if (!buyerFilter && !orderFilter) {
             if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) return null;
@@ -778,8 +791,9 @@ route('GET', '/api/messages', async (req, res) => {
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
             buyer_id: order.buyer?.id?.toString() || '',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
-            messages: mappedMessages, is_unread: isUnread,
-            last_message_date: messages[messages.length - 1]?.date_created || messages[messages.length - 1]?.date || order.date_created
+            messages: mappedMessages, is_unread: isUnread, has_ml_unread: hasMLUnread,
+            // messages[0] is newest (ML returns newest-first) — use it for sorting
+            last_message_date: messages[0]?.date_created || messages[0]?.date || order.date_created
           };
         }));
         for (const r of results) {
@@ -1491,6 +1505,33 @@ route('GET', '/api/prep/export', async (req, res) => {
     'Content-Disposition': `attachment; filename="autochap_prep_${today}.csv"`
   });
   res.end(csv);
+});
+
+route('POST', '/api/prep/note', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id, notes } = await parseBody(req);
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const order = (db.prep_orders || []).find(o => o.order_id === String(order_id));
+  if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  order.notes = notes || '';
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+route('POST', '/api/prep/reset', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id } = await parseBody(req);
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const idx = (db.prep_orders || []).findIndex(o => o.order_id === String(order_id));
+  if (idx === -1) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  const removed = db.prep_orders.splice(idx, 1)[0];
+  saveDB(db);
+  console.log(`[PREP RESET] Orden ${order_id} devuelta a Sin Preparar por ${sess.username} (estaba en ${removed.status})`);
+  sendJSON(res, 200, { ok: true });
 });
 
 // ==================== STATIC FILES ====================
