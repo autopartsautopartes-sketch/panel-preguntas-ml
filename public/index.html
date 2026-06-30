@@ -448,7 +448,7 @@
           document.getElementById('mob-prep').style.display = '';
         }
         // Show dashboard nav only for admin or users with can_view_dashboard permission
-        if (!currentUser.can_view_dashboard) {
+        if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
           const mobDash = document.getElementById('mob-dashboard');
           if (mobDash) mobDash.style.display = 'none';
@@ -481,7 +481,7 @@
       showSection('sales');
     } else {
       // Go to dashboard only if the user has permission, otherwise go to questions
-      if (currentUser?.can_view_dashboard) {
+      if (currentUser?.role === 'admin' || currentUser?.can_view_dashboard) {
         showSection('dashboard');
       } else {
         showSection('questions');
@@ -620,7 +620,7 @@
   // ==================== DASHBOARD ====================
 
   async function loadDashboard() {
-    if (!currentUser?.can_view_dashboard) {
+    if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver el Dashboard.</p></div>';
       return;
     }
@@ -1844,6 +1844,7 @@
                 <input type="checkbox" ${u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:18px;height:18px;cursor:pointer">
                 Operario embalaje
               </label>
+              <button onclick="openChangePassword(${u.id}, '${escapeHtml(u.username)}')" style="padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">🔑 Cambiar contraseña</button>
               ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:6px 12px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
             </div>
           </div>
@@ -1905,6 +1906,63 @@
       loadUsers();
     } catch (e) {
       showToast('Error al eliminar', 'error');
+    }
+  }
+
+  function openChangePassword(userId, username) {
+    // Remove any existing modal
+    const old = document.getElementById('changePassModal');
+    if (old) old.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'changePassModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;padding:28px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.2)">
+        <h3 style="margin-bottom:6px;color:#2d3277">🔑 Cambiar contraseña</h3>
+        <p style="font-size:13px;color:#666;margin-bottom:18px">Usuario: <strong>${escapeHtml(username)}</strong></p>
+        <input id="cpNewPass" type="password" placeholder="Nueva contraseña" autocomplete="new-password"
+          style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:10px;outline:none;box-sizing:border-box">
+        <input id="cpConfirmPass" type="password" placeholder="Confirmar contraseña" autocomplete="new-password"
+          style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:16px;outline:none;box-sizing:border-box">
+        <div id="cpError" style="color:#e74c3c;font-size:13px;margin-bottom:10px;display:none"></div>
+        <div style="display:flex;gap:10px">
+          <button onclick="doChangePassword(${userId})" style="flex:1;padding:10px;background:#3483fa;color:white;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Guardar</button>
+          <button onclick="document.getElementById('changePassModal').remove()" style="flex:1;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px;cursor:pointer;background:white">Cancelar</button>
+        </div>
+      </div>
+    `;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+    document.getElementById('cpNewPass').focus();
+    // Allow Enter key to submit
+    modal.querySelectorAll('input').forEach(inp => inp.addEventListener('keypress', e => { if (e.key === 'Enter') doChangePassword(userId); }));
+  }
+
+  async function doChangePassword(userId) {
+    const newPass = document.getElementById('cpNewPass')?.value || '';
+    const confirmPass = document.getElementById('cpConfirmPass')?.value || '';
+    const errEl = document.getElementById('cpError');
+    if (newPass.length < 4) { errEl.textContent = 'La contraseña debe tener al menos 4 caracteres'; errEl.style.display = ''; return; }
+    if (newPass !== confirmPass) { errEl.textContent = 'Las contraseñas no coinciden'; errEl.style.display = ''; return; }
+    errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/users/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: userId, new_password: newPass })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        document.getElementById('changePassModal')?.remove();
+        showToast('Contraseña actualizada', 'success');
+      } else {
+        errEl.textContent = data.error || 'Error al cambiar contraseña';
+        errEl.style.display = '';
+      }
+    } catch (e) {
+      errEl.textContent = 'Error de conexión';
+      errEl.style.display = '';
     }
   }
 
