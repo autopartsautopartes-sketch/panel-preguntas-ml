@@ -101,6 +101,16 @@ for (const u of dbMigrate.users) {
 }
 if (migrated) saveDB(dbMigrate);
 
+// Migrate: add prep permission fields to users
+const dbMigrate2 = loadDB();
+let migrated2 = false;
+for (const u of dbMigrate2.users) {
+  if (u.can_prep_manage === undefined) { u.can_prep_manage = false; migrated2 = true; }
+  if (u.can_prep_operate === undefined) { u.can_prep_operate = false; migrated2 = true; }
+}
+if (!dbMigrate2.prep_orders) { dbMigrate2.prep_orders = []; migrated2 = true; }
+if (migrated2) saveDB(dbMigrate2);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -222,6 +232,23 @@ setInterval(() => {
     else if (!entry.blockedUntil && (now - entry.firstAttempt) > LOGIN_WINDOW_MS) delete loginAttempts[ip];
   }
 }, 10 * 60 * 1000);
+
+// ==================== PREP PERMISSION HELPERS ====================
+
+function canPrepManage(sess) {
+  if (!sess) return false;
+  if (sess.role === 'admin') return true;
+  const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
+  return user?.can_prep_manage === true;
+}
+function canPrepOperate(sess) {
+  if (!sess) return false;
+  if (sess.role === 'admin') return true;
+  const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
+  return user?.can_prep_operate === true || user?.can_prep_manage === true;
+}
 
 // ==================== SECURITY HEADERS ====================
 
@@ -389,7 +416,9 @@ route('GET', '/api/me', async (req, res) => {
     username: sess.username, role: sess.role,
     alerts_questions: user?.alerts_questions ?? true,
     alerts_messages: user?.alerts_messages ?? true,
-    view_dashboard: user?.view_dashboard !== false
+    view_dashboard: user?.view_dashboard !== false,
+    can_prep_manage: user?.can_prep_manage === true,
+    can_prep_operate: user?.can_prep_operate === true
   });
 });
 
@@ -398,19 +427,21 @@ route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
-  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, view_dashboard: u.view_dashboard !== false, created_at: u.created_at })));
+  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, view_dashboard: u.view_dashboard !== false, can_prep_manage: u.can_prep_manage === true, can_prep_operate: u.can_prep_operate === true, created_at: u.created_at })));
 });
 
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_prep_manage, can_prep_operate } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
   if (alerts_questions !== undefined) user.alerts_questions = !!alerts_questions;
   if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
   if (view_dashboard !== undefined) user.view_dashboard = !!view_dashboard;
+  if (can_prep_manage !== undefined) user.can_prep_manage = !!can_prep_manage;
+  if (can_prep_operate !== undefined) user.can_prep_operate = !!can_prep_operate;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -1336,6 +1367,130 @@ route('POST', '/api/restore', async (req, res) => {
   saveDB(body);
   console.log('[RESTORE] Base de datos restaurada:', body.users.length, 'usuarios,', (body.ml_accounts || []).length, 'cuentas ML');
   sendJSON(res, 200, { ok: true, users: body.users.length, accounts: (body.ml_accounts || []).length });
+});
+
+// ==================== PREP ROUTES ====================
+
+route('GET', '/api/prep/list', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const url = new URL(req.url, 'http://localhost');
+  const statusFilter = url.searchParams.get('status');
+  const db = loadDB();
+  let orders = db.prep_orders || [];
+  if (statusFilter) orders = orders.filter(o => o.status === statusFilter);
+  sendJSON(res, 200, orders);
+});
+
+route('POST', '/api/prep/add', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const { order_id, order_ids, pack_id, account_id, account_name, seller_id, buyer_name, buyer_id, items, shipping_id, shipping_type, total_amount, date_created, priority, notes, note_id, finish_type } = body;
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const validFinishTypes = ['dropshipping', 'puerta'];
+  const isDirectDone = validFinishTypes.includes(finish_type);
+  const db = loadDB();
+  if (!db.prep_orders) db.prep_orders = [];
+  const existing = db.prep_orders.find(o => o.order_id === String(order_id));
+  if (existing) {
+    if (isDirectDone && existing.status !== 'done') {
+      existing.status = 'done';
+      existing.finish_type = finish_type;
+      existing.done_at = new Date().toISOString();
+      existing.done_by = sess.username;
+    } else {
+      existing.priority = priority || existing.priority;
+    }
+    saveDB(db);
+    return sendJSON(res, 200, { ok: true, updated: true });
+  }
+  const now = new Date().toISOString();
+  db.prep_orders.push({
+    order_id: String(order_id),
+    order_ids: order_ids || [String(order_id)],
+    pack_id: pack_id || null,
+    account_id, account_name, seller_id,
+    buyer_name, buyer_id: String(buyer_id || ''),
+    items: items || [],
+    shipping_id: shipping_id ? String(shipping_id) : null,
+    shipping_type: shipping_type || 'drop_off',
+    total_amount: total_amount || 0,
+    date_created: date_created || now,
+    status: isDirectDone ? 'done' : 'in_prep',
+    finish_type: finish_type || 'normal',
+    priority: priority || 3,
+    notes: notes || '',
+    note_id: note_id || null,
+    added_at: now,
+    added_by: sess.username,
+    done_at: isDirectDone ? now : null,
+    done_by: isDirectDone ? sess.username : null
+  });
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+route('POST', '/api/prep/priority', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id, priority } = await parseBody(req);
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const order = (db.prep_orders || []).find(o => o.order_id === String(order_id));
+  if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  order.priority = Math.max(1, Math.min(5, parseInt(priority) || 3));
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+route('POST', '/api/prep/finish', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id } = await parseBody(req);
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const order = (db.prep_orders || []).find(o => o.order_id === String(order_id));
+  if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  order.status = 'done';
+  order.done_at = new Date().toISOString();
+  order.done_by = sess.username;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+route('GET', '/api/prep/export', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const db = loadDB();
+  const orders = (db.prep_orders || []).filter(o => o.status === 'done');
+  const today = new Date().toISOString().slice(0, 10);
+  const BOM = '﻿';
+  const headers = ['N° Orden','Pack ID','Cuenta ML','Comprador','Comprador ID','Fecha Compra','Producto(s)','SKU(s)','Cantidad Total','Tipo Envío','Total ARS','Prioridad','Notas','Fecha Agregada','Finalizado Por','Fecha Finalizado','Tipo Finalización'];
+  const finishTypeLabel = { dropshipping: 'Dropshipping', puerta: 'Puerta', normal: 'Normal' };
+  const rows = orders.map(o => {
+    const products = (o.items || []).map(i => i.title).join(' | ');
+    const skus = (o.items || []).map(i => i.sku || '').join(' | ');
+    const totalQty = (o.items || []).reduce((sum, i) => sum + (i.quantity || 0), 0);
+    const shippingLabel = o.shipping_type === 'flex' ? 'FLEX' : o.shipping_type === 'drop_off' ? 'PUNTO DESPACHO' : 'ACORDAR';
+    function csvCell(v) { const s = String(v == null ? '' : v); return s.includes(',') || s.includes('"') || s.includes('\n') ? '"' + s.replace(/"/g, '""') + '"' : s; }
+    return [
+      o.order_id, o.pack_id || '', o.account_name, o.buyer_name, o.buyer_id,
+      o.date_created ? new Date(o.date_created).toLocaleString('es-AR') : '',
+      products, skus, totalQty, shippingLabel, o.total_amount || 0,
+      o.priority || '', o.notes || '',
+      o.added_at ? new Date(o.added_at).toLocaleString('es-AR') : '',
+      o.done_by || '',
+      o.done_at ? new Date(o.done_at).toLocaleString('es-AR') : '',
+      finishTypeLabel[o.finish_type] || 'Normal'
+    ].map(csvCell).join(',');
+  });
+  const csv = BOM + [headers.join(','), ...rows].join('\r\n');
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="autochap_prep_${today}.csv"`
+  });
+  res.end(csv);
 });
 
 // ==================== STATIC FILES ====================
