@@ -508,7 +508,7 @@ route('POST', '/api/users', async (req, res) => {
   if (!username || !password) return sendJSON(res, 400, { error: 'Faltan datos' });
   const db = loadDB();
   if (db.users.find(u => u.username === username)) return sendJSON(res, 400, { error: 'El usuario ya existe' });
-  db.users.push({ id: db.nextUserId++, username, password: hashPassword(password), role: 'user', alerts_questions: true, alerts_messages: true, view_dashboard: true, created_at: new Date().toISOString() });
+  db.users.push({ id: db.nextUserId++, username, password: hashPassword(password), role: 'user', alerts_questions: true, alerts_messages: true, view_dashboard: true, can_view_dashboard: false, can_view_questions: true, can_view_messages: true, can_view_sales: true, can_prep_manage: false, can_prep_operate: false, created_at: new Date().toISOString() });
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
