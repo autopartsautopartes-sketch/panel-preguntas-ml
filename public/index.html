@@ -445,6 +445,8 @@
           document.getElementById('mob-prep').style.display = '';
         }
         loadAccounts();
+        // Run immediately so badge shows on first load without waiting 15s
+        checkNewMessages();
         // Check URL params for deep linking (e.g. from sales buttons)
         handleDeepLink();
       }
@@ -910,71 +912,96 @@
   // ==================== MESSAGES ====================
 
   let messageStatus = 'unread';
+  let msgBuyerSearch = '';
+  let msgAccountFilter = '';
+  let allConversationsCache = [];
 
-  async function loadMessages(accountId = '') {
+  async function loadMessages(accountId) {
+    if (accountId !== undefined) msgAccountFilter = accountId;
     const content = document.getElementById('content');
     try {
-      const res = await fetch(`/api/messages?account_id=${accountId}&status=${messageStatus}`);
-      const conversations = await res.json();
-
-      let html = `
-        <h2 style="margin-bottom:20px;color:#2d3277">Mensajes de compras</h2>
-        <div class="filters">
-          <button class="${messageStatus === 'unread' ? 'active' : ''}" onclick="messageStatus='unread';loadMessages()">Sin leer</button>
-          <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="messageStatus='answered';loadMessages()">Respondidos</button>
-          <select onchange="loadMessages(this.value)">${accountFilterHTML()}</select>
-        </div>
-      `;
-
-      if (conversations.length === 0) {
-        html += `<div class="empty"><p>${messageStatus === 'unread' ? 'No hay mensajes sin leer' : 'No hay mensajes respondidos'}</p></div>`;
-      } else {
-        for (const conv of conversations) {
-          html += `
-            <div class="card">
-              <div class="card-header">
-                <span class="card-account">${escapeHtml(conv.account_name)}</span>
-                <span class="card-date">Comprador: ${escapeHtml(conv.buyer_name)}</span>
-              </div>
-              <div class="card-item-title" style="margin-bottom:12px">
-                📦 ${escapeHtml(conv.item_title)} &nbsp; <a href="/?section=sales&order_id=${encodeURIComponent(conv.order_id)}&account_id=${encodeURIComponent(conv.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${escapeHtml(conv.order_id)}</a>
-              </div>
-              <div class="msg-conversation">
-                ${(function(){
-                  const msgs = conv.messages || [];
-                  // Reverse array: ML API returns newest first, we want oldest first (buyer on top, seller below)
-                  const ordered = [...msgs].reverse();
-                  return ordered.map(m => {
-                    let dateStr = '';
-                    if (m.date && m.date !== '') {
-                      try {
-                        const dd = new Date(m.date);
-                        if (!isNaN(dd.getTime())) {
-                          const dy = dd.getDate().toString().padStart(2,'0');
-                          const mo = (dd.getMonth()+1).toString().padStart(2,'0');
-                          const yr = dd.getFullYear().toString().slice(2);
-                          const hh = dd.getHours().toString().padStart(2,'0');
-                          const mm = dd.getMinutes().toString().padStart(2,'0');
-                          dateStr = dy+'/'+mo+'/'+yr+' '+hh+':'+mm+' hs';
-                        }
-                      } catch(e) {}
-                    }
-                    return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
-                  }).join('');
-                })()}
-              </div>
-              <div class="reply-box">
-                <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
-                <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
-              </div>
-            </div>
-          `;
-        }
-      }
-      content.innerHTML = html;
+      const res = await fetch(`/api/messages?account_id=${encodeURIComponent(msgAccountFilter)}&status=${messageStatus}`);
+      allConversationsCache = await res.json();
+      renderMessagesList();
     } catch (e) {
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
     }
+  }
+
+  function renderMessagesList() {
+    const content = document.getElementById('content');
+    const search = msgBuyerSearch.trim().toLowerCase();
+    const conversations = search
+      ? allConversationsCache.filter(c => c.buyer_name?.toLowerCase().includes(search))
+      : allConversationsCache;
+
+    let html = `
+      <h2 style="margin-bottom:16px;color:#2d3277">Mensajes de compras</h2>
+      <div class="filters" style="flex-wrap:wrap;gap:8px">
+        <button class="${messageStatus === 'unread' ? 'active' : ''}" onclick="messageStatus='unread';msgBuyerSearch='';loadMessages()">Sin leer</button>
+        <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="messageStatus='answered';msgBuyerSearch='';loadMessages()">Respondidos</button>
+        <select onchange="loadMessages(this.value)">${accountFilterHTML()}</select>
+        <input type="text" id="msg-buyer-search" placeholder="🔍 Buscar comprador..." value="${escapeHtml(msgBuyerSearch)}"
+          oninput="msgBuyerSearch=this.value;renderMessagesList()"
+          style="flex:1;min-width:160px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
+      </div>
+    `;
+
+    if (conversations.length === 0) {
+      html += `<div class="empty"><p>${search ? 'No hay resultados para "'+escapeHtml(search)+'"' : messageStatus === 'unread' ? 'No hay mensajes sin leer' : 'No hay mensajes respondidos'}</p></div>`;
+    } else {
+      for (const conv of conversations) {
+        const isMLUnread = conv.has_ml_unread;
+        const borderColor = isMLUnread ? '#e74c3c' : (conv.is_unread ? '#f5a623' : '#27ae60');
+        const unreadBadge = isMLUnread
+          ? '<span style="background:#e74c3c;color:white;font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px">🔴 No leído ML</span>'
+          : (conv.is_unread ? '<span style="background:#f5a623;color:white;font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px">Sin responder</span>' : '');
+        html += `
+          <div class="card" style="border-left:4px solid ${borderColor}">
+            <div class="card-header">
+              <span class="card-account">${escapeHtml(conv.account_name)}</span>
+              <span class="card-date" style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">Comprador: <strong>${escapeHtml(conv.buyer_name)}</strong>${unreadBadge}</span>
+            </div>
+            <div class="card-item-title" style="margin-bottom:12px">
+              📦 ${escapeHtml(conv.item_title)} &nbsp; <a href="/?section=sales&order_id=${encodeURIComponent(conv.order_id)}&account_id=${encodeURIComponent(conv.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none;cursor:pointer" title="Ver venta">Orden #${escapeHtml(conv.order_id)}</a>
+            </div>
+            <div class="msg-conversation">
+              ${(function(){
+                const msgs = conv.messages || [];
+                // Reverse: ML returns newest-first, we show oldest-first
+                const ordered = [...msgs].reverse();
+                return ordered.map(m => {
+                  let dateStr = '';
+                  if (m.date && m.date !== '') {
+                    try {
+                      const dd = new Date(m.date);
+                      if (!isNaN(dd.getTime())) {
+                        const dy = dd.getDate().toString().padStart(2,'0');
+                        const mo = (dd.getMonth()+1).toString().padStart(2,'0');
+                        const yr = dd.getFullYear().toString().slice(2);
+                        const hh = dd.getHours().toString().padStart(2,'0');
+                        const mm = dd.getMinutes().toString().padStart(2,'0');
+                        dateStr = dy+'/'+mo+'/'+yr+' '+hh+':'+mm+' hs';
+                      }
+                    } catch(e) {}
+                  }
+                  const unreadDot = m.mlUnread ? ' <span style="display:inline-block;width:7px;height:7px;background:#e74c3c;border-radius:50%;vertical-align:middle" title="No leído por ML"></span>' : '';
+                  return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + unreadDot + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
+                }).join('');
+              })()}
+            </div>
+            <div class="reply-box">
+              <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
+              <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
+            </div>
+          </div>
+        `;
+      }
+    }
+    content.innerHTML = html;
+    // Restore search input focus position if user was typing
+    const searchInput = document.getElementById('msg-buyer-search');
+    if (searchInput && document.activeElement !== searchInput && msgBuyerSearch) searchInput.focus();
   }
 
   async function replyMessage(orderId, accountId) {
@@ -2215,10 +2242,26 @@
                 </div>
               </div>
             `).join('')}
-            ${order.notes ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623;font-size:13px"><strong>Nota:</strong> ${escapeHtml(order.notes)}</div>` : ''}
+            <div id="pnc-${escapeHtml(order.order_id)}"
+                 data-order-id="${escapeHtml(order.order_id)}"
+                 data-account-id="${order.account_id}"
+                 style="margin-top:8px;padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #eee;min-height:38px">
+              <div style="display:flex;align-items:flex-start;gap:8px">
+                <div id="pnt-${escapeHtml(order.order_id)}" style="flex:1;font-size:13px;color:#bbb;line-height:1.5">${order.notes ? `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(order.notes)}</span>` : 'Sin notas'}</div>
+                ${can_manage ? `<button onclick="editPrepNote('${escapeHtml(order.order_id)}')" title="Editar nota" style="flex-shrink:0;width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">✏️</button>` : ''}
+              </div>
+              ${can_manage ? `<div id="pne-${escapeHtml(order.order_id)}" style="display:none;margin-top:8px">
+                <textarea id="pni-${escapeHtml(order.order_id)}" placeholder="Escribí la nota..." style="width:100%;padding:8px 10px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>
+                <div style="display:flex;gap:8px;margin-top:6px">
+                  <button onclick="savePrepNote('${escapeHtml(order.order_id)}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar en ML</button>
+                  <button onclick="cancelPrepNote('${escapeHtml(order.order_id)}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
+                </div>
+              </div>` : ''}
+            </div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
               <div style="display:flex;gap:8px;flex-wrap:wrap">
                 ${order.shipping_id ? `<button class="btn-print" onclick="printLabel(${order.shipping_id}, ${order.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
+                ${can_manage ? `<button onclick="volverASinPreparar('${escapeHtml(order.order_id)}',this)" style="padding:8px 14px;background:white;color:#e74c3c;border:2px solid #e74c3c;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
               </div>
               <button class="btn-finalizar" onclick="finalizarOrden('${escapeHtml(order.order_id)}', this)">✅ FINALIZADO</button>
             </div>
@@ -2227,6 +2270,8 @@
       }
 
       container.innerHTML = html;
+      // Fetch fresh notes from ML for each order (async, non-blocking)
+      for (const o of orders) loadPrepNoteDisplay(o.order_id, o.account_id);
     } catch(e) {
       container.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
     }
@@ -2326,18 +2371,38 @@
                 </div>
               </div>
             `).join('')}
-            ${order.notes ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623;font-size:13px"><strong>Nota:</strong> ${escapeHtml(order.notes)}</div>` : ''}
+            <div id="pnc-${escapeHtml(order.order_id)}"
+                 data-order-id="${escapeHtml(order.order_id)}"
+                 data-account-id="${order.account_id}"
+                 style="margin-top:8px;padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #eee;min-height:38px">
+              <div style="display:flex;align-items:flex-start;gap:8px">
+                <div id="pnt-${escapeHtml(order.order_id)}" style="flex:1;font-size:13px;color:#bbb;line-height:1.5">${order.notes ? `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(order.notes)}</span>` : 'Sin notas'}</div>
+                ${can_manage ? `<button onclick="editPrepNote('${escapeHtml(order.order_id)}')" title="Editar nota" style="flex-shrink:0;width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">✏️</button>` : ''}
+              </div>
+              ${can_manage ? `<div id="pne-${escapeHtml(order.order_id)}" style="display:none;margin-top:8px">
+                <textarea id="pni-${escapeHtml(order.order_id)}" placeholder="Escribí la nota..." style="width:100%;padding:8px 10px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>
+                <div style="display:flex;gap:8px;margin-top:6px">
+                  <button onclick="savePrepNote('${escapeHtml(order.order_id)}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar en ML</button>
+                  <button onclick="cancelPrepNote('${escapeHtml(order.order_id)}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
+                </div>
+              </div>` : ''}
+            </div>
             <div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
               ${order.finish_type && order.finish_type !== 'normal' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;${order.finish_type==='dropshipping'?'background:#f0e6ff;color:#8e44ad':'background:#e6f7f4;color:#16a085'}">${order.finish_type==='dropshipping'?'🚚 Dropshipping':'🏠 Puerta'}</span>` : ''}
               <span>Finalizado por: <strong style="color:#333">${escapeHtml(order.done_by || '-')}</strong></span>
               <span>${formatDateTime(order.done_at)}</span>
               ${can_manage ? `<span>| Orden: <a onclick="verVentaPrep('${escapeHtml(order.order_id)}','${order.account_id}')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#${escapeHtml(order.order_id)}</a></span>` : ''}
+              ${can_manage ? `<button onclick="volverASinPreparar('${escapeHtml(order.order_id)}',this)" style="margin-left:auto;padding:5px 12px;background:white;color:#e74c3c;border:1.5px solid #e74c3c;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
             </div>
           </div>
         `;
       }
 
       container.innerHTML = html;
+      // Fetch fresh notes from ML for each order (only matters for can_manage since non-managers don't have the editor)
+      if (can_manage) {
+        for (const o of orders) loadPrepNoteDisplay(o.order_id, o.account_id);
+      }
     } catch(e) {
       container.innerHTML = '<div class="empty"><p>Error al cargar finalizadas</p></div>';
     }
@@ -2350,6 +2415,116 @@
 
   function exportarPrep() {
     window.open('/api/prep/export', '_blank');
+  }
+
+  // Fetch fresh note from ML and update the prep note display
+  async function loadPrepNoteDisplay(orderId, accountId) {
+    const textEl = document.getElementById('pnt-' + orderId);
+    const container = document.getElementById('pnc-' + orderId);
+    if (!textEl || !container) return;
+    try {
+      const res = await fetch('/api/sales/note?order_id=' + orderId + '&account_id=' + accountId);
+      const data = await res.json();
+      if (data.note) {
+        textEl.innerHTML = `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(data.note)}</span>`;
+        container.dataset.noteId = data.note_id || '';
+        container.dataset.noteOrderId = orderId;
+      } else {
+        textEl.innerHTML = '<span style="color:#bbb">Sin notas</span>';
+      }
+    } catch(e) {
+      // Keep the snapshot value already rendered, don't overwrite
+    }
+  }
+
+  function editPrepNote(orderId) {
+    const editor = document.getElementById('pne-' + orderId);
+    const input = document.getElementById('pni-' + orderId);
+    const textEl = document.getElementById('pnt-' + orderId);
+    if (!editor || !input) return;
+    const currentText = textEl?.textContent?.replace(/^📝\s*/, '').trim() || '';
+    input.value = (currentText === 'Sin notas') ? '' : currentText;
+    editor.style.display = 'block';
+    input.focus();
+  }
+
+  function cancelPrepNote(orderId) {
+    const editor = document.getElementById('pne-' + orderId);
+    if (editor) editor.style.display = 'none';
+  }
+
+  async function savePrepNote(orderId) {
+    const container = document.getElementById('pnc-' + orderId);
+    const editor = document.getElementById('pne-' + orderId);
+    const input = document.getElementById('pni-' + orderId);
+    const textEl = document.getElementById('pnt-' + orderId);
+    if (!container || !input) return;
+
+    const text = input.value.trim();
+    const accountId = container.dataset.accountId;
+    const noteId = container.dataset.noteId || '';
+    const noteOrderId = container.dataset.noteOrderId || orderId;
+
+    const saveBtn = editor?.querySelector('button');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Guardando...'; }
+
+    try {
+      // 1. Save to MercadoLibre
+      const res = await fetch('/api/sales/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: noteOrderId, account_id: accountId, note_id: noteId || null, notes: text })
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        if (data.note_id) container.dataset.noteId = data.note_id;
+        textEl.innerHTML = text
+          ? `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(text)}</span>`
+          : '<span style="color:#bbb">Sin notas</span>';
+        if (editor) editor.style.display = 'none';
+
+        // 2. Sync local prep_order.notes
+        fetch('/api/prep/note', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_id: orderId, notes: text })
+        }).catch(() => {}); // Fire and forget — ML is the source of truth
+
+        showToast('Nota guardada en MercadoLibre ✓', 'success');
+      } else {
+        showToast(data.error || 'Error al guardar nota', 'error');
+      }
+    } catch(e) {
+      showToast('Error al guardar nota', 'error');
+    }
+
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Guardar en ML'; }
+  }
+
+  async function volverASinPreparar(orderId, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const res = await fetch('/api/prep/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId })
+      });
+      if (res.ok) {
+        showToast('Orden devuelta a Sin Preparar', 'success');
+        loadCurrentPrepTab();
+      } else {
+        const d = await res.json();
+        showToast(d.error || 'Error al revertir', 'error');
+        btn.disabled = false;
+        btn.textContent = '↩️ Sin preparar';
+      }
+    } catch(e) {
+      showToast('Error de conexión', 'error');
+      btn.disabled = false;
+      btn.textContent = '↩️ Sin preparar';
+    }
   }
 
   // ==================== HELPERS ====================
@@ -2578,7 +2753,8 @@
       const res = await fetch('/api/messages?account_id=&status=unread');
       if (!res.ok) return;
       const conversations = await res.json();
-      const currentIds = conversations.map(c => c.messages?.[c.messages.length - 1]?.id).filter(Boolean);
+      // messages[0] = newest message (ML returns newest-first) — use this for new-message detection
+      const currentIds = conversations.map(c => c.messages?.[0]?.id).filter(Boolean);
 
       // Update message badge in sidebar and mobile nav
       const msgBadge = document.getElementById('badge-unread-messages');
