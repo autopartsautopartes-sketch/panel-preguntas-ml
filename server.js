@@ -457,6 +457,21 @@ route('POST', '/api/users/alerts', async (req, res) => {
   sendJSON(res, 200, { ok: true });
 });
 
+route('POST', '/api/users/password', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador puede cambiar contraseñas' });
+  const { id, new_password } = await parseBody(req);
+  if (!new_password || new_password.length < 4) return sendJSON(res, 400, { error: 'La contraseña debe tener al menos 4 caracteres' });
+  const db = loadDB();
+  const targetUser = id ? db.users.find(u => u.id === parseInt(id)) : db.users.find(u => u.id === sess.userId);
+  if (!targetUser) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
+  targetUser.password = hashPassword(new_password);
+  saveDB(db);
+  console.log(`[PASS] Contraseña cambiada: usuario "${targetUser.username}" por admin "${sess.username}"`);
+  sendJSON(res, 200, { ok: true });
+});
+
 route('POST', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
