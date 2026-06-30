@@ -444,6 +444,12 @@
           document.getElementById('nav-prep').style.display = '';
           document.getElementById('mob-prep').style.display = '';
         }
+        // Show dashboard nav only for admin or users with can_view_dashboard permission
+        if (!currentUser.can_view_dashboard) {
+          document.getElementById('nav-dashboard').style.display = 'none';
+          const mobDash = document.getElementById('mob-dashboard');
+          if (mobDash) mobDash.style.display = 'none';
+        }
         loadAccounts();
         // Run immediately so badge shows on first load without waiting 15s
         checkNewMessages();
@@ -471,7 +477,12 @@
     } else if (targetSection === 'sales') {
       showSection('sales');
     } else {
-      showSection('dashboard');
+      // Go to dashboard only if the user has permission, otherwise go to questions
+      if (currentUser?.can_view_dashboard) {
+        showSection('dashboard');
+      } else {
+        showSection('questions');
+      }
     }
   }
 
@@ -498,6 +509,11 @@
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
           document.getElementById('mob-prep').style.display = '';
+        }
+        if (!currentUser.can_view_dashboard) {
+          document.getElementById('nav-dashboard').style.display = 'none';
+          const mobDash = document.getElementById('mob-dashboard');
+          if (mobDash) mobDash.style.display = 'none';
         }
         loadAccounts();
         handleDeepLink();
@@ -598,6 +614,10 @@
   // ==================== DASHBOARD ====================
 
   async function loadDashboard() {
+    if (!currentUser?.can_view_dashboard) {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver el Dashboard.</p></div>';
+      return;
+    }
     try {
       const res = await fetch('/api/stats');
       const stats = await res.json();
@@ -1506,6 +1526,12 @@
           html += '<button onclick="editNote(\'' + firstOrderId + '\')" id="btn-edit-' + firstOrderId + '" title="Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center">&#9999;&#65039;</button>';
           html += '<button onclick="deleteNote(\'' + firstOrderId + '\')" id="btn-del-' + firstOrderId + '" title="Eliminar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center;color:#e74c3c">&#128465;&#65039;</button>';
           html += '</div></div>';
+          html += '<div id="note-editor-' + firstOrderId + '" style="display:none;margin-top:4px">';
+          html += '<textarea id="note-input-' + firstOrderId + '" placeholder="Escribí tu nota..." style="width:100%;padding:8px 12px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none"></textarea>';
+          html += '<div style="display:flex;gap:8px;margin-top:6px">';
+          html += '<button onclick="saveNote(\'' + firstOrderId + '\')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar</button>';
+          html += '<button onclick="cancelNote(\'' + firstOrderId + '\')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>';
+          html += '</div></div>';
           html += '</div>';
         }
       }
@@ -1792,7 +1818,11 @@
                 <input type="checkbox" ${u.alerts_messages ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_messages', this.checked)" style="width:18px;height:18px;cursor:pointer">
                 Alertas mensajes
               </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Permite ver la sección Dashboard">
+                <input type="checkbox" ${u.can_view_dashboard || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_dashboard', this.checked)"`} style="width:18px;height:18px;cursor:pointer">
+                Ver Dashboard
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Permite ver estadísticas de ventas dentro del Dashboard">
                 <input type="checkbox" ${u.view_dashboard ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'view_dashboard', this.checked)" style="width:18px;height:18px;cursor:pointer">
                 Ver ventas
               </label>
