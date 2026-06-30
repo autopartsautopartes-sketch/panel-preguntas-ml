@@ -1873,8 +1873,8 @@
                   <input type="checkbox" ${u.can_view_sales || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_sales', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Ventas
                 </label>
-                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Preparación">
-                  <input type="checkbox" ${u.can_prep_manage || u.can_prep_operate ? 'checked' : ''} disabled style="width:16px;height:16px;cursor:default;opacity:.5">
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Habilita acceso a la sección Preparación (activa Operario embalaje)">
+                  <input type="checkbox" ${u.can_prep_manage || u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:16px;height:16px;cursor:pointer">
                   Preparación
                 </label>
               </div>
