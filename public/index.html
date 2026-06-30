@@ -602,20 +602,18 @@
       const res = await fetch('/api/stats');
       const stats = await res.json();
 
-      // Update question badge (defer to checkNewQuestions for sticky logic; only update upward here)
+      // Update question/message badges — only update upward here; hiding is owned by
+      // checkNewQuestions/checkNewMessages (per-id sticky tracking) to avoid fighting
+      // over the badge and causing flicker or false re-alerts.
       const badge = document.getElementById('badge-unanswered');
-      if (stats.unanswered > 0) {
-        qBadgeCount = stats.unanswered; qZeroStreak = 0;
-        badge.textContent = qBadgeCount;
+      if (stats.unanswered > 0 && stats.unanswered > knownQuestionIds.size) {
+        badge.textContent = stats.unanswered;
         badge.style.display = '';
       }
-      // Note: hiding is handled by checkNewQuestions sticky logic to avoid transient flicker
 
-      // Update message badge (defer to checkNewMessages for sticky logic; only update upward here)
       const msgBadge = document.getElementById('badge-unread-messages');
-      if (stats.unread_messages > 0) {
-        msgBadgeCount = stats.unread_messages; msgZeroStreak = 0;
-        msgBadge.textContent = msgBadgeCount;
+      if (stats.unread_messages > 0 && stats.unread_messages > knownMessageIds.size) {
+        msgBadge.textContent = stats.unread_messages;
         msgBadge.style.display = '';
       }
 
@@ -2670,14 +2668,15 @@
 
   // ==================== NOTIFICATIONS ====================
 
-  let lastQuestionIds = [];
-  let lastMessageIds = [];
   let notificationsReady = false;
-  // Sticky badge counts: only hide badge after 2 consecutive zero-polls (avoids transient API blips)
-  let msgBadgeCount = 0;
-  let qBadgeCount = 0;
-  let msgZeroStreak = 0;
-  let qZeroStreak = 0;
+  // Per-ID sticky tracking: an id is only considered "gone" after being absent from
+  // 2 consecutive successful polls. This avoids both badge flicker AND repeated/false
+  // notification sounds caused by a single transient API blip dropping a conversation
+  // from the unread list and then it reappearing on the next poll.
+  let knownMessageIds = new Set();
+  let msgMissingStreak = {};
+  let knownQuestionIds = new Set();
+  let qMissingStreak = {};
 
   // Create notification sound using Web Audio API
   function playNotificationSound() {
@@ -2801,45 +2800,56 @@
       if (!res.ok) return;
       const questions = await res.json();
       const currentIds = questions.map(q => q.id);
+      const currentSet = new Set(currentIds);
 
+      // Truly-new ids: present now AND not already known (avoids re-alerting on ids that
+      // briefly vanished from a poll due to a transient API blip and then reappeared)
+      const newIds = currentIds.filter(id => !knownQuestionIds.has(id));
+      const hadKnownBefore = knownQuestionIds.size > 0;
+
+      newIds.forEach(id => knownQuestionIds.add(id));
+      // Reset missing-streak for ids present in this poll
+      currentSet.forEach(id => { qMissingStreak[id] = 0; });
+      // Ids previously known but absent now: only drop after 2 consecutive misses
+      for (const id of Array.from(knownQuestionIds)) {
+        if (!currentSet.has(id)) {
+          qMissingStreak[id] = (qMissingStreak[id] || 0) + 1;
+          if (qMissingStreak[id] >= 2) {
+            knownQuestionIds.delete(id);
+            delete qMissingStreak[id];
+          }
+        }
+      }
+
+      const qBadgeCount = knownQuestionIds.size;
       const badge = document.getElementById('badge-unanswered');
       const mobBadge = document.getElementById('mob-badge-unanswered');
-      if (questions.length > 0) {
-        qBadgeCount = questions.length;
-        qZeroStreak = 0;
+      if (qBadgeCount > 0) {
         badge.textContent = qBadgeCount; badge.style.display = '';
         if (mobBadge) { mobBadge.textContent = qBadgeCount; mobBadge.style.display = ''; }
       } else {
-        qZeroStreak++;
-        if (qZeroStreak >= 2) {
-          qBadgeCount = 0;
-          badge.style.display = 'none';
-          if (mobBadge) { mobBadge.style.display = 'none'; }
-        }
+        badge.style.display = 'none';
+        if (mobBadge) { mobBadge.style.display = 'none'; }
       }
 
-      if (notificationsReady && lastQuestionIds.length > 0) {
-        const newIds = currentIds.filter(id => !lastQuestionIds.includes(id));
-        if (newIds.length > 0) {
-          // Sound + popup notification (if user has alerts enabled)
-          if (currentUser?.alerts_questions) {
-            playNotificationSound();
-            showNotification(newIds.length, 'questions');
-          }
-
-          if (currentSection === 'questions') {
-            if (isUserTyping()) {
-              // User is typing — don't refresh, show banner instead
-              pendingNewQuestions += newIds.length;
-              showNewQuestionsBanner(pendingNewQuestions);
-            } else {
-              loadQuestions();
-            }
-          }
-          if (currentSection === 'dashboard') loadDashboard();
+      if (notificationsReady && hadKnownBefore && newIds.length > 0) {
+        // Sound + popup notification (if user has alerts enabled)
+        if (currentUser?.alerts_questions) {
+          playNotificationSound();
+          showNotification(newIds.length, 'questions');
         }
+
+        if (currentSection === 'questions') {
+          if (isUserTyping()) {
+            // User is typing — don't refresh, show banner instead
+            pendingNewQuestions += newIds.length;
+            showNewQuestionsBanner(pendingNewQuestions);
+          } else {
+            loadQuestions();
+          }
+        }
+        if (currentSection === 'dashboard') loadDashboard();
       }
-      lastQuestionIds = currentIds;
     } catch(e) {}
   }
 
@@ -2850,34 +2860,45 @@
       const conversations = await res.json();
       // messages[0] = newest message (ML returns newest-first) — use this for new-message detection
       const currentIds = conversations.map(c => c.messages?.[0]?.id).filter(Boolean);
+      const currentSet = new Set(currentIds);
 
-      // Update message badge in sidebar and mobile nav (sticky: only hide after 2 consecutive zero polls)
+      // Truly-new ids: present now AND not already known (avoids re-alerting on ids that
+      // briefly vanished from a poll due to a transient API blip and then reappeared)
+      const newIds = currentIds.filter(id => !knownMessageIds.has(id));
+      const hadKnownBefore = knownMessageIds.size > 0;
+
+      newIds.forEach(id => knownMessageIds.add(id));
+      // Reset missing-streak for ids present in this poll
+      currentSet.forEach(id => { msgMissingStreak[id] = 0; });
+      // Ids previously known but absent now: only drop after 2 consecutive misses
+      for (const id of Array.from(knownMessageIds)) {
+        if (!currentSet.has(id)) {
+          msgMissingStreak[id] = (msgMissingStreak[id] || 0) + 1;
+          if (msgMissingStreak[id] >= 2) {
+            knownMessageIds.delete(id);
+            delete msgMissingStreak[id];
+          }
+        }
+      }
+
+      // Update message badge in sidebar and mobile nav
+      const msgBadgeCount = knownMessageIds.size;
       const msgBadge = document.getElementById('badge-unread-messages');
       const mobMsgBadge = document.getElementById('mob-badge-unread-messages');
-      if (conversations.length > 0) {
-        msgBadgeCount = conversations.length;
-        msgZeroStreak = 0;
+      if (msgBadgeCount > 0) {
         msgBadge.textContent = msgBadgeCount; msgBadge.style.display = '';
         if (mobMsgBadge) { mobMsgBadge.textContent = msgBadgeCount; mobMsgBadge.style.display = ''; }
       } else {
-        msgZeroStreak++;
-        if (msgZeroStreak >= 2) {
-          msgBadgeCount = 0;
-          msgBadge.style.display = 'none';
-          if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
-        }
+        msgBadge.style.display = 'none';
+        if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
       }
 
-      if (notificationsReady && lastMessageIds.length > 0) {
-        const newIds = currentIds.filter(id => !lastMessageIds.includes(id));
-        if (newIds.length > 0 && currentUser?.alerts_messages) {
-          playNotificationSound();
-          showNotification(newIds.length, 'messages');
-          // Don't auto-refresh messages if user is typing
-          if (currentSection === 'messages' && !isUserTyping()) loadMessages();
-        }
+      if (notificationsReady && hadKnownBefore && newIds.length > 0 && currentUser?.alerts_messages) {
+        playNotificationSound();
+        showNotification(newIds.length, 'messages');
+        // Don't auto-refresh messages if user is typing
+        if (currentSection === 'messages' && !isUserTyping()) loadMessages();
       }
-      lastMessageIds = currentIds;
     } catch(e) {}
   }
 
