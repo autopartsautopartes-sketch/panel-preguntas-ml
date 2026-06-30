@@ -495,11 +495,19 @@
     } else if (targetSection === 'sales') {
       showSection('sales');
     } else {
-      // Go to dashboard only if the user has permission, otherwise go to questions
+      // Go to the first section this user has access to
       if (currentUser?.role === 'admin' || currentUser?.can_view_dashboard) {
         showSection('dashboard');
-      } else {
+      } else if (currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate) {
+        showSection('prep');
+      } else if (currentUser?.can_view_questions !== false) {
         showSection('questions');
+      } else if (currentUser?.can_view_messages !== false) {
+        showSection('messages');
+      } else if (currentUser?.can_view_sales !== false) {
+        showSection('sales');
+      } else {
+        showSection('prep');
       }
     }
   }
@@ -531,7 +539,7 @@
           document.getElementById('nav-prep').style.display = '';
           document.getElementById('mob-prep').style.display = '';
         }
-        if (!currentUser.can_view_dashboard) {
+        if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
           const mobDash = document.getElementById('mob-dashboard');
           if (mobDash) mobDash.style.display = 'none';
@@ -1846,45 +1854,55 @@
               <h3>${u.username} ${u.role === 'admin' ? '<span style="font-size:12px;color:#3483fa">(Admin)</span>' : ''}</h3>
               <p>Creado: ${formatDate(u.created_at)}</p>
             </div>
-            <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Puede ver la sección Preguntas">
-                <input type="checkbox" ${u.can_view_questions || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_questions', this.checked)"`} style="width:18px;height:18px;cursor:pointer">
-                Ver preguntas
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Puede ver la sección Mensajes">
-                <input type="checkbox" ${u.can_view_messages || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_messages', this.checked)"`} style="width:18px;height:18px;cursor:pointer">
-                Ver mensajes
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Puede ver la sección Ventas">
-                <input type="checkbox" ${u.can_view_sales || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_sales', this.checked)"`} style="width:18px;height:18px;cursor:pointer">
-                Ver ventas (sección)
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-                <input type="checkbox" ${u.alerts_questions ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_questions', this.checked)" style="width:18px;height:18px;cursor:pointer">
-                Alertas preguntas
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-                <input type="checkbox" ${u.alerts_messages ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_messages', this.checked)" style="width:18px;height:18px;cursor:pointer">
-                Alertas mensajes
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Permite ver la sección Dashboard">
-                <input type="checkbox" ${u.can_view_dashboard || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_dashboard', this.checked)"`} style="width:18px;height:18px;cursor:pointer">
-                Ver Dashboard
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer" title="Permite ver estadísticas de ventas dentro del Dashboard">
-                <input type="checkbox" ${u.view_dashboard ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'view_dashboard', this.checked)" style="width:18px;height:18px;cursor:pointer">
-                Ver ventas
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-                <input type="checkbox" ${u.can_prep_manage ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_manage', this.checked)" style="width:18px;height:18px;cursor:pointer">
-                Gestión preparación
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-                <input type="checkbox" ${u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:18px;height:18px;cursor:pointer">
-                Operario embalaje
-              </label>
-              <button onclick="openChangePassword(${u.id}, '${escapeHtml(u.username)}')" style="padding:6px 12px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">🔑 Cambiar contraseña</button>
-              ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:6px 12px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
+            <div style="display:flex;flex-direction:column;gap:10px;flex:1">
+              <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;background:#f0f4ff;border-radius:8px">
+                <span style="font-size:11px;font-weight:600;color:#3483fa;text-transform:uppercase;letter-spacing:.5px;min-width:80px">Secciones</span>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Dashboard">
+                  <input type="checkbox" ${u.can_view_dashboard || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_dashboard', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Dashboard
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Preguntas">
+                  <input type="checkbox" ${u.can_view_questions || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_questions', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Preguntas
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Mensajes">
+                  <input type="checkbox" ${u.can_view_messages || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_messages', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Mensajes
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Ventas">
+                  <input type="checkbox" ${u.can_view_sales || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_sales', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Ventas
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Preparación">
+                  <input type="checkbox" ${u.can_prep_manage || u.can_prep_operate ? 'checked' : ''} disabled style="width:16px;height:16px;cursor:default;opacity:.5">
+                  Preparación
+                </label>
+              </div>
+              <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;background:#f8f9fa;border-radius:8px">
+                <span style="font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.5px;min-width:80px">Permisos</span>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Permite ver estadísticas de ventas dentro del Dashboard">
+                  <input type="checkbox" ${u.view_dashboard ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'view_dashboard', this.checked)" style="width:16px;height:16px;cursor:pointer">
+                  Ver ventas (stats)
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+                  <input type="checkbox" ${u.alerts_questions ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_questions', this.checked)" style="width:16px;height:16px;cursor:pointer">
+                  Alertas preguntas
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer">
+                  <input type="checkbox" ${u.alerts_messages ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'alerts_messages', this.checked)" style="width:16px;height:16px;cursor:pointer">
+                  Alertas mensajes
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede gestionar el panel de Preparación (asignar, mover, completar)">
+                  <input type="checkbox" ${u.can_prep_manage ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_manage', this.checked)" style="width:16px;height:16px;cursor:pointer">
+                  Gestión preparación
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede operar como operario de embalaje en Preparación">
+                  <input type="checkbox" ${u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:16px;height:16px;cursor:pointer">
+                  Operario embalaje
+                </label>
+                <button onclick="openChangePassword(${u.id}, '${escapeHtml(u.username)}')" style="padding:5px 10px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">🔑 Contraseña</button>
+                ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:5px 10px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
+              </div>
             </div>
           </div>
         `;
