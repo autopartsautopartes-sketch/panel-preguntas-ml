@@ -298,6 +298,24 @@
       .stats { grid-template-columns: 1fr; }
       .content { padding: 10px 8px 70px 8px; }
     }
+    /* PREP SECTION */
+    .prep-tabs { display:flex; gap:4px; margin-bottom:20px; background:white; padding:8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+    .prep-tab { flex:1; padding:10px 12px; border:2px solid transparent; border-radius:8px; background:#f0f2f5; cursor:pointer; font-size:13px; font-weight:600; color:#666; transition:all 0.2s; }
+    .prep-tab.active { background:#2d3277; color:white; }
+    .prep-tab:hover:not(.active) { border-color:#2d3277; color:#2d3277; }
+    .priority-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; font-size:13px; font-weight:700; color:white; flex-shrink:0; }
+    .priority-1 { background:#e74c3c; }
+    .priority-2 { background:#e67e22; }
+    .priority-3 { background:#f5a623; }
+    .priority-4 { background:#27ae60; }
+    .priority-5 { background:#95a5a6; }
+    .prep-status-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+    .prep-status-in_prep { background:#fff3cd; color:#856404; }
+    .prep-status-done { background:#d4edda; color:#155724; }
+    .btn-finalizar { background:#27ae60; color:white; border:none; border-radius:8px; padding:10px 24px; font-size:14px; font-weight:700; cursor:pointer; }
+    .btn-finalizar:hover { background:#219a52; }
+    .btn-preparar { background:#2d3277; color:white; border:none; border-radius:6px; padding:7px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+    .btn-preparar:hover { background:#1a2055; }
   </style>
 </head>
 <body spellcheck="true">
@@ -340,6 +358,9 @@
       <a onclick="showSection('sales')" id="nav-sales">
         <span>🛒 Ventas</span>
       </a>
+      <a onclick="showSection('prep')" id="nav-prep" style="display:none">
+        <span>📦 Preparación</span>
+      </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts">
         <span>🏪 Cuentas ML</span>
@@ -381,6 +402,10 @@
       <span class="nav-icon">🏪</span>
       Cuentas
     </a>
+    <a onclick="showSection('prep')" id="mob-prep" style="display:none">
+      <span class="nav-icon">📦</span>
+      Preparar
+    </a>
   </div>
 </div>
 
@@ -414,6 +439,10 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
+          document.getElementById('nav-prep').style.display = '';
+          document.getElementById('mob-prep').style.display = '';
         }
         loadAccounts();
         // Check URL params for deep linking (e.g. from sales buttons)
@@ -463,6 +492,10 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
+          document.getElementById('nav-prep').style.display = '';
+          document.getElementById('mob-prep').style.display = '';
         }
         loadAccounts();
         handleDeepLink();
@@ -539,6 +572,7 @@
       case 'sales': loadSales(); break;
       case 'accounts': loadAccountsSection(); break;
       case 'users': loadUsers(); break;
+      case 'prep': loadPrepSection(); break;
     }
   }
 
@@ -1288,6 +1322,7 @@
 
           fullHtml += `
             <div class="sale-card">
+              <div id="prep-badge-${firstOrderId}" style="float:right;margin-bottom:4px"></div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
                 <span class="card-account">${escapeHtml(sale.account_name)}</span>
                 <div style="display:flex;align-items:center;gap:8px">
@@ -1344,6 +1379,8 @@
       }
       content.innerHTML = fullHtml;
       if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
+      // Apply prep status badges after rendering
+      applyPrepStatusBadges(sales);
 
       // Fetch notes from ML after sales are rendered
       fetchSalesNotes(sales);
@@ -1588,6 +1625,31 @@
     }
   }
 
+  async function applyPrepStatusBadges(sales) {
+    try {
+      const res = await fetch('/api/prep/list');
+      if (!res.ok) return;
+      const prepOrders = await res.json();
+      const prepMap = {};
+      for (const p of prepOrders) prepMap[p.order_id] = p;
+
+      for (const sale of sales) {
+        const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+        const saleKey = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
+        const el = document.getElementById('prep-badge-' + firstOrderId);
+        if (!el) continue;
+        const p = prepMap[saleKey];
+        if (!p) {
+          el.innerHTML = '<span class="prep-status-badge" style="background:#f0f2f5;color:#999">Sin preparar</span>';
+        } else if (p.status === 'in_prep') {
+          el.innerHTML = '<span class="prep-status-badge prep-status-in_prep">🔄 En preparación</span>';
+        } else if (p.status === 'done') {
+          el.innerHTML = '<span class="prep-status-badge prep-status-done">✅ Finalizado</span>';
+        }
+      }
+    } catch(e) {}
+  }
+
   // ==================== ACCOUNTS SECTION ====================
 
   async function loadAccountsSection() {
@@ -1679,6 +1741,14 @@
                 <input type="checkbox" ${u.view_dashboard ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'view_dashboard', this.checked)" style="width:18px;height:18px;cursor:pointer">
                 Ver ventas
               </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" ${u.can_prep_manage ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_manage', this.checked)" style="width:18px;height:18px;cursor:pointer">
+                Gestión preparación
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" ${u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:18px;height:18px;cursor:pointer">
+                Operario embalaje
+              </label>
               ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:6px 12px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
             </div>
           </div>
@@ -1741,6 +1811,545 @@
     } catch (e) {
       showToast('Error al eliminar', 'error');
     }
+  }
+
+  // ==================== PREP SECTION ====================
+
+  let currentPrepTab = 'sin-preparar';
+  let prepOrdersCache = null;
+
+  function loadPrepSection() {
+    const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
+
+    if (!can_manage && !can_operate) {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permisos para acceder a esta sección</p></div>';
+      return;
+    }
+
+    if (!can_manage && can_operate) currentPrepTab = 'en-preparacion';
+
+    renderPrepTabs();
+  }
+
+  function renderPrepTabs() {
+    const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
+
+    let html = `
+      <h2 style="margin-bottom:16px;color:#2d3277">📦 Preparación de Órdenes</h2>
+      <div class="prep-tabs">
+        ${can_manage ? `<button class="prep-tab ${currentPrepTab==='sin-preparar'?'active':''}" onclick="switchPrepTab('sin-preparar')">📋 Sin Preparar</button>` : ''}
+        ${can_operate ? `<button class="prep-tab ${currentPrepTab==='en-preparacion'?'active':''}" onclick="switchPrepTab('en-preparacion')">🔄 En Preparación</button>` : ''}
+        <button class="prep-tab ${currentPrepTab==='finalizadas'?'active':''}" onclick="switchPrepTab('finalizadas')">✅ Finalizadas</button>
+      </div>
+      <div id="prep-tab-content"></div>
+    `;
+    document.getElementById('content').innerHTML = html;
+    loadCurrentPrepTab();
+  }
+
+  function switchPrepTab(tab) {
+    currentPrepTab = tab;
+    renderPrepTabs();
+  }
+
+  function loadCurrentPrepTab() {
+    if (currentPrepTab === 'sin-preparar') loadSinPreparar();
+    else if (currentPrepTab === 'en-preparacion') loadEnPreparacion();
+    else loadFinalizadas();
+  }
+
+  let prepSalesStatusFilters = [];
+  let prepSalesShippingFilters = [];
+  let prepSalesDateFrom = '';
+  let prepSalesDateTo = '';
+  let prepSalesAccountFilter = '';
+
+  async function loadSinPreparar() {
+    const container = document.getElementById('prep-tab-content');
+    if (!container) return;
+
+    let html = `
+      <div class="sales-filters">
+        <div class="filter-row">
+          <select id="prepAccountSel" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            ${accountFilterHTML()}
+          </select>
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="prepDateFrom" value="${prepSalesDateFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="prepDateTo" value="${prepSalesDateTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+        </div>
+        <h4>Estados</h4>
+        <div class="filter-row">
+          ${Object.entries(STATUS_LABELS).map(([key, label]) => `
+            <label class="chip ${prepSalesStatusFilters.includes(key) ? 'checked' : ''}">
+              <input type="checkbox" ${prepSalesStatusFilters.includes(key) ? 'checked' : ''} onchange="togglePrepFilter('status','${key}',this)">
+              ${label}
+            </label>
+          `).join('')}
+        </div>
+        <h4>Formas de entrega</h4>
+        <div class="filter-row">
+          ${Object.entries(SHIPPING_LABELS).map(([key, label]) => `
+            <label class="chip ${prepSalesShippingFilters.includes(key) ? 'checked' : ''}">
+              <input type="checkbox" ${prepSalesShippingFilters.includes(key) ? 'checked' : ''} onchange="togglePrepFilter('shipping','${key}',this)">
+              ${label}
+            </label>
+          `).join('')}
+        </div>
+        <div class="filter-row" style="margin-top:8px">
+          <button onclick="applyPrepSalesFilters()" style="padding:8px 24px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔍 Filtrar</button>
+          <button onclick="clearPrepSalesFilters()" style="padding:8px 16px;border:1px solid #ddd;border-radius:6px;font-size:13px;cursor:pointer;background:#f0f2f5">Limpiar filtros</button>
+        </div>
+      </div>
+      <div id="sinPreparar-list"><div class="loading"><div class="spinner"></div><p>Cargando órdenes...</p></div></div>
+    `;
+    container.innerHTML = html;
+    if (prepSalesAccountFilter) document.getElementById('prepAccountSel').value = prepSalesAccountFilter;
+
+    try {
+      const params = new URLSearchParams();
+      if (prepSalesAccountFilter) params.set('account_id', prepSalesAccountFilter);
+      if (prepSalesStatusFilters.length) params.set('status', prepSalesStatusFilters.join(','));
+      if (prepSalesShippingFilters.length) params.set('shipping', prepSalesShippingFilters.join(','));
+      if (prepSalesDateFrom) params.set('date_from', prepSalesDateFrom);
+      if (prepSalesDateTo) params.set('date_to', prepSalesDateTo);
+
+      const [salesRes, prepRes] = await Promise.all([
+        fetch('/api/sales?' + params.toString()),
+        fetch('/api/prep/list')
+      ]);
+      const allSales = await salesRes.json();
+      const prepOrders = await prepRes.json();
+      prepOrdersCache = prepOrders;
+
+      const inPrepIds = new Set();
+      for (const p of prepOrders) inPrepIds.add(String(p.order_id));
+
+      const pendingSales = allSales.filter(sale => {
+        const key = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
+        return !inPrepIds.has(key);
+      });
+
+      const listEl = document.getElementById('sinPreparar-list');
+      if (!listEl) return;
+
+      if (pendingSales.length === 0) {
+        listEl.innerHTML = '<div class="empty"><p>No hay órdenes pendientes de preparación</p></div>';
+        return;
+      }
+
+      let salesHtml = `<p style="color:#999;font-size:13px;margin-bottom:12px">${pendingSales.length} orden${pendingSales.length!==1?'es':''} sin preparar</p>`;
+
+      for (const sale of pendingSales) {
+        const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+        const displayId = sale.pack_id ? sale.pack_id : sale.order_id;
+        const saleKey = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
+        const statusLabel = STATUS_LABELS[sale.status] || sale.status;
+        const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'PUNTO DESPACHO' : 'ACORDAR';
+        const dateStr = formatSaleDate(sale.date_created);
+        const saleDataJson = JSON.stringify({
+          order_id: saleKey,
+          order_ids: sale.order_ids || [sale.order_id],
+          pack_id: sale.pack_id || null,
+          account_id: sale.account_id,
+          account_name: sale.account_name,
+          seller_id: sale.seller_id,
+          buyer_name: sale.buyer_name,
+          buyer_id: String(sale.buyer_id),
+          items: sale.items,
+          shipping_id: sale.shipping_id,
+          shipping_type: sale.shipping_type,
+          total_amount: sale.total_amount,
+          date_created: sale.date_created
+        }).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+        salesHtml += `
+          <div class="sale-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <span class="card-account">${escapeHtml(sale.account_name)}</span>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(sale.buyer_name)}</span>
+              </div>
+            </div>
+            <div class="sale-header">
+              <span class="sale-status ${sale.status}">${statusLabel}</span>
+              <span class="order-id">#${displayId}</span>
+              <span class="sale-date">${dateStr}</span>
+              <span class="shipping-badge ${sale.shipping_type}">${shippingLabel}</span>
+            </div>
+            ${sale.items.map(item => `
+              <div class="sale-item">
+                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
+                <div class="sale-item-info">
+                  <div class="sale-item-title" style="font-weight:600">${escapeHtml(item.title)}</div>
+                  <div class="sale-item-meta">
+                    $ ${Number(item.unit_price).toLocaleString('es-AR',{minimumFractionDigits:2})} &middot; ${item.quantity} unidad${item.quantity!==1?'es':''}
+                    ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px;flex-wrap:wrap">
+              <div class="sale-actions" style="margin-top:0">
+                ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Etiqueta</button>` : ''}
+                <a href="/?section=messages&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
+                <a href="/?section=questions&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">❓ Preguntas</a>
+              </div>
+              <div style="font-weight:700;color:#2d3277;font-size:16px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR',{minimumFractionDigits:2})}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px;background:#f8f9fa;border-radius:8px;flex-wrap:wrap">
+              <span style="font-size:13px;color:#666;font-weight:600">Prioridad:</span>
+              ${[1,2,3,4,5].map(n => `<button onclick="selectPriority(this,${n})" data-priority="${n}" style="width:32px;height:32px;border-radius:50%;border:2px solid ${n===3?'#f5a623':'#ddd'};background:${n===3?(['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'][n]):'white'};color:${n===3?'white':'#333'};font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">${n}</button>`).join('')}
+              <button class="btn-preparar" onclick="pasarAPreparacion('${saleKey}', this)" data-sale-json="${saleDataJson}">📦 Pasar a Preparación</button>
+              <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','dropshipping',this)" data-sale-json="${saleDataJson}" style="background:#8e44ad">🚚 Dropshipping</button>
+              <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','puerta',this)" data-sale-json="${saleDataJson}" style="background:#16a085">🏠 Puerta</button>
+            </div>
+            <div class="sale-notes" style="margin-top:8px" id="prep-note-display-${firstOrderId}">
+              <div style="font-size:13px;color:#bbb;padding:8px 10px;background:#f8f9fa;border-radius:6px">Cargando nota...</div>
+            </div>
+          </div>
+        `;
+      }
+
+      listEl.innerHTML = salesHtml;
+      fetchPrepNotes(pendingSales);
+
+    } catch(e) {
+      const listEl = document.getElementById('sinPreparar-list');
+      if (listEl) listEl.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
+    }
+  }
+
+  async function fetchPrepNotes(sales) {
+    for (const sale of sales) {
+      const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+      const el = document.getElementById('prep-note-display-' + firstOrderId);
+      if (!el) continue;
+
+      let foundNote = false;
+      const orderIds = sale.order_ids || [sale.order_id];
+      for (const oid of orderIds) {
+        try {
+          const res = await fetch('/api/sales/note?order_id=' + oid + '&account_id=' + sale.account_id);
+          const data = await res.json();
+          if (data.note) {
+            el.innerHTML = `<div style="font-size:13px;color:#333;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623"><strong>Nota:</strong> ${escapeHtml(data.note)}</div>`;
+            el.dataset.noteText = data.note;
+            el.dataset.noteId = data.note_id || '';
+            foundNote = true;
+            break;
+          }
+        } catch(e) {}
+      }
+      if (!foundNote) el.innerHTML = '<div style="font-size:12px;color:#bbb;padding:6px 10px">Sin notas</div>';
+    }
+  }
+
+  function togglePrepFilter(type, value, checkbox) {
+    const arr = type === 'status' ? prepSalesStatusFilters : prepSalesShippingFilters;
+    const idx = arr.indexOf(value);
+    if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
+    const chip = checkbox.closest('.chip');
+    if (chip) chip.classList.toggle('checked');
+  }
+
+  function applyPrepSalesFilters() {
+    const accSel = document.getElementById('prepAccountSel');
+    const dateFromEl = document.getElementById('prepDateFrom');
+    const dateToEl = document.getElementById('prepDateTo');
+    if (accSel) prepSalesAccountFilter = accSel.value;
+    if (dateFromEl) prepSalesDateFrom = dateFromEl.value;
+    if (dateToEl) prepSalesDateTo = dateToEl.value;
+    loadSinPreparar();
+  }
+
+  function clearPrepSalesFilters() {
+    prepSalesDateFrom = ''; prepSalesDateTo = '';
+    prepSalesStatusFilters = []; prepSalesShippingFilters = [];
+    prepSalesAccountFilter = '';
+    loadSinPreparar();
+  }
+
+  function selectPriority(btn, n) {
+    const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
+    const container = btn.parentElement;
+    container.querySelectorAll('button[data-priority]').forEach(b => {
+      b.style.background = 'white';
+      b.style.color = '#333';
+      b.style.borderColor = '#ddd';
+    });
+    btn.style.background = colors[n];
+    btn.style.color = 'white';
+    btn.style.borderColor = colors[n];
+  }
+
+  async function pasarAPreparacion(saleKey, btn) {
+    const container = btn.parentElement;
+    const selectedPriorityBtn = [...container.querySelectorAll('button[data-priority]')].find(b => b.style.background && b.style.background !== 'white' && b.style.background !== 'rgb(255, 255, 255)');
+    const priority = selectedPriorityBtn ? parseInt(selectedPriorityBtn.dataset.priority) : 3;
+
+    const saleDataStr = btn.dataset.saleJson;
+    let saleData;
+    try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch(e) { showToast('Error al procesar datos', 'error'); return; }
+
+    const saleCard = btn.closest('.sale-card');
+    let noteText = '';
+    let noteId = null;
+    if (saleCard) {
+      const noteEl = saleCard.querySelector('[id^="prep-note-display-"]');
+      if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Procesando...';
+
+    try {
+      const res = await fetch('/api/prep/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...saleData, priority, notes: noteText, note_id: noteId })
+      });
+      if (res.ok) {
+        showToast('Orden pasada a Preparación', 'success');
+        prepOrdersCache = null;
+        loadSinPreparar();
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'Error al procesar', 'error');
+        btn.disabled = false;
+        btn.textContent = '📦 Pasar a Preparación';
+      }
+    } catch(e) {
+      showToast('Error de conexión', 'error');
+      btn.disabled = false;
+      btn.textContent = '📦 Pasar a Preparación';
+    }
+  }
+
+  async function finalizarDirecto(saleKey, finishType, btn) {
+    const labels = { dropshipping: 'Dropshipping', puerta: 'Puerta' };
+    const label = labels[finishType] || finishType;
+    const saleDataStr = btn.dataset.saleJson;
+    let saleData;
+    try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch(e) { showToast('Error al procesar datos', 'error'); return; }
+
+    const saleCard = btn.closest('.sale-card');
+    let noteText = '';
+    let noteId = null;
+    if (saleCard) {
+      const noteEl = saleCard.querySelector('[id^="prep-note-display-"]');
+      if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Procesando...';
+
+    try {
+      const res = await fetch('/api/prep/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...saleData, notes: noteText, note_id: noteId, finish_type: finishType })
+      });
+      if (res.ok) {
+        showToast(`Orden marcada como ${label}`, 'success');
+        prepOrdersCache = null;
+        loadSinPreparar();
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'Error al procesar', 'error');
+        btn.disabled = false;
+        btn.textContent = finishType === 'dropshipping' ? '🚚 Dropshipping' : '🏠 Puerta';
+      }
+    } catch(e) {
+      showToast('Error de conexión', 'error');
+      btn.disabled = false;
+      btn.textContent = finishType === 'dropshipping' ? '🚚 Dropshipping' : '🏠 Puerta';
+    }
+  }
+
+  async function loadEnPreparacion() {
+    const container = document.getElementById('prep-tab-content');
+    if (!container) return;
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+
+    try {
+      const res = await fetch('/api/prep/list?status=in_prep');
+      const orders = await res.json();
+
+      orders.sort((a, b) => (a.priority || 5) - (b.priority || 5));
+
+      if (orders.length === 0) {
+        container.innerHTML = '<div class="empty"><p>No hay órdenes en preparación</p></div>';
+        return;
+      }
+
+      let html = `<p style="color:#999;font-size:13px;margin-bottom:12px">${orders.length} orden${orders.length!==1?'es':''} en preparación — ordenadas por prioridad</p>`;
+
+      const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
+
+      for (const order of orders) {
+        const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+        html += `
+          <div class="sale-card" style="border-left:4px solid ${colors[order.priority||3]}">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+              <span class="priority-badge priority-${order.priority||3}" title="Prioridad ${order.priority||3}">${order.priority||3}</span>
+              <span class="card-account">${escapeHtml(order.account_name)}</span>
+              <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(order.buyer_name)}</span>
+              <span style="font-size:12px;color:#999">${formatDate(order.added_at)}</span>
+              ${can_manage ? `
+                <div style="margin-left:auto;display:flex;gap:4px;align-items:center">
+                  <span style="font-size:12px;color:#666">Prioridad:</span>
+                  ${[1,2,3,4,5].map(n => `
+                    <button onclick="updatePriority('${escapeHtml(order.order_id)}',${n},this)" style="width:26px;height:26px;border-radius:50%;border:2px solid ${n===order.priority?colors[n]:'#ddd'};background:${n===order.priority?colors[n]:'white'};color:${n===order.priority?'white':'#333'};font-weight:700;cursor:pointer;font-size:11px">${n}</button>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+            ${order.items.map(item => `
+              <div class="sale-item">
+                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" style="width:50px;height:50px;border-radius:6px;object-fit:cover">` : '<div style="width:50px;height:50px;background:#f0f2f5;border-radius:6px"></div>'}
+                <div class="sale-item-info">
+                  <div style="font-weight:600;font-size:14px">${escapeHtml(item.title)}</div>
+                  <div class="sale-item-meta">${item.quantity} unidad${item.quantity!==1?'es':''} ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}</div>
+                </div>
+              </div>
+            `).join('')}
+            ${order.notes ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623;font-size:13px"><strong>Nota:</strong> ${escapeHtml(order.notes)}</div>` : ''}
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${order.shipping_id ? `<button class="btn-print" onclick="printLabel(${order.shipping_id}, ${order.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
+              </div>
+              <button class="btn-finalizar" onclick="finalizarOrden('${escapeHtml(order.order_id)}', this)">✅ FINALIZADO</button>
+            </div>
+          </div>
+        `;
+      }
+
+      container.innerHTML = html;
+    } catch(e) {
+      container.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
+    }
+  }
+
+  async function updatePriority(orderId, priority, btn) {
+    try {
+      const res = await fetch('/api/prep/priority', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, priority })
+      });
+      if (res.ok) {
+        showToast('Prioridad actualizada', 'success');
+        prepOrdersCache = null;
+        loadEnPreparacion();
+      } else {
+        showToast('Error al actualizar prioridad', 'error');
+      }
+    } catch(e) {
+      showToast('Error de conexión', 'error');
+    }
+  }
+
+  async function finalizarOrden(orderId, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Procesando...';
+    try {
+      const res = await fetch('/api/prep/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId })
+      });
+      if (res.ok) {
+        showToast('¡Orden finalizada!', 'success');
+        prepOrdersCache = null;
+        loadEnPreparacion();
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'Error al finalizar', 'error');
+        btn.disabled = false;
+        btn.textContent = '✅ FINALIZADO';
+      }
+    } catch(e) {
+      showToast('Error de conexión', 'error');
+      btn.disabled = false;
+      btn.textContent = '✅ FINALIZADO';
+    }
+  }
+
+  async function loadFinalizadas() {
+    const container = document.getElementById('prep-tab-content');
+    if (!container) return;
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+
+    const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+
+    try {
+      const res = await fetch('/api/prep/list?status=done');
+      const orders = await res.json();
+
+      orders.sort((a, b) => new Date(b.done_at || 0) - new Date(a.done_at || 0));
+
+      let html = '';
+      if (can_manage) {
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <p style="color:#999;font-size:13px">${orders.length} orden${orders.length!==1?'es':''} finalizadas</p>
+          ${orders.length > 0 ? `<button onclick="exportarPrep()" style="padding:8px 20px;background:#27ae60;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📥 Descargar Excel</button>` : ''}
+        </div>`;
+      } else {
+        html += `<p style="color:#999;font-size:13px;margin-bottom:12px">${orders.length} orden${orders.length!==1?'es':''} finalizadas</p>`;
+      }
+
+      if (orders.length === 0) {
+        html += '<div class="empty"><p>No hay órdenes finalizadas aún</p></div>';
+        container.innerHTML = html;
+        return;
+      }
+
+      const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
+
+      for (const order of orders) {
+        html += `
+          <div class="sale-card" style="border-left:4px solid #27ae60">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+              <span class="prep-status-badge prep-status-done">✅ Finalizado</span>
+              <span class="priority-badge priority-${order.priority||3}" style="width:22px;height:22px;font-size:11px">${order.priority||3}</span>
+              <span class="card-account">${escapeHtml(order.account_name)}</span>
+              <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(order.buyer_name)}</span>
+            </div>
+            ${order.items.map(item => `
+              <div class="sale-item">
+                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" style="width:45px;height:45px;border-radius:6px;object-fit:cover">` : ''}
+                <div class="sale-item-info">
+                  <div style="font-weight:600;font-size:14px">${escapeHtml(item.title)}</div>
+                  <div class="sale-item-meta">${item.quantity} unidad${item.quantity!==1?'es':''} ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}</div>
+                </div>
+              </div>
+            `).join('')}
+            ${order.notes ? `<div style="margin-top:8px;padding:8px 10px;background:#fff8e1;border-radius:6px;border-left:3px solid #f5a623;font-size:13px"><strong>Nota:</strong> ${escapeHtml(order.notes)}</div>` : ''}
+            <div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+              ${order.finish_type && order.finish_type !== 'normal' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;${order.finish_type==='dropshipping'?'background:#f0e6ff;color:#8e44ad':'background:#e6f7f4;color:#16a085'}">${order.finish_type==='dropshipping'?'🚚 Dropshipping':'🏠 Puerta'}</span>` : ''}
+              <span>Finalizado por: <strong style="color:#333">${escapeHtml(order.done_by || '-')}</strong></span>
+              <span>${formatDateTime(order.done_at)}</span>
+              ${can_manage ? `<span>| Orden: <a onclick="verVentaPrep('${escapeHtml(order.order_id)}','${order.account_id}')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#${escapeHtml(order.order_id)}</a></span>` : ''}
+            </div>
+          </div>
+        `;
+      }
+
+      container.innerHTML = html;
+    } catch(e) {
+      container.innerHTML = '<div class="empty"><p>Error al cargar finalizadas</p></div>';
+    }
+  }
+
+  function verVentaPrep(orderId, accountId) {
+    showSection('sales', true);
+    loadSalesForOrder(orderId, accountId);
+  }
+
+  function exportarPrep() {
+    window.open('/api/prep/export', '_blank');
   }
 
   // ==================== HELPERS ====================
