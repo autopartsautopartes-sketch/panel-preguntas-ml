@@ -109,6 +109,7 @@ for (const u of dbMigrate2.users) {
   if (u.can_prep_operate === undefined) { u.can_prep_operate = false; migrated2 = true; }
 }
 if (!dbMigrate2.prep_orders) { dbMigrate2.prep_orders = []; migrated2 = true; }
+if (!dbMigrate2.dismissed_msg_packs) { dbMigrate2.dismissed_msg_packs = {}; migrated2 = true; }
 if (migrated2) saveDB(dbMigrate2);
 
 // ==================== SESSION STORE (persistent) ====================
@@ -690,6 +691,7 @@ route('GET', '/api/messages', async (req, res) => {
   const orderFilter = url.searchParams.get('order_id');
   const buyerFilter = url.searchParams.get('buyer_id');
   const db = loadDB();
+  const dismissedPacks = db.dismissed_msg_packs || {};
   let allMessages = [];
 
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
@@ -780,10 +782,29 @@ route('GET', '/api/messages', async (req, res) => {
           const lastMsg = mappedMessages[0];
           // "Sin leer" = last msg from buyer (we haven't replied) OR ML marks any buyer msg as unread
           const hasMLUnread = mappedMessages.some(m => m.from === 'buyer' && m.mlUnread);
-          const isUnread = lastMsg.from === 'buyer' || hasMLUnread;
+          let isUnread = lastMsg.from === 'buyer' || hasMLUnread;
+
+          // Check dismissed: if pack was manually dismissed but buyer sent a NEW message after that → auto-un-dismiss
+          const packKey = String(packId);
+          const dismissedAt = dismissedPacks[packKey];
+          let isDismissed = false;
+          if (dismissedAt && !buyerFilter && !orderFilter) {
+            const newestBuyerMsg = mappedMessages.find(m => m.from === 'buyer');
+            const newestBuyerDate = newestBuyerMsg?.date ? new Date(newestBuyerMsg.date) : null;
+            if (newestBuyerDate && newestBuyerDate > new Date(dismissedAt)) {
+              // Buyer replied after dismiss → auto-un-dismiss
+              delete dismissedPacks[packKey];
+              db.dismissed_msg_packs = dismissedPacks;
+              saveDB(db);
+            } else {
+              isDismissed = true;
+              isUnread = false; // treat as answered
+            }
+          }
 
           if (!buyerFilter && !orderFilter) {
-            if ((statusFilter === 'unread' && !isUnread) || (statusFilter === 'answered' && isUnread)) return null;
+            if (statusFilter === 'unread' && (!isUnread || isDismissed)) return null;
+            if (statusFilter === 'answered' && isUnread && !isDismissed) return null;
           }
 
           return {
@@ -791,7 +812,7 @@ route('GET', '/api/messages', async (req, res) => {
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
             buyer_id: order.buyer?.id?.toString() || '',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
-            messages: mappedMessages, is_unread: isUnread, has_ml_unread: hasMLUnread,
+            messages: mappedMessages, is_unread: isUnread, has_ml_unread: hasMLUnread, is_dismissed: isDismissed,
             // messages[0] is newest (ML returns newest-first) — use it for sorting
             last_message_date: messages[0]?.date_created || messages[0]?.date || order.date_created
           };
@@ -859,6 +880,57 @@ route('POST', '/api/messages/reply', async (req, res) => {
     console.error('Error sending message:', err.response?.data || err.message || err);
     sendJSON(res, 500, { error: err.response?.data?.message || err.message || 'Error al enviar mensaje' });
   }
+});
+
+route('POST', '/api/messages/dismiss', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { pack_id } = await parseBody(req);
+  if (!pack_id) return sendJSON(res, 400, { error: 'Falta pack_id' });
+  const db = loadDB();
+  if (!db.dismissed_msg_packs) db.dismissed_msg_packs = {};
+  db.dismissed_msg_packs[String(pack_id)] = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+// GET /api/prep/claims — returns {order_id: 'open'|'closed'} for orders with claims (last 90 days)
+route('GET', '/api/prep/claims', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const claimsMap = {};
+
+  await Promise.all(db.ml_accounts.map(async (account) => {
+    const token = await getValidToken(account);
+    if (!token) return;
+    try {
+      // Fetch open and closed claims in parallel
+      const [openData, closedData] = await Promise.allSettled([
+        mlGet('https://api.mercadolibre.com/post-purchase/v1/claims/search', token, {
+          seller_id: account.seller_id, status: 'opened', limit: 50
+        }),
+        mlGet('https://api.mercadolibre.com/post-purchase/v1/claims/search', token, {
+          seller_id: account.seller_id, status: 'closed', limit: 50
+        })
+      ]);
+
+      const processList = (result, status) => {
+        if (result.status !== 'fulfilled') return;
+        const list = result.value?.data || result.value?.results || result.value?.claims || [];
+        for (const c of list) {
+          const oid = String(c.resource_id || c.order_id || '');
+          if (oid) claimsMap[oid] = status; // open wins over closed
+        }
+      };
+      processList(closedData, 'closed'); // closed first so open can overwrite
+      processList(openData, 'open');
+    } catch(e) {
+      console.log('[CLAIMS] Error:', e.message || e);
+    }
+  }));
+
+  sendJSON(res, 200, claimsMap);
 });
 
 // SALES
