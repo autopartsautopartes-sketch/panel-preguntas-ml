@@ -112,6 +112,14 @@ if (!dbMigrate2.prep_orders) { dbMigrate2.prep_orders = []; migrated2 = true; }
 if (!dbMigrate2.dismissed_msg_packs) { dbMigrate2.dismissed_msg_packs = {}; migrated2 = true; }
 if (migrated2) saveDB(dbMigrate2);
 
+// Migrate: add can_view_dashboard field (default false for non-admin, admin always has access)
+const dbMigrate3 = loadDB();
+let migrated3 = false;
+for (const u of dbMigrate3.users) {
+  if (u.can_view_dashboard === undefined) { u.can_view_dashboard = false; migrated3 = true; }
+}
+if (migrated3) saveDB(dbMigrate3);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -418,6 +426,7 @@ route('GET', '/api/me', async (req, res) => {
     alerts_questions: user?.alerts_questions ?? true,
     alerts_messages: user?.alerts_messages ?? true,
     view_dashboard: user?.view_dashboard !== false,
+    can_view_dashboard: sess.role === 'admin' || user?.can_view_dashboard === true,
     can_prep_manage: user?.can_prep_manage === true,
     can_prep_operate: user?.can_prep_operate === true
   });
@@ -428,19 +437,20 @@ route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
   const db = loadDB();
-  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, view_dashboard: u.view_dashboard !== false, can_prep_manage: u.can_prep_manage === true, can_prep_operate: u.can_prep_operate === true, created_at: u.created_at })));
+  sendJSON(res, 200, db.users.map(u => ({ id: u.id, username: u.username, role: u.role, alerts_questions: u.alerts_questions ?? true, alerts_messages: u.alerts_messages ?? true, view_dashboard: u.view_dashboard !== false, can_view_dashboard: u.role === 'admin' || u.can_view_dashboard === true, can_prep_manage: u.can_prep_manage === true, can_prep_operate: u.can_prep_operate === true, created_at: u.created_at })));
 });
 
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_prep_manage, can_prep_operate } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_prep_manage, can_prep_operate } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
   if (alerts_questions !== undefined) user.alerts_questions = !!alerts_questions;
   if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
   if (view_dashboard !== undefined) user.view_dashboard = !!view_dashboard;
+  if (can_view_dashboard !== undefined) user.can_view_dashboard = !!can_view_dashboard;
   if (can_prep_manage !== undefined) user.can_prep_manage = !!can_prep_manage;
   if (can_prep_operate !== undefined) user.can_prep_operate = !!can_prep_operate;
   saveDB(db);
