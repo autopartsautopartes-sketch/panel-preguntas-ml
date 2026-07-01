@@ -2083,9 +2083,14 @@ function serveStatic(req, res) {
 
 const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
 // Headers requeridos por la API de seller-promotions
-// X-Caller-Id es derivado por ML desde el Bearer token — no lo enviamos manualmente
-const promoHeaders = () => ({ 'version': 'v2' });
-const getCallerId = async () => null; // no usado, mantenido por compatibilidad
+// X-Caller-Id debe ser el client_id numérico de la APP (no el seller_id)
+const promoHeaders = (sellerIdOverride) => {
+  const h = { 'version': 'v2' };
+  // ML_CLIENT_ID = el ID numérico de la aplicación registrada en developers.mercadolibre.com
+  if (ML_CLIENT_ID) h['X-Caller-Id'] = String(ML_CLIENT_ID);
+  return h;
+};
+const getCallerId = async () => ML_CLIENT_ID || null;
 
 // GET /api/promotions?account_id=X  — lista campañas por cuenta
 route('GET', '/api/promotions', async (req, res) => {
@@ -2105,16 +2110,16 @@ route('GET', '/api/promotions', async (req, res) => {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
-      const callerId = await getCallerId(account, token);
-      // Correct endpoint: GET /marketplace/seller-promotions/users/{seller_id}  (no /promotions suffix!)
+      const callerIdUsed = ML_CLIENT_ID ? String(ML_CLIENT_ID) : null;
+      // Correct endpoint: GET /marketplace/seller-promotions/users/{seller_id}
       const url = `${PROMO_BASE}/users/${account.seller_id}`;
       let r;
-      try { r = await mlGet(url, token, {}, promoHeaders(callerId)); }
+      try { r = await mlGet(url, token, {}, promoHeaders()); }
       catch(e) {
-        debug.push({ account: account.name, url, callerId, httpStatus: e?.response?.status, mlError: e?.response?.data });
+        debug.push({ account: account.name, url, 'X-Caller-Id_sent': callerIdUsed, seller_id: account.seller_id, httpStatus: e?.response?.status, mlError: e?.response?.data });
         continue;
       }
-      debug.push({ account: account.name, url, callerId, OK: true, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
+      debug.push({ account: account.name, url, 'X-Caller-Id_sent': callerIdUsed, OK: true, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
       const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
       for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
     } catch(e) {
