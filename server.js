@@ -623,7 +623,7 @@ route('GET', '/api/export-listings', async (req, res) => {
         for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
           const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
           const responses = await Promise.all(concurrent.map(b =>
-            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping,flex`, token)
+            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping,flex,tags`, token)
               .catch(() => [])
           ));
           for (const itemsData of responses) {
@@ -631,15 +631,18 @@ route('GET', '/api/export-listings', async (req, res) => {
               if (entry.code === 200 && entry.body) {
                 const it = entry.body;
                 const sh = it.shipping || {};
-                // mode muestra el tipo de envío (me2, not_specified, etc.)
                 const shippingMode = sh.mode || sh.logistic_type || 'not_specified';
-                // flex es un campo directo del ítem: "yes" o "not_available"
-                const flex = it.flex === 'yes' ? 'si' : 'no';
+                // DEBUG: mostrar valores crudos para identificar el campo correcto de flex
+                const flexRaw = it.flex !== undefined ? String(it.flex) : '';
+                const shTags = Array.isArray(sh.tags) ? sh.tags.join('|') : '';
+                const itTags = Array.isArray(it.tags) ? it.tags.join('|') : '';
+                // Por ahora flex usa flexRaw si existe, sino 'no'
+                const flex = flexRaw === 'yes' ? 'si' : 'no';
                 const localPickup = sh.local_pick_up ? 'si' : 'no';
                 exported++;
                 res.write(JSON.stringify({
                   type: 'item', exported, total,
-                  row: [it.id, flex, localPickup, shippingMode, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '']
+                  row: [it.id, flex, localPickup, shippingMode, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '', flexRaw, shTags, itTags]
                 }) + '\n');
               }
             }
