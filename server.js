@@ -674,38 +674,37 @@ route('POST', '/api/search-listings', async (req, res) => {
 
       let itemIds = null;
 
-      // Búsqueda por SKU sin sufijo: scan completo + filtro local (API de ML solo hace match exacto)
-      if (skuLower && !skuLower.includes('_')) {
-        // Traer TODOS los IDs de la cuenta con paginación
+      // Búsqueda por SKU
+      if (skuLower) {
         itemIds = new Set();
-        let offset = 0;
-        const limit = 200;
-        let total = null;
-        do {
-          try {
-            const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=active&limit=${limit}&offset=${offset}`, token);
-            if (total === null) total = r.paging?.total || 0;
-            (r.results || []).forEach(id => itemIds.add(id));
-            offset += limit;
-          } catch(e) { break; }
-        } while (offset < (total || 0) && offset < 5000);
-        // También pausados
-        offset = 0; total = null;
-        do {
-          try {
-            const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=paused&limit=${limit}&offset=${offset}`, token);
-            if (total === null) total = r.paging?.total || 0;
-            (r.results || []).forEach(id => itemIds.add(id));
-            offset += limit;
-          } catch(e) { break; }
-        } while (offset < (total || 0) && offset < 5000);
-      } else if (skuLower && skuLower.includes('_')) {
-        // SKU exacto con sufijo → búsqueda directa
-        itemIds = new Set();
+        // 1) Búsqueda directa por seller_sku (ML hace match exacto, sirve para con y sin _)
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(sku.trim())}&limit=200`, token);
           (r.results || []).forEach(id => itemIds.add(id));
         } catch(e) {}
+
+        // 2) Si el SKU no trae _, hacer scan completo para encontrar variantes con sufijo (ej: 01/151/007 → 01/151/007_D)
+        if (!skuLower.includes('_')) {
+          const limit = 200;
+          let offset = 0; let total = null;
+          do {
+            try {
+              const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=active&limit=${limit}&offset=${offset}`, token);
+              if (total === null) total = r.paging?.total || 0;
+              (r.results || []).forEach(id => itemIds.add(id));
+              offset += limit;
+            } catch(e) { break; }
+          } while (offset < (total || 0) && offset < 4000);
+          offset = 0; total = null;
+          do {
+            try {
+              const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=paused&limit=${limit}&offset=${offset}`, token);
+              if (total === null) total = r.paging?.total || 0;
+              (r.results || []).forEach(id => itemIds.add(id));
+              offset += limit;
+            } catch(e) { break; }
+          } while (offset < (total || 0) && offset < 4000);
+        }
       }
 
       // Búsqueda por título (keyword)
@@ -730,7 +729,7 @@ route('POST', '/api/search-listings', async (req, res) => {
         const batch = ids.slice(i, i + 20);
         try {
           const items = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes`,
             token
           );
           for (const it of (Array.isArray(items) ? items : [])) {
@@ -739,9 +738,12 @@ route('POST', '/api/search-listings', async (req, res) => {
             if (b.status === 'closed' || b.status === 'under_review') continue;
             // Filtro local de título por substring
             if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
+            // Obtener SKU: primero seller_custom_field, si está vacío buscar en attributes array
+            const rawSku = b.seller_custom_field ||
+              (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
             // Filtro local de SKU: si la búsqueda no tiene _, compara solo la base (antes de _)
             if (skuLower) {
-              const itemSku = String(b.seller_custom_field || '').toLowerCase();
+              const itemSku = String(rawSku).toLowerCase();
               if (skuLower.includes('_')) {
                 // Tiene sufijo → substring normal
                 if (!itemSku.includes(skuLower)) continue;
@@ -756,7 +758,7 @@ route('POST', '/api/search-listings', async (req, res) => {
               title: b.title || '',
               available_quantity: b.available_quantity ?? '',
               price: b.price ?? '',
-              seller_sku: b.seller_custom_field || '',
+              seller_sku: rawSku,
               status: b.status || '',
               account_id: account.id,
               account_name: account.name
