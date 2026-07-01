@@ -2121,14 +2121,29 @@
     `;
 
     // Load SheetJS lazily
-    if (!window.XLSX) {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-        s.onload = resolve; s.onerror = reject;
-        document.head.appendChild(s);
-      });
+    await loadXLSX();
+  }
+
+  async function loadXLSX() {
+    if (window.XLSX) return true;
+    const cdns = [
+      'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+      'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+      'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'
+    ];
+    for (const src of cdns) {
+      try {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = src;
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('CDN falló: ' + src));
+          document.head.appendChild(s);
+        });
+        if (window.XLSX) return true;
+      } catch(e) { console.warn('[XLSX]', e.message); }
     }
+    return false;
   }
 
   function handleUpdateFile(file) {
@@ -2266,19 +2281,11 @@
     btn.disabled = true;
 
     // Cargar SheetJS si no está disponible
-    if (!window.XLSX) {
-      try {
-        await new Promise((resolve, reject) => {
-          const s = document.createElement('script');
-          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-          s.onload = resolve; s.onerror = reject;
-          document.head.appendChild(s);
-        });
-      } catch(e) {
-        showToast('No se pudo cargar la librería Excel. Verificá tu conexión.', 'error');
-        btn.disabled = false;
-        return;
-      }
+    const xlsxOk = await loadXLSX();
+    if (!xlsxOk) {
+      showToast('No se pudo cargar la librería Excel. Verificá tu conexión.', 'error');
+      btn.disabled = false;
+      return;
     }
 
     // Mostrar progress en la UI
