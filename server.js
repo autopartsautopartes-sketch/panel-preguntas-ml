@@ -2100,7 +2100,7 @@ route('GET', '/api/promotions', async (req, res) => {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
-      const url = `${PROMO_BASE}/users/${account.seller_id}/promotions?app_id=${ML_CLIENT_ID}&offset=0&limit=100`;
+      const url = `${PROMO_BASE}/users/${account.seller_id}/promotions?offset=0&limit=100`;
       let r;
       try {
         r = await mlGet(url, token);
@@ -2141,7 +2141,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   do {
     try {
       const r = await mlGet(
-        `${PROMO_BASE}/promotions/${promoId}/items?app_id=${ML_CLIENT_ID}&limit=${limit}&offset=${offset}`,
+        `${PROMO_BASE}/promotions/${promoId}/items&limit=${limit}&offset=${offset}`,
         token
       );
       const items = r.results || (Array.isArray(r) ? r : []);
@@ -2252,7 +2252,7 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
     const token = accountTokens[item.account_id];
     if (!token) return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     try {
-      const r = await mlGet(`${PROMO_BASE}/promotions/${promo_id}/items/${item.item_id}?app_id=${ML_CLIENT_ID}`, token);
+      const r = await mlGet(`${PROMO_BASE}/promotions/${promo_id}/items/${item.item_id}`, token);
       const active = r?.status && r.status !== 'INACTIVE' && r.status !== 'FINISHED';
       return { ...item, in_promo: !!active, new_price: r?.new_price ?? null, discount: r?.discount ?? null, promo_status: r?.status ?? null };
     } catch(e) {
@@ -2280,7 +2280,7 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
   try {
     if (participate) {
       if (isDeal) {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
           method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'CANDIDATE' })
         });
@@ -2290,7 +2290,7 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
       } else {
         const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
         const payload = [{ item_id, ...(p > 0 ? { price: p } : { discount: disc > 0 ? disc : 10 }) }];
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items`, {
           method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
@@ -2300,7 +2300,7 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
       }
     } else {
       if (isDeal) {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
           method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'INACTIVE' })
         });
@@ -2308,7 +2308,7 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
         if (r.ok) return sendJSON(res, 200, { ok: true });
         return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
       } else {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
           method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
         });
         if (r.ok || r.status === 204) return sendJSON(res, 200, { ok: true });
@@ -2346,7 +2346,7 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
     let ok = true, errMsg = null;
     try {
       if (isDeal) {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
           method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: participate ? 'CANDIDATE' : 'INACTIVE' })
         });
@@ -2354,13 +2354,13 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
       } else if (participate) {
         const p = parseFloat(precio_promo) || 0, disc = parseFloat(descuento_pct) || 0;
         const payload = [{ item_id, ...(p > 0 ? { price: p } : { discount: disc > 0 ? disc : 10 }) }];
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items`, {
           method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
         if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || `HTTP ${r.status}`; }
       } else {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
           method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
         });
         if (!r.ok && r.status !== 204) { ok = false; errMsg = `HTTP ${r.status}`; }
