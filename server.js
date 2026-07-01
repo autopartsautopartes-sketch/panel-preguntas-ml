@@ -540,13 +540,30 @@ async function updateFlexForItem(itemId, flexStr, token) {
   const disable = ['no', 'false', '0'].includes(flexStr);
   if (!enable && !disable) return null; // 'not_available' u otro → no tocar
 
-  const res = await fetch(url, {
+  const fetchOpts = {
     method: enable ? 'POST' : 'DELETE',
-    headers: { Authorization: `Bearer ${token}` }
-  });
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  };
+  if (enable) fetchOpts.body = '{}';
+
+  const res = await fetch(url, fetchOpts);
   if (res.status === 204 || res.status === 200) return null; // ok
+
+  // Capturar el error real de ML
+  let rawText = '';
+  try { rawText = await res.text(); } catch(e) {}
+  console.log(`[FLEX ERROR] ${itemId} HTTP ${res.status}: ${rawText}`);
+
   let errMsg = `flex HTTP ${res.status}`;
-  try { const d = await res.json(); errMsg = d.message || d.error || errMsg; } catch(e) {}
+  try {
+    const d = JSON.parse(rawText);
+    errMsg = d.message || d.error || d.cause?.[0]?.description || errMsg;
+  } catch(e) {
+    if (rawText) errMsg = `flex ${res.status}: ${rawText.slice(0, 100)}`;
+  }
   return errMsg;
 }
 
