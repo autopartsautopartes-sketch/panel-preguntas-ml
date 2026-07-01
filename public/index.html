@@ -2307,7 +2307,7 @@
       </div>`;
     exportSection.scrollIntoView({ behavior: 'smooth' });
 
-    const csvRows = [['item_id','flex','local_pick_up','shipping','titulo','available_quantity','status','price','debug_flex_raw','debug_shipping_tags','debug_item_tags']];
+    const csvRows = [['item_id','flex','local_pick_up','shipping','titulo','available_quantity','status','price']];
 
     try {
       const res = await fetch(`/api/export-listings?account_id=${accountId}`);
@@ -2349,7 +2349,7 @@
       // Generar .xlsx con SheetJS
       const ws = XLSX.utils.aoa_to_sheet(csvRows);
       // Ancho de columnas
-      ws['!cols'] = [18,8,12,18,50,18,10,12,15,30,30].map(w => ({ wch: w }));
+      ws['!cols'] = [18,8,12,18,50,18,10,12].map(w => ({ wch: w }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
       // Nombre del archivo: publicaciones_cuenta_DDMM
