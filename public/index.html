@@ -3719,9 +3719,21 @@
 
     try {
       const res = await fetch(`/api/promotions?account_id=${encodeURIComponent(accountId)}`);
-      const data = await res.json();
-      if (!res.ok) { area.innerHTML = `<p style="color:#e74c3c">${escapeHtml(data.error || 'Error al cargar campañas')}</p>`; return; }
-      if (!data.length) { area.innerHTML = '<p style="color:#888;font-size:13px">No hay campañas disponibles para esta cuenta.</p>'; return; }
+      const raw = await res.json();
+      if (!res.ok) { area.innerHTML = `<p style="color:#e74c3c">${escapeHtml(raw.error || 'Error al cargar campañas')}</p>`; return; }
+
+      // Soporte para respuesta debug temporal {results, debug} y respuesta normal (array)
+      const data = Array.isArray(raw) ? raw : (raw.results || []);
+      const debugInfo = raw.debug || null;
+
+      if (!data.length) {
+        let dbgHtml = '';
+        if (debugInfo) {
+          dbgHtml = `<details style="margin-top:8px;font-size:11px;color:#888"><summary>Debug API</summary><pre style="white-space:pre-wrap;word-break:break-all">${escapeHtml(JSON.stringify(debugInfo, null, 2))}</pre></details>`;
+        }
+        area.innerHTML = `<p style="color:#888;font-size:13px">No hay campañas disponibles para esta cuenta.</p>${dbgHtml}`;
+        return;
+      }
 
       const typeLabel = { DEAL:'🤝 DEAL (ML)', LIGHTNING_DEAL:'⚡ Lightning Deal', PRICE_DISCOUNT:'🏷️ Precio Oferta' };
       const statusBadge = { active:'<span style="color:#27ae60;font-weight:600">● Activa</span>', inactive:'<span style="color:#999">○ Inactiva</span>', upcoming:'<span style="color:#e67e22;font-weight:600">◎ Próxima</span>', finished:'<span style="color:#aaa">✓ Finalizada</span>' };
