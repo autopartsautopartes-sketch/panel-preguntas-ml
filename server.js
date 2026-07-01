@@ -624,15 +624,20 @@ route('GET', '/api/export-listings', async (req, res) => {
           for (const entry of (Array.isArray(itemsData) ? itemsData : [])) {
             if (entry.code === 200 && entry.body) {
               const it = entry.body;
+              // Excluir publicaciones cerradas o en revisión
+              const itemStatus = it.status ?? '';
+              if (itemStatus === 'under_review' || itemStatus === 'closed') continue;
               const sh = it.shipping || {};
-              const flex = sh.logistic_type === 'cross_docking' ? 'si' : 'no';
+              // Flex: cross_docking = ME/flex configurado desde el panel; self_service = flex asignado por ML en envíos
+              const flexTypes = ['cross_docking', 'self_service'];
+              const flex = flexTypes.includes(sh.logistic_type) ? 'si' : 'no';
               const localPickup = sh.local_pick_up ? 'si' : 'no';
               const shippingType = sh.logistic_type || 'not_specified';
               exported++;
               // Columns: item_id, flex, local_pick_up, shipping, titulo, available_quantity, status, price
               res.write(JSON.stringify({
                 type: 'item', exported, total,
-                row: [it.id, flex, localPickup, shippingType, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '']
+                row: [it.id, flex, localPickup, shippingType, it.title || '', it.available_quantity ?? '', itemStatus, it.price ?? '']
               }) + '\n');
             }
           }
