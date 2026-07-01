@@ -2083,11 +2083,26 @@ function serveStatic(req, res) {
 
 const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
 // Headers requeridos por la API de seller-promotions
-const promoHeaders = (sellerId) => ({
+const promoHeaders = (callerId) => ({
   'version': 'v2',
-  'X-Client-Id': ML_CLIENT_ID,
-  'X-Caller-Id': String(sellerId)
+  'X-Client-Id': String(ML_CLIENT_ID),
+  'X-Caller-Id': String(callerId)
 });
+
+// Cache de user_id real por account_id (evita llamar /users/me en cada request)
+const _callerIdCache = {};
+async function getCallerId(account, token) {
+  if (_callerIdCache[account.id]) return _callerIdCache[account.id];
+  try {
+    const r = await fetch('https://api.mercadolibre.com/users/me', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const d = await r.json();
+    if (d?.id) { _callerIdCache[account.id] = String(d.id); return _callerIdCache[account.id]; }
+  } catch(e) {}
+  // Fallback: usar seller_id almacenado
+  return String(account.seller_id);
+}
 
 // GET /api/promotions?account_id=X  — lista campañas por cuenta
 route('GET', '/api/promotions', async (req, res) => {
@@ -2107,15 +2122,16 @@ route('GET', '/api/promotions', async (req, res) => {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
+      const callerId = await getCallerId(account, token);
       // Correct endpoint: GET /marketplace/seller-promotions/users/{seller_id}  (no /promotions suffix!)
       const url = `${PROMO_BASE}/users/${account.seller_id}`;
       let r;
-      try { r = await mlGet(url, token, {}, promoHeaders(account.seller_id)); }
+      try { r = await mlGet(url, token, {}, promoHeaders(callerId)); }
       catch(e) {
-        debug.push({ account: account.name, url, httpStatus: e?.response?.status, mlError: e?.response?.data });
+        debug.push({ account: account.name, url, callerId, httpStatus: e?.response?.status, mlError: e?.response?.data });
         continue;
       }
-      debug.push({ account: account.name, url, OK: true, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
+      debug.push({ account: account.name, url, callerId, OK: true, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
       const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
       for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
     } catch(e) {
@@ -2140,6 +2156,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
+  const callerId = await getCallerId(account, token);
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
 
   // API uses cursor-based pagination (search_after), max limit=50
@@ -2148,7 +2165,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     try {
       let url = `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=${limit}`;
       if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
-      const r = await mlGet(url, token, {}, promoHeaders(account.seller_id));
+      const r = await mlGet(url, token, {}, promoHeaders(callerId));
       const items = r.results || (Array.isArray(r) ? r : []);
       if (total === null) {
         total = r.paging?.total ?? items.length;
@@ -2287,7 +2304,8 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
   // Correct endpoints: POST/DELETE /marketplace/seller-promotions/items/{item_id}?user_id={seller_id}
-  const ph = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoHeaders(account.seller_id) };
+  const callerId = await getCallerId(account, token);
+  const ph = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoHeaders(callerId) };
   const userQuery = `user_id=${account.seller_id}`;
   try {
     if (participate) {
@@ -2329,12 +2347,13 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
+  const callerIdBulk = await getCallerId(account, token);
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
   const total = items.length;
   let done = 0, errCount = 0;
   const errorRows = [];
   res.write(JSON.stringify({ type: 'start', total }) + '\n');
-  const bHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoHeaders(account.seller_id) };
+  const bHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoHeaders(callerIdBulk) };
   const userQ = `user_id=${account.seller_id}`;
 
   for (const item of items) {
@@ -2393,9 +2412,10 @@ route('POST', '/api/promotion-create', async (req, res) => {
     end_date: new Date(end_date).toISOString(),
     status: 'active'
   };
+  const callerIdCreate = await getCallerId(account, token);
   const r = await fetch(createUrl, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoHeaders(account.seller_id) },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoHeaders(callerIdCreate) },
     body: JSON.stringify(createBody)
   });
   const d = await r.json().catch(() => ({}));
