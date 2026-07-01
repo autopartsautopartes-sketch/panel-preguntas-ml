@@ -303,6 +303,17 @@ async function mlGet(url, token, params = {}) {
   return data;
 }
 
+async function mlPut(url, body, token) {
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) throw { response: { data, status: res.status } };
+  return data;
+}
+
 async function mlPost(url, body, token) {
   const res = await fetch(url, {
     method: 'POST',
@@ -499,6 +510,135 @@ route('POST', '/api/users/password', async (req, res) => {
   saveDB(db);
   console.log(`[PASS] Contraseña cambiada: usuario "${targetUser.username}" por admin "${sess.username}"`);
   sendJSON(res, 200, { ok: true });
+});
+
+// Helper: build ML item update payload from row data
+function buildItemPayload(item) {
+  const payload = {};
+  if (item.available_quantity !== '' && item.available_quantity != null) {
+    const qty = parseInt(item.available_quantity);
+    if (!isNaN(qty)) payload.available_quantity = qty;
+  }
+  if (item.status === 'active' || item.status === 'paused') payload.status = item.status;
+  if (item.price !== '' && item.price != null) {
+    const p = parseFloat(item.price);
+    if (!isNaN(p)) payload.price = p;
+  }
+  if (item.item_sku !== '' && item.item_sku != null) payload.seller_custom_field = String(item.item_sku);
+  if (item.flex !== '' && item.flex != null) {
+    const flexOn = ['si', 'sí', 'yes', 'true', '1'].includes(String(item.flex).toLowerCase().trim());
+    payload.shipping = { logistic_type: flexOn ? 'cross_docking' : 'not_specified' };
+  }
+  if (item.marca !== '' && item.marca != null) payload.attributes = [{ id: 'BRAND', value_name: item.marca }];
+  return payload;
+}
+
+// BULK UPDATE — streaming ndjson, 10 llamadas paralelas
+route('POST', '/api/bulk-update', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { account_id, items } = await parseBody(req);
+  if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML' });
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
+  res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
+
+  const CONCURRENCY = 10;
+  let done = 0;
+  for (let i = 0; i < items.length; i += CONCURRENCY) {
+    const batch = items.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(async (item) => {
+      if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
+      try {
+        const payload = buildItemPayload(item);
+        if (!Object.keys(payload).length) return { item_id: item.item_id, ok: false, error: 'Sin cambios' };
+        await mlPut(`https://api.mercadolibre.com/items/${item.item_id}`, payload, token);
+        return { item_id: item.item_id, ok: true };
+      } catch(e) {
+        return { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
+      }
+    }));
+    done += batch.length;
+    for (const r of batchResults) {
+      res.write(JSON.stringify({ type: 'result', done, total: items.length, ...r }) + '\n');
+    }
+  }
+  res.write(JSON.stringify({ type: 'done', total: items.length }) + '\n');
+  res.end();
+  console.log(`[BULK] Completado: ${items.length} items por ${sess.username}`);
+});
+
+// EXPORT LISTINGS — streaming ndjson con progreso en tiempo real, 5 lotes paralelos
+route('GET', '/api/export-listings', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const urlObj = new URL(req.url, 'http://localhost');
+  const accountId = parseInt(urlObj.searchParams.get('account_id'));
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
+
+  try {
+    // 1. Obtener total primero
+    const firstPage = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, offset: 0 });
+    const total = firstPage.total || 0;
+    res.write(JSON.stringify({ type: 'start', total }) + '\n');
+
+    const LIMIT = 100;
+    const BATCH_SIZE = 20;      // items por llamada de detalle
+    const DETAIL_CONCURRENCY = 5; // llamadas de detalle en paralelo por página
+    let exported = 0;
+
+    for (let offset = 0; offset < total; offset += LIMIT) {
+      // Obtener IDs de esta página
+      const pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: LIMIT, offset });
+      const ids = pageData.results || [];
+      if (!ids.length) break;
+
+      // Dividir IDs en lotes de 20 y fetchear en paralelo (hasta 5 a la vez)
+      const batches = [];
+      for (let j = 0; j < ids.length; j += BATCH_SIZE) batches.push(ids.slice(j, j + BATCH_SIZE));
+
+      for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
+        const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
+        const responses = await Promise.all(concurrent.map(b =>
+          mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping`, token)
+            .catch(() => [])
+        ));
+        for (const itemsData of responses) {
+          for (const entry of (Array.isArray(itemsData) ? itemsData : [])) {
+            if (entry.code === 200 && entry.body) {
+              const it = entry.body;
+              const sh = it.shipping || {};
+              const flex = sh.logistic_type === 'cross_docking' ? 'si' : 'no';
+              const localPickup = sh.local_pick_up ? 'si' : 'no';
+              const shippingType = sh.logistic_type || 'not_specified';
+              exported++;
+              // Columns: item_id, flex, local_pick_up, shipping, titulo, available_quantity, status, price
+              res.write(JSON.stringify({
+                type: 'item', exported, total,
+                row: [it.id, flex, localPickup, shippingType, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '']
+              }) + '\n');
+            }
+          }
+        }
+      }
+    }
+    res.write(JSON.stringify({ type: 'done', exported }) + '\n');
+  } catch(e) {
+    console.error('[EXPORT]', e?.response?.data || e.message);
+    res.write(JSON.stringify({ type: 'error', error: e?.response?.data?.message || e.message || 'Error al exportar' }) + '\n');
+  }
+  res.end();
 });
 
 route('POST', '/api/users', async (req, res) => {
@@ -1536,7 +1676,7 @@ route('POST', '/api/prep/add', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const body = await parseBody(req);
-  const { order_id, order_ids, pack_id, account_id, account_name, seller_id, buyer_name, buyer_id, items, shipping_id, shipping_type, total_amount, date_created, priority, notes, note_id, finish_type } = body;
+  const { order_id, order_ids, pack_id, account_id, account_name, seller_id, buyer_name, buyer_id, items, shipping_id, shipping_type, total_amount, date_created, priority, notes, note_id, finish_type, shipping_data } = body;
   if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
   const validFinishTypes = ['dropshipping', 'puerta'];
   const isDirectDone = validFinishTypes.includes(finish_type);
@@ -1575,8 +1715,22 @@ route('POST', '/api/prep/add', async (req, res) => {
     added_at: now,
     added_by: sess.username,
     done_at: isDirectDone ? now : null,
-    done_by: isDirectDone ? sess.username : null
+    done_by: isDirectDone ? sess.username : null,
+    shipping_data: shipping_data || null
   });
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+route('POST', '/api/prep/shipping', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess) && !canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id, shipping_data } = await parseBody(req);
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const order = (db.prep_orders || []).find(o => o.order_id === String(order_id));
+  if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  order.shipping_data = shipping_data || null;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
