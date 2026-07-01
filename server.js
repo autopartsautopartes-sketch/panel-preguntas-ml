@@ -672,26 +672,43 @@ route('POST', '/api/search-listings', async (req, res) => {
       if (!token) continue;
       const sellerId = account.seller_id;
 
-      let itemIds = null; // null = sin filtro todavía
+      let itemIds = null;
 
-      // Buscar por SKU — exacto + variantes con sufijo (_D, _DM, etc.)
-      if (skuLower) {
+      // Búsqueda por SKU sin sufijo: scan completo + filtro local (API de ML solo hace match exacto)
+      if (skuLower && !skuLower.includes('_')) {
+        // Traer TODOS los IDs de la cuenta con paginación
         itemIds = new Set();
-        // Búsqueda exacta por seller_sku
+        let offset = 0;
+        const limit = 200;
+        let total = null;
+        do {
+          try {
+            const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=active&limit=${limit}&offset=${offset}`, token);
+            if (total === null) total = r.paging?.total || 0;
+            (r.results || []).forEach(id => itemIds.add(id));
+            offset += limit;
+          } catch(e) { break; }
+        } while (offset < (total || 0) && offset < 5000);
+        // También pausados
+        offset = 0; total = null;
+        do {
+          try {
+            const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=paused&limit=${limit}&offset=${offset}`, token);
+            if (total === null) total = r.paging?.total || 0;
+            (r.results || []).forEach(id => itemIds.add(id));
+            offset += limit;
+          } catch(e) { break; }
+        } while (offset < (total || 0) && offset < 5000);
+      } else if (skuLower && skuLower.includes('_')) {
+        // SKU exacto con sufijo → búsqueda directa
+        itemIds = new Set();
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(sku.trim())}&limit=200`, token);
           (r.results || []).forEach(id => itemIds.add(id));
         } catch(e) {}
-        // Si no tiene _ en la búsqueda, también buscar por keyword para encontrar variantes con sufijo
-        if (!sku.trim().includes('_')) {
-          try {
-            const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(sku.trim())}&limit=200`, token);
-            (r.results || []).forEach(id => itemIds.add(id));
-          } catch(e) {}
-        }
       }
 
-      // Buscar por título (keyword) en ML
+      // Búsqueda por título (keyword)
       if (titleLower) {
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(title.trim())}&limit=200`, token);
@@ -699,7 +716,7 @@ route('POST', '/api/search-listings', async (req, res) => {
           if (itemIds === null) {
             itemIds = titleIds;
           } else {
-            // AND: intersección de SKU y título
+            // AND: intersección con resultados de SKU
             for (const id of itemIds) { if (!titleIds.has(id)) itemIds.delete(id); }
           }
         } catch(e) { if (itemIds === null) itemIds = new Set(); }
