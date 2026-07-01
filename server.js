@@ -2082,17 +2082,11 @@ function serveStatic(req, res) {
 // ==================== PROMOTIONS ====================
 
 const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
-// Headers requeridos por la API de seller-promotions
-// X-Caller-Id debe ser el client_id numérico de la APP (no el seller_id)
-const promoHeaders = (sellerIdOverride) => {
-  const h = { 'version': 'v2' };
-  // ML_CLIENT_ID = el ID numérico de la aplicación registrada en developers.mercadolibre.com
-  if (ML_CLIENT_ID) h['X-Caller-Id'] = String(ML_CLIENT_ID);
-  return h;
-};
-const getCallerId = async () => ML_CLIENT_ID || null;
+// Headers para operaciones de promociones (toggle, create, bulk) — solo version: v2
+const promoHeaders = () => ({ 'version': 'v2' });
+const getCallerId = async () => null;
 
-// GET /api/promotions?account_id=X  — lista campañas por cuenta
+// GET /api/promotions?account_id=X  — lista campañas por cuenta (con debug multi-URL)
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -2110,18 +2104,31 @@ route('GET', '/api/promotions', async (req, res) => {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
-      const callerIdUsed = ML_CLIENT_ID ? String(ML_CLIENT_ID) : null;
-      // Correct endpoint: GET /marketplace/seller-promotions/users/{seller_id}
-      const url = `${PROMO_BASE}/users/${account.seller_id}`;
-      let r;
-      try { r = await mlGet(url, token, {}, promoHeaders()); }
-      catch(e) {
-        debug.push({ account: account.name, url, 'X-Caller-Id_sent': callerIdUsed, seller_id: account.seller_id, httpStatus: e?.response?.status, mlError: e?.response?.data });
-        continue;
+      const sid = account.seller_id;
+
+      // Probar 4 variantes de URL y header para identificar cuál funciona
+      const candidates = [
+        { label: 'A', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2' } },
+        { label: 'B', url: `${PROMO_BASE}/users/${sid}/promotions`, headers: { 'version': 'v2' } },
+        { label: 'C', url: `${PROMO_BASE}/promotions?user_id=${sid}`, headers: { 'version': 'v2' } },
+        { label: 'D', url: `https://api.mercadolibre.com/seller-promotions/users/${sid}/promotions`, headers: {} },
+      ];
+
+      let found = false;
+      for (const c of candidates) {
+        try {
+          const r = await mlGet(c.url, token, {}, c.headers);
+          const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+          debug.push({ account: account.name, winner: c.label, url: c.url, promos_found: promos.length, sample: JSON.stringify(r).slice(0, 200) });
+          for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+          found = true;
+          break;
+        } catch(e) {
+          debug.push({ account: account.name, tried: c.label, url: c.url, httpStatus: e?.response?.status, mlError: e?.response?.data?.message });
+        }
       }
-      debug.push({ account: account.name, url, 'X-Caller-Id_sent': callerIdUsed, OK: true, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
-      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-      for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+      if (!found) debug.push({ account: account.name, conclusion: 'NINGUNA URL funcionó — ver errores arriba' });
+
     } catch(e) {
       debug.push({ account: account.name, error: e.message });
     }
