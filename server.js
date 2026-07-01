@@ -677,34 +677,26 @@ route('POST', '/api/search-listings', async (req, res) => {
       // Búsqueda por SKU
       if (skuLower) {
         itemIds = new Set();
-        // 1) Búsqueda directa por seller_sku (ML hace match exacto, sirve para con y sin _)
-        try {
-          const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(sku.trim())}&limit=200`, token);
-          (r.results || []).forEach(id => itemIds.add(id));
-        } catch(e) {}
 
-        // 2) Si el SKU no trae _, hacer scan completo para encontrar variantes con sufijo (ej: 01/151/007 → 01/151/007_D)
+        // Armar lista de términos a buscar:
+        // - siempre el término exacto ingresado
+        // - si no tiene _, también probar con sufijos comunes (_D, _I, _DM, _IM, etc.)
+        //   porque ML solo hace match exacto en seller_sku
+        const skuBase = sku.trim();
+        const skuTerms = [skuBase];
         if (!skuLower.includes('_')) {
-          const limit = 200;
-          let offset = 0; let total = null;
-          do {
-            try {
-              const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=active&limit=${limit}&offset=${offset}`, token);
-              if (total === null) total = r.paging?.total || 0;
-              (r.results || []).forEach(id => itemIds.add(id));
-              offset += limit;
-            } catch(e) { break; }
-          } while (offset < (total || 0) && offset < 4000);
-          offset = 0; total = null;
-          do {
-            try {
-              const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=paused&limit=${limit}&offset=${offset}`, token);
-              if (total === null) total = r.paging?.total || 0;
-              (r.results || []).forEach(id => itemIds.add(id));
-              offset += limit;
-            } catch(e) { break; }
-          } while (offset < (total || 0) && offset < 4000);
+          const sufijos = ['_D','_I','_DM','_IM','_DER','_IZQ','_T','_TD','_TI',
+                           '_d','_i','_dm','_im','_der','_izq','_t',
+                           '_1','_2','_3','_A','_B','_C','_E','_F'];
+          for (const s of sufijos) skuTerms.push(skuBase + s);
         }
+
+        // Buscar todos los términos en paralelo (mucho más rápido que scan completo)
+        await Promise.all(skuTerms.map(term =>
+          mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(term)}&limit=200`, token)
+            .then(r => (r.results || []).forEach(id => itemIds.add(id)))
+            .catch(() => {})
+        ));
       }
 
       // Búsqueda por título (keyword)
