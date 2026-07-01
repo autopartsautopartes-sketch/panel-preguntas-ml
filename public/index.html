@@ -2352,7 +2352,15 @@
       ws['!cols'] = [18,8,12,18,50,18,10,12].map(w => ({ wch: w }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
-      XLSX.writeFile(wb, 'publicaciones.xlsx');
+      // Nombre del archivo: publicaciones_cuenta_DDMM
+      const accountSelect = document.getElementById('updateAccount');
+      const accountName = (accountSelect?.options[accountSelect.selectedIndex]?.text || 'cuenta')
+        .toLowerCase().replace(/[^a-z0-9]/g, '');
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const fileName = `publicaciones_${accountName}_${dd}${mm}.xlsx`;
+      XLSX.writeFile(wb, fileName);
       showToast(`✅ ${csvRows.length - 1} publicaciones descargadas`, 'success');
 
     } catch(e) {
