@@ -588,62 +588,68 @@ route('GET', '/api/export-listings', async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
 
   try {
-    // 1. Obtener total primero
-    const firstPage = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, offset: 0 });
-    const total = firstPage.paging?.total || firstPage.total || 0;
+    const LIMIT = 100;
+    const BATCH_SIZE = 20;
+    const DETAIL_CONCURRENCY = 5;
+    let exported = 0;
+
+    // Obtener totales de activas y pausadas por separado
+    // (items/search sin status solo devuelve activas por defecto)
+    const [activeFirst, pausedFirst] = await Promise.all([
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active' }),
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused' }),
+    ]);
+    const activeTotal = activeFirst.paging?.total || 0;
+    const pausedTotal = pausedFirst.paging?.total || 0;
+    const total = activeTotal + pausedTotal;
     res.write(JSON.stringify({ type: 'start', total }) + '\n');
 
-    const LIMIT = 100;
-    const BATCH_SIZE = 20;      // items por llamada de detalle
-    const DETAIL_CONCURRENCY = 5; // llamadas de detalle en paralelo por página
-    let exported = 0;
-    let scrollId = null;
-    let fetched = 0;
+    // Helper: exportar todos los ítems de un status usando scroll_id
+    const exportByStatus = async (status, statusTotal) => {
+      let scrollId = null;
+      let fetched = 0;
+      while (fetched < statusTotal) {
+        const params = { limit: LIMIT, status };
+        if (scrollId) params.scroll_id = scrollId;
+        const pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
+        scrollId = pageData.scroll_id || null;
+        const ids = pageData.results || [];
+        if (!ids.length) break;
+        fetched += ids.length;
 
-    while (fetched < total) {
-      // Usar scroll_id para paginar más allá de offset 1000
-      const params = { limit: LIMIT };
-      if (scrollId) params.scroll_id = scrollId;
-      const pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
-      scrollId = pageData.scroll_id || null;
-      const ids = pageData.results || [];
-      if (!ids.length) break;
-      fetched += ids.length;
+        const batches = [];
+        for (let j = 0; j < ids.length; j += BATCH_SIZE) batches.push(ids.slice(j, j + BATCH_SIZE));
 
-      // Dividir IDs en lotes de 20 y fetchear en paralelo (hasta 5 a la vez)
-      const batches = [];
-      for (let j = 0; j < ids.length; j += BATCH_SIZE) batches.push(ids.slice(j, j + BATCH_SIZE));
-
-      for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
-        const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
-        const responses = await Promise.all(concurrent.map(b =>
-          mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping`, token)
-            .catch(() => [])
-        ));
-        for (const itemsData of responses) {
-          for (const entry of (Array.isArray(itemsData) ? itemsData : [])) {
-            if (entry.code === 200 && entry.body) {
-              const it = entry.body;
-              // Excluir publicaciones cerradas o en revisión
-              const itemStatus = it.status ?? '';
-              if (itemStatus === 'under_review' || itemStatus === 'closed') continue;
-              const sh = it.shipping || {};
-              // Flex: cross_docking = ME/flex configurado desde el panel; self_service = flex asignado por ML en envíos
-              const flexTypes = ['cross_docking', 'self_service'];
-              const flex = flexTypes.includes(sh.logistic_type) ? 'si' : 'no';
-              const localPickup = sh.local_pick_up ? 'si' : 'no';
-              const shippingType = sh.logistic_type || 'not_specified';
-              exported++;
-              // Columns: item_id, flex, local_pick_up, shipping, titulo, available_quantity, status, price
-              res.write(JSON.stringify({
-                type: 'item', exported, total,
-                row: [it.id, flex, localPickup, shippingType, it.title || '', it.available_quantity ?? '', itemStatus, it.price ?? '']
-              }) + '\n');
+        for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
+          const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
+          const responses = await Promise.all(concurrent.map(b =>
+            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping`, token)
+              .catch(() => [])
+          ));
+          for (const itemsData of responses) {
+            for (const entry of (Array.isArray(itemsData) ? itemsData : [])) {
+              if (entry.code === 200 && entry.body) {
+                const it = entry.body;
+                const sh = it.shipping || {};
+                // logistic_type es el campo principal; mode como fallback
+                const logType = sh.logistic_type || sh.mode || 'not_specified';
+                // Flex: cross_docking (ME estándar/flex), self_service (flex directo), xd_drop_off (drop-off)
+                const flex = ['cross_docking', 'self_service', 'xd_drop_off'].includes(logType) ? 'si' : 'no';
+                const localPickup = sh.local_pick_up ? 'si' : 'no';
+                exported++;
+                res.write(JSON.stringify({
+                  type: 'item', exported, total,
+                  row: [it.id, flex, localPickup, logType, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '']
+                }) + '\n');
+              }
             }
           }
         }
       }
-    }
+    };
+
+    await exportByStatus('active', activeTotal);
+    await exportByStatus('paused', pausedTotal);
     res.write(JSON.stringify({ type: 'done', exported }) + '\n');
   } catch(e) {
     console.error('[EXPORT]', e?.response?.data || e.message);
