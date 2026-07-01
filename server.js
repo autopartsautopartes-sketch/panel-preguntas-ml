@@ -2105,10 +2105,10 @@ route('GET', '/api/promotions', async (req, res) => {
       try {
         r = await mlGet(url, token);
       } catch(e) {
-        debug.push({ account: account.name, url, error: e.message, raw: String(e) });
+        debug.push({ account: account.name, url, httpStatus: e?.response?.status, mlError: e?.response?.data });
         continue;
       }
-      debug.push({ account: account.name, url, responseKeys: Object.keys(r||{}), isArray: Array.isArray(r), sample: JSON.stringify(r).slice(0,300) });
+      debug.push({ account: account.name, url, isArray: Array.isArray(r), responseKeys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,500) });
       const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
       for (const p of promos) {
         results.push({ ...p, account_id: account.id, account_name: account.name });
@@ -2393,7 +2393,7 @@ route('POST', '/api/promotion-create', async (req, res) => {
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
   // ML promotion creation endpoint
-  const createUrl = `${PROMO_BASE}/promotions?app_id=${ML_CLIENT_ID}`;
+  const createUrl = `${PROMO_BASE}/promotions?app_id=${ML_CLIENT_ID}&app_version=1`;
   const createBody = {
     type: 'PRICE_DISCOUNT',
     name,
@@ -2404,7 +2404,7 @@ route('POST', '/api/promotion-create', async (req, res) => {
   };
   const r = await fetch(createUrl, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Version': '2' },
     body: JSON.stringify(createBody)
   });
   const d = await r.json().catch(() => ({}));
