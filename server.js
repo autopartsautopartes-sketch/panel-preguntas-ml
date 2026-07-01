@@ -512,7 +512,7 @@ route('POST', '/api/users/password', async (req, res) => {
   sendJSON(res, 200, { ok: true });
 });
 
-// Helper: build ML item update payload from row data
+// Helper: build ML item update payload from row data (excluye flex — se maneja por separado)
 function buildItemPayload(item) {
   const payload = {};
   if (item.available_quantity !== '' && item.available_quantity != null) {
@@ -525,12 +525,29 @@ function buildItemPayload(item) {
     if (!isNaN(p)) payload.price = p;
   }
   if (item.item_sku !== '' && item.item_sku != null) payload.seller_custom_field = String(item.item_sku);
-  if (item.flex !== '' && item.flex != null) {
-    const flexOn = ['si', 'sí', 'yes', 'true', '1'].includes(String(item.flex).toLowerCase().trim());
-    payload.shipping = { logistic_type: flexOn ? 'cross_docking' : 'not_specified' };
-  }
   if (item.marca !== '' && item.marca != null) payload.attributes = [{ id: 'BRAND', value_name: item.marca }];
   return payload;
+}
+
+// Helper: activar/desactivar flex via endpoint dedicado de ML
+// POST /sites/{SITE}/shipping/selfservice/items/{ITEM_ID}  → activa flex (204)
+// DELETE /sites/{SITE}/shipping/selfservice/items/{ITEM_ID} → desactiva flex (204)
+async function updateFlexForItem(itemId, flexStr, token) {
+  const siteMatch = itemId.match(/^([A-Za-z]+)/);
+  const siteId = siteMatch ? siteMatch[1].toUpperCase() : 'MLA';
+  const url = `https://api.mercadolibre.com/sites/${siteId}/shipping/selfservice/items/${itemId}`;
+  const enable = ['si', 'sí', 'yes', 'true', '1'].includes(flexStr);
+  const disable = ['no', 'false', '0'].includes(flexStr);
+  if (!enable && !disable) return null; // 'not_available' u otro → no tocar
+
+  const res = await fetch(url, {
+    method: enable ? 'POST' : 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (res.status === 204 || res.status === 200) return null; // ok
+  let errMsg = `flex HTTP ${res.status}`;
+  try { const d = await res.json(); errMsg = d.message || d.error || errMsg; } catch(e) {}
+  return errMsg;
 }
 
 // BULK UPDATE — streaming ndjson, 10 llamadas paralelas
@@ -556,8 +573,31 @@ route('POST', '/api/bulk-update', async (req, res) => {
       if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
       try {
         const payload = buildItemPayload(item);
-        if (!Object.keys(payload).length) return { item_id: item.item_id, ok: false, error: 'Sin cambios' };
-        await mlPut(`https://api.mercadolibre.com/items/${item.item_id}`, payload, token);
+        const hasFlex = item.flex !== '' && item.flex != null &&
+          ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
+
+        if (!Object.keys(payload).length && !hasFlex) {
+          return { item_id: item.item_id, ok: false, error: 'Sin cambios' };
+        }
+
+        const errors = [];
+
+        // 1. Actualizar campos normales (precio, stock, status, etc.)
+        if (Object.keys(payload).length) {
+          try {
+            await mlPut(`https://api.mercadolibre.com/items/${item.item_id}`, payload, token);
+          } catch(e) {
+            errors.push(e?.response?.data?.message || e?.message || 'Error al actualizar');
+          }
+        }
+
+        // 2. Actualizar flex via endpoint dedicado
+        if (hasFlex) {
+          const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
+          if (flexErr) errors.push(flexErr);
+        }
+
+        if (errors.length) return { item_id: item.item_id, ok: false, error: errors.join(' | ') };
         return { item_id: item.item_id, ok: true };
       } catch(e) {
         return { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
@@ -623,26 +663,27 @@ route('GET', '/api/export-listings', async (req, res) => {
         for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
           const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
           const responses = await Promise.all(concurrent.map(b =>
-            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping,flex,tags`, token)
+            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping`, token)
               .catch(() => [])
           ));
           for (const itemsData of responses) {
             for (const entry of (Array.isArray(itemsData) ? itemsData : [])) {
               if (entry.code === 200 && entry.body) {
                 const it = entry.body;
+                // Excluir publicaciones under_review y closed
+                if (it.status === 'under_review' || it.status === 'closed') continue;
                 const sh = it.shipping || {};
-                const shippingMode = sh.mode || sh.logistic_type || 'not_specified';
-                // DEBUG: mostrar valores crudos para identificar el campo correcto de flex
-                const flexRaw = it.flex !== undefined ? String(it.flex) : '';
-                const shTags = Array.isArray(sh.tags) ? sh.tags.join('|') : '';
-                const itTags = Array.isArray(it.tags) ? it.tags.join('|') : '';
-                // Por ahora flex usa flexRaw si existe, sino 'no'
-                const flex = flexRaw === 'yes' ? 'si' : 'no';
+                const rawMode = sh.mode || sh.logistic_type || 'not_specified';
+                const shippingMode = rawMode === 'me2' ? 'ME' : rawMode;
+                const shTags = Array.isArray(sh.tags) ? sh.tags : [];
+                const flex = shTags.includes('self_service_in') ? 'si'
+                           : shTags.includes('self_service_out') ? 'no'
+                           : 'not_available';
                 const localPickup = sh.local_pick_up ? 'si' : 'no';
                 exported++;
                 res.write(JSON.stringify({
                   type: 'item', exported, total,
-                  row: [it.id, flex, localPickup, shippingMode, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '', flexRaw, shTags, itTags]
+                  row: [it.id, flex, localPickup, shippingMode, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '']
                 }) + '\n');
               }
             }
