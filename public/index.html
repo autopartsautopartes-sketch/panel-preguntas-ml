@@ -2265,6 +2265,22 @@
     const btn = event.target;
     btn.disabled = true;
 
+    // Cargar SheetJS si no está disponible
+    if (!window.XLSX) {
+      try {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      } catch(e) {
+        showToast('No se pudo cargar la librería Excel. Verificá tu conexión.', 'error');
+        btn.disabled = false;
+        return;
+      }
+    }
+
     // Mostrar progress en la UI
     let exportSection = document.getElementById('exportProgress');
     if (!exportSection) {
@@ -3220,15 +3236,15 @@
   @media print{body{padding:10mm}@page{size:A4;margin:10mm}.no-print{display:none}}
 </style></head><body>
 <div class="box">
+  <div class="lbl">Destinatario</div>
+  ${destRows ? `<table style="font-size:15px;border-collapse:collapse;width:100%">${destRows}</table>`
+              : '<p style="font-size:14px;color:#999">Sin datos de destinatario</p>'}
+</div>
+<div class="box">
   <div class="lbl">Remitente</div>
   <div style="font-size:18px;font-weight:900;letter-spacing:.5px">AUTOCHAP AUTOPARTES</div>
   <div style="font-size:14px;margin-top:6px">📞 03382-15447399</div>
   <div style="font-size:14px;margin-top:4px">📍 SAN LORENZO 4246 - VILLA BALLESTER - BSAS</div>
-</div>
-<div class="box">
-  <div class="lbl">Destinatario</div>
-  ${destRows ? `<table style="font-size:15px;border-collapse:collapse;width:100%">${destRows}</table>`
-              : '<p style="font-size:14px;color:#999">Sin datos de destinatario</p>'}
 </div>
 <div class="fragil">⚠ FRÁGIL</div>
 <div class="no-print" style="margin-top:30px;text-align:center">
