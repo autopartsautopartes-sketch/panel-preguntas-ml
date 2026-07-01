@@ -2052,6 +2052,7 @@
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
         <select id="updateAccount" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;width:100%;max-width:320px">
+          <option value="">— Seleccioná una cuenta —</option>
           ${accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
         </select>
       </div>
@@ -2083,6 +2084,40 @@
           </table>
         </div>
         <p style="font-size:12px;color:#888">💡 Las celdas vacías se ignoran — solo se actualizan los campos que completaste.</p>
+      </div>
+
+      <!-- BUSCADOR POR SKU / TÍTULO -->
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+        <h3 style="font-size:15px;color:#333;margin-bottom:4px">🔍 Buscar y editar publicaciones</h3>
+        <p style="font-size:12px;color:#888;margin-bottom:14px">Buscá por SKU y/o título en todas las cuentas y editá stock, precio o SKU directamente.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:12px">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:12px;color:#666;font-weight:600">SKU</label>
+            <input id="searchSku" type="text" placeholder="Ej: SKU-001" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:160px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:12px;color:#666;font-weight:600">Título</label>
+            <input id="searchTitle" type="text" placeholder="Ej: Toyota Corolla" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:220px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:12px;color:#666;font-weight:600">Cuenta</label>
+            <select id="searchAccount" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
+              <option value="">Todas las cuentas</option>
+              ${accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
+            </select>
+          </div>
+          <button onclick="searchListings()" id="btnSearch" style="padding:9px 20px;background:#3483fa;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🔍 Buscar</button>
+        </div>
+        <div id="searchResults" style="display:none">
+          <div style="overflow-x:auto;margin-bottom:14px">
+            <table id="searchResultsTable" style="border-collapse:collapse;font-size:12px;width:100%;min-width:700px"></table>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-top:10px">
+            <p style="font-size:12px;color:#888;margin:0">✏️ Editá stock, precio o SKU en cada fila. Las celdas vacías se ignoran.</p>
+            <button onclick="applySearchUpdate()" id="btnApplySearch" style="padding:9px 22px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">✅ Aplicar seleccionados</button>
+          </div>
+          <div id="searchUpdateLog" style="margin-top:12px"></div>
+        </div>
       </div>
 
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
@@ -2222,6 +2257,7 @@
     listEl.innerHTML = '<div id="bulkResultsLog" style="max-height:300px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:8px;margin-top:12px"></div>';
 
     let okCount = 0, errCount = 0;
+    const errorRows = [];
     const logEl = () => document.getElementById('bulkResultsLog');
 
     try {
@@ -2260,10 +2296,28 @@
               if (!msg.ok) {
                 const log = logEl();
                 if (log) log.innerHTML += `<div style="padding:7px 12px;border-bottom:1px solid #f5f5f5;font-size:12px;color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || '')}</div>`;
+                // Guardar fila original + error para el Excel de errores
+                const original = updateParsedData.find(r => r.item_id === msg.item_id) || { item_id: msg.item_id };
+                errorRows.push({ ...original, error: msg.error || '' });
               }
             } else if (msg.type === 'done') {
               document.getElementById('bulkProgressText').textContent = `✅ Completado: ${okCount} exitosos${errCount ? `, ${errCount} con errores` : ''}`;
               document.getElementById('bulkProgressBar').style.background = '#27ae60';
+              // Descargar Excel con errores si los hay
+              if (errCount > 0 && window.XLSX) {
+                const wsData = [
+                  ['item_id','available_quantity','status','price','marca','flex','item_sku','error'],
+                  ...errorRows.map(r => [r.item_id, r.available_quantity||'', r.status||'', r.price||'', r.marca||'', r.flex||'', r.item_sku||'', r.error||''])
+                ];
+                const ws = XLSX.utils.aoa_to_sheet(wsData);
+                ws['!cols'] = [18,16,10,10,15,8,15,40].map(w => ({ wch: w }));
+                const wb2 = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb2, ws, 'Errores');
+                const now = new Date();
+                const dd = String(now.getDate()).padStart(2,'0');
+                const mm = String(now.getMonth()+1).padStart(2,'0');
+                XLSX.writeFile(wb2, `errores_bulk_${dd}${mm}.xlsx`);
+              }
             }
           } catch(_) {}
         }
@@ -2272,6 +2326,176 @@
       progressEl.innerHTML += `<p style="color:#e74c3c;margin-top:8px">Error de conexión: ${escapeHtml(e.message)}</p>`;
     }
     btn.disabled = false; btn.textContent = '✅ Aplicar cambios';
+  }
+
+  let searchResultsData = [];
+
+  async function searchListings() {
+    const sku = document.getElementById('searchSku').value.trim();
+    const title = document.getElementById('searchTitle').value.trim();
+    const accountId = document.getElementById('searchAccount').value;
+    if (!sku && !title) return showToast('Ingresá SKU o título para buscar', 'error');
+    const btn = document.getElementById('btnSearch');
+    btn.disabled = true; btn.textContent = '⏳ Buscando...';
+    document.getElementById('searchResults').style.display = 'none';
+    searchResultsData = [];
+    try {
+      const res = await fetch('/api/search-listings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sku, title, account_id: accountId ? parseInt(accountId) : '' })
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Error al buscar', 'error'); return; }
+      searchResultsData = data;
+      renderSearchResults(data);
+    } catch(e) {
+      showToast('Error de conexión: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = '🔍 Buscar';
+    }
+  }
+
+  function renderSearchResults(data) {
+    const section = document.getElementById('searchResults');
+    const table = document.getElementById('searchResultsTable');
+    const log = document.getElementById('searchUpdateLog');
+    log.innerHTML = '';
+    if (!data.length) {
+      section.style.display = 'block';
+      table.innerHTML = '<tr><td colspan="8" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
+      return;
+    }
+    const inp = (type, placeholder, w) =>
+      `<input type="${type}" placeholder="${placeholder}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:${w};box-sizing:border-box">`;
+    let html = `<tr style="background:#f0f4ff">
+      <th style="border:1px solid #ddd;padding:8px 10px;text-align:center">
+        <input type="checkbox" id="checkAll" onchange="toggleAllSearch(this.checked)" title="Seleccionar todos">
+      </th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">item_id</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">Cuenta</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">Título</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa;text-align:center">Estado</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Nuevo stock</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Nuevo precio</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Nuevo SKU</th>
+    </tr>`;
+    data.forEach((r, i) => {
+      const statusColor = r.status === 'active' ? '#27ae60' : '#e67e22';
+      html += `<tr>
+        <td style="border:1px solid #ddd;padding:7px 10px;text-align:center">
+          <input type="checkbox" class="searchCheck" data-idx="${i}" checked>
+        </td>
+        <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;white-space:nowrap;color:#3483fa;font-weight:600">${escapeHtml(r.item_id)}</td>
+        <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;white-space:nowrap;color:#555">${escapeHtml(r.account_name)}</td>
+        <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
+        <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;text-align:center;color:${statusColor};font-weight:600">${r.status}</td>
+        <td style="border:1px solid #ddd;padding:6px 8px">
+          <input type="number" min="0" placeholder="${r.available_quantity}" class="si-stock" data-idx="${i}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:80px;box-sizing:border-box">
+        </td>
+        <td style="border:1px solid #ddd;padding:6px 8px">
+          <input type="number" min="0" placeholder="${r.price}" class="si-price" data-idx="${i}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:100px;box-sizing:border-box">
+        </td>
+        <td style="border:1px solid #ddd;padding:6px 8px">
+          <input type="text" placeholder="${escapeHtml(r.seller_sku || 'SKU')}" class="si-sku" data-idx="${i}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:110px;box-sizing:border-box">
+        </td>
+      </tr>`;
+    });
+    table.innerHTML = html;
+    section.style.display = 'block';
+    section.scrollIntoView({ behavior: 'smooth' });
+    showToast(`${data.length} publicación${data.length !== 1 ? 'es' : ''} encontrada${data.length !== 1 ? 's' : ''}`, 'success');
+  }
+
+  function toggleAllSearch(checked) {
+    document.querySelectorAll('.searchCheck').forEach(cb => cb.checked = checked);
+  }
+
+  async function applySearchUpdate() {
+    const checkedBoxes = [...document.querySelectorAll('.searchCheck:checked')];
+    if (!checkedBoxes.length) return showToast('Seleccioná al menos una publicación', 'error');
+
+    // Construir lista de items con sus valores individuales
+    const selected = checkedBoxes.map(cb => {
+      const idx = parseInt(cb.dataset.idx);
+      const r = searchResultsData[idx];
+      const stock = document.querySelector(`.si-stock[data-idx="${idx}"]`)?.value.trim() || '';
+      const price = document.querySelector(`.si-price[data-idx="${idx}"]`)?.value.trim() || '';
+      const sku   = document.querySelector(`.si-sku[data-idx="${idx}"]`)?.value.trim() || '';
+      return { ...r, newStock: stock, newPrice: price, newSku: sku };
+    }).filter(r => r && (r.newStock || r.newPrice || r.newSku));
+
+    if (!selected.length) return showToast('Ingresá al menos un valor a cambiar en las filas seleccionadas', 'error');
+
+    const btn = document.getElementById('btnApplySearch');
+    btn.disabled = true; btn.textContent = '⏳ Aplicando...';
+    const log = document.getElementById('searchUpdateLog');
+    log.innerHTML = `<div style="background:#f8f9fa;border-radius:8px;padding:12px;font-size:12px;color:#666">
+      <b>Aplicando cambios en ${selected.length} publicación${selected.length !== 1 ? 'es' : ''}…</b>
+      <div id="searchApplyLog" style="max-height:200px;overflow-y:auto;margin-top:8px"></div>
+    </div>`;
+
+    // Agrupar por cuenta usando los valores individuales de cada fila
+    const byAccount = {};
+    for (const r of selected) {
+      if (!byAccount[r.account_id]) byAccount[r.account_id] = { name: r.account_name, items: [] };
+      byAccount[r.account_id].items.push({
+        item_id: r.item_id,
+        available_quantity: r.newStock || '',
+        price: r.newPrice || '',
+        item_sku: r.newSku || '',
+        status: '',
+        marca: '',
+        flex: ''
+      });
+    }
+
+    let totalOk = 0, totalErr = 0;
+    const applyLog = document.getElementById('searchApplyLog');
+
+    for (const [accId, group] of Object.entries(byAccount)) {
+      try {
+        const res = await fetch('/api/bulk-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: parseInt(accId), items: group.items })
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          if (applyLog) applyLog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(group.name)}: ${escapeHtml(d.error || 'Error')}</div>`;
+          continue;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line);
+              if (msg.type === 'result') {
+                if (msg.ok) totalOk++; else { totalErr++; }
+                if (!msg.ok && applyLog) applyLog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || '')}</div>`;
+              }
+            } catch(_) {}
+          }
+        }
+      } catch(e) {
+        if (applyLog) applyLog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(group.name)}: ${e.message}</div>`;
+      }
+    }
+
+    log.innerHTML = `<div style="background:${totalErr ? '#fff8f8' : '#f0fff4'};border:1px solid ${totalErr ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:12px;font-size:13px">
+      <b>${totalErr ? '⚠️' : '✅'} Completado: ${totalOk} exitosos${totalErr ? `, ${totalErr} con errores` : ''}</b>
+      ${totalErr ? '<div id="searchApplyLog" style="max-height:150px;overflow-y:auto;margin-top:6px;font-size:12px">' + (applyLog?.innerHTML || '') + '</div>' : ''}
+    </div>`;
+    btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados';
+    // Refrescar resultados
+    if (totalOk > 0) searchListings();
   }
 
   async function downloadCurrentListings() {
