@@ -2079,6 +2079,320 @@ function serveStatic(req, res) {
   });
 }
 
+// ==================== PROMOTIONS ====================
+
+const PROMO_BASE = 'https://api.mercadolibre.com/seller-promotions';
+
+// GET /api/promotions?account_id=X  — lista campañas por cuenta
+route('GET', '/api/promotions', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const urlObj = new URL(req.url, 'http://localhost');
+  const accountId = urlObj.searchParams.get('account_id');
+  const db = loadDB();
+  const targets = accountId
+    ? db.ml_accounts.filter(a => a.id === parseInt(accountId))
+    : db.ml_accounts;
+
+  const results = [];
+  for (const account of targets) {
+    try {
+      const token = await getValidToken(account);
+      if (!token) continue;
+      const r = await mlGet(
+        `${PROMO_BASE}/users/${account.seller_id}/promotions?app_id=${ML_CLIENT_ID}&offset=0&limit=100`,
+        token
+      );
+      const promos = Array.isArray(r) ? r : (r.results || []);
+      for (const p of promos) {
+        results.push({ ...p, account_id: account.id, account_name: account.name });
+      }
+    } catch(e) {}
+  }
+  sendJSON(res, 200, results);
+});
+
+// GET /api/promotion-items-stream?account_id=X&promo_id=Y  — streaming ndjson de todos los ítems
+route('GET', '/api/promotion-items-stream', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const urlObj = new URL(req.url, 'http://localhost');
+  const accountId = parseInt(urlObj.searchParams.get('account_id'));
+  const promoId = urlObj.searchParams.get('promo_id');
+  if (!promoId) return sendJSON(res, 400, { error: 'Falta promo_id' });
+
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
+
+  let offset = 0; const limit = 500; let total = null; let sent = 0;
+  do {
+    try {
+      const r = await mlGet(
+        `${PROMO_BASE}/promotions/${promoId}/items?app_id=${ML_CLIENT_ID}&limit=${limit}&offset=${offset}`,
+        token
+      );
+      const items = r.results || (Array.isArray(r) ? r : []);
+      if (total === null) {
+        total = r.paging?.total ?? items.length;
+        res.write(JSON.stringify({ type: 'total', total }) + '\n');
+      }
+      for (const it of items) {
+        res.write(JSON.stringify({ type: 'item', data: it }) + '\n');
+        sent++;
+      }
+      if (items.length) res.write(JSON.stringify({ type: 'progress', done: sent, total }) + '\n');
+      offset += limit;
+    } catch(e) {
+      res.write(JSON.stringify({ type: 'error', message: e.message }) + '\n');
+      break;
+    }
+  } while (offset < (total || 0));
+
+  res.write(JSON.stringify({ type: 'done', total: sent }) + '\n');
+  res.end();
+});
+
+// POST /api/promotion-search-items {account_id, promo_id, sku, title}
+route('POST', '/api/promotion-search-items', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const { account_id, promo_id, sku, title } = body;
+  if (!sku && !title) return sendJSON(res, 400, { error: 'Ingresá SKU o título' });
+  if (!promo_id) return sendJSON(res, 400, { error: 'Seleccioná una campaña primero' });
+
+  const db = loadDB();
+  const targets = account_id
+    ? db.ml_accounts.filter(a => a.id === parseInt(account_id))
+    : db.ml_accounts;
+
+  const skuLower = sku ? sku.trim().toLowerCase() : '';
+  const titleLower = title ? title.trim().toLowerCase() : '';
+  const foundItems = [];
+
+  for (const account of targets) {
+    try {
+      const token = await getValidToken(account);
+      if (!token) continue;
+      let itemIds = new Set();
+
+      if (skuLower) {
+        const skuBase = sku.trim();
+        const skuTerms = [skuBase];
+        if (!skuLower.includes('_')) {
+          for (const s of ['_D','_I','_DM','_IM','_DER','_IZQ','_T','_TD','_TI','_d','_i','_dm','_im','_1','_2','_3','_A','_B'])
+            skuTerms.push(skuBase + s);
+        }
+        await Promise.all(skuTerms.map(term =>
+          mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search?seller_sku=${encodeURIComponent(term)}&limit=200`, token)
+            .then(r => (r.results || []).forEach(id => itemIds.add(id)))
+            .catch(() => {})
+        ));
+      }
+
+      if (titleLower) {
+        try {
+          const r = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search?q=${encodeURIComponent(title.trim())}&limit=200`, token);
+          const titleIds = new Set(r.results || []);
+          if (skuLower) { for (const id of [...itemIds]) { if (!titleIds.has(id)) itemIds.delete(id); } }
+          else itemIds = titleIds;
+        } catch(e) { if (!skuLower) itemIds = new Set(); }
+      }
+
+      if (!itemIds.size) continue;
+      const idArr = [...itemIds];
+      for (let i = 0; i < idArr.length; i += 20) {
+        const batch = idArr.slice(i, i + 20);
+        try {
+          const details = await mlGet(
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,price,status`,
+            token
+          );
+          for (const it of (Array.isArray(details) ? details : [])) {
+            const b = it.body || it;
+            if (!b?.id || b.status === 'closed' || b.status === 'under_review') continue;
+            const itemSku = String(b.seller_custom_field || '').toLowerCase();
+            if (skuLower) {
+              if (skuLower.includes('_')) { if (!itemSku.includes(skuLower)) continue; }
+              else { if (!itemSku.split('_')[0].includes(skuLower)) continue; }
+            }
+            if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
+            foundItems.push({
+              item_id: b.id, title: b.title || '', sku: b.seller_custom_field || '',
+              original_price: b.price ?? 0, account_id: account.id, account_name: account.name
+            });
+          }
+        } catch(e) {}
+      }
+    } catch(e) {}
+  }
+
+  if (!foundItems.length) return sendJSON(res, 200, []);
+
+  // Chequear estado de cada ítem en la promoción
+  const accountTokens = {};
+  for (const account of targets) {
+    try { accountTokens[account.id] = await getValidToken(account); } catch(e) {}
+  }
+
+  const results = await Promise.all(foundItems.map(async (item) => {
+    const token = accountTokens[item.account_id];
+    if (!token) return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
+    try {
+      const r = await mlGet(`${PROMO_BASE}/promotions/${promo_id}/items/${item.item_id}?app_id=${ML_CLIENT_ID}`, token);
+      const active = r?.status && r.status !== 'INACTIVE' && r.status !== 'FINISHED';
+      return { ...item, in_promo: !!active, new_price: r?.new_price ?? null, discount: r?.discount ?? null, promo_status: r?.status ?? null };
+    } catch(e) {
+      return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
+    }
+  }));
+
+  sendJSON(res, 200, results);
+});
+
+// POST /api/promotion-toggle {account_id, promo_id, promo_type, item_id, participate, price, discount}
+route('POST', '/api/promotion-toggle', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const { account_id, promo_id, promo_type, item_id, participate, price, discount } = body;
+
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+
+  const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
+  try {
+    if (participate) {
+      if (isDeal) {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'CANDIDATE' })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) return sendJSON(res, 200, { ok: true });
+        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
+      } else {
+        const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
+        const payload = [{ item_id, ...(p > 0 ? { price: p } : { discount: disc > 0 ? disc : 10 }) }];
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items?app_id=${ML_CLIENT_ID}`, {
+          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) return sendJSON(res, 200, { ok: true });
+        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
+      }
+    } else {
+      if (isDeal) {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) return sendJSON(res, 200, { ok: true });
+        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
+      } else {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+          method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
+        });
+        if (r.ok || r.status === 204) return sendJSON(res, 200, { ok: true });
+        const d = await r.json().catch(() => ({}));
+        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
+      }
+    }
+  } catch(e) { sendJSON(res, 500, { error: e.message }); }
+});
+
+// POST /api/promotion-bulk-stream {account_id, promo_id, promo_type, items:[...]}  streaming ndjson
+route('POST', '/api/promotion-bulk-stream', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const { account_id, promo_id, promo_type, items } = body;
+  if (!items?.length) return sendJSON(res, 400, { error: 'Sin ítems' });
+
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
+  const total = items.length;
+  let done = 0, errCount = 0;
+  const errorRows = [];
+  res.write(JSON.stringify({ type: 'start', total }) + '\n');
+  const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
+
+  for (const item of items) {
+    const { item_id, participar, precio_promo, descuento_pct } = item;
+    const participate = ['si','sí','yes','true','1'].includes(String(participar || '').toLowerCase().trim());
+    let ok = true, errMsg = null;
+    try {
+      if (isDeal) {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: participate ? 'CANDIDATE' : 'INACTIVE' })
+        });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || `HTTP ${r.status}`; }
+      } else if (participate) {
+        const p = parseFloat(precio_promo) || 0, disc = parseFloat(descuento_pct) || 0;
+        const payload = [{ item_id, ...(p > 0 ? { price: p } : { discount: disc > 0 ? disc : 10 }) }];
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items?app_id=${ML_CLIENT_ID}`, {
+          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || `HTTP ${r.status}`; }
+      } else {
+        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}?app_id=${ML_CLIENT_ID}`, {
+          method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!r.ok && r.status !== 204) { ok = false; errMsg = `HTTP ${r.status}`; }
+      }
+    } catch(e) { ok = false; errMsg = e.message; }
+
+    done++;
+    if (!ok) { errCount++; errorRows.push({ item_id, participar, precio_promo, descuento_pct, error: errMsg }); }
+    if (done % 100 === 0 || done === total) {
+      res.write(JSON.stringify({ type: 'progress', done, total, errors: errCount }) + '\n');
+    }
+  }
+
+  res.write(JSON.stringify({ type: 'done', done, total, errors: errCount, errorRows }) + '\n');
+  res.end();
+});
+
+// POST /api/promotion-create {account_id, name, start_date, end_date}
+route('POST', '/api/promotion-create', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const { account_id, name, start_date, end_date } = body;
+  if (!account_id || !name || !start_date || !end_date) return sendJSON(res, 400, { error: 'Faltan datos' });
+
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+
+  const r = await fetch(`${PROMO_BASE}/users/${account.seller_id}/promotions?app_id=${ML_CLIENT_ID}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'PRICE_DISCOUNT', name, start_date: new Date(start_date).toISOString(), end_date: new Date(end_date).toISOString() })
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) return sendJSON(res, 200, d);
+  sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
+});
+
 // ==================== SERVER ====================
 
 const server = http.createServer(async (req, res) => {
