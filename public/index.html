@@ -364,6 +364,9 @@
       <a onclick="showSection('update')" id="nav-update" style="display:none">
         <span>🔄 Actualizar</span>
       </a>
+      <a onclick="showSection('promos')" id="nav-promos" style="display:none">
+        <span>📣 Promociones</span>
+      </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts" style="display:none">
         <span>🏪 Cuentas ML</span>
@@ -413,6 +416,10 @@
       <span class="nav-icon">🔄</span>
       Actualizar
     </a>
+    <a onclick="showSection('promos')" id="mob-promos" style="display:none">
+      <span class="nav-icon">📣</span>
+      Promos
+    </a>
   </div>
 </div>
 
@@ -446,7 +453,10 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
+          document.getElementById('nav-promos').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+          const mobPromos = document.getElementById('mob-promos');
+          if (mobPromos) mobPromos.style.display = '';
           const mobAcc = document.getElementById('mob-accounts');
           if (mobAcc) mobAcc.style.display = '';
         }
@@ -543,7 +553,10 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
+          document.getElementById('nav-promos').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+          const mobPromos = document.getElementById('mob-promos');
+          if (mobPromos) mobPromos.style.display = '';
           const mobAcc = document.getElementById('mob-accounts');
           if (mobAcc) mobAcc.style.display = '';
         }
@@ -638,6 +651,7 @@
       case 'users': loadUsers(); break;
       case 'prep': loadPrepSection(); break;
       case 'update': loadUpdate(); break;
+      case 'promos': loadPromos(); break;
     }
   }
 
@@ -3579,6 +3593,652 @@
   <button onclick="window.close()" style="margin-left:12px;padding:10px 24px;font-size:15px;background:#eee;border:none;border-radius:6px;cursor:pointer">Cerrar</button>
 </div>
 </body></html>`;
+  }
+
+  // ==================== PROMOCIONES ====================
+
+  let promosCurrentAccountId = '';
+  let promosCurrentPromoId = '';
+  let promosCurrentPromoType = '';
+  let promosCurrentPromoName = '';
+
+  function loadPromos() {
+    if (currentUser?.role !== 'admin') {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permisos para acceder a esta sección</p></div>';
+      return;
+    }
+
+    let accountOptions = '<option value="">-- Seleccioná una cuenta --</option>';
+    for (const a of accounts) {
+      accountOptions += `<option value="${a.id}">${escapeHtml(a.name)}</option>`;
+    }
+
+    document.getElementById('content').innerHTML = `
+      <h2 style="margin-bottom:16px;color:#2d3277">📣 Promociones</h2>
+
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:18px">
+        <select id="promoAccountSel" onchange="promosCurrentAccountId=this.value;loadPromoCampaigns()"
+          style="padding:8px 14px;border:1px solid #ddd;border-radius:8px;font-size:13px;min-width:200px">
+          ${accountOptions}
+        </select>
+        <button onclick="showCreatePromoModal()"
+          style="padding:8px 18px;background:#8e44ad;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">
+          ➕ Nueva campaña propia
+        </button>
+      </div>
+
+      <div id="promoCampaignsArea"></div>
+
+      <div id="promoItemsArea" style="display:none;margin-top:24px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+          <b id="promoItemsTitle" style="font-size:15px;color:#2d3277"></b>
+          <button onclick="cerrarCampana()"
+            style="padding:5px 12px;background:#eee;color:#333;border:none;border-radius:6px;font-size:12px;cursor:pointer">
+            ✖ Cerrar
+          </button>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px">
+          <input id="promoSearchSku" type="text" placeholder="SKU"
+            style="padding:7px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:160px"
+            onkeydown="if(event.key==='Enter')searchPromoItems()">
+          <input id="promoSearchTitle" type="text" placeholder="Título"
+            style="padding:7px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:200px"
+            onkeydown="if(event.key==='Enter')searchPromoItems()">
+          <button id="btnPromoSearch" onclick="searchPromoItems()"
+            style="padding:7px 16px;background:#2980b9;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+            🔍 Buscar
+          </button>
+          <button onclick="downloadPromoXLSX()"
+            style="padding:7px 16px;background:#27ae60;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+            ⬇️ Descargar XLSX
+          </button>
+          <label style="padding:7px 16px;background:#e67e22;color:white;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+            ⬆️ Subir XLSX
+            <input type="file" accept=".xlsx" style="display:none" onchange="handlePromoXLSX(this.files[0]);this.value=''">
+          </label>
+        </div>
+
+        <div id="promoProgressArea" style="display:none;margin-bottom:12px"></div>
+        <div id="promoItemsTable" style="overflow-x:auto"></div>
+      </div>
+
+      <!-- Modal nueva campaña -->
+      <div id="createPromoModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center">
+        <div style="background:white;border-radius:12px;padding:28px;width:min(480px,95vw);box-shadow:0 8px 32px rgba(0,0,0,.25)">
+          <h3 style="margin:0 0 18px;color:#2d3277">➕ Nueva campaña propia (PRICE_DISCOUNT)</h3>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <label style="font-size:13px;font-weight:600;color:#555">
+              Nombre de la campaña
+              <input id="newPromoName" type="text" placeholder="Ej: Liquidación Julio 2026"
+                style="display:block;width:100%;margin-top:4px;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box">
+            </label>
+            <label style="font-size:13px;font-weight:600;color:#555">
+              Cuenta
+              <select id="newPromoAccount" style="display:block;width:100%;margin-top:4px;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px">
+                ${accountOptions}
+              </select>
+            </label>
+            <div style="display:flex;gap:12px">
+              <label style="flex:1;font-size:13px;font-weight:600;color:#555">
+                Fecha inicio
+                <input id="newPromoStart" type="date" style="display:block;width:100%;margin-top:4px;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box">
+              </label>
+              <label style="flex:1;font-size:13px;font-weight:600;color:#555">
+                Fecha fin
+                <input id="newPromoEnd" type="date" style="display:block;width:100%;margin-top:4px;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;box-sizing:border-box">
+              </label>
+            </div>
+          </div>
+          <div id="createPromoError" style="margin-top:10px;color:#e74c3c;font-size:13px;display:none"></div>
+          <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
+            <button onclick="document.getElementById('createPromoModal').style.display='none'"
+              style="padding:8px 20px;background:#eee;border:none;border-radius:8px;font-size:13px;cursor:pointer">
+              Cancelar
+            </button>
+            <button id="btnCreatePromo" onclick="createPromo()"
+              style="padding:8px 20px;background:#8e44ad;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+              Crear campaña
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadPromoCampaigns() {
+    const accountId = document.getElementById('promoAccountSel')?.value;
+    const area = document.getElementById('promoCampaignsArea');
+    if (!area) return;
+    if (!accountId) { area.innerHTML = ''; return; }
+
+    area.innerHTML = '<p style="color:#888;font-size:13px">⏳ Cargando campañas...</p>';
+    // cerrar ítem-area al cambiar cuenta
+    const itemsArea = document.getElementById('promoItemsArea');
+    if (itemsArea) itemsArea.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/promotions?account_id=${encodeURIComponent(accountId)}`);
+      const data = await res.json();
+      if (!res.ok) { area.innerHTML = `<p style="color:#e74c3c">${escapeHtml(data.error || 'Error al cargar campañas')}</p>`; return; }
+      if (!data.length) { area.innerHTML = '<p style="color:#888;font-size:13px">No hay campañas disponibles para esta cuenta.</p>'; return; }
+
+      const typeLabel = { DEAL:'🤝 DEAL (ML)', LIGHTNING_DEAL:'⚡ Lightning Deal', PRICE_DISCOUNT:'🏷️ Precio Oferta' };
+      const statusBadge = { active:'<span style="color:#27ae60;font-weight:600">● Activa</span>', inactive:'<span style="color:#999">○ Inactiva</span>', upcoming:'<span style="color:#e67e22;font-weight:600">◎ Próxima</span>', finished:'<span style="color:#aaa">✓ Finalizada</span>' };
+
+      let rows = '';
+      for (const p of data) {
+        const label = typeLabel[p.type] || p.type;
+        const badge = statusBadge[p.status] || `<span style="color:#888">${escapeHtml(p.status||'')}</span>`;
+        const from = p.start_date ? new Date(p.start_date).toLocaleDateString('es-AR') : '—';
+        const to   = p.end_date   ? new Date(p.end_date).toLocaleDateString('es-AR')   : '—';
+        rows += `<tr>
+          <td style="padding:8px 10px">${escapeHtml(p.name||'Sin nombre')}</td>
+          <td style="padding:8px 10px">${label}</td>
+          <td style="padding:8px 10px">${badge}</td>
+          <td style="padding:8px 10px">${from}</td>
+          <td style="padding:8px 10px">${to}</td>
+          <td style="padding:8px 10px">
+            <button onclick="openPromoCampaign('${escapeHtml(p.id)}','${escapeHtml(p.type)}','${escapeHtml((p.name||'').replace(/'/g,"\\'"))}')"
+              style="padding:5px 12px;background:#2980b9;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600">
+              Ver ítems
+            </button>
+          </td>
+        </tr>`;
+      }
+
+      area.innerHTML = `
+        <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;font-size:13px;width:100%;min-width:600px">
+            <thead>
+              <tr style="background:#f5f6fa;border-bottom:2px solid #e0e0e0">
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Nombre</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Tipo</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Estado</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Inicio</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Fin</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    } catch(e) {
+      area.innerHTML = `<p style="color:#e74c3c">Error de conexión: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  function openPromoCampaign(promoId, promoType, promoName) {
+    promosCurrentPromoId   = promoId;
+    promosCurrentPromoType = promoType;
+    promosCurrentPromoName = promoName;
+    promosCurrentAccountId = document.getElementById('promoAccountSel')?.value || '';
+
+    const area = document.getElementById('promoItemsArea');
+    if (!area) return;
+    area.style.display = 'block';
+
+    const title = document.getElementById('promoItemsTitle');
+    if (title) title.textContent = `Campaña: ${promoName}`;
+
+    const tableEl = document.getElementById('promoItemsTable');
+    if (tableEl) tableEl.innerHTML = '';
+    const progEl = document.getElementById('promoProgressArea');
+    if (progEl) { progEl.style.display = 'none'; progEl.innerHTML = ''; }
+
+    // Limpiar búsqueda anterior
+    const skuEl = document.getElementById('promoSearchSku');
+    const titEl = document.getElementById('promoSearchTitle');
+    if (skuEl) skuEl.value = '';
+    if (titEl) titEl.value = '';
+
+    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function cerrarCampana() {
+    const area = document.getElementById('promoItemsArea');
+    if (area) area.style.display = 'none';
+    promosCurrentPromoId = '';
+    promosCurrentPromoType = '';
+    promosCurrentPromoName = '';
+  }
+
+  async function searchPromoItems() {
+    if (!promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
+    const sku   = document.getElementById('promoSearchSku')?.value.trim() || '';
+    const title = document.getElementById('promoSearchTitle')?.value.trim() || '';
+    if (!sku && !title) return showToast('Ingresá SKU o título para buscar', 'error');
+
+    const btn = document.getElementById('btnPromoSearch');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando...'; }
+    const tableEl = document.getElementById('promoItemsTable');
+    if (tableEl) tableEl.innerHTML = '<p style="color:#888;font-size:13px">Buscando ítems...</p>';
+
+    try {
+      const res = await fetch('/api/promotion-search-items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: parseInt(promosCurrentAccountId) || promosCurrentAccountId,
+          promo_id: promosCurrentPromoId,
+          sku, title
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Error al buscar', 'error'); if (tableEl) tableEl.innerHTML = ''; return; }
+      renderPromoItemsTable(data);
+    } catch(e) {
+      showToast('Error de conexión: ' + e.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar'; }
+    }
+  }
+
+  function renderPromoItemsTable(items) {
+    const tableEl = document.getElementById('promoItemsTable');
+    if (!tableEl) return;
+    if (!items.length) {
+      tableEl.innerHTML = '<p style="color:#888;font-size:13px;margin-top:8px">No se encontraron ítems.</p>';
+      return;
+    }
+
+    const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
+    let header = `<tr style="background:#f5f6fa;border-bottom:2px solid #e0e0e0">
+      <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555;font-size:12px">ID</th>
+      <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555;font-size:12px">SKU</th>
+      <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555;font-size:12px">Título</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:600;color:#555;font-size:12px">Precio orig.</th>`;
+    if (!isDeal) {
+      header += `<th style="padding:8px 10px;text-align:right;font-weight:600;color:#555;font-size:12px">Precio promo</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:600;color:#555;font-size:12px">Dto %</th>`;
+    }
+    header += `<th style="padding:8px 10px;text-align:center;font-weight:600;color:#555;font-size:12px">Participar</th>
+    </tr>`;
+
+    let rows = '';
+    for (const it of items) {
+      const inPromo = it.in_promo;
+      const safeName = escapeHtml(it.title || '');
+      const safeId   = escapeHtml(it.item_id || '');
+      const safeSku  = escapeHtml(it.sku || '');
+      const price    = it.original_price ? `$${Number(it.original_price).toLocaleString('es-AR')}` : '—';
+
+      let extraCols = '';
+      if (!isDeal) {
+        const curPrice = it.new_price ? `${Number(it.new_price).toLocaleString('es-AR')}` : '';
+        const curDisc  = it.discount  ? `${it.discount}` : '';
+        extraCols = `
+          <td style="padding:6px 8px;text-align:right">
+            <input type="number" value="${curPrice}" min="0" step="0.01"
+              id="promo-price-${safeId}" placeholder="precio"
+              style="width:90px;padding:4px 6px;border:1px solid #ddd;border-radius:5px;font-size:12px;text-align:right">
+          </td>
+          <td style="padding:6px 8px;text-align:right">
+            <input type="number" value="${curDisc}" min="0" max="99" step="1"
+              id="promo-disc-${safeId}" placeholder="%"
+              style="width:60px;padding:4px 6px;border:1px solid #ddd;border-radius:5px;font-size:12px;text-align:right">
+          </td>`;
+      }
+
+      const btnBg = inPromo ? '#e74c3c' : '#27ae60';
+      const btnTxt = inPromo ? 'NO participar' : 'Participar';
+      rows += `<tr style="border-bottom:1px solid #f0f0f0" id="promo-row-${safeId}">
+        <td style="padding:6px 10px;font-size:11px;color:#888">${safeId}</td>
+        <td style="padding:6px 10px;font-size:12px">${safeSku}</td>
+        <td style="padding:6px 10px;font-size:12px;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${safeName}">${safeName}</td>
+        <td style="padding:6px 10px;text-align:right;font-size:12px">${price}</td>
+        ${extraCols}
+        <td style="padding:6px 10px;text-align:center">
+          <button id="promo-btn-${safeId}"
+            onclick="togglePromoItem('${safeId}',${inPromo})"
+            style="padding:5px 12px;background:${btnBg};color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600">
+            ${btnTxt}
+          </button>
+        </td>
+      </tr>`;
+    }
+
+    tableEl.innerHTML = `<table style="border-collapse:collapse;font-size:13px;width:100%;min-width:600px">
+      <thead>${header}</thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  async function togglePromoItem(itemId, currentlyInPromo) {
+    const btn = document.getElementById('promo-btn-' + itemId);
+    if (!btn) return;
+    const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
+    const participate = !currentlyInPromo;
+
+    let price = null, discount = null;
+    if (!isDeal && participate) {
+      const priceVal = parseFloat(document.getElementById('promo-price-' + itemId)?.value || '');
+      const discVal  = parseFloat(document.getElementById('promo-disc-' + itemId)?.value || '');
+      if (!priceVal && !discVal) return showToast('Ingresá precio o descuento para agregar a la promoción', 'error');
+      if (priceVal > 0)  price    = priceVal;
+      if (discVal  > 0)  discount = discVal;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳';
+
+    try {
+      const res = await fetch('/api/promotion-toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: parseInt(promosCurrentAccountId) || promosCurrentAccountId,
+          promo_id: promosCurrentPromoId,
+          promo_type: promosCurrentPromoType,
+          item_id: itemId,
+          participate,
+          price, discount
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Error al actualizar', 'error');
+        btn.disabled = false;
+        btn.textContent = currentlyInPromo ? 'NO participar' : 'Participar';
+        return;
+      }
+      // Update button in place
+      btn.disabled = false;
+      if (participate) {
+        btn.style.background = '#e74c3c';
+        btn.textContent = 'NO participar';
+        btn.setAttribute('onclick', `togglePromoItem('${itemId}',true)`);
+      } else {
+        btn.style.background = '#27ae60';
+        btn.textContent = 'Participar';
+        btn.setAttribute('onclick', `togglePromoItem('${itemId}',false)`);
+      }
+      showToast(participate ? '✅ Ítem agregado a la promoción' : '✅ Ítem removido de la promoción');
+    } catch(e) {
+      showToast('Error de conexión: ' + e.message, 'error');
+      btn.disabled = false;
+      btn.textContent = currentlyInPromo ? 'NO participar' : 'Participar';
+    }
+  }
+
+  async function downloadPromoXLSX() {
+    if (!promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
+
+    // Load SheetJS if needed
+    if (!window.XLSX) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    const progArea = document.getElementById('promoProgressArea');
+    if (progArea) {
+      progArea.style.display = 'block';
+      progArea.innerHTML = `<div style="background:#f0f4ff;border:1px solid #c5d0e6;border-radius:8px;padding:12px;font-size:13px">
+        <b>⬇️ Descargando ítems...</b>
+        <div id="promoDownloadBar" style="height:8px;background:#e0e0e0;border-radius:4px;margin-top:8px;overflow:hidden">
+          <div id="promoDownloadFill" style="height:100%;background:#3498db;width:0%;transition:width .3s"></div>
+        </div>
+        <div id="promoDownloadStatus" style="margin-top:6px;color:#666;font-size:12px">Iniciando...</div>
+      </div>`;
+    }
+
+    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}`;
+    const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const d = await res.json();
+        if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">${escapeHtml(d.error || 'Error al descargar')}</p>`;
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '', allItems = [], total = 0;
+      const barFill  = document.getElementById('promoDownloadFill');
+      const barStatus = document.getElementById('promoDownloadStatus');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.type === 'total') { total = msg.total; }
+            else if (msg.type === 'item') { allItems.push(msg.data); }
+            else if (msg.type === 'progress') {
+              const pct = total > 0 ? Math.round((msg.done / total) * 100) : 0;
+              if (barFill)   barFill.style.width = pct + '%';
+              if (barStatus) barStatus.textContent = `${msg.done} de ${msg.total} ítems`;
+            }
+            else if (msg.type === 'done') {
+              if (barFill)   barFill.style.width = '100%';
+              if (barStatus) barStatus.textContent = `${msg.total} ítems descargados`;
+            }
+          } catch(_) {}
+        }
+      }
+
+      // Build XLSX
+      const headers = isDeal
+        ? ['item_id', 'titulo', 'sku', 'precio_original', 'estado', 'participar']
+        : ['item_id', 'titulo', 'sku', 'precio_original', 'precio_promo', 'descuento_%', 'participar'];
+
+      const rows = allItems.map(it => {
+        const inPromo = it.status === 'CANDIDATE' || it.status === 'ACTIVE';
+        if (isDeal) {
+          return [it.item_id, it.title||'', it.seller_sku||'', it.original_price||'', it.status||'', inPromo?'SI':'NO'];
+        } else {
+          return [it.item_id, it.title||'', it.seller_sku||'', it.original_price||'', it.new_price||'', it.discount||'', inPromo?'SI':'NO'];
+        }
+      });
+
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      // Column widths
+      ws['!cols'] = [{ wch:15 }, { wch:45 }, { wch:18 }, { wch:14 }, ...(isDeal ? [{ wch:12 }, { wch:10 }] : [{ wch:12 }, { wch:10 }, { wch:10 }])];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Promo');
+      const today = new Date();
+      const dd = today.getDate().toString().padStart(2,'0');
+      const mm = (today.getMonth()+1).toString().padStart(2,'0');
+      const safeName = (promosCurrentPromoName||'promo').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,30);
+      XLSX.writeFile(wb, `promo_${safeName}_${dd}${mm}.xlsx`);
+
+      if (progArea) {
+        setTimeout(() => { progArea.style.display = 'none'; progArea.innerHTML = ''; }, 2000);
+      }
+    } catch(e) {
+      if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function handlePromoXLSX(file) {
+    if (!file || !promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
+
+    if (!window.XLSX) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    const progArea = document.getElementById('promoProgressArea');
+
+    try {
+      const ab = await file.arrayBuffer();
+      const wb = XLSX.read(ab, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      if (!rows.length) return showToast('El archivo está vacío', 'error');
+
+      // Normalize column names
+      const items = rows.map(r => {
+        const norm = {};
+        for (const [k, v] of Object.entries(r)) norm[k.toLowerCase().trim()] = v;
+        return {
+          item_id:     String(norm.item_id || '').trim(),
+          participar:  String(norm.participar || '').toUpperCase().trim(),
+          precio_promo: norm['precio_promo'] || norm['precio promo'] || '',
+          descuento_pct: norm['descuento_%'] || norm['descuento_pct'] || norm['descuento'] || ''
+        };
+      }).filter(r => r.item_id);
+
+      if (!items.length) return showToast('No se encontraron filas válidas (se requiere columna item_id)', 'error');
+
+      if (progArea) {
+        progArea.style.display = 'block';
+        progArea.innerHTML = `<div style="background:#f0f4ff;border:1px solid #c5d0e6;border-radius:8px;padding:12px;font-size:13px">
+          <b>⬆️ Aplicando cambios...</b>
+          <div id="promoBulkBar" style="height:8px;background:#e0e0e0;border-radius:4px;margin-top:8px;overflow:hidden">
+            <div id="promoBulkFill" style="height:100%;background:#e67e22;width:0%;transition:width .3s"></div>
+          </div>
+          <div id="promoBulkStatus" style="margin-top:6px;color:#666;font-size:12px">0 de ${items.length}</div>
+        </div>`;
+      }
+
+      const res = await fetch('/api/promotion-bulk-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: parseInt(promosCurrentAccountId) || promosCurrentAccountId,
+          promo_id: promosCurrentPromoId,
+          promo_type: promosCurrentPromoType,
+          items
+        })
+      });
+
+      if (!res.ok) {
+        const d = await res.json();
+        if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">${escapeHtml(d.error || 'Error al procesar')}</p>`;
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf2 = '', lastMsg = null;
+      const barFill   = document.getElementById('promoBulkFill');
+      const barStatus = document.getElementById('promoBulkStatus');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf2 += decoder.decode(value, { stream: true });
+        const lines = buf2.split('\n'); buf2 = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            lastMsg = msg;
+            if (msg.type === 'progress' || msg.type === 'done') {
+              const pct = msg.total > 0 ? Math.round((msg.done / msg.total) * 100) : 0;
+              if (barFill)   barFill.style.width = pct + '%';
+              if (barStatus) barStatus.textContent = `${msg.done} de ${msg.total} — ${msg.errors||0} errores`;
+            }
+          } catch(_) {}
+        }
+      }
+
+      // Final summary
+      if (progArea && lastMsg) {
+        const hasErr = (lastMsg.errors || 0) > 0;
+        progArea.innerHTML = `<div style="background:${hasErr?'#fff8f8':'#f0fff4'};border:1px solid ${hasErr?'#f8d7da':'#c3e6cb'};border-radius:8px;padding:12px;font-size:13px">
+          <b>${hasErr?'⚠️':'✅'} Completado: ${lastMsg.done - (lastMsg.errors||0)} exitosos${hasErr?`, ${lastMsg.errors} con errores`:''}</b>
+          ${hasErr && lastMsg.errorRows?.length ? `
+            <div style="margin-top:8px;font-size:12px">
+              <button onclick="descargarErroresPromo()" style="padding:4px 10px;background:#e74c3c;color:white;border:none;border-radius:5px;font-size:12px;cursor:pointer">
+                ⬇️ Descargar errores
+              </button>
+            </div>` : ''}
+        </div>`;
+        if (hasErr && lastMsg.errorRows) window._promoErrorRows = lastMsg.errorRows;
+      }
+    } catch(e) {
+      if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  async function descargarErroresPromo() {
+    const rows = window._promoErrorRows;
+    if (!rows?.length) return;
+    if (!window.XLSX) await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    const headers = ['item_id','participar','precio_promo','descuento_%','error'];
+    const data = rows.map(r => [r.item_id, r.participar, r.precio_promo, r.descuento_pct, r.error]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+    const wb2 = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb2, ws, 'Errores');
+    const today = new Date();
+    const dd = today.getDate().toString().padStart(2,'0');
+    const mm = (today.getMonth()+1).toString().padStart(2,'0');
+    XLSX.writeFile(wb2, `errores_promo_${dd}${mm}.xlsx`);
+  }
+
+  function showCreatePromoModal() {
+    const modal = document.getElementById('createPromoModal');
+    if (!modal) return showToast('Cargá la sección Promociones primero', 'error');
+    const errEl = document.getElementById('createPromoError');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    // Pre-select current account if set
+    const accSel = document.getElementById('newPromoAccount');
+    if (accSel && promosCurrentAccountId) accSel.value = promosCurrentAccountId;
+    modal.style.display = 'flex';
+  }
+
+  async function createPromo() {
+    const name  = document.getElementById('newPromoName')?.value.trim();
+    const accId = document.getElementById('newPromoAccount')?.value;
+    const start = document.getElementById('newPromoStart')?.value;
+    const end   = document.getElementById('newPromoEnd')?.value;
+    const errEl = document.getElementById('createPromoError');
+    const btn   = document.getElementById('btnCreatePromo');
+
+    const showErr = msg => { if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; } };
+
+    if (!name)  return showErr('Ingresá un nombre para la campaña');
+    if (!accId) return showErr('Seleccioná una cuenta');
+    if (!start) return showErr('Seleccioná fecha de inicio');
+    if (!end)   return showErr('Seleccioná fecha de fin');
+    if (end <= start) return showErr('La fecha de fin debe ser posterior al inicio');
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Creando...'; }
+    if (errEl) { errEl.style.display = 'none'; }
+
+    try {
+      const res = await fetch('/api/promotion-create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: parseInt(accId) || accId, name, start_date: start, end_date: end })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showErr(data.error || 'Error al crear la campaña');
+        return;
+      }
+      document.getElementById('createPromoModal').style.display = 'none';
+      showToast('✅ Campaña creada exitosamente');
+      // Reload campaigns if we're on the same account
+      const curAcc = document.getElementById('promoAccountSel')?.value;
+      if (curAcc && curAcc === String(accId)) loadPromoCampaigns();
+    } catch(e) {
+      showErr('Error de conexión: ' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Crear campaña'; }
+    }
   }
 
   // ==================== HELPERS ====================
