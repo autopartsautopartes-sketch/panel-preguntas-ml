@@ -130,6 +130,14 @@ for (const u of dbMigrate4.users) {
 }
 if (migrated4) saveDB(dbMigrate4);
 
+// Migrate: add can_search_update permission (default false for non-admin)
+const dbMigrate5 = loadDB();
+let migrated5 = false;
+for (const u of dbMigrate5.users) {
+  if (u.can_search_update === undefined) { u.can_search_update = false; migrated5 = true; }
+}
+if (migrated5) saveDB(dbMigrate5);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -453,7 +461,8 @@ route('GET', '/api/me', async (req, res) => {
     can_view_messages: isAdmin || user?.can_view_messages !== false,
     can_view_sales: isAdmin || user?.can_view_sales !== false,
     can_prep_manage: user?.can_prep_manage === true,
-    can_prep_operate: user?.can_prep_operate === true
+    can_prep_operate: user?.can_prep_operate === true,
+    can_search_update: isAdmin || user?.can_search_update === true
   });
 });
 
@@ -473,6 +482,7 @@ route('GET', '/api/users', async (req, res) => {
     can_view_sales: u.role === 'admin' || u.can_view_sales !== false,
     can_prep_manage: u.can_prep_manage === true,
     can_prep_operate: u.can_prep_operate === true,
+    can_search_update: u.role === 'admin' || u.can_search_update === true,
     created_at: u.created_at
   })));
 });
@@ -480,7 +490,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -493,6 +503,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_view_sales !== undefined) user.can_view_sales = !!can_view_sales;
   if (can_prep_manage !== undefined) user.can_prep_manage = !!can_prep_manage;
   if (can_prep_operate !== undefined) user.can_prep_operate = !!can_prep_operate;
+  if (can_search_update !== undefined) user.can_search_update = !!can_search_update;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -570,7 +581,11 @@ async function updateFlexForItem(itemId, flexStr, token) {
 // BULK UPDATE — streaming ndjson, 10 llamadas paralelas
 route('POST', '/api/bulk-update', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const dbPerm = loadDB();
+  const userPerm = dbPerm.users.find(u => u.id === sess.userId);
+  const canBulk = sess.role === 'admin' || userPerm?.can_search_update === true;
+  if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const { account_id, items } = await parseBody(req);
   if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
   const db = loadDB();
@@ -633,7 +648,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
 // SEARCH LISTINGS — busca por SKU y/o título en una o todas las cuentas
 route('POST', '/api/search-listings', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const dbPerm2 = loadDB();
+  const userPerm2 = dbPerm2.users.find(u => u.id === sess.userId);
+  const canSearch = sess.role === 'admin' || userPerm2?.can_search_update === true;
+  if (!canSearch) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const { sku, title, account_id } = await parseBody(req);
   if (!sku && !title) return sendJSON(res, 400, { error: 'Ingresá SKU o título para buscar' });
 
@@ -655,12 +674,21 @@ route('POST', '/api/search-listings', async (req, res) => {
 
       let itemIds = null; // null = sin filtro todavía
 
-      // Buscar por SKU exacto
+      // Buscar por SKU — exacto + variantes con sufijo (_D, _DM, etc.)
       if (skuLower) {
+        itemIds = new Set();
+        // Búsqueda exacta por seller_sku
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(sku.trim())}&limit=200`, token);
-          itemIds = new Set(r.results || []);
-        } catch(e) { itemIds = new Set(); }
+          (r.results || []).forEach(id => itemIds.add(id));
+        } catch(e) {}
+        // Si no tiene _ en la búsqueda, también buscar por keyword para encontrar variantes con sufijo
+        if (!sku.trim().includes('_')) {
+          try {
+            const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(sku.trim())}&limit=200`, token);
+            (r.results || []).forEach(id => itemIds.add(id));
+          } catch(e) {}
+        }
       }
 
       // Buscar por título (keyword) en ML
@@ -694,8 +722,18 @@ route('POST', '/api/search-listings', async (req, res) => {
             if (b.status === 'closed' || b.status === 'under_review') continue;
             // Filtro local de título por substring
             if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
-            // Filtro local de SKU por substring
-            if (skuLower && !String(b.seller_custom_field || '').toLowerCase().includes(skuLower)) continue;
+            // Filtro local de SKU: si la búsqueda no tiene _, compara solo la base (antes de _)
+            if (skuLower) {
+              const itemSku = String(b.seller_custom_field || '').toLowerCase();
+              if (skuLower.includes('_')) {
+                // Tiene sufijo → substring normal
+                if (!itemSku.includes(skuLower)) continue;
+              } else {
+                // Sin sufijo → comparar solo la base del SKU del item (antes del _)
+                const itemBase = itemSku.split('_')[0];
+                if (!itemBase.includes(skuLower)) continue;
+              }
+            }
             results.push({
               item_id: b.id,
               title: b.title || '',
