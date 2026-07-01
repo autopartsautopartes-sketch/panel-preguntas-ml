@@ -300,11 +300,11 @@ function setSecurityHeaders(res) {
 
 // ==================== HTTP HELPERS ====================
 
-async function mlGet(url, token, params = {}) {
+async function mlGet(url, token, params = {}, extraHeaders = {}) {
   const qs = new URLSearchParams(params).toString();
   const fullUrl = qs ? `${url}?${qs}` : url;
   const res = await fetch(fullUrl, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {}
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extraHeaders }
   });
   const data = await res.json();
   if (!res.ok) throw { response: { data, status: res.status } };
@@ -2081,7 +2081,8 @@ function serveStatic(req, res) {
 
 // ==================== PROMOTIONS ====================
 
-const PROMO_BASE = 'https://api.mercadolibre.com/seller-promotions';
+const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
+const PROMO_HEADERS = { 'version': 'v2' };
 
 // GET /api/promotions?account_id=X  — lista campañas por cuenta
 route('GET', '/api/promotions', async (req, res) => {
@@ -2097,32 +2098,21 @@ route('GET', '/api/promotions', async (req, res) => {
   const results = [];
   const debug = [];
 
-  // Candidatos de URL en orden — el primero que responda 200 es el correcto
-  const urlCandidates = (sid) => [
-    `${PROMO_BASE}/users/${sid}/promotions?offset=0&limit=100`,
-    `${PROMO_BASE}/promotions?seller_id=${sid}&limit=100`,
-    `https://api.mercadolibre.com/promotions/users/${sid}/promotions?limit=100`,
-    `https://api.mercadolibre.com/users/${sid}/promotions?limit=100`,
-  ];
-
   for (const account of targets) {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
-
-      for (const url of urlCandidates(account.seller_id)) {
-        let r;
-        try { r = await mlGet(url, token); }
-        catch(e) {
-          debug.push({ account: account.name, url, httpStatus: e?.response?.status, mlError: e?.response?.data });
-          continue; // probar siguiente candidato
-        }
-        // Éxito
-        debug.push({ account: account.name, url, OK: true, isArray: Array.isArray(r), keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
-        const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-        for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
-        break; // no seguir probando
+      // Correct endpoint: GET /marketplace/seller-promotions/users/{seller_id}  (no /promotions suffix!)
+      const url = `${PROMO_BASE}/users/${account.seller_id}`;
+      let r;
+      try { r = await mlGet(url, token, {}, PROMO_HEADERS); }
+      catch(e) {
+        debug.push({ account: account.name, url, httpStatus: e?.response?.status, mlError: e?.response?.data });
+        continue;
       }
+      debug.push({ account: account.name, url, OK: true, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
+      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+      for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
     } catch(e) {
       debug.push({ account: account.name, error: e.message });
     }
@@ -2147,13 +2137,13 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
 
-  let offset = 0; const limit = 500; let total = null; let sent = 0;
+  // API uses cursor-based pagination (search_after), max limit=50
+  const limit = 50; let total = null; let sent = 0; let searchAfter = null;
   do {
     try {
-      const r = await mlGet(
-        `${PROMO_BASE}/promotions/${promoId}/items&limit=${limit}&offset=${offset}`,
-        token
-      );
+      let url = `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=${limit}`;
+      if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
+      const r = await mlGet(url, token, {}, PROMO_HEADERS);
       const items = r.results || (Array.isArray(r) ? r : []);
       if (total === null) {
         total = r.paging?.total ?? items.length;
@@ -2164,12 +2154,13 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         sent++;
       }
       if (items.length) res.write(JSON.stringify({ type: 'progress', done: sent, total }) + '\n');
-      offset += limit;
+      searchAfter = r.paging?.search_after || null;
+      if (!items.length) break;
     } catch(e) {
-      res.write(JSON.stringify({ type: 'error', message: e.message }) + '\n');
+      res.write(JSON.stringify({ type: 'error', message: e?.response?.data?.message || e.message }) + '\n');
       break;
     }
-  } while (offset < (total || 0));
+  } while (searchAfter);
 
   res.write(JSON.stringify({ type: 'done', total: sent }) + '\n');
   res.end();
@@ -2242,7 +2233,8 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
             if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
             foundItems.push({
               item_id: b.id, title: b.title || '', sku: b.seller_custom_field || '',
-              original_price: b.price ?? 0, account_id: account.id, account_name: account.name
+              original_price: b.price ?? 0, account_id: account.id, account_name: account.name,
+              account_seller_id: account.seller_id
             });
           }
         } catch(e) {}
@@ -2262,9 +2254,12 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
     const token = accountTokens[item.account_id];
     if (!token) return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     try {
-      const r = await mlGet(`${PROMO_BASE}/promotions/${promo_id}/items/${item.item_id}`, token);
-      const active = r?.status && r.status !== 'INACTIVE' && r.status !== 'FINISHED';
-      return { ...item, in_promo: !!active, new_price: r?.new_price ?? null, discount: r?.discount ?? null, promo_status: r?.status ?? null };
+      // Check item status in promotion: GET /promotions/{id}/items?user_id=...&item_id=...
+      const r = await mlGet(`${PROMO_BASE}/promotions/${promo_id}/items?user_id=${item.account_seller_id || ''}&item_id=${item.item_id}`, token, {}, PROMO_HEADERS);
+      const arr = r?.results || (Array.isArray(r) ? r : []);
+      const it = arr[0] || r;
+      const active = it?.status && it.status !== 'INACTIVE' && it.status !== 'FINISHED' && it.status !== 'DELETED';
+      return { ...item, in_promo: !!active, new_price: it?.new_price ?? null, discount: it?.discount ?? null, promo_status: it?.status ?? null };
     } catch(e) {
       return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     }
@@ -2286,45 +2281,31 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
-  const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
+  // Correct endpoints: POST/DELETE /marketplace/seller-promotions/items/{item_id}?user_id={seller_id}
+  const promoHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'version': 'v2' };
+  const userQuery = `user_id=${account.seller_id}`;
   try {
     if (participate) {
-      if (isDeal) {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
-          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'CANDIDATE' })
-        });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) return sendJSON(res, 200, { ok: true });
-        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
-      } else {
-        const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
-        const payload = [{ item_id, ...(p > 0 ? { price: p } : { discount: disc > 0 ? disc : 10 }) }];
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items`, {
-          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) return sendJSON(res, 200, { ok: true });
-        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
-      }
+      // Add item to promotion
+      const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
+      const addBody = { promotion_id: promo_id, promotion_type: promo_type };
+      if (p > 0) addBody.price = p;
+      else if (disc > 0) addBody.discount = disc;
+      const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQuery}`, {
+        method: 'POST', headers: promoHeaders, body: JSON.stringify(addBody)
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) return sendJSON(res, 200, { ok: true });
+      return sendJSON(res, 400, { error: d.message || d.error || JSON.stringify(d) || `HTTP ${r.status}`, raw: d });
     } else {
-      if (isDeal) {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
-          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'INACTIVE' })
-        });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) return sendJSON(res, 200, { ok: true });
-        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
-      } else {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
-          method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
-        });
-        if (r.ok || r.status === 204) return sendJSON(res, 200, { ok: true });
-        const d = await r.json().catch(() => ({}));
-        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
-      }
+      // Remove item from promotion
+      const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQuery}`, {
+        method: 'DELETE', headers: promoHeaders,
+        body: JSON.stringify({ promotion_id: promo_id, promotion_type: promo_type })
+      });
+      if (r.ok || r.status === 204) return sendJSON(res, 200, { ok: true });
+      const d = await r.json().catch(() => ({}));
+      return sendJSON(res, 400, { error: d.message || d.error || JSON.stringify(d) || `HTTP ${r.status}`, raw: d });
     }
   } catch(e) { sendJSON(res, 500, { error: e.message }); }
 });
@@ -2348,32 +2329,28 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
   let done = 0, errCount = 0;
   const errorRows = [];
   res.write(JSON.stringify({ type: 'start', total }) + '\n');
-  const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
+  const bHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'version': 'v2' };
+  const userQ = `user_id=${account.seller_id}`;
 
   for (const item of items) {
     const { item_id, participar, precio_promo, descuento_pct } = item;
     const participate = ['si','sí','yes','true','1'].includes(String(participar || '').toLowerCase().trim());
     let ok = true, errMsg = null;
     try {
-      if (isDeal) {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
-          method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: participate ? 'CANDIDATE' : 'INACTIVE' })
-        });
-        if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || `HTTP ${r.status}`; }
-      } else if (participate) {
+      if (participate) {
         const p = parseFloat(precio_promo) || 0, disc = parseFloat(descuento_pct) || 0;
-        const payload = [{ item_id, ...(p > 0 ? { price: p } : { discount: disc > 0 ? disc : 10 }) }];
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items`, {
-          method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+        const addBody = { promotion_id: promo_id, promotion_type: promo_type };
+        if (p > 0) addBody.price = p; else if (disc > 0) addBody.discount = disc;
+        const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQ}`, {
+          method: 'POST', headers: bHeaders, body: JSON.stringify(addBody)
         });
-        if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || `HTTP ${r.status}`; }
+        if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || d.error || `HTTP ${r.status}`; }
       } else {
-        const r = await fetch(`${PROMO_BASE}/promotions/${promo_id}/items/${item_id}`, {
-          method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
+        const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQ}`, {
+          method: 'DELETE', headers: bHeaders,
+          body: JSON.stringify({ promotion_id: promo_id, promotion_type: promo_type })
         });
-        if (!r.ok && r.status !== 204) { ok = false; errMsg = `HTTP ${r.status}`; }
+        if (!r.ok && r.status !== 204) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || d.error || `HTTP ${r.status}`; }
       }
     } catch(e) { ok = false; errMsg = e.message; }
 
@@ -2402,24 +2379,22 @@ route('POST', '/api/promotion-create', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
-  // ML promotion creation endpoint
-  const createUrl = `${PROMO_BASE}/promotions?app_id=${ML_CLIENT_ID}&app_version=1`;
+  // POST /marketplace/seller-promotions/promotions?user_id={seller_id}
+  const createUrl = `${PROMO_BASE}/promotions?user_id=${account.seller_id}`;
   const createBody = {
     type: 'PRICE_DISCOUNT',
     name,
-    seller_id: String(account.seller_id),
     start_date: new Date(start_date).toISOString(),
     end_date: new Date(end_date).toISOString(),
     status: 'active'
   };
   const r = await fetch(createUrl, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Version': '2' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'version': 'v2' },
     body: JSON.stringify(createBody)
   });
   const d = await r.json().catch(() => ({}));
   if (r.ok) return sendJSON(res, 200, d);
-  // Devolver el error completo de ML para debug
   sendJSON(res, 400, { error: d.message || d.cause || JSON.stringify(d) || `HTTP ${r.status}`, raw: d });
 });
 
