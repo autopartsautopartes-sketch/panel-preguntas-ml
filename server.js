@@ -2083,26 +2083,9 @@ function serveStatic(req, res) {
 
 const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
 // Headers requeridos por la API de seller-promotions
-const promoHeaders = (callerId) => ({
-  'version': 'v2',
-  'X-Client-Id': String(ML_CLIENT_ID),
-  'X-Caller-Id': String(callerId)
-});
-
-// Cache de user_id real por account_id (evita llamar /users/me en cada request)
-const _callerIdCache = {};
-async function getCallerId(account, token) {
-  if (_callerIdCache[account.id]) return _callerIdCache[account.id];
-  try {
-    const r = await fetch('https://api.mercadolibre.com/users/me', {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const d = await r.json();
-    if (d?.id) { _callerIdCache[account.id] = String(d.id); return _callerIdCache[account.id]; }
-  } catch(e) {}
-  // Fallback: usar seller_id almacenado
-  return String(account.seller_id);
-}
+// X-Caller-Id es derivado por ML desde el Bearer token — no lo enviamos manualmente
+const promoHeaders = () => ({ 'version': 'v2' });
+const getCallerId = async () => null; // no usado, mantenido por compatibilidad
 
 // GET /api/promotions?account_id=X  — lista campañas por cuenta
 route('GET', '/api/promotions', async (req, res) => {
