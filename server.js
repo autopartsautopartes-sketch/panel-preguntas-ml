@@ -2096,22 +2096,32 @@ route('GET', '/api/promotions', async (req, res) => {
 
   const results = [];
   const debug = [];
+
+  // Candidatos de URL en orden — el primero que responda 200 es el correcto
+  const urlCandidates = (sid) => [
+    `${PROMO_BASE}/users/${sid}/promotions?offset=0&limit=100`,
+    `${PROMO_BASE}/promotions?seller_id=${sid}&limit=100`,
+    `https://api.mercadolibre.com/promotions/users/${sid}/promotions?limit=100`,
+    `https://api.mercadolibre.com/users/${sid}/promotions?limit=100`,
+  ];
+
   for (const account of targets) {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
-      const url = `${PROMO_BASE}/users/${account.seller_id}/promotions?offset=0&limit=100`;
-      let r;
-      try {
-        r = await mlGet(url, token);
-      } catch(e) {
-        debug.push({ account: account.name, url, httpStatus: e?.response?.status, mlError: e?.response?.data });
-        continue;
-      }
-      debug.push({ account: account.name, url, isArray: Array.isArray(r), responseKeys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,500) });
-      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-      for (const p of promos) {
-        results.push({ ...p, account_id: account.id, account_name: account.name });
+
+      for (const url of urlCandidates(account.seller_id)) {
+        let r;
+        try { r = await mlGet(url, token); }
+        catch(e) {
+          debug.push({ account: account.name, url, httpStatus: e?.response?.status, mlError: e?.response?.data });
+          continue; // probar siguiente candidato
+        }
+        // Éxito
+        debug.push({ account: account.name, url, OK: true, isArray: Array.isArray(r), keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0,300) });
+        const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+        for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+        break; // no seguir probando
       }
     } catch(e) {
       debug.push({ account: account.name, error: e.message });
