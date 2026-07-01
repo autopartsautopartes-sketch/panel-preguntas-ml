@@ -590,7 +590,7 @@ route('GET', '/api/export-listings', async (req, res) => {
   try {
     // 1. Obtener total primero
     const firstPage = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, offset: 0 });
-    const total = firstPage.total || 0;
+    const total = firstPage.paging?.total || firstPage.total || 0;
     res.write(JSON.stringify({ type: 'start', total }) + '\n');
 
     const LIMIT = 100;
