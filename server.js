@@ -630,6 +630,91 @@ route('POST', '/api/bulk-update', async (req, res) => {
   console.log(`[BULK] Completado: ${items.length} items por ${sess.username}`);
 });
 
+// SEARCH LISTINGS — busca por SKU y/o título en una o todas las cuentas
+route('POST', '/api/search-listings', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { sku, title, account_id } = await parseBody(req);
+  if (!sku && !title) return sendJSON(res, 400, { error: 'Ingresá SKU o título para buscar' });
+
+  const db = loadDB();
+  const allAccounts = db.ml_accounts || [];
+  const targets = account_id
+    ? allAccounts.filter(a => a.id === parseInt(account_id))
+    : allAccounts;
+
+  const results = [];
+  const skuLower = sku ? sku.trim().toLowerCase() : '';
+  const titleLower = title ? title.trim().toLowerCase() : '';
+
+  for (const account of targets) {
+    try {
+      const token = await getValidToken(account);
+      if (!token) continue;
+      const sellerId = account.seller_id;
+
+      let itemIds = null; // null = sin filtro todavía
+
+      // Buscar por SKU exacto
+      if (skuLower) {
+        try {
+          const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(sku.trim())}&limit=200`, token);
+          itemIds = new Set(r.results || []);
+        } catch(e) { itemIds = new Set(); }
+      }
+
+      // Buscar por título (keyword) en ML
+      if (titleLower) {
+        try {
+          const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(title.trim())}&limit=200`, token);
+          const titleIds = new Set(r.results || []);
+          if (itemIds === null) {
+            itemIds = titleIds;
+          } else {
+            // AND: intersección de SKU y título
+            for (const id of itemIds) { if (!titleIds.has(id)) itemIds.delete(id); }
+          }
+        } catch(e) { if (itemIds === null) itemIds = new Set(); }
+      }
+
+      if (!itemIds || itemIds.size === 0) continue;
+
+      // Fetch detalles en lotes de 20
+      const ids = [...itemIds];
+      for (let i = 0; i < ids.length; i += 20) {
+        const batch = ids.slice(i, i + 20);
+        try {
+          const items = await mlGet(
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status`,
+            token
+          );
+          for (const it of (Array.isArray(items) ? items : [])) {
+            const b = it.body || it;
+            if (!b || !b.id) continue;
+            if (b.status === 'closed' || b.status === 'under_review') continue;
+            // Filtro local de título por substring
+            if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
+            // Filtro local de SKU por substring
+            if (skuLower && !String(b.seller_custom_field || '').toLowerCase().includes(skuLower)) continue;
+            results.push({
+              item_id: b.id,
+              title: b.title || '',
+              available_quantity: b.available_quantity ?? '',
+              price: b.price ?? '',
+              seller_sku: b.seller_custom_field || '',
+              status: b.status || '',
+              account_id: account.id,
+              account_name: account.name
+            });
+          }
+        } catch(e) {}
+      }
+    } catch(e) {}
+  }
+
+  sendJSON(res, 200, results);
+});
+
 // EXPORT LISTINGS — streaming ndjson con progreso en tiempo real, 5 lotes paralelos
 route('GET', '/api/export-listings', async (req, res) => {
   const sess = requireAuth(req);
