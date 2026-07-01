@@ -361,6 +361,9 @@
       <a onclick="showSection('prep')" id="nav-prep" style="display:none">
         <span>📦 Preparación</span>
       </a>
+      <a onclick="showSection('update')" id="nav-update" style="display:none">
+        <span>🔄 Actualizar</span>
+      </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts" style="display:none">
         <span>🏪 Cuentas ML</span>
@@ -406,6 +409,10 @@
       <span class="nav-icon">📦</span>
       Preparar
     </a>
+    <a onclick="showSection('update')" id="mob-update" style="display:none">
+      <span class="nav-icon">🔄</span>
+      Actualizar
+    </a>
   </div>
 </div>
 
@@ -439,9 +446,12 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
+          document.getElementById('nav-update').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           const mobAcc = document.getElementById('mob-accounts');
           if (mobAcc) mobAcc.style.display = '';
+          const mobUpd = document.getElementById('mob-update');
+          if (mobUpd) mobUpd.style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
@@ -531,9 +541,12 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
+          document.getElementById('nav-update').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           const mobAcc = document.getElementById('mob-accounts');
           if (mobAcc) mobAcc.style.display = '';
+          const mobUpd2 = document.getElementById('mob-update');
+          if (mobUpd2) mobUpd2.style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
@@ -620,6 +633,7 @@
       case 'accounts': loadAccountsSection(); break;
       case 'users': loadUsers(); break;
       case 'prep': loadPrepSection(); break;
+      case 'update': loadUpdate(); break;
     }
   }
 
@@ -770,7 +784,7 @@
                 <span class="card-date">${formatDate(q.date_created)}</span>
               </div>
               <div class="card-item">
-                ${q.item_thumbnail ? `<img src="${q.item_thumbnail}" alt="">` : ''}
+                ${q.item_thumbnail ? `<img src="${q.item_thumbnail}" alt="" onerror="this.onerror=null;this.style.visibility='hidden'">` : ''}
                 <div class="card-item-title" style="flex:1">
                   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                     ${q.item_listing_type ? `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;color:white;background:${q.item_listing_type === 'Premium' ? '#f5a623' : q.item_listing_type === 'Gratis' ? '#27ae60' : '#3483fa'}">${q.item_listing_type}</span>` : ''}
@@ -1214,7 +1228,7 @@
                 <span class="card-date">${formatDate(q.date_created)}</span>
               </div>
               <div class="card-item">
-                ${q.item_thumbnail ? `<img src="${q.item_thumbnail}" alt="">` : ''}
+                ${q.item_thumbnail ? `<img src="${q.item_thumbnail}" alt="" onerror="this.onerror=null;this.style.visibility='hidden'">` : ''}
                 <div class="card-item-title" style="flex:1">
                   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                     ${q.item_permalink ? `<a href="${escapeHtml(q.item_permalink)}" target="_blank" style="font-size:14px">${escapeHtml(q.item_title || 'Ver producto')}</a>` : escapeHtml(q.item_title || 'Producto no disponible')}
@@ -1455,7 +1469,7 @@
               </div>
               ${sale.items.map(item => `
                 <div class="sale-item">
-                  ${item.thumbnail ? `<img src="${item.thumbnail}" alt="">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
+                  ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" onerror="this.onerror=null;this.style.visibility='hidden'">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
                   <div class="sale-item-info">
                     <div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/${encodeURIComponent(item.id)}" target="_blank" style="color:#3483fa;text-decoration:none">${escapeHtml(item.title)}</a></div>
                     <div class="sale-item-meta">
@@ -1534,7 +1548,7 @@
           let itemsHtml = '';
           for (const item of sale.items) {
             itemsHtml += '<div class="sale-item">';
-            itemsHtml += item.thumbnail ? '<img src="' + item.thumbnail + '" alt="">' : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>';
+            itemsHtml += item.thumbnail ? '<img src="' + item.thumbnail + '" alt="" onerror="this.onerror=null;this.style.visibility=\'hidden\'">' : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>';
             itemsHtml += '<div class="sale-item-info">';
             itemsHtml += '<div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/' + encodeURIComponent(item.id) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
             itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
@@ -2023,10 +2037,315 @@
     }
   }
 
+  // ==================== ACTUALIZAR (BULK UPDATE) ====================
+
+  let updateParsedData = [];
+
+  async function loadUpdate() {
+    if (currentUser?.role !== 'admin') {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para esta sección.</p></div>';
+      return;
+    }
+    document.getElementById('content').innerHTML = `
+      <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
+
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+        <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
+        <select id="updateAccount" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;width:100%;max-width:320px">
+          ${accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+          <h3 style="font-size:15px;color:#333">2. Exportar estado actual</h3>
+          <button onclick="downloadCurrentListings()" style="padding:8px 18px;background:#3483fa;color:white;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">📥 Descargar Excel actual</button>
+        </div>
+        <p style="font-size:13px;color:#666">Descargá un Excel con todas tus publicaciones activas y pausadas (item_id, stock, estado, precio, SKU). Usalo como base para editar y volver a subir.</p>
+      </div>
+
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+        <h3 style="font-size:15px;color:#333;margin-bottom:8px">3. Estructura del archivo para subir</h3>
+        <div style="overflow-x:auto;margin-bottom:10px">
+          <table style="border-collapse:collapse;font-size:13px">
+            <tr style="background:#f0f4ff">
+              ${['A — item_id','B — Stock','C — Estado','D — Precio','E — Marca','F — Flex (si/no)','G — SKU'].map(h=>`<th style="border:1px solid #ddd;padding:8px 12px;text-align:left;color:#3483fa;white-space:nowrap">${h}</th>`).join('')}
+            </tr>
+            <tr style="color:#666">
+              <td style="border:1px solid #ddd;padding:7px 12px">MLA123456789</td>
+              <td style="border:1px solid #ddd;padding:7px 12px">10</td>
+              <td style="border:1px solid #ddd;padding:7px 12px">active / paused</td>
+              <td style="border:1px solid #ddd;padding:7px 12px">1500</td>
+              <td style="border:1px solid #ddd;padding:7px 12px">Toyota</td>
+              <td style="border:1px solid #ddd;padding:7px 12px">si / no</td>
+              <td style="border:1px solid #ddd;padding:7px 12px">SKU-001</td>
+            </tr>
+          </table>
+        </div>
+        <p style="font-size:12px;color:#888">💡 Las celdas vacías se ignoran — solo se actualizan los campos que completaste.</p>
+      </div>
+
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+        <h3 style="font-size:15px;color:#333;margin-bottom:12px">4. Subí tu archivo de actualizaciones</h3>
+        <div id="dropZone" onclick="document.getElementById('fileInput').click()"
+          style="border:2px dashed #3483fa;border-radius:8px;padding:32px;text-align:center;cursor:pointer;background:#f8fbff;transition:background .15s"
+          ondragover="event.preventDefault();this.style.background='#e8f0fe'"
+          ondragleave="this.style.background='#f8fbff'"
+          ondrop="event.preventDefault();this.style.background='#f8fbff';handleUpdateFile(event.dataTransfer.files[0])">
+          <div style="font-size:40px;margin-bottom:8px">📂</div>
+          <p style="font-weight:600;color:#3483fa">Hacé clic o arrastrá tu archivo aquí</p>
+          <p style="font-size:12px;color:#888;margin-top:4px">Acepta .xlsx, .xls, .csv</p>
+          <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleUpdateFile(this.files[0])">
+        </div>
+      </div>
+
+      <div id="previewSection" style="display:none">
+        <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+            <h3 style="font-size:15px;color:#333">5. Vista previa <span id="previewCount" style="color:#888;font-weight:400"></span></h3>
+            <button onclick="applyBulkUpdate()" id="btnApply" style="padding:10px 24px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">✅ Aplicar cambios</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table id="previewTable" style="border-collapse:collapse;font-size:13px;width:100%;min-width:500px"></table>
+          </div>
+        </div>
+      </div>
+
+      <div id="resultsSection" style="display:none">
+        <div style="background:white;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+          <h3 style="font-size:15px;color:#333;margin-bottom:12px">Resultados</h3>
+          <div id="resultsProgress"></div>
+          <div id="resultsList"></div>
+        </div>
+      </div>
+    `;
+
+    // Load SheetJS lazily
+    if (!window.XLSX) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+  }
+
+  function handleUpdateFile(file) {
+    if (!file) return;
+    if (!window.XLSX) { showToast('Librería no cargada, recargá la página', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        const startRow = (rows[0] && String(rows[0][0]).toLowerCase().includes('item')) ? 1 : 0;
+        updateParsedData = [];
+        for (let i = startRow; i < rows.length; i++) {
+          const r = rows[i];
+          const itemId = String(r[0] || '').trim();
+          if (!itemId) continue;
+          updateParsedData.push({
+            item_id: itemId,
+            available_quantity: String(r[1] || '').trim(),
+            status: String(r[2] || '').trim(),
+            price: String(r[3] || '').trim(),
+            marca: String(r[4] || '').trim(),
+            flex: String(r[5] || '').trim(),
+            item_sku: String(r[6] || '').trim()
+          });
+        }
+        showUpdatePreview();
+      } catch(err) { showToast('Error al leer el archivo: ' + err.message, 'error'); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function showUpdatePreview() {
+    if (!updateParsedData.length) { showToast('El archivo no tiene datos válidos', 'error'); return; }
+    document.getElementById('previewSection').style.display = 'block';
+    document.getElementById('previewCount').textContent = `(${updateParsedData.length} fila${updateParsedData.length !== 1 ? 's' : ''})`;
+    const headers = ['item_id','Stock','Estado','Precio','Marca','Flex','SKU'];
+    const fields = ['item_id','available_quantity','status','price','marca','flex','item_sku'];
+    let html = `<tr style="background:#f0f4ff">${headers.map(h=>`<th style="border:1px solid #ddd;padding:8px 10px;text-align:left;font-size:12px;color:#3483fa;white-space:nowrap">${h}</th>`).join('')}</tr>`;
+    for (const row of updateParsedData) {
+      html += '<tr>';
+      for (const f of fields) {
+        const v = row[f];
+        const empty = v === '' || v === undefined || v === null;
+        html += `<td style="border:1px solid #ddd;padding:7px 10px;${empty?'color:#ccc':'color:#333'}">${empty ? '–' : escapeHtml(v)}</td>`;
+      }
+      html += '</tr>';
+    }
+    document.getElementById('previewTable').innerHTML = html;
+    document.getElementById('previewSection').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  async function applyBulkUpdate() {
+    const accountId = document.getElementById('updateAccount')?.value;
+    if (!accountId) return showToast('Seleccioná una cuenta ML', 'error');
+    if (!updateParsedData.length) return showToast('No hay datos para aplicar', 'error');
+    const btn = document.getElementById('btnApply');
+    btn.disabled = true; btn.textContent = '⏳ Aplicando...';
+    document.getElementById('resultsSection').style.display = 'block';
+    document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+
+    const progressEl = document.getElementById('resultsProgress');
+    const listEl = document.getElementById('resultsList');
+    progressEl.innerHTML = `
+      <div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:#666;margin-bottom:6px">
+          <span id="bulkProgressText">Iniciando…</span>
+          <span id="bulkProgressPct">0%</span>
+        </div>
+        <div style="background:#e9ecef;border-radius:8px;height:10px;overflow:hidden">
+          <div id="bulkProgressBar" style="background:#3483fa;height:100%;width:0%;transition:width .3s;border-radius:8px"></div>
+        </div>
+      </div>
+      <div id="bulkCounters" style="display:flex;gap:12px;flex-wrap:wrap"></div>`;
+    listEl.innerHTML = '<div id="bulkResultsLog" style="max-height:300px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:8px;margin-top:12px"></div>';
+
+    let okCount = 0, errCount = 0;
+    const logEl = () => document.getElementById('bulkResultsLog');
+
+    try {
+      const res = await fetch('/api/bulk-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: parseInt(accountId), items: updateParsedData })
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        progressEl.innerHTML = `<p style="color:#e74c3c">${escapeHtml(d.error || 'Error')}</p>`;
+        btn.disabled = false; btn.textContent = '✅ Aplicar cambios'; return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.type === 'result') {
+              if (msg.ok) okCount++; else errCount++;
+              const pct = Math.round((msg.done / msg.total) * 100);
+              document.getElementById('bulkProgressBar').style.width = pct + '%';
+              document.getElementById('bulkProgressPct').textContent = pct + '%';
+              document.getElementById('bulkProgressText').textContent = `${msg.done} / ${msg.total} publicaciones`;
+              document.getElementById('bulkCounters').innerHTML =
+                `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount}</span>` +
+                (errCount ? `<span style="padding:4px 12px;background:#f8d7da;color:#e74c3c;border-radius:20px;font-size:13px;font-weight:600">❌ ${errCount}</span>` : '');
+              if (!msg.ok) {
+                const log = logEl();
+                if (log) log.innerHTML += `<div style="padding:7px 12px;border-bottom:1px solid #f5f5f5;font-size:12px;color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || '')}</div>`;
+              }
+            } else if (msg.type === 'done') {
+              document.getElementById('bulkProgressText').textContent = `✅ Completado: ${okCount} exitosos${errCount ? `, ${errCount} con errores` : ''}`;
+              document.getElementById('bulkProgressBar').style.background = '#27ae60';
+            }
+          } catch(_) {}
+        }
+      }
+    } catch(e) {
+      progressEl.innerHTML += `<p style="color:#e74c3c;margin-top:8px">Error de conexión: ${escapeHtml(e.message)}</p>`;
+    }
+    btn.disabled = false; btn.textContent = '✅ Aplicar cambios';
+  }
+
+  async function downloadCurrentListings() {
+    const accountId = document.getElementById('updateAccount')?.value;
+    if (!accountId) return showToast('Seleccioná una cuenta ML primero', 'error');
+    const btn = event.target;
+    btn.disabled = true;
+
+    // Mostrar progress en la UI
+    let exportSection = document.getElementById('exportProgress');
+    if (!exportSection) {
+      exportSection = document.createElement('div');
+      exportSection.id = 'exportProgress';
+      exportSection.style.cssText = 'background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)';
+      btn.closest('.account-card, div')?.after?.(exportSection) || document.getElementById('content').appendChild(exportSection);
+    }
+    exportSection.innerHTML = `
+      <h3 style="font-size:15px;color:#333;margin-bottom:12px">📥 Exportando publicaciones…</h3>
+      <div style="display:flex;justify-content:space-between;font-size:13px;color:#666;margin-bottom:6px">
+        <span id="expText">Conectando con MercadoLibre…</span>
+        <span id="expPct">0%</span>
+      </div>
+      <div style="background:#e9ecef;border-radius:8px;height:10px;overflow:hidden">
+        <div id="expBar" style="background:#3483fa;height:100%;width:0%;transition:width .2s;border-radius:8px"></div>
+      </div>`;
+    exportSection.scrollIntoView({ behavior: 'smooth' });
+
+    const csvRows = [['item_id','flex','local_pick_up','shipping','titulo','available_quantity','status','price']];
+
+    try {
+      const res = await fetch(`/api/export-listings?account_id=${accountId}`);
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Error'); }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (msg.type === 'start') {
+              document.getElementById('expText').textContent = `0 / ${msg.total} publicaciones`;
+            } else if (msg.type === 'item') {
+              csvRows.push(msg.row);
+              const pct = msg.total ? Math.round((msg.exported / msg.total) * 100) : 0;
+              document.getElementById('expBar').style.width = pct + '%';
+              document.getElementById('expPct').textContent = pct + '%';
+              if (msg.exported % 500 === 0 || msg.exported === msg.total)
+                document.getElementById('expText').textContent = `${msg.exported} / ${msg.total} publicaciones`;
+            } else if (msg.type === 'done') {
+              document.getElementById('expText').textContent = `✅ ${msg.exported} publicaciones exportadas`;
+              document.getElementById('expBar').style.width = '100%';
+              document.getElementById('expBar').style.background = '#27ae60';
+            } else if (msg.type === 'error') {
+              throw new Error(msg.error);
+            }
+          } catch(pe) { if (pe.message && !pe.message.includes('JSON')) throw pe; }
+        }
+      }
+
+      // Generar y descargar CSV
+      // Generar .xlsx con SheetJS
+      const ws = XLSX.utils.aoa_to_sheet(csvRows);
+      // Ancho de columnas
+      ws['!cols'] = [18,8,12,18,50,18,10,12].map(w => ({ wch: w }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
+      XLSX.writeFile(wb, 'publicaciones.xlsx');
+      showToast(`✅ ${csvRows.length - 1} publicaciones descargadas`, 'success');
+
+    } catch(e) {
+      exportSection.innerHTML += `<p style="color:#e74c3c;margin-top:8px">Error: ${escapeHtml(e.message)}</p>`;
+      showToast('Error al exportar: ' + e.message, 'error');
+    }
+    btn.disabled = false; btn.textContent = '📥 Descargar Excel actual';
+  }
+
   // ==================== PREP SECTION ====================
 
   let currentPrepTab = 'sin-preparar';
   let prepOrdersCache = null;
+  let prepRenderedOrderIds = new Set();
+  let prepAutoRefreshTimer = null;
+  let acordarPendingData = { saleKey: null, btn: null };
 
   function loadPrepSection() {
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
@@ -2060,6 +2379,7 @@
   }
 
   function switchPrepTab(tab) {
+    if (tab !== 'en-preparacion') stopPrepAutoRefresh();
     currentPrepTab = tab;
     renderPrepTabs();
   }
@@ -2200,7 +2520,7 @@
             </div>
             ${sale.items.map(item => `
               <div class="sale-item">
-                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
+                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" onerror="this.onerror=null;this.style.visibility='hidden'">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
                 <div class="sale-item-info">
                   <div class="sale-item-title" style="font-weight:600">${escapeHtml(item.title)}</div>
                   <div class="sale-item-meta">
@@ -2222,6 +2542,7 @@
               <span style="font-size:13px;color:#666;font-weight:600">Prioridad:</span>
               ${[1,2,3,4,5].map(n => `<button onclick="selectPriority(this,${n})" data-priority="${n}" style="width:32px;height:32px;border-radius:50%;border:2px solid ${n===3?'#f5a623':'#ddd'};background:${n===3?(['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'][n]):'white'};color:${n===3?'white':'#333'};font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">${n}</button>`).join('')}
               <button class="btn-preparar" onclick="pasarAPreparacion('${saleKey}', this)" data-sale-json="${saleDataJson}">📦 Pasar a Preparación</button>
+              ${sale.shipping_type !== 'flex' && sale.shipping_type !== 'drop_off' ? `<button class="btn-preparar" onclick="openAcordarModal('${saleKey}', this)" data-sale-json="${saleDataJson}" style="background:#e67e22">📋 ACORDAR</button>` : ''}
               <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','dropshipping',this)" data-sale-json="${saleDataJson}" style="background:#8e44ad">🚚 Dropshipping</button>
               <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','puerta',this)" data-sale-json="${saleDataJson}" style="background:#16a085">🏠 Puerta</button>
             </div>
@@ -2344,7 +2665,7 @@
     btn.style.borderColor = colors[n];
   }
 
-  async function pasarAPreparacion(saleKey, btn) {
+  async function pasarAPreparacion(saleKey, btn, extraData = {}) {
     const container = btn.parentElement;
     const selectedPriorityBtn = [...container.querySelectorAll('button[data-priority]')].find(b => b.style.background && b.style.background !== 'white' && b.style.background !== 'rgb(255, 255, 255)');
     const priority = selectedPriorityBtn ? parseInt(selectedPriorityBtn.dataset.priority) : 3;
@@ -2368,7 +2689,7 @@
       const res = await fetch('/api/prep/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...saleData, priority, notes: noteText, note_id: noteId })
+        body: JSON.stringify({ ...saleData, priority, notes: noteText, note_id: noteId, ...extraData })
       });
       if (res.ok) {
         showToast('Orden pasada a Preparación', 'success');
@@ -2431,83 +2752,152 @@
   async function loadEnPreparacion() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
+
+    prepRenderedOrderIds.clear();
+    stopPrepAutoRefresh();
+
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+
+    const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
 
     try {
       const res = await fetch('/api/prep/list?status=in_prep');
       const orders = await res.json();
-
       orders.sort((a, b) => (a.priority || 5) - (b.priority || 5));
 
       if (orders.length === 0) {
-        container.innerHTML = '<div class="empty"><p>No hay órdenes en preparación</p></div>';
+        container.innerHTML = `<div class="empty"><p>No hay órdenes en preparación</p></div>
+          <div style="text-align:center;margin-top:8px"><span id="prep-refresh-status" style="font-size:12px;color:#bbb">🔄 Verificando actualizaciones cada 30 seg...</span></div>`;
+        startPrepAutoRefresh(can_manage, can_operate);
         return;
       }
 
-      let html = `<p style="color:#999;font-size:13px;margin-bottom:12px">${orders.length} orden${orders.length!==1?'es':''} en preparación — ordenadas por prioridad</p>`;
+      let html = `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+        <p style="color:#999;font-size:13px">${orders.length} orden${orders.length!==1?'es':''} en preparación — ordenadas por prioridad</p>
+        <span id="prep-refresh-status" style="font-size:12px;color:#bbb">🔄 Actualización cada 30 seg</span>
+      </div>`;
 
-      const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
-
-      for (const order of orders) {
-        const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
-        html += `
-          <div class="sale-card" style="border-left:4px solid ${colors[order.priority||3]}">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-              <span class="priority-badge priority-${order.priority||3}" title="Prioridad ${order.priority||3}">${order.priority||3}</span>
-              <span class="card-account">${escapeHtml(order.account_name)}</span>
-              <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(order.buyer_name)}</span>
-              <span style="font-size:12px;color:#999">${formatDate(order.added_at)}</span>
-              ${can_manage ? `
-                <div style="margin-left:auto;display:flex;gap:4px;align-items:center">
-                  <span style="font-size:12px;color:#666">Prioridad:</span>
-                  ${[1,2,3,4,5].map(n => `
-                    <button onclick="updatePriority('${escapeHtml(order.order_id)}',${n},this)" style="width:26px;height:26px;border-radius:50%;border:2px solid ${n===order.priority?colors[n]:'#ddd'};background:${n===order.priority?colors[n]:'white'};color:${n===order.priority?'white':'#333'};font-weight:700;cursor:pointer;font-size:11px">${n}</button>
-                  `).join('')}
-                </div>
-              ` : ''}
-            </div>
-            ${order.items.map(item => `
-              <div class="sale-item">
-                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" style="width:50px;height:50px;border-radius:6px;object-fit:cover">` : '<div style="width:50px;height:50px;background:#f0f2f5;border-radius:6px"></div>'}
-                <div class="sale-item-info">
-                  <div style="font-weight:600;font-size:14px">${escapeHtml(item.title)}</div>
-                  <div class="sale-item-meta">${item.quantity} unidad${item.quantity!==1?'es':''} ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}</div>
-                </div>
-              </div>
-            `).join('')}
-            <div id="pnc-${escapeHtml(order.order_id)}"
-                 data-order-id="${escapeHtml(order.order_id)}"
-                 data-account-id="${order.account_id}"
-                 style="margin-top:8px;padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #eee;min-height:38px">
-              <div style="display:flex;align-items:flex-start;gap:8px">
-                <div id="pnt-${escapeHtml(order.order_id)}" style="flex:1;font-size:13px;color:#bbb;line-height:1.5">${order.notes ? `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(order.notes)}</span>` : 'Sin notas'}</div>
-                ${can_manage ? `<button onclick="editPrepNote('${escapeHtml(order.order_id)}')" title="Editar nota" style="flex-shrink:0;width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">✏️</button>` : ''}
-              </div>
-              ${can_manage ? `<div id="pne-${escapeHtml(order.order_id)}" style="display:none;margin-top:8px">
-                <textarea id="pni-${escapeHtml(order.order_id)}" placeholder="Escribí la nota..." style="width:100%;padding:8px 10px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>
-                <div style="display:flex;gap:8px;margin-top:6px">
-                  <button onclick="savePrepNote('${escapeHtml(order.order_id)}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar en ML</button>
-                  <button onclick="cancelPrepNote('${escapeHtml(order.order_id)}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
-                </div>
-              </div>` : ''}
-            </div>
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                ${order.shipping_id ? `<button class="btn-print" onclick="printLabel(${order.shipping_id}, ${order.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
-                ${can_manage ? `<button onclick="volverASinPreparar('${escapeHtml(order.order_id)}',this)" style="padding:8px 14px;background:white;color:#e74c3c;border:2px solid #e74c3c;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
-              </div>
-              <button class="btn-finalizar" onclick="finalizarOrden('${escapeHtml(order.order_id)}', this)">✅ FINALIZADO</button>
-            </div>
-          </div>
-        `;
-      }
+      orders.forEach((order, idx) => {
+        html += renderEnPrepCard(order, idx === 0, can_manage, can_operate);
+        prepRenderedOrderIds.add(String(order.order_id));
+      });
 
       container.innerHTML = html;
-      // Fetch fresh notes from ML for each order (async, non-blocking)
+      // Fetch fresh notes from ML for each order (async, non-blocking) — Fix 2: only overwrites if ML has a note
       for (const o of orders) loadPrepNoteDisplay(o.order_id, o.account_id);
+      startPrepAutoRefresh(can_manage, can_operate);
     } catch(e) {
       container.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
     }
+  }
+
+  function renderEnPrepCard(order, expanded, can_manage, can_operate) {
+    const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
+    const oid = escapeHtml(String(order.order_id));
+    const shippingDataStr = escapeHtml(JSON.stringify(order.shipping_data || {}));
+    return `
+      <div class="sale-card" id="prep-card-${oid}" data-shipping-data="${shippingDataStr}" style="border-left:4px solid ${colors[order.priority||3]}">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:${expanded?'10':'0'}px;flex-wrap:wrap;cursor:pointer;user-select:none" onclick="togglePrepCard('${oid}')">
+          <span class="priority-badge priority-${order.priority||3}" title="Prioridad ${order.priority||3}">${order.priority||3}</span>
+          <span class="card-account">${escapeHtml(order.account_name)}</span>
+          <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(order.buyer_name)}</span>
+          <span style="font-size:12px;color:#999">${formatDate(order.added_at)}</span>
+          <span id="prep-toggle-icon-${oid}" style="margin-left:auto;font-size:12px;color:#3483fa;font-weight:600">${expanded ? '▲ Contraer' : '▼ Ver detalle'}</span>
+        </div>
+        <div id="prep-body-${oid}" style="display:${expanded?'block':'none'}">
+          ${can_manage ? `
+            <div style="display:flex;gap:4px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+              <span style="font-size:12px;color:#666">Prioridad:</span>
+              ${[1,2,3,4,5].map(n => `<button onclick="event.stopPropagation();updatePriority('${oid}',${n},this)" style="width:26px;height:26px;border-radius:50%;border:2px solid ${n===order.priority?colors[n]:'#ddd'};background:${n===order.priority?colors[n]:'white'};color:${n===order.priority?'white':'#333'};font-weight:700;cursor:pointer;font-size:11px">${n}</button>`).join('')}
+            </div>
+          ` : ''}
+          ${order.items.map(item => `
+            <div class="sale-item">
+              ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" style="width:50px;height:50px;border-radius:6px;object-fit:cover" onerror="this.onerror=null;this.style.visibility='hidden'">` : '<div style="width:50px;height:50px;background:#f0f2f5;border-radius:6px"></div>'}
+              <div class="sale-item-info">
+                <div style="font-weight:600;font-size:14px">${escapeHtml(item.title)}</div>
+                <div class="sale-item-meta">${item.quantity} unidad${item.quantity!==1?'es':''} ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}</div>
+              </div>
+            </div>
+          `).join('')}
+          <div id="pnc-${oid}" data-order-id="${oid}" data-account-id="${order.account_id}" style="margin-top:8px;padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #eee;min-height:38px">
+            <div style="display:flex;align-items:flex-start;gap:8px">
+              <div id="pnt-${oid}" style="flex:1;font-size:13px;color:#bbb;line-height:1.5">${order.notes ? `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(order.notes)}</span>` : 'Sin notas'}</div>
+              ${can_manage ? `<button onclick="event.stopPropagation();editPrepNote('${oid}')" title="Editar nota" style="flex-shrink:0;width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">✏️</button>` : ''}
+            </div>
+            ${can_manage ? `<div id="pne-${oid}" style="display:none;margin-top:8px">
+              <textarea id="pni-${oid}" placeholder="Escribí la nota..." style="width:100%;padding:8px 10px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>
+              <div style="display:flex;gap:8px;margin-top:6px">
+                <button onclick="savePrepNote('${oid}')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar en ML</button>
+                <button onclick="cancelPrepNote('${oid}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
+              </div>
+            </div>` : ''}
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              ${order.shipping_id ? `<button class="btn-print" onclick="event.stopPropagation();printLabel(${order.shipping_id}, ${order.account_id})">🖨️ Etiqueta ML</button>` : ''}
+              ${can_operate ? `<button onclick="event.stopPropagation();imprimirEtiquetaEnvio('${oid}')" style="padding:8px 14px;background:#2c3e50;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">🖨️ Imprimir envío</button>` : ''}
+              ${can_manage ? `<button onclick="event.stopPropagation();volverASinPreparar('${oid}',this)" style="padding:8px 14px;background:white;color:#e74c3c;border:2px solid #e74c3c;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
+            </div>
+            <button class="btn-finalizar" onclick="event.stopPropagation();finalizarOrden('${oid}', this)">✅ FINALIZADO</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function togglePrepCard(orderId) {
+    const body = document.getElementById('prep-body-' + orderId);
+    const icon = document.getElementById('prep-toggle-icon-' + orderId);
+    const header = body ? body.previousElementSibling : null;
+    if (!body) return;
+    const isExpanded = body.style.display !== 'none';
+    body.style.display = isExpanded ? 'none' : 'block';
+    if (icon) icon.textContent = isExpanded ? '▼ Ver detalle' : '▲ Contraer';
+    if (header) header.style.marginBottom = isExpanded ? '0px' : '10px';
+    // Load fresh ML note when opening for the first time
+    if (!isExpanded) {
+      const noteContainer = document.getElementById('pnc-' + orderId);
+      if (noteContainer?.dataset.accountId) loadPrepNoteDisplay(orderId, noteContainer.dataset.accountId);
+    }
+  }
+
+  function stopPrepAutoRefresh() {
+    if (prepAutoRefreshTimer) { clearInterval(prepAutoRefreshTimer); prepAutoRefreshTimer = null; }
+  }
+
+  function startPrepAutoRefresh(can_manage, can_operate) {
+    stopPrepAutoRefresh();
+    prepAutoRefreshTimer = setInterval(async () => {
+      if (currentPrepTab !== 'en-preparacion') return;
+      try {
+        const res = await fetch('/api/prep/list?status=in_prep');
+        if (!res.ok) return;
+        const orders = await res.json();
+        orders.sort((a, b) => (a.priority || 5) - (b.priority || 5));
+        const container = document.getElementById('prep-tab-content');
+        if (!container) return;
+        let newCount = 0;
+        for (const order of orders) {
+          if (!prepRenderedOrderIds.has(String(order.order_id))) {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = renderEnPrepCard(order, false, can_manage, can_operate).trim();
+            if (wrapper.firstElementChild) {
+              container.appendChild(wrapper.firstElementChild);
+              prepRenderedOrderIds.add(String(order.order_id));
+              newCount++;
+            }
+          }
+        }
+        if (newCount > 0) showToast(`${newCount} nueva${newCount!==1?'s':''} orden${newCount!==1?'es':''} en preparación`, 'success');
+        const statusEl = document.getElementById('prep-refresh-status');
+        if (statusEl) {
+          const now = new Date();
+          statusEl.textContent = `🔄 Actualizado ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')} hs`;
+        }
+      } catch(e) {}
+    }, 30000);
   }
 
   async function updatePriority(orderId, priority, btn) {
@@ -2597,7 +2987,7 @@
             </div>
             ${order.items.map(item => `
               <div class="sale-item">
-                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" style="width:45px;height:45px;border-radius:6px;object-fit:cover">` : ''}
+                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" style="width:45px;height:45px;border-radius:6px;object-fit:cover" onerror="this.onerror=null;this.style.visibility='hidden'">` : ''}
                 <div class="sale-item-info">
                   <div style="font-weight:600;font-size:14px">${escapeHtml(item.title)}</div>
                   <div class="sale-item-meta">${item.quantity} unidad${item.quantity!==1?'es':''} ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}</div>
@@ -2651,6 +3041,7 @@
   }
 
   // Fetch fresh note from ML and update the prep note display
+  // Only updates if ML actually returns a note — never overwrites DB-stored notes with empty
   async function loadPrepNoteDisplay(orderId, accountId) {
     const textEl = document.getElementById('pnt-' + orderId);
     const container = document.getElementById('pnc-' + orderId);
@@ -2662,9 +3053,8 @@
         textEl.innerHTML = `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(data.note)}</span>`;
         container.dataset.noteId = data.note_id || '';
         container.dataset.noteOrderId = orderId;
-      } else {
-        textEl.innerHTML = '<span style="color:#bbb">Sin notas</span>';
       }
+      // If ML returns empty, keep the DB-stored note already rendered — don't overwrite
     } catch(e) {
       // Keep the snapshot value already rendered, don't overwrite
     }
@@ -2762,6 +3152,90 @@
       btn.disabled = false;
       btn.textContent = '↩️ Sin preparar';
     }
+  }
+
+  // ==================== ACORDAR MODAL ====================
+
+  function openAcordarModal(saleKey, btn) {
+    acordarPendingData = { saleKey, btn };
+    const modal = document.getElementById('acordar-modal');
+    if (modal) {
+      modal.style.display = 'flex';
+      modal.querySelector('form')?.reset();
+    }
+  }
+
+  function closeAcordarModal() {
+    const modal = document.getElementById('acordar-modal');
+    if (modal) modal.style.display = 'none';
+    acordarPendingData = { saleKey: null, btn: null };
+  }
+
+  async function confirmAcordarModal() {
+    const form = document.getElementById('acordar-form');
+    if (!form) return;
+    const get = name => form.querySelector('[name="' + name + '"]')?.value.trim() || '';
+    const shipping_data = {
+      nombre: get('nombre'), dni: get('dni'), telefono: get('telefono'),
+      direccion: get('direccion'), localidad: get('localidad'),
+      provincia: get('provincia'), cp: get('cp'), observaciones: get('observaciones')
+    };
+    const { saleKey, btn } = acordarPendingData;
+    closeAcordarModal();
+    if (saleKey && btn) await pasarAPreparacion(saleKey, btn, { shipping_data });
+  }
+
+  // ==================== PRINT LABEL PDF ====================
+
+  function imprimirEtiquetaEnvio(orderId) {
+    const card = document.getElementById('prep-card-' + orderId);
+    let sd = {};
+    if (card?.dataset.shippingData) {
+      try { sd = JSON.parse(card.dataset.shippingData.replace(/&quot;/g, '"')); } catch(e) {}
+    }
+    const w = window.open('', '_blank', 'width=800,height=900');
+    if (!w) { showToast('Permití los pop-ups para imprimir', 'error'); return; }
+    w.document.write(generateEtiquetaHtml(sd));
+    w.document.close();
+    w.onload = () => { try { w.print(); } catch(e) {} };
+  }
+
+  function generateEtiquetaHtml(sd) {
+    const fields = [
+      ['Nombre', sd.nombre], ['DNI', sd.dni], ['Teléfono', sd.telefono],
+      ['Dirección', sd.direccion], ['Localidad', sd.localidad],
+      ['Provincia', sd.provincia], ['CP', sd.cp], ['Obs.', sd.observaciones]
+    ];
+    const destRows = fields
+      .filter(([,v]) => v)
+      .map(([l,v]) => `<tr><td style="font-weight:700;padding:3px 10px 3px 0;white-space:nowrap;vertical-align:top">${l}:</td><td style="padding:3px 0">${v.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td></tr>`)
+      .join('');
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Etiqueta envío</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,sans-serif;width:210mm;padding:15mm;background:white;color:#000}
+  .box{border:2.5px solid #000;padding:14px 18px;border-radius:4px;margin-bottom:18px}
+  .lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#555;margin-bottom:6px}
+  .fragil{text-align:center;font-size:72px;font-weight:900;letter-spacing:-3px;border:5px solid #000;padding:14px 10px;border-radius:6px;margin-top:28px;line-height:1}
+  @media print{body{padding:10mm}@page{size:A4;margin:10mm}.no-print{display:none}}
+</style></head><body>
+<div class="box">
+  <div class="lbl">Remitente</div>
+  <div style="font-size:18px;font-weight:900;letter-spacing:.5px">AUTOCHAP AUTOPARTES</div>
+  <div style="font-size:14px;margin-top:6px">📞 03382-15447399</div>
+  <div style="font-size:14px;margin-top:4px">📍 SAN LORENZO 4246 - VILLA BALLESTER - BSAS</div>
+</div>
+<div class="box">
+  <div class="lbl">Destinatario</div>
+  ${destRows ? `<table style="font-size:15px;border-collapse:collapse;width:100%">${destRows}</table>`
+              : '<p style="font-size:14px;color:#999">Sin datos de destinatario</p>'}
+</div>
+<div class="fragil">⚠ FRÁGIL</div>
+<div class="no-print" style="margin-top:30px;text-align:center">
+  <button onclick="window.print()" style="padding:10px 24px;font-size:15px;background:#2c3e50;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:700">🖨️ Imprimir</button>
+  <button onclick="window.close()" style="margin-left:12px;padding:10px 24px;font-size:15px;background:#eee;border:none;border-radius:6px;cursor:pointer">Cerrar</button>
+</div>
+</body></html>`;
   }
 
   // ==================== HELPERS ====================
@@ -3077,6 +3551,13 @@
     if (currentSection === 'dashboard') loadDashboard();
   }, 15000);
 
+  // Stop prep auto-refresh when navigating away from prep section
+  const _origShowSection = showSection;
+  showSection = function(section, ...args) {
+    if (section !== 'prep') stopPrepAutoRefresh();
+    return _origShowSection(section, ...args);
+  };
+
   // Register Service Worker for PWA
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').then(reg => {
@@ -3094,5 +3575,56 @@
   // Init
   checkAuth();
 </script>
+
+<!-- ACORDAR Shipping Data Modal -->
+<div id="acordar-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:10000;align-items:center;justify-content:center;padding:16px">
+  <div style="background:white;border-radius:14px;padding:28px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <h3 style="font-size:17px;font-weight:700;color:#2c3e50">📋 Datos de envío — ACORDAR</h3>
+      <button onclick="closeAcordarModal()" style="width:30px;height:30px;border:none;background:#f0f2f5;border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
+    </div>
+    <p style="font-size:13px;color:#888;margin-bottom:18px">Todos los campos son opcionales. Los que no se completen quedarán en blanco en la etiqueta.</p>
+    <form id="acordar-form" onsubmit="event.preventDefault();confirmAcordarModal()">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="grid-column:1/-1">
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Nombre destinatario</label>
+          <input name="nombre" type="text" placeholder="Nombre completo" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">DNI</label>
+          <input name="dni" type="text" placeholder="12.345.678" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Teléfono</label>
+          <input name="telefono" type="text" placeholder="+54 11 1234-5678" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div style="grid-column:1/-1">
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Dirección</label>
+          <input name="direccion" type="text" placeholder="Calle y número" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Localidad</label>
+          <input name="localidad" type="text" placeholder="Ciudad / Localidad" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Provincia</label>
+          <input name="provincia" type="text" placeholder="Buenos Aires" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Código Postal</label>
+          <input name="cp" type="text" placeholder="1234" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+        </div>
+        <div style="grid-column:1/-1">
+          <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Observaciones</label>
+          <textarea name="observaciones" placeholder="Notas adicionales para el envío..." rows="2" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button type="submit" style="flex:1;padding:11px;background:#e67e22;color:white;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">📦 Confirmar y pasar a Preparación</button>
+        <button type="button" onclick="closeAcordarModal()" style="padding:11px 20px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;cursor:pointer;background:white">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
 </body>
 </html>
