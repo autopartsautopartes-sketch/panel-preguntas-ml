@@ -2095,21 +2095,29 @@ route('GET', '/api/promotions', async (req, res) => {
     : db.ml_accounts;
 
   const results = [];
+  const debug = [];
   for (const account of targets) {
     try {
       const token = await getValidToken(account);
-      if (!token) continue;
-      const r = await mlGet(
-        `${PROMO_BASE}/users/${account.seller_id}/promotions?app_id=${ML_CLIENT_ID}&offset=0&limit=100`,
-        token
-      );
-      const promos = Array.isArray(r) ? r : (r.results || []);
+      if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
+      const url = `${PROMO_BASE}/users/${account.seller_id}/promotions?app_id=${ML_CLIENT_ID}&offset=0&limit=100`;
+      let r;
+      try {
+        r = await mlGet(url, token);
+      } catch(e) {
+        debug.push({ account: account.name, url, error: e.message, raw: String(e) });
+        continue;
+      }
+      debug.push({ account: account.name, url, responseKeys: Object.keys(r||{}), isArray: Array.isArray(r), sample: JSON.stringify(r).slice(0,300) });
+      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
       for (const p of promos) {
         results.push({ ...p, account_id: account.id, account_name: account.name });
       }
-    } catch(e) {}
+    } catch(e) {
+      debug.push({ account: account.name, error: e.message });
+    }
   }
-  sendJSON(res, 200, results);
+  sendJSON(res, 200, { results, debug });
 });
 
 // GET /api/promotion-items-stream?account_id=X&promo_id=Y  — streaming ndjson de todos los ítems
@@ -2384,13 +2392,25 @@ route('POST', '/api/promotion-create', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
-  const r = await fetch(`${PROMO_BASE}/users/${account.seller_id}/promotions?app_id=${ML_CLIENT_ID}`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'PRICE_DISCOUNT', name, start_date: new Date(start_date).toISOString(), end_date: new Date(end_date).toISOString() })
+  // ML promotion creation endpoint
+  const createUrl = `${PROMO_BASE}/promotions?app_id=${ML_CLIENT_ID}`;
+  const createBody = {
+    type: 'PRICE_DISCOUNT',
+    name,
+    seller_id: String(account.seller_id),
+    start_date: new Date(start_date).toISOString(),
+    end_date: new Date(end_date).toISOString(),
+    status: 'active'
+  };
+  const r = await fetch(createUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(createBody)
   });
   const d = await r.json().catch(() => ({}));
   if (r.ok) return sendJSON(res, 200, d);
-  sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
+  // Devolver el error completo de ML para debug
+  sendJSON(res, 400, { error: d.message || d.cause || JSON.stringify(d) || `HTTP ${r.status}`, raw: d });
 });
 
 // ==================== SERVER ====================
