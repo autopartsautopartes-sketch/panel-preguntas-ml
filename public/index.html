@@ -446,10 +446,12 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
-          document.getElementById('nav-update').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           const mobAcc = document.getElementById('mob-accounts');
           if (mobAcc) mobAcc.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_search_update) {
+          document.getElementById('nav-update').style.display = '';
           const mobUpd = document.getElementById('mob-update');
           if (mobUpd) mobUpd.style.display = '';
         }
@@ -541,10 +543,12 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
-          document.getElementById('nav-update').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           const mobAcc = document.getElementById('mob-accounts');
           if (mobAcc) mobAcc.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_search_update) {
+          document.getElementById('nav-update').style.display = '';
           const mobUpd2 = document.getElementById('mob-update');
           if (mobUpd2) mobUpd2.style.display = '';
         }
@@ -1891,6 +1895,10 @@
                   <input type="checkbox" ${u.can_prep_manage || u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:16px;height:16px;cursor:pointer">
                   Preparación
                 </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede buscar publicaciones y editar stock, precio y SKU desde el buscador">
+                  <input type="checkbox" ${u.can_search_update || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_search_update', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Buscar y editar
+                </label>
               </div>
               <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;background:#f8f9fa;border-radius:8px">
                 <span style="font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.5px;min-width:80px">Permisos</span>
@@ -2042,29 +2050,34 @@
   let updateParsedData = [];
 
   async function loadUpdate() {
-    if (currentUser?.role !== 'admin') {
+    const isAdmin = currentUser?.role === 'admin';
+    const canSearch = isAdmin || currentUser?.can_search_update;
+    if (!canSearch) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para esta sección.</p></div>';
       return;
     }
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
 
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
         <select id="updateAccount" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;width:100%;max-width:320px">
           <option value="">— Seleccioná una cuenta —</option>
           ${accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
         </select>
-      </div>
+      </div>` : ''}
 
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
           <h3 style="font-size:15px;color:#333">2. Exportar estado actual</h3>
           <button onclick="downloadCurrentListings()" style="padding:8px 18px;background:#3483fa;color:white;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">📥 Descargar Excel actual</button>
         </div>
         <p style="font-size:13px;color:#666">Descargá un Excel con todas tus publicaciones activas y pausadas (item_id, stock, estado, precio, SKU). Usalo como base para editar y volver a subir.</p>
-      </div>
+      </div>` : ''}
 
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:8px">3. Estructura del archivo para subir</h3>
         <div style="overflow-x:auto;margin-bottom:10px">
@@ -2084,7 +2097,7 @@
           </table>
         </div>
         <p style="font-size:12px;color:#888">💡 Las celdas vacías se ignoran — solo se actualizan los campos que completaste.</p>
-      </div>
+      </div>` : ''}
 
       <!-- BUSCADOR POR SKU / TÍTULO -->
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
@@ -2120,6 +2133,7 @@
         </div>
       </div>
 
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:12px">4. Subí tu archivo de actualizaciones</h3>
         <div id="dropZone" onclick="document.getElementById('fileInput').click()"
@@ -2144,7 +2158,7 @@
             <table id="previewTable" style="border-collapse:collapse;font-size:13px;width:100%;min-width:500px"></table>
           </div>
         </div>
-      </div>
+      </div>` : ''}
 
       <div id="resultsSection" style="display:none">
         <div style="background:white;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
@@ -2366,9 +2380,34 @@
       table.innerHTML = '<tr><td colspan="8" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
       return;
     }
-    const inp = (type, placeholder, w) =>
-      `<input type="${type}" placeholder="${placeholder}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:${w};box-sizing:border-box">`;
-    let html = `<tr style="background:#f0f4ff">
+    const inpStyle = 'padding:5px 7px;border:1px solid #cce0ff;border-radius:5px;font-size:12px;box-sizing:border-box;background:#fff';
+    const selStyle = 'padding:5px 6px;border:1px solid #cce0ff;border-radius:5px;font-size:12px;background:#fff;cursor:pointer';
+
+    // Fila masiva arriba de las cabeceras
+    let html = `
+    <tr style="background:#e8f4fd">
+      <td colspan="4" style="border:1px solid #ddd;padding:8px 12px;font-size:12px;font-weight:700;color:#2471a3;white-space:nowrap">
+        ✏️ Aplicar a todos →
+        <button onclick="applyBulkFill()" style="margin-left:8px;padding:4px 10px;background:#3483fa;color:white;border:none;border-radius:5px;font-size:11px;cursor:pointer;font-weight:600">Llenar filas</button>
+      </td>
+      <td style="border:1px solid #ddd;padding:6px 8px">
+        <select id="bulk-status" style="${selStyle};width:90px">
+          <option value="">— sin cambio —</option>
+          <option value="active">active</option>
+          <option value="paused">paused</option>
+        </select>
+      </td>
+      <td style="border:1px solid #ddd;padding:6px 8px">
+        <input type="number" id="bulk-stock" min="0" placeholder="Stock" style="${inpStyle};width:80px">
+      </td>
+      <td style="border:1px solid #ddd;padding:6px 8px">
+        <input type="number" id="bulk-price" min="0" placeholder="Precio" style="${inpStyle};width:100px">
+      </td>
+      <td style="border:1px solid #ddd;padding:6px 8px">
+        <input type="text" id="bulk-sku" placeholder="SKU" style="${inpStyle};width:110px">
+      </td>
+    </tr>
+    <tr style="background:#f0f4ff">
       <th style="border:1px solid #ddd;padding:8px 10px;text-align:center">
         <input type="checkbox" id="checkAll" onchange="toggleAllSearch(this.checked)" title="Seleccionar todos">
       </th>
@@ -2376,12 +2415,14 @@
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">Cuenta</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">Título</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa;text-align:center">Estado</th>
-      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Nuevo stock</th>
-      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Nuevo precio</th>
-      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Nuevo SKU</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Stock</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Precio</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">SKU</th>
     </tr>`;
+
     data.forEach((r, i) => {
-      const statusColor = r.status === 'active' ? '#27ae60' : '#e67e22';
+      const activeOpt = r.status === 'active' ? 'selected' : '';
+      const pausedOpt = r.status === 'paused' ? 'selected' : '';
       html += `<tr>
         <td style="border:1px solid #ddd;padding:7px 10px;text-align:center">
           <input type="checkbox" class="searchCheck" data-idx="${i}" checked>
@@ -2389,15 +2430,20 @@
         <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;white-space:nowrap;color:#3483fa;font-weight:600">${escapeHtml(r.item_id)}</td>
         <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;white-space:nowrap;color:#555">${escapeHtml(r.account_name)}</td>
         <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
-        <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;text-align:center;color:${statusColor};font-weight:600">${r.status}</td>
         <td style="border:1px solid #ddd;padding:6px 8px">
-          <input type="number" min="0" placeholder="${r.available_quantity}" class="si-stock" data-idx="${i}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:80px;box-sizing:border-box">
+          <select class="si-status" data-idx="${i}" style="${selStyle};width:90px">
+            <option value="active" ${activeOpt}>active</option>
+            <option value="paused" ${pausedOpt}>paused</option>
+          </select>
         </td>
         <td style="border:1px solid #ddd;padding:6px 8px">
-          <input type="number" min="0" placeholder="${r.price}" class="si-price" data-idx="${i}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:100px;box-sizing:border-box">
+          <input type="number" min="0" value="${r.available_quantity}" class="si-stock" data-idx="${i}" style="${inpStyle};width:80px">
         </td>
         <td style="border:1px solid #ddd;padding:6px 8px">
-          <input type="text" placeholder="${escapeHtml(r.seller_sku || 'SKU')}" class="si-sku" data-idx="${i}" style="padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;width:110px;box-sizing:border-box">
+          <input type="number" min="0" value="${r.price}" class="si-price" data-idx="${i}" style="${inpStyle};width:100px">
+        </td>
+        <td style="border:1px solid #ddd;padding:6px 8px">
+          <input type="text" value="${escapeHtml(r.seller_sku || '')}" class="si-sku" data-idx="${i}" style="${inpStyle};width:110px">
         </td>
       </tr>`;
     });
@@ -2405,6 +2451,33 @@
     section.style.display = 'block';
     section.scrollIntoView({ behavior: 'smooth' });
     showToast(`${data.length} publicación${data.length !== 1 ? 'es' : ''} encontrada${data.length !== 1 ? 's' : ''}`, 'success');
+  }
+
+  function applyBulkFill() {
+    const bulkStatus = document.getElementById('bulk-status').value;
+    const bulkStock  = document.getElementById('bulk-stock').value;
+    const bulkPrice  = document.getElementById('bulk-price').value;
+    const bulkSku    = document.getElementById('bulk-sku').value;
+    document.querySelectorAll('.searchCheck').forEach(cb => {
+      const idx = cb.dataset.idx;
+      if (bulkStatus) {
+        const sel = document.querySelector(`.si-status[data-idx="${idx}"]`);
+        if (sel) sel.value = bulkStatus;
+      }
+      if (bulkStock !== '') {
+        const inp = document.querySelector(`.si-stock[data-idx="${idx}"]`);
+        if (inp) inp.value = bulkStock;
+      }
+      if (bulkPrice !== '') {
+        const inp = document.querySelector(`.si-price[data-idx="${idx}"]`);
+        if (inp) inp.value = bulkPrice;
+      }
+      if (bulkSku !== '') {
+        const inp = document.querySelector(`.si-sku[data-idx="${idx}"]`);
+        if (inp) inp.value = bulkSku;
+      }
+    });
+    showToast('Valores aplicados a todas las filas', 'success');
   }
 
   function toggleAllSearch(checked) {
@@ -2419,11 +2492,12 @@
     const selected = checkedBoxes.map(cb => {
       const idx = parseInt(cb.dataset.idx);
       const r = searchResultsData[idx];
-      const stock = document.querySelector(`.si-stock[data-idx="${idx}"]`)?.value.trim() || '';
-      const price = document.querySelector(`.si-price[data-idx="${idx}"]`)?.value.trim() || '';
-      const sku   = document.querySelector(`.si-sku[data-idx="${idx}"]`)?.value.trim() || '';
-      return { ...r, newStock: stock, newPrice: price, newSku: sku };
-    }).filter(r => r && (r.newStock || r.newPrice || r.newSku));
+      const status = document.querySelector(`.si-status[data-idx="${idx}"]`)?.value.trim() || '';
+      const stock  = document.querySelector(`.si-stock[data-idx="${idx}"]`)?.value.trim() || '';
+      const price  = document.querySelector(`.si-price[data-idx="${idx}"]`)?.value.trim() || '';
+      const sku    = document.querySelector(`.si-sku[data-idx="${idx}"]`)?.value.trim() || '';
+      return { ...r, newStatus: status, newStock: stock, newPrice: price, newSku: sku };
+    }).filter(r => r);
 
     if (!selected.length) return showToast('Ingresá al menos un valor a cambiar en las filas seleccionadas', 'error');
 
@@ -2444,7 +2518,7 @@
         available_quantity: r.newStock || '',
         price: r.newPrice || '',
         item_sku: r.newSku || '',
-        status: '',
+        status: r.newStatus || '',
         marca: '',
         flex: ''
       });
