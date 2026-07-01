@@ -529,30 +529,30 @@ function buildItemPayload(item) {
   return payload;
 }
 
-// Helper: activar/desactivar flex via endpoint dedicado de ML
-// POST /sites/{SITE}/shipping/selfservice/items/{ITEM_ID}  → activa flex (204)
-// DELETE /sites/{SITE}/shipping/selfservice/items/{ITEM_ID} → desactiva flex (204)
+// Helper: activar/desactivar flex via PUT /items/{id} con logistic_type
+// self_service = flex activado | not_specified = flex desactivado
 async function updateFlexForItem(itemId, flexStr, token) {
-  const siteMatch = itemId.match(/^([A-Za-z]+)/);
-  const siteId = siteMatch ? siteMatch[1].toUpperCase() : 'MLA';
-  const url = `https://api.mercadolibre.com/sites/${siteId}/shipping/selfservice/items/${itemId}`;
   const enable = ['si', 'sí', 'yes', 'true', '1'].includes(flexStr);
   const disable = ['no', 'false', '0'].includes(flexStr);
-  if (!enable && !disable) return null; // 'not_available' u otro → no tocar
+  if (!enable && !disable) return null;
 
-  const fetchOpts = {
-    method: enable ? 'POST' : 'DELETE',
+  const payload = {
+    shipping: {
+      logistic_type: enable ? 'self_service' : 'not_specified'
+    }
+  };
+
+  const url = `https://api.mercadolibre.com/items/${itemId}`;
+  const res = await fetch(url, {
+    method: 'PUT',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json'
-    }
-  };
-  if (enable) fetchOpts.body = '{}';
+    },
+    body: JSON.stringify(payload)
+  });
+  if (res.status === 200) return null; // ok
 
-  const res = await fetch(url, fetchOpts);
-  if (res.status === 204 || res.status === 200) return null; // ok
-
-  // Capturar el error real de ML
   let rawText = '';
   try { rawText = await res.text(); } catch(e) {}
   console.log(`[FLEX ERROR] ${itemId} HTTP ${res.status}: ${rawText}`);
