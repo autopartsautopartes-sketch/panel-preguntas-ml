@@ -597,12 +597,18 @@ route('GET', '/api/export-listings', async (req, res) => {
     const BATCH_SIZE = 20;      // items por llamada de detalle
     const DETAIL_CONCURRENCY = 5; // llamadas de detalle en paralelo por página
     let exported = 0;
+    let scrollId = null;
+    let fetched = 0;
 
-    for (let offset = 0; offset < total; offset += LIMIT) {
-      // Obtener IDs de esta página
-      const pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: LIMIT, offset });
+    while (fetched < total) {
+      // Usar scroll_id para paginar más allá de offset 1000
+      const params = { limit: LIMIT };
+      if (scrollId) params.scroll_id = scrollId;
+      const pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
+      scrollId = pageData.scroll_id || null;
       const ids = pageData.results || [];
       if (!ids.length) break;
+      fetched += ids.length;
 
       // Dividir IDs en lotes de 20 y fetchear en paralelo (hasta 5 a la vez)
       const batches = [];
