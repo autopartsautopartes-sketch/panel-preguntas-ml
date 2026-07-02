@@ -437,6 +437,7 @@
   }
 
   let currentSection = 'dashboard';
+  let navToken = 0; // se incrementa en cada navegación para cancelar cargas anteriores
   let currentUser = null;
   let accounts = [];
 
@@ -619,6 +620,7 @@
 
   function showSection(section, skipLoad) {
     currentSection = section;
+    navToken++; // cancela cualquier carga async anterior
     document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
     const nav = document.getElementById('nav-' + section);
     if (nav) nav.classList.add('active');
@@ -675,6 +677,7 @@
   // ==================== DASHBOARD ====================
 
   async function loadDashboard() {
+    const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver el Dashboard.</p></div>';
       return;
@@ -682,6 +685,7 @@
     try {
       const res = await fetch('/api/stats');
       const stats = await res.json();
+      if (navToken !== myNav) return;
 
       // Update question/message badges — only update upward here; hiding is owned by
       // checkNewQuestions/checkNewMessages (per-id sticky tracking) to avoid fighting
@@ -764,6 +768,7 @@
         </div>
       `;
     } catch (e) {
+      if (navToken !== myNav) return;
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar el dashboard</p></div>';
     }
   }
@@ -773,6 +778,7 @@
   let questionStatus = 'UNANSWERED';
 
   async function loadQuestions(accountId = '') {
+    const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_questions) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver Preguntas.</p></div>';
       return;
@@ -827,8 +833,10 @@
           `;
         }
       }
+      if (navToken !== myNav) return;
       content.innerHTML = html;
     } catch (e) {
+      if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
     }
   }
@@ -999,6 +1007,7 @@
   let allConversationsCache = [];
 
   async function loadMessages(accountId) {
+    const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_messages) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver Mensajes.</p></div>';
       return;
@@ -1008,8 +1017,10 @@
     try {
       const res = await fetch(`/api/messages?account_id=${encodeURIComponent(msgAccountFilter)}&status=${messageStatus}`);
       allConversationsCache = await res.json();
+      if (navToken !== myNav) return;
       renderMessagesList();
     } catch (e) {
+      if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
     }
   }
@@ -1155,6 +1166,7 @@
   // ==================== BUYER-FILTERED VIEWS ====================
 
   async function loadMessagesForBuyer(buyerId, accountId, orderId) {
+    const myNav = navToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando mensajes...</p></div>';
     try {
@@ -1214,13 +1226,16 @@
           `;
         }
       }
+      if (navToken !== myNav) return;
       content.innerHTML = html;
     } catch (e) {
+      if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
     }
   }
 
   async function loadQuestionsForBuyer(buyerId, accountId) {
+    const myNav = navToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando preguntas del comprador...</p></div>';
     try {
@@ -1264,8 +1279,10 @@
           `;
         }
       }
+      if (navToken !== myNav) return;
       content.innerHTML = html;
     } catch (e) {
+      if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
     }
   }
@@ -1334,6 +1351,7 @@
   }
 
   async function loadSales(doFetch = false) {
+    const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_sales) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver Ventas.</p></div>';
       return;
@@ -1525,6 +1543,7 @@
           `;
         }
       }
+      if (navToken !== myNav) return;
       content.innerHTML = fullHtml;
       if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
       // Apply prep status badges after rendering
@@ -1533,6 +1552,7 @@
       // Fetch notes from ML after sales are rendered
       fetchSalesNotes(sales);
     } catch (e) {
+      if (navToken !== myNav) return;
       // Keep filters, show error below
       const loadingEl = content.querySelector('.loading');
       if (loadingEl) loadingEl.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
@@ -1540,6 +1560,7 @@
   }
 
   async function loadSalesForOrder(orderId, accountId) {
+    const myNav = navToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando venta...</p></div>';
     try {
@@ -1608,9 +1629,11 @@
           html += '</div>';
         }
       }
+      if (navToken !== myNav) return;
       content.innerHTML = html;
       fetchSalesNotes(sales);
     } catch(e) {
+      if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar venta</p></div>';
     }
   }
@@ -1807,11 +1830,13 @@
   // ==================== ACCOUNTS SECTION ====================
 
   async function loadAccountsSection() {
+    const myNav = navToken;
     if (currentUser?.role !== 'admin') {
       document.getElementById('content').innerHTML = '<div class="empty"><p>Solo el administrador puede acceder a esta sección.</p></div>';
       return;
     }
     await loadAccounts();
+    if (navToken !== myNav) return;
     let html = `
       <h2 style="margin-bottom:20px;color:#2d3277">Cuentas de MercadoLibre</h2>
       <div style="margin-bottom:20px;display:flex;gap:8px;align-items:center">
@@ -1866,9 +1891,11 @@
   // ==================== USERS SECTION ====================
 
   async function loadUsers() {
+    const myNav = navToken;
     try {
       const res = await fetch('/api/users');
       const users = await res.json();
+      if (navToken !== myNav) return;
 
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Gestión de Usuarios</h2>
@@ -1945,6 +1972,7 @@
       }
       document.getElementById('content').innerHTML = html;
     } catch (e) {
+      if (navToken !== myNav) return;
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar usuarios</p></div>';
     }
   }
@@ -2443,13 +2471,31 @@
       resultsBox.style.display = 'block';
       const table = document.getElementById('searchResultsTable');
       const log = document.getElementById('searchUpdateLog');
-      if (table) table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#666;text-align:center">⏳ Buscando...</td></tr>';
+      if (table) table.innerHTML = `
+        <tr><td colspan="9" style="padding:36px 16px;text-align:center">
+          <div style="display:inline-flex;align-items:center;gap:12px;font-size:15px;color:#555">
+            <span style="display:inline-block;font-size:24px;animation:spin 1s linear infinite;line-height:1">↻</span>
+            <span>Cargando<span id="searchDots"></span></span>
+          </div>
+        </td></tr>`;
       if (log) log.innerHTML = '';
     }
 
     const clickedBtn = window.event?.target;
     const oldText = clickedBtn?.innerHTML;
     if (clickedBtn) { clickedBtn.disabled = true; clickedBtn.innerHTML = loadMore ? '⏳ Cargando...' : '⏳ Buscando...'; }
+
+    // Puntos animados mientras carga
+    let dotsInterval = null;
+    if (!loadMore) {
+      let d = 0;
+      dotsInterval = setInterval(() => {
+        const el = document.getElementById('searchDots');
+        if (el) el.textContent = ['.','..',  '...'][d++ % 3];
+      }, 500);
+    }
+
+    const stopDots = () => { if (dotsInterval) { clearInterval(dotsInterval); dotsInterval = null; } };
 
     try {
       const res = await fetch('/api/search-listings-stream', {
@@ -2472,6 +2518,29 @@
       const decoder = new TextDecoder();
       let buf = '', hasMore = false, nextCursor = null, scanned = 0;
 
+      // firstRenderDone = false mientras estamos en el período de espera de 15s.
+      // Cuando se cumple el timer (o termina el stream), se renderiza todo de una vez.
+      let firstRenderDone = !!loadMore;
+
+      let renderTimer = null;
+      if (!loadMore) {
+        renderTimer = setTimeout(() => {
+          // Pasaron 15 segundos: mostrar lo que se juntó hasta ahora
+          firstRenderDone = true;
+          stopDots();
+          if (searchAccumulated.length) {
+            renderSearchResultsPaged(searchAccumulated, true, scanned); // has_more=true porque el stream sigue
+          } else {
+            const table = document.getElementById('searchResultsTable');
+            if (table) table.innerHTML = `
+              <tr><td colspan="9" style="padding:20px;color:#999;text-align:center">
+                <span style="display:inline-block;font-size:20px;animation:spin 1s linear infinite">↻</span>
+                &nbsp;Todavía buscando, esperá un momento más...
+              </td></tr>`;
+          }
+        }, 15000);
+      }
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -2481,15 +2550,25 @@
 
         for (const line of lines) {
           if (!line.trim()) continue;
-          const msg = JSON.parse(line);
+          let msg;
+          try { msg = JSON.parse(line); } catch(e) { continue; }
 
           if (msg.type === 'item') {
             searchAccumulated.push(msg.row);
-            renderSearchResultsPaged(searchAccumulated, hasMore, scanned);
+            // Si ya pasaron los 15s, actualizar en tiempo real; si no, buffereamos
+            if (firstRenderDone) {
+              renderSearchResultsPaged(searchAccumulated, hasMore, scanned);
+            }
           } else if (msg.type === 'progress') {
             scanned = msg.scanned || scanned;
+            // Actualizar contador dentro del spinner
+            const dotsEl = document.getElementById('searchDots');
+            if (dotsEl && !firstRenderDone) {
+              const parent = dotsEl.parentElement;
+              if (parent) parent.innerHTML = `Cargando<span id="searchDots"></span>${searchAccumulated.length ? ` — ${searchAccumulated.length} encontrados` : ''}`;
+            }
             const st = document.getElementById('searchStreamStatus');
-            if (st) st.textContent = `Revisadas ${scanned} publicaciones — encontradas ${searchAccumulated.length}`;
+            if (st) st.textContent = `Encontrados ${searchAccumulated.length}${scanned ? ` — revisados ${scanned}` : ''}`;
           } else if (msg.type === 'done') {
             hasMore = !!msg.has_more;
             nextCursor = msg.cursor || null;
@@ -2500,6 +2579,9 @@
         }
       }
 
+      // Stream terminó: cancelar timer, renderizar todo de una vez
+      if (renderTimer) clearTimeout(renderTimer);
+      stopDots();
       searchNextCursor = nextCursor;
 
       if (!searchAccumulated.length) {
@@ -2509,6 +2591,7 @@
         renderSearchResultsPaged(searchAccumulated, hasMore, scanned);
       }
     } catch(e) {
+      stopDots();
       showToast(e.message, 'error');
       if (!loadMore) {
         const table = document.getElementById('searchResultsTable');
