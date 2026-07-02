@@ -4025,7 +4025,7 @@
       </div>`;
     }
 
-    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}&promo_type=${encodeURIComponent(promosCurrentPromoType)}`;
+    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}&promo_type=${encodeURIComponent(promosCurrentPromoType)}&concurrency=25`;
     const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
 
     function normPromoItem(it) {
