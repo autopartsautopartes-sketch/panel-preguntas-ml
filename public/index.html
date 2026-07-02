@@ -3713,40 +3713,68 @@
     if (!accountId) { area.innerHTML = ''; return; }
 
     area.innerHTML = '<p style="color:#888;font-size:13px">⏳ Cargando campañas...</p>';
-    // cerrar ítem-area al cambiar cuenta
+
     const itemsArea = document.getElementById('promoItemsArea');
     if (itemsArea) itemsArea.style.display = 'none';
 
     try {
       const res = await fetch(`/api/promotions?account_id=${encodeURIComponent(accountId)}`);
-      const data = await res.json();
+      const payload = await res.json();
+
       if (!res.ok) {
-        let debugHtml = '';
-        if (data.debug) {
-          debugHtml = `<details style="margin-top:8px"><summary style="cursor:pointer;color:#888;font-size:12px">Ver respuesta de ML</summary><pre style="font-size:11px;background:#f9f9f9;padding:8px;border-radius:4px;overflow:auto;max-height:200px;word-break:break-all">${escapeHtml(JSON.stringify(data.debug, null, 2))}</pre></details>`;
-        }
-        area.innerHTML = `<p style="color:#e74c3c">${escapeHtml(data.error || 'Error al cargar campañas')}</p>${debugHtml}`;
+        area.innerHTML = `<p style="color:#e74c3c">${escapeHtml(payload.error || 'Error al cargar campañas')}</p>`;
         return;
       }
-      if (!Array.isArray(data) || !data.length) { area.innerHTML = '<p style="color:#888;font-size:13px">No hay campañas disponibles para esta cuenta.</p>'; return; }
 
-      const typeLabel = { DEAL:'🤝 DEAL (ML)', LIGHTNING_DEAL:'⚡ Lightning Deal', PRICE_DISCOUNT:'🏷️ Precio Oferta' };
-      const statusBadge = { active:'<span style="color:#27ae60;font-weight:600">● Activa</span>', inactive:'<span style="color:#999">○ Inactiva</span>', upcoming:'<span style="color:#e67e22;font-weight:600">◎ Próxima</span>', finished:'<span style="color:#aaa">✓ Finalizada</span>' };
+      const campaigns = Array.isArray(payload) ? payload : (payload.results || payload.data || payload.promotions || []);
+      const debug = Array.isArray(payload) ? [] : (payload.debug || []);
+
+      if (!campaigns.length) {
+        area.innerHTML = `
+          <div style="background:#fff8e1;border:1px solid #f5d76e;border-radius:8px;padding:12px;font-size:13px;color:#856404">
+            No hay campañas disponibles para esta cuenta.
+            ${debug.length ? `<details style="margin-top:8px"><summary>Ver debug</summary><pre style="white-space:pre-wrap;font-size:11px;margin-top:6px">${escapeHtml(JSON.stringify(debug, null, 2))}</pre></details>` : ''}
+          </div>`;
+        return;
+      }
+
+      const typeLabel = {
+        DEAL:'🤝 DEAL (ML)',
+        LIGHTNING_DEAL:'⚡ Lightning Deal',
+        PRICE_DISCOUNT:'🏷️ Precio Oferta',
+        DOD:'🔥 Oferta del día',
+        SMART:'🧠 Smart',
+        VOLUME:'📦 Volumen'
+      };
+
+      const statusBadge = {
+        active:'<span style="color:#27ae60;font-weight:600">● Activa</span>',
+        inactive:'<span style="color:#999">○ Inactiva</span>',
+        upcoming:'<span style="color:#e67e22;font-weight:600">◎ Próxima</span>',
+        programmed:'<span style="color:#e67e22;font-weight:600">◎ Programada</span>',
+        finished:'<span style="color:#aaa">✓ Finalizada</span>',
+        cancelled:'<span style="color:#e74c3c">✕ Cancelada</span>'
+      };
 
       let rows = '';
-      for (const p of data) {
-        const label = typeLabel[p.type] || p.type;
-        const badge = statusBadge[p.status] || `<span style="color:#888">${escapeHtml(p.status||'')}</span>`;
+      for (const p of campaigns) {
+        const id = p.id || p.promotion_id || p.offer_id || '';
+        const type = p.type || p.promotion_type || '';
+        const name = p.name || p.title || p.description || id || 'Sin nombre';
+        const status = p.status || p.state || '';
+        const label = typeLabel[type] || escapeHtml(type || '—');
+        const badge = statusBadge[String(status).toLowerCase()] || `<span style="color:#888">${escapeHtml(status || '')}</span>`;
         const from = p.start_date ? new Date(p.start_date).toLocaleDateString('es-AR') : '—';
         const to   = p.end_date   ? new Date(p.end_date).toLocaleDateString('es-AR')   : '—';
+
         rows += `<tr>
-          <td style="padding:8px 10px">${escapeHtml(p.name||'Sin nombre')}</td>
+          <td style="padding:8px 10px">${escapeHtml(name)}</td>
           <td style="padding:8px 10px">${label}</td>
           <td style="padding:8px 10px">${badge}</td>
           <td style="padding:8px 10px">${from}</td>
           <td style="padding:8px 10px">${to}</td>
           <td style="padding:8px 10px">
-            <button onclick="openPromoCampaign('${escapeHtml(p.id)}','${escapeHtml(p.type)}','${escapeHtml((p.name||'').replace(/'/g,"\\'"))}')"
+            <button onclick="openPromoCampaign('${escapeHtml(String(id))}','${escapeHtml(String(type))}','${escapeHtml(String(name).replace(/'/g, "\\'"))}')"
               style="padding:5px 12px;background:#2980b9;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600">
               Ver ítems
             </button>
@@ -3756,7 +3784,7 @@
 
       area.innerHTML = `
         <div style="overflow-x:auto">
-          <table style="border-collapse:collapse;font-size:13px;width:100%;min-width:600px">
+          <table style="border-collapse:collapse;font-size:13px;width:100%;min-width:600px;background:white;border-radius:8px;overflow:hidden">
             <thead>
               <tr style="background:#f5f6fa;border-bottom:2px solid #e0e0e0">
                 <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555">Nombre</th>
@@ -3769,7 +3797,8 @@
             </thead>
             <tbody>${rows}</tbody>
           </table>
-        </div>`;
+        </div>
+        ${debug.length ? `<details style="margin-top:10px;font-size:12px;color:#777"><summary>Debug campañas</summary><pre style="white-space:pre-wrap;font-size:11px;background:#f8f9fa;border-radius:8px;padding:10px;margin-top:6px">${escapeHtml(JSON.stringify(debug, null, 2))}</pre></details>` : ''}`;
     } catch(e) {
       area.innerHTML = `<p style="color:#e74c3c">Error de conexión: ${escapeHtml(e.message)}</p>`;
     }
@@ -3971,7 +4000,6 @@
   async function downloadPromoXLSX() {
     if (!promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
 
-    // Load SheetJS if needed
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement('script');
@@ -3990,11 +4018,28 @@
           <div id="promoDownloadFill" style="height:100%;background:#3498db;width:0%;transition:width .3s"></div>
         </div>
         <div id="promoDownloadStatus" style="margin-top:6px;color:#666;font-size:12px">Iniciando...</div>
+        <details id="promoDownloadDebugBox" style="display:none;margin-top:8px;font-size:12px;color:#777">
+          <summary>Ver debug descarga</summary>
+          <pre id="promoDownloadDebug" style="white-space:pre-wrap;background:white;padding:8px;border-radius:6px;max-height:180px;overflow:auto"></pre>
+        </details>
       </div>`;
     }
 
-    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}`;
+    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}&promo_type=${encodeURIComponent(promosCurrentPromoType)}`;
     const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
+
+    function normPromoItem(it) {
+      const itemId = it.item_id || it.id || it.item?.id || '';
+      const title = it.title || it.item_title || it.name || it.item?.title || '';
+      const sku = it.seller_sku || it.seller_custom_field || it.sku || it.item?.seller_sku || '';
+      const originalPrice = it.original_price ?? it.regular_price ?? it.price ?? it.item?.price ?? '';
+      const newPrice = it.new_price ?? it.promotion_price ?? it.price_promo ?? '';
+      const discount = it.discount ?? it.discount_percentage ?? it.discount_pct ?? '';
+      const status = it.status || it.item_status || '';
+      const statusUpper = String(status || '').toUpperCase();
+      const inPromo = ['ACTIVE','CANDIDATE','STARTED','PROGRAMMED','PENDING'].includes(statusUpper) || !!newPrice || !!discount;
+      return { itemId, title, sku, originalPrice, newPrice, discount, status, inPromo };
+    }
 
     try {
       const res = await fetch(url);
@@ -4006,9 +4051,11 @@
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let buf = '', allItems = [], total = 0;
+      let buf = '', allItems = [], total = 0, lastDebug = null, winner = '';
       const barFill  = document.getElementById('promoDownloadFill');
       const barStatus = document.getElementById('promoDownloadStatus');
+      const debugBox = document.getElementById('promoDownloadDebugBox');
+      const debugPre = document.getElementById('promoDownloadDebug');
 
       while (true) {
         const { done, value } = await reader.read();
@@ -4019,54 +4066,73 @@
           if (!line.trim()) continue;
           try {
             const msg = JSON.parse(line);
-            if (msg.type === 'total') { total = msg.total; }
-            else if (msg.type === 'item') { allItems.push(msg.data); }
-            else if (msg.type === 'progress') {
+            if (msg.type === 'debug') {
+              lastDebug = msg.attempts || msg;
+              if (debugBox) debugBox.style.display = '';
+              if (debugPre) debugPre.textContent = JSON.stringify(lastDebug, null, 2);
+            } else if (msg.type === 'winner') {
+              winner = msg.winner || '';
+              if (barStatus && winner) barStatus.textContent = `Endpoint: ${winner}`;
+            } else if (msg.type === 'total') {
+              total = msg.total || 0;
+              if (barStatus) barStatus.textContent = `Total informado: ${total}`;
+            } else if (msg.type === 'item') {
+              allItems.push(msg.data);
+            } else if (msg.type === 'progress') {
               const pct = total > 0 ? Math.round((msg.done / total) * 100) : 0;
               if (barFill)   barFill.style.width = pct + '%';
-              if (barStatus) barStatus.textContent = `${msg.done} de ${msg.total} ítems`;
-            }
-            else if (msg.type === 'done') {
+              if (barStatus) barStatus.textContent = `${msg.done} de ${msg.total} ítems${winner ? ' — ' + winner : ''}`;
+            } else if (msg.type === 'error') {
+              if (barStatus) barStatus.innerHTML = `⚠️ Error: ${escapeHtml(msg.message || 'Error')}`;
+              if (debugBox) debugBox.style.display = '';
+              if (debugPre) debugPre.textContent = JSON.stringify(msg, null, 2);
+            } else if (msg.type === 'done') {
               if (barFill) barFill.style.width = '100%';
-              if (barStatus) {
-                if (msg.total === 0 && msg.debug) {
-                  barStatus.innerHTML = `⚠️ 0 ítems — Respuesta ML: <code style="font-size:11px;word-break:break-all">${escapeHtml(JSON.stringify(msg.debug))}</code>`;
-                } else {
-                  barStatus.textContent = `${msg.total} ítems descargados`;
-                }
-              }
+              if (barStatus) barStatus.textContent = `${msg.total} ítems descargados${msg.winner ? ' — ' + msg.winner : ''}`;
+              if (msg.debug && debugPre) debugPre.textContent = JSON.stringify(msg.debug, null, 2);
             }
           } catch(_) {}
         }
       }
 
-      // Build XLSX
       const headers = isDeal
         ? ['item_id', 'titulo', 'sku', 'precio_original', 'estado', 'participar']
         : ['item_id', 'titulo', 'sku', 'precio_original', 'precio_promo', 'descuento_%', 'participar'];
 
-      const rows = allItems.map(it => {
-        const inPromo = it.status === 'CANDIDATE' || it.status === 'ACTIVE';
+      const rows = allItems.map(raw => {
+        const it = normPromoItem(raw);
         if (isDeal) {
-          return [it.item_id, it.title||'', it.seller_sku||'', it.original_price||'', it.status||'', inPromo?'SI':'NO'];
-        } else {
-          return [it.item_id, it.title||'', it.seller_sku||'', it.original_price||'', it.new_price||'', it.discount||'', inPromo?'SI':'NO'];
+          return [it.itemId, it.title, it.sku, it.originalPrice, it.status, it.inPromo ? 'SI' : 'NO'];
         }
+        return [it.itemId, it.title, it.sku, it.originalPrice, it.newPrice, it.discount, it.inPromo ? 'SI' : 'NO'];
       });
 
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-      // Column widths
       ws['!cols'] = [{ wch:15 }, { wch:45 }, { wch:18 }, { wch:14 }, ...(isDeal ? [{ wch:12 }, { wch:10 }] : [{ wch:12 }, { wch:10 }, { wch:10 }])];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Promo');
+
+      if (lastDebug) {
+        const dbg = [['debug'], [JSON.stringify(lastDebug, null, 2)]];
+        const wsDebug = XLSX.utils.aoa_to_sheet(dbg);
+        wsDebug['!cols'] = [{ wch: 120 }];
+        XLSX.utils.book_append_sheet(wb, wsDebug, 'Debug');
+      }
+
       const today = new Date();
       const dd = today.getDate().toString().padStart(2,'0');
       const mm = (today.getMonth()+1).toString().padStart(2,'0');
       const safeName = (promosCurrentPromoName||'promo').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,30);
       XLSX.writeFile(wb, `promo_${safeName}_${dd}${mm}.xlsx`);
 
-      if (progArea) {
-        setTimeout(() => { progArea.style.display = 'none'; progArea.innerHTML = ''; }, 2000);
+      if (!rows.length) {
+        showToast('Se descargó en 0. Revisá la hoja Debug del Excel o el debug en pantalla.', 'error');
+      } else {
+        showToast(`✅ ${rows.length} ítems descargados`, 'success');
+      }
+
+      if (progArea && rows.length) {
+        setTimeout(() => { progArea.style.display = 'none'; progArea.innerHTML = ''; }, 2500);
       }
     } catch(e) {
       if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
