@@ -2119,6 +2119,10 @@
         <p style="font-size:12px;color:#888;margin-bottom:14px">Buscá por SKU y/o título en todas las cuentas y editá stock, precio o SKU directamente.</p>
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:12px">
           <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:12px;color:#666;font-weight:600">Item ID</label>
+            <input id="searchItemId" type="text" placeholder="Ej: MLA834640084" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:160px">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
             <label style="font-size:12px;color:#666;font-weight:600">SKU</label>
             <input id="searchSku" type="text" placeholder="Ej: SKU-001" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:160px">
           </div>
@@ -2366,6 +2370,7 @@
   let searchResultsData = [];
 
   function nuevaBusqueda() {
+    const itemEl = document.getElementById('searchItemId'); if (itemEl) itemEl.value = '';
     document.getElementById('searchSku').value = '';
     document.getElementById('searchTitle').value = '';
     const accEl = document.getElementById('searchAccount');
@@ -2377,10 +2382,11 @@
   }
 
   async function searchListings() {
+    const item_id = document.getElementById('searchItemId')?.value.trim() || '';
     const sku = document.getElementById('searchSku').value.trim();
     const title = document.getElementById('searchTitle').value.trim();
     const accountId = document.getElementById('searchAccount').value;
-    if (!sku && !title) return showToast('Ingresá SKU o título para buscar', 'error');
+    if (!item_id && !sku && !title) return showToast('Ingresá Item ID, SKU o título para buscar', 'error');
     const btn = document.getElementById('btnSearch');
     btn.disabled = true; btn.textContent = '⏳ Buscando...';
     document.getElementById('searchResults').style.display = 'none';
@@ -2389,7 +2395,7 @@
       const res = await fetch('/api/search-listings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sku, title, account_id: accountId ? parseInt(accountId) : '' })
+        body: JSON.stringify({ item_id, sku, title, account_id: accountId ? parseInt(accountId) : '' })
       });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || 'Error al buscar', 'error'); return; }
@@ -2402,6 +2408,23 @@
     }
   }
 
+
+  async function copyListingUrl(url, itemId) {
+    const finalUrl = url || ('https://articulo.mercadolibre.com.ar/' + itemId);
+    try {
+      await navigator.clipboard.writeText(finalUrl);
+      showToast('URL copiada', 'success');
+    } catch(e) {
+      const tmp = document.createElement('textarea');
+      tmp.value = finalUrl;
+      document.body.appendChild(tmp);
+      tmp.select();
+      document.execCommand('copy');
+      tmp.remove();
+      showToast('URL copiada', 'success');
+    }
+  }
+
   function renderSearchResults(data) {
     const section = document.getElementById('searchResults');
     const table = document.getElementById('searchResultsTable');
@@ -2409,7 +2432,7 @@
     log.innerHTML = '';
     if (!data.length) {
       section.style.display = 'block';
-      table.innerHTML = '<tr><td colspan="8" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
+      table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
       return;
     }
     const inpStyle = 'padding:5px 7px;border:1px solid #cce0ff;border-radius:5px;font-size:12px;box-sizing:border-box;background:#fff';
@@ -2418,7 +2441,7 @@
     // Fila masiva arriba de las cabeceras
     let html = `
     <tr style="background:#e8f4fd">
-      <td colspan="4" style="border:1px solid #ddd;padding:8px 12px;font-size:12px;font-weight:700;color:#2471a3;white-space:nowrap">
+      <td colspan="5" style="border:1px solid #ddd;padding:8px 12px;font-size:12px;font-weight:700;color:#2471a3;white-space:nowrap">
         ✏️ Aplicar a todos →
         <button onclick="applyBulkFill()" style="margin-left:8px;padding:4px 10px;background:#3483fa;color:white;border:none;border-radius:5px;font-size:11px;cursor:pointer;font-weight:600">Llenar filas</button>
       </td>
@@ -2446,6 +2469,7 @@
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">item_id</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">Cuenta</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa">Título</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa;text-align:center">URL</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#3483fa;text-align:center">Estado</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Stock</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Precio</th>
@@ -2462,6 +2486,9 @@
         <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;white-space:nowrap;color:#3483fa;font-weight:600">${escapeHtml(r.item_id)}</td>
         <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;white-space:nowrap;color:#555">${escapeHtml(r.account_name)}</td>
         <td style="border:1px solid #ddd;padding:7px 10px;font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
+        <td style="border:1px solid #ddd;padding:6px 8px;text-align:center">
+          <button onclick="copyListingUrl('${escapeHtml(r.permalink || '')}', '${escapeHtml(r.item_id)}')" title="Copiar URL de publicación" style="border:none;background:#f0f7ff;color:#3483fa;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:14px">📋</button>
+        </td>
         <td style="border:1px solid #ddd;padding:6px 8px">
           <select class="si-status" data-idx="${i}" style="${selStyle};width:90px">
             <option value="active" ${activeOpt}>active</option>
@@ -3848,7 +3875,7 @@
     if (!promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
     const sku   = document.getElementById('promoSearchSku')?.value.trim() || '';
     const title = document.getElementById('promoSearchTitle')?.value.trim() || '';
-    if (!sku && !title) return showToast('Ingresá SKU o título para buscar', 'error');
+    if (!item_id && !sku && !title) return showToast('Ingresá Item ID, SKU o título para buscar', 'error');
 
     const btn = document.getElementById('btnPromoSearch');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando...'; }
