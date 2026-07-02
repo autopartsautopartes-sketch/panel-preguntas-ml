@@ -759,17 +759,6 @@
         </div>
         ${salesHTML}
 
-        <!-- SALDO MERCADO PAGO -->
-        <div style="margin-top:24px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-            <h3 style="font-size:15px;font-weight:700;color:#0f172a">Saldo Mercado Pago</h3>
-            <button onclick="loadMPBalance()" id="btnRefreshBalance"
-              style="background:#f1f5f9;border:1px solid #e2e8f0;color:#475569;border-radius:8px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600;font-family:inherit;transition:background 0.2s"
-              onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='#f1f5f9'">↻ Actualizar saldo</button>
-          </div>
-          <div id="mpBalanceContent"><div style="color:#94a3b8;font-size:13px;padding:8px 0">Cargando saldo...</div></div>
-        </div>
-
         <div id="dashChartSection" style="margin-top:24px;background:white;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
             <label style="font-size:12px;color:#64748b;font-weight:600;white-space:nowrap">Cuenta:</label>
@@ -799,9 +788,6 @@
           <div id="dashChartLoader" style="text-align:center;padding:40px;color:#94a3b8;font-size:13px">Cargando...</div>
         </div>
       `;
-      // Cargar saldo de Mercado Pago en paralelo (no bloquea el gráfico)
-      loadMPBalance();
-
       // Inicializar gráfico — NO resetear _dashPeriod/_dashMetric ni _dashAccountId
       // para conservar la selección del usuario entre refrescos automáticos.
       _dashData = null;
@@ -938,73 +924,6 @@
         }
       }
     });
-  }
-
-  async function loadMPBalance() {
-    const container = document.getElementById('mpBalanceContent');
-    if (!container) return;
-    const btn = document.getElementById('btnRefreshBalance');
-    if (btn) btn.textContent = '↻ Cargando...';
-    container.innerHTML = '<div style="color:#94a3b8;font-size:13px;padding:8px 0">Cargando saldo...</div>';
-    try {
-      const res = await fetch('/api/mp-balance');
-      if (!res.ok) throw new Error('Error');
-      const data = await res.json();
-      const fmt = v => '$ ' + Number(v).toLocaleString('es-AR', {minimumFractionDigits:2, maximumFractionDigits:2});
-
-      container.innerHTML = `
-        <!-- Card grande — totales -->
-        <div style="background:linear-gradient(135deg,#009ee3 0%,#005eb8 100%);color:white;border-radius:14px;padding:22px 28px;margin-bottom:16px;box-shadow:0 4px 16px rgba(0,158,227,0.25)">
-          <div style="font-size:11px;font-weight:700;opacity:0.8;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px">Total todas las cuentas</div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;text-align:center">
-            <div>
-              <div style="font-size:13px;opacity:0.8;margin-bottom:4px">Dinero en cuenta</div>
-              <div style="font-size:26px;font-weight:800;letter-spacing:-0.5px">${fmt(data.total.total_amount)}</div>
-            </div>
-            <div style="border-left:1px solid rgba(255,255,255,0.25);border-right:1px solid rgba(255,255,255,0.25)">
-              <div style="font-size:13px;opacity:0.8;margin-bottom:4px">Disponible</div>
-              <div style="font-size:26px;font-weight:800;letter-spacing:-0.5px">${fmt(data.total.available_balance)}</div>
-            </div>
-            <div>
-              <div style="font-size:13px;opacity:0.8;margin-bottom:4px">A liquidar</div>
-              <div style="font-size:26px;font-weight:800;letter-spacing:-0.5px">${fmt(data.total.unavailable_balance)}</div>
-            </div>
-          </div>
-        </div>
-        <!-- Detalle por cuenta -->
-        ${data.accounts.length > 0 ? `
-          <div style="display:flex;flex-wrap:wrap;gap:10px">
-            ${data.accounts.map(a => `
-              <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;min-width:210px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">
-                <div style="font-weight:700;color:#0f172a;font-size:12px;margin-bottom:10px;border-bottom:1px solid #f1f5f9;padding-bottom:6px">${a.name}${a.error ? ` <span style="color:#e74c3c;font-size:11px" title="${escapeHtml(a.error_detail || 'Error')}">(error)</span>` : ''}</div>
-                <div style="display:flex;flex-direction:column;gap:5px;font-size:12px">
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="color:#64748b">En cuenta</span>
-                    <span style="font-weight:700;color:#0f172a">${fmt(a.total_amount)}</span>
-                  </div>
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="color:#64748b">Disponible</span>
-                    <span style="font-weight:700;color:#16a34a">${fmt(a.available_balance)}</span>
-                  </div>
-                  <div style="display:flex;justify-content:space-between;align-items:center">
-                    <span style="color:#64748b">A liquidar</span>
-                    <span style="font-weight:700;color:#d97706">${fmt(a.unavailable_balance)}</span>
-                  </div>
-                  ${a.error_detail ? `
-                    <div style="margin-top:8px;padding:7px;background:#fff1f0;border:1px solid #ffccc7;border-radius:6px;color:#cf1322;font-size:11px;line-height:1.35;word-break:break-word">
-                      ${escapeHtml(a.error_detail)}
-                    </div>
-                  ` : ''}
-                </div>
-              </div>
-            `).join('')}
-          </div>
-        ` : ''}
-      `;
-    } catch(e) {
-      container.innerHTML = '<div style="color:#e74c3c;font-size:13px;padding:8px 0">Error al cargar saldo de Mercado Pago</div>';
-    }
-    if (btn) btn.textContent = '↻ Actualizar saldo';
   }
 
   async function loadDashboardChart() {
