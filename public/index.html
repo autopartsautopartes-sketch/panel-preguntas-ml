@@ -999,9 +999,11 @@
                   <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
                 </div>
               `}
-              <div style="margin-top:8px;border-top:1px solid #f0f0f0;padding-top:8px">
+              <div style="margin-top:8px;border-top:1px solid #f0f0f0;padding-top:8px"
+                   class="prev-q-wrapper" data-buyer="${escapeHtml(String(q.from||''))}" data-account="${escapeHtml(String(q.account_id||''))}" data-item="${escapeHtml(String(q.item_id||''))}">
                 <button onclick="togglePrevQuestions(this, '${escapeHtml(String(q.from || ''))}', '${escapeHtml(String(q.account_id || ''))}', '${escapeHtml(String(q.item_id || ''))}')"
-                  style="background:none;border:none;color:#3483fa;font-size:12px;cursor:pointer;padding:4px 0;display:flex;align-items:center;gap:4px">
+                  class="prev-q-btn"
+                  style="display:none;background:none;border:none;color:#3483fa;font-size:12px;cursor:pointer;padding:4px 0;align-items:center;gap:4px">
                   <span class="pq-arrow" style="display:inline-block;transition:transform 0.2s">&#9658;</span>
                   Ver preguntas anteriores de este comprador
                 </button>
@@ -1013,6 +1015,27 @@
       }
       if (navToken !== myNav) return;
       content.innerHTML = html;
+
+      // Verificar en paralelo si cada comprador tiene preguntas anteriores.
+      // Solo muestra el botón "Ver preguntas anteriores" cuando hay al menos una.
+      content.querySelectorAll('.prev-q-wrapper').forEach(async wrapper => {
+        const buyerId   = wrapper.dataset.buyer;
+        const accountId = wrapper.dataset.account;
+        const itemId    = wrapper.dataset.item;
+        if (!buyerId) return;
+        try {
+          const params = new URLSearchParams({ buyer_id: buyerId, account_id: accountId, status: 'ANSWERED' });
+          if (itemId) params.set('item_id', itemId);
+          const r = await fetch('/api/questions?' + params);
+          if (!r.ok) return;
+          const qs = await r.json();
+          if (qs.length > 0) {
+            const btn = wrapper.querySelector('.prev-q-btn');
+            if (btn) { btn.style.display = 'flex'; }
+          }
+        } catch(e) {}
+      });
+
     } catch (e) {
       if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
@@ -5049,7 +5072,7 @@
             loadQuestions();
           }
         }
-        if (currentSection === 'dashboard') loadDashboard();
+        // Dashboard no se refresca automáticamente (evita destruir el gráfico)
       }
     } catch(e) {}
   }
@@ -5117,11 +5140,11 @@
   }, 15000);
 
   // Auto-refresh current view every 15 seconds ONLY if not typing
+  // El dashboard NO se refresca automáticamente para no destruir el gráfico.
   setInterval(() => {
     if (isUserTyping()) return;
     if (currentSection === 'questions') loadQuestions();
     if (currentSection === 'messages') loadMessages();
-    if (currentSection === 'dashboard') loadDashboard();
   }, 15000);
 
   // Stop prep auto-refresh when navigating away from prep section
