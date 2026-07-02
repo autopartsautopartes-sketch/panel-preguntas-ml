@@ -20,17 +20,6 @@ const PORT = config.PORT || process.env.PORT || 3000;
 const BASE_URL = config.BASE_URL || process.env.BASE_URL || `http://localhost:${PORT}`;
 const ML_CLIENT_ID = config.ML_CLIENT_ID || process.env.ML_CLIENT_ID;
 const ML_CLIENT_SECRET = config.ML_CLIENT_SECRET || process.env.ML_CLIENT_SECRET;
-
-// Mercado Pago OAuth separado.
-// Si no configurás MP_CLIENT_ID / MP_CLIENT_SECRET, intenta usar los mismos de ML.
-// Lo ideal: crear app en Mercado Pago Developers y poner:
-// MP_CLIENT_ID=...
-// MP_CLIENT_SECRET=...
-// MP_REDIRECT_URI=https://TU-APP.onrender.com/callback-mp
-const MP_CLIENT_ID = config.MP_CLIENT_ID || process.env.MP_CLIENT_ID || ML_CLIENT_ID;
-const MP_CLIENT_SECRET = config.MP_CLIENT_SECRET || process.env.MP_CLIENT_SECRET || ML_CLIENT_SECRET;
-const MP_REDIRECT_URI = config.MP_REDIRECT_URI || process.env.MP_REDIRECT_URI || (BASE_URL + '/callback-mp');
-
 const SESSION_SECRET = config.SESSION_SECRET || process.env.SESSION_SECRET || 'panel-secret-key';
 
 // ==================== PASSWORD HASHING ====================
@@ -417,58 +406,6 @@ async function getValidToken(account) {
     return await refreshToken(account);
   }
   return account.access_token;
-}
-
-// ==================== MERCADO PAGO OAUTH HELPERS ====================
-
-async function mpTokenRequest(body) {
-  const res = await fetch('https://api.mercadopago.com/oauth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const text = await res.text();
-  let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
-  if (!res.ok) throw { response: { data, status: res.status } };
-  return data;
-}
-
-async function refreshMPToken(account) {
-  if (!account.mp_refresh_token) return null;
-  try {
-    const data = await mpTokenRequest({
-      grant_type: 'refresh_token',
-      client_id: MP_CLIENT_ID,
-      client_secret: MP_CLIENT_SECRET,
-      refresh_token: account.mp_refresh_token
-    });
-
-    const expiresAt = new Date(Date.now() + (data.expires_in || 15552000) * 1000).toISOString();
-    const db = loadDB();
-    const acc = db.ml_accounts.find(a => a.id === account.id);
-    if (acc) {
-      acc.mp_access_token = data.access_token;
-      acc.mp_refresh_token = data.refresh_token || account.mp_refresh_token;
-      acc.mp_token_expires_at = expiresAt;
-      if (data.user_id) acc.mp_user_id = String(data.user_id);
-      acc.mp_connected_at = acc.mp_connected_at || new Date().toISOString();
-      saveDB(db);
-    }
-    return data.access_token;
-  } catch (err) {
-    console.error(`[MP] Error refreshing token for ${account.name}:`, err.response?.data || err.message || err);
-    return null;
-  }
-}
-
-async function getValidMPToken(account) {
-  if (!account.mp_access_token) return null;
-  const expires = account.mp_token_expires_at ? new Date(account.mp_token_expires_at) : new Date(0);
-  if (expires <= new Date(Date.now() + 5 * 60 * 1000)) {
-    return await refreshMPToken(account);
-  }
-  return account.mp_access_token;
 }
 
 // ==================== ROUTE HANDLERS ====================
@@ -1437,89 +1374,6 @@ route('GET', '/callback', async (req, res) => {
   }
 });
 
-
-// MERCADO PAGO OAUTH — conectar saldo MP por cuenta
-route('GET', '/auth/mercadopago', async (req, res) => {
-  const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
-  const urlObj = new URL(req.url, 'http://localhost');
-  const accountId = parseInt(urlObj.searchParams.get('account_id'));
-  const db = loadDB();
-  const account = db.ml_accounts.find(a => a.id === accountId);
-  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
-  const state = crypto.randomBytes(18).toString('hex');
-  sess.pendingMP = { state, accountId, created: Date.now() };
-  saveSessions();
-
-  const authUrl =
-    `https://auth.mercadopago.com/authorization` +
-    `?client_id=${encodeURIComponent(MP_CLIENT_ID)}` +
-    `&response_type=code` +
-    `&platform_id=mp` +
-    `&state=${encodeURIComponent(state)}` +
-    `&redirect_uri=${encodeURIComponent(MP_REDIRECT_URI)}`;
-
-  res.writeHead(302, { Location: authUrl });
-  res.end();
-});
-
-route('GET', '/callback-mp', async (req, res) => {
-  const sess = getSession(req);
-  const urlObj = new URL(req.url, 'http://localhost');
-  const code = urlObj.searchParams.get('code');
-  const state = urlObj.searchParams.get('state');
-
-  if (!sess || !sess.pendingMP) {
-    res.writeHead(302, { Location: '/?error=mp_session' });
-    return res.end();
-  }
-
-  if (!code || !state || state !== sess.pendingMP.state) {
-    res.writeHead(302, { Location: '/?error=mp_state' });
-    return res.end();
-  }
-
-  const accountId = sess.pendingMP.accountId;
-  delete sess.pendingMP;
-  saveSessions();
-
-  try {
-    const tokenData = await mpTokenRequest({
-      client_id: MP_CLIENT_ID,
-      client_secret: MP_CLIENT_SECRET,
-      code,
-      grant_type: 'authorization_code',
-      redirect_uri: MP_REDIRECT_URI,
-      test_token: false
-    });
-
-    const db = loadDB();
-    const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
-    if (!account) {
-      res.writeHead(302, { Location: '/?error=mp_account' });
-      return res.end();
-    }
-
-    account.mp_access_token = tokenData.access_token;
-    account.mp_refresh_token = tokenData.refresh_token;
-    account.mp_token_expires_at = new Date(Date.now() + (tokenData.expires_in || 15552000) * 1000).toISOString();
-    account.mp_user_id = tokenData.user_id ? String(tokenData.user_id) : '';
-    account.mp_connected_at = new Date().toISOString();
-
-    saveDB(db);
-
-    res.writeHead(302, { Location: '/?success=mp_connected' });
-    res.end();
-  } catch (err) {
-    console.error('[MP OAuth]', err.response?.data || err.message || err);
-    res.writeHead(302, { Location: '/?error=mp_oauth_failed' });
-    res.end();
-  }
-});
-
-
 // QUESTIONS
 route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
@@ -2387,142 +2241,78 @@ route('GET', '/api/stats', async (req, res) => {
 });
 
 // MERCADO PAGO BALANCE — saldo total y por cuenta
-// Requiere OAuth propio de Mercado Pago por cuenta.
 route('GET', '/api/mp-balance', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-
   const db = loadDB();
   const user = db.users.find(u => u.id === sess.userId);
   if (user?.view_dashboard === false) return sendJSON(res, 403, { error: 'Sin permiso' });
 
-  const urlObj = new URL(req.url, 'http://localhost');
-  const debugMode = urlObj.searchParams.get('debug') === '1';
-
-  let totalAmount = 0;
-  let availableBalance = 0;
-  let unavailableBalance = 0;
+  let totalAmount = 0, availableBalance = 0, unavailableBalance = 0;
   const accounts = [];
 
-  function pickNumber(obj, keys) {
-    for (const k of keys) {
-      const v = obj?.[k];
-      if (v !== undefined && v !== null && v !== '' && !isNaN(Number(v))) return Number(v);
+  await Promise.all(db.ml_accounts.map(async account => {
+    const token = await getValidToken(account);
+    if (!token) { accounts.push({ name: account.name, total_amount: 0, available_balance: 0, unavailable_balance: 0, error: 'Sin token' }); return; }
+    let data = null;
+    let lastErr = '';
+
+    // Intento 1: endpoint estándar de MP
+    try {
+      data = await mlGet('https://api.mercadopago.com/v1/account/balance', token);
+    } catch(e) {
+      const errDetail = JSON.stringify(e.response?.data || e.message || e);
+      console.log(`[MP-BALANCE] Intento1 ${account.name} status=${e.response?.status}:`, errDetail);
+      lastErr = `${e.response?.status || ''} ${e.response?.data?.message || e.response?.data?.error || e.message || errDetail}`;
     }
-    return 0;
-  }
 
-  function normalizeMPBalance(data) {
-    const total = pickNumber(data, ['total_amount', 'total_amounts', 'total', 'amount']);
-    const available = pickNumber(data, ['available_balance', 'available_amount', 'available', 'money_available']);
-    const unavailable = pickNumber(data, ['unavailable_balance', 'unavailable_amount', 'unavailable', 'money_unavailable']);
-    return {
-      total_amount: total || (available + unavailable),
-      available_balance: available,
-      unavailable_balance: unavailable
-    };
-  }
-
-  async function getMPBalance(mpToken) {
-    const attempts = [
-      {
-        label: 'mp_v1_account_balance',
-        url: 'https://api.mercadopago.com/v1/account/balance',
-        headers: { Authorization: `Bearer ${mpToken}` }
-      },
-      {
-        label: 'mp_users_me_balance',
-        url: 'https://api.mercadopago.com/users/me/mercadopago_account/balance',
-        headers: { Authorization: `Bearer ${mpToken}` }
-      }
-    ];
-
-    const errors = [];
-    for (const a of attempts) {
+    // Intento 2: con seller_id explícito
+    if (!data) {
       try {
-        const r = await fetch(a.url, { headers: a.headers });
-        const text = await r.text();
-        let data = {};
-        try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
-
-        if (!r.ok) {
-          errors.push({
-            tried: a.label,
-            status: r.status,
-            error: data.message || data.error || String(text || '').slice(0, 180)
-          });
-          continue;
-        }
-
-        const normalized = normalizeMPBalance(data);
-        return { ok: true, via: a.label, raw: data, ...normalized, errors };
+        data = await mlGet(`https://api.mercadopago.com/v1/account/balance`, token, { user_id: account.seller_id });
       } catch(e) {
-        errors.push({ tried: a.label, error: e.message || String(e) });
+        const errDetail = JSON.stringify(e.response?.data || e.message || e);
+        console.log(`[MP-BALANCE] Intento2 ${account.name} status=${e.response?.status}:`, errDetail);
+        lastErr = `${e.response?.status || ''} ${e.response?.data?.message || e.response?.data?.error || e.message || errDetail}`;
       }
     }
 
-    return { ok: false, total_amount: 0, available_balance: 0, unavailable_balance: 0, errors };
-  }
-
-  await Promise.all((db.ml_accounts || []).map(async account => {
-    const mpToken = await getValidMPToken(account);
-
-    if (!mpToken) {
-      accounts.push({
-        account_id: account.id,
-        name: account.name,
-        total_amount: 0,
-        available_balance: 0,
-        unavailable_balance: 0,
-        error: true,
-        connect_required: true,
-        error_detail: 'Falta conectar Mercado Pago para esta cuenta'
-      });
-      return;
+    // Intento 3: endpoint de ML para info MP del usuario
+    if (!data) {
+      try {
+        const mpData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/mercadopago_account`, token);
+        // Este endpoint devuelve formato distinto — adaptamos
+        if (mpData && (mpData.total_amount !== undefined || mpData.available_balance !== undefined)) {
+          data = mpData;
+        } else {
+          console.log(`[MP-BALANCE] Intento3 ${account.name} respuesta:`, JSON.stringify(mpData));
+          lastErr = 'Formato desconocido: ' + JSON.stringify(mpData).slice(0, 200);
+        }
+      } catch(e) {
+        const errDetail = JSON.stringify(e.response?.data || e.message || e);
+        console.log(`[MP-BALANCE] Intento3 ${account.name} status=${e.response?.status}:`, errDetail);
+        lastErr = `${e.response?.status || ''} ${e.response?.data?.message || e.response?.data?.error || e.message || errDetail}`;
+      }
     }
 
-    const result = await getMPBalance(mpToken);
-
-    if (result.ok) {
-      totalAmount += result.total_amount;
-      availableBalance += result.available_balance;
-      unavailableBalance += result.unavailable_balance;
-
-      accounts.push({
-        account_id: account.id,
-        name: account.name,
-        total_amount: result.total_amount,
-        available_balance: result.available_balance,
-        unavailable_balance: result.unavailable_balance,
-        mp_connected: true,
-        via: result.via,
-        ...(debugMode ? { raw: result.raw, errors: result.errors } : {})
-      });
+    if (data) {
+      const ta = data.total_amount || 0;
+      const ab = data.available_balance || 0;
+      const ub = data.unavailable_balance || 0;
+      totalAmount += ta;
+      availableBalance += ab;
+      unavailableBalance += ub;
+      accounts.push({ name: account.name, total_amount: ta, available_balance: ab, unavailable_balance: ub });
     } else {
-      const detail = (result.errors || []).map(e => `${e.tried}: ${e.status || ''} ${e.error || ''}`).join(' | ');
-      console.log(`[MP-BALANCE] Error ${account.name}:`, detail);
-      accounts.push({
-        account_id: account.id,
-        name: account.name,
-        total_amount: 0,
-        available_balance: 0,
-        unavailable_balance: 0,
-        error: true,
-        reconnect_required: true,
-        error_detail: detail || 'No se pudo consultar saldo MP',
-        ...(debugMode ? { errors: result.errors } : {})
-      });
+      accounts.push({ name: account.name, total_amount: 0, available_balance: 0, unavailable_balance: 0, error: lastErr.slice(0, 120) });
     }
   }));
 
+  // Ordenar por total_amount descendente
   accounts.sort((a, b) => b.total_amount - a.total_amount);
 
   sendJSON(res, 200, {
-    total: {
-      total_amount: totalAmount,
-      available_balance: availableBalance,
-      unavailable_balance: unavailableBalance
-    },
+    total: { total_amount: totalAmount, available_balance: availableBalance, unavailable_balance: unavailableBalance },
     accounts
   });
 });
