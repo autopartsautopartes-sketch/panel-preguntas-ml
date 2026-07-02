@@ -2177,11 +2177,15 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
 
   const limit = 50; let total = null; let sent = 0; let searchAfter = null;
+  let firstPageRaw = null;
   do {
     try {
       let url = `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=${limit}`;
       if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
       const r = await mlGet(url, appTok, {}, promoH());
+
+      if (firstPageRaw === null) firstPageRaw = { url, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0, 500) };
+
       const items = r.results || (Array.isArray(r) ? r : []);
       if (total === null) {
         total = r.paging?.total ?? items.length;
@@ -2194,12 +2198,14 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       if (items.length) res.write(JSON.stringify({ type: 'progress', done: sent, total }) + '\n');
       searchAfter = r.paging?.search_after || null;
     } catch(e) {
-      res.write(JSON.stringify({ type: 'error', message: e.message }) + '\n');
+      const errInfo = { type: 'error', message: e?.response?.data?.message || e.message, status: e?.response?.status };
+      if (firstPageRaw === null) firstPageRaw = errInfo;
+      res.write(JSON.stringify(errInfo) + '\n');
       break;
     }
   } while (searchAfter);
 
-  res.write(JSON.stringify({ type: 'done', total: sent }) + '\n');
+  res.write(JSON.stringify({ type: 'done', total: sent, debug: firstPageRaw }) + '\n');
   res.end();
 });
 
