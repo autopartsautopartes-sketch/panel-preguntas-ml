@@ -2381,51 +2381,97 @@
     searchResultsData = [];
   }
 
-  async function searchListings() {
+    let searchNextCursor = null;
+  let searchAccumulated = [];
+
+  async function searchListings(loadMore = false) {
     const item_id = document.getElementById('searchItemId')?.value.trim() || '';
     const sku = document.getElementById('searchSku').value.trim();
     const title = document.getElementById('searchTitle').value.trim();
     const accountId = document.getElementById('searchAccount').value;
+
     if (!item_id && !sku && !title) return showToast('Ingresá Item ID, SKU o título para buscar', 'error');
-    const btn = document.getElementById('btnSearch');
-    btn.disabled = true; btn.textContent = '⏳ Buscando...';
-    document.getElementById('searchResults').style.display = 'none';
-    searchResultsData = [];
+
+    if (!loadMore) {
+      searchNextCursor = null;
+      searchAccumulated = [];
+      document.getElementById('searchResults').innerHTML = '<p style="padding:16px;color:#666">⏳ Buscando...</p>';
+    }
+
+    const btn = event?.target;
+    const oldText = btn?.innerHTML;
+    if (btn) { btn.disabled = true; btn.innerHTML = loadMore ? '⏳ Cargando...' : '⏳ Buscando...'; }
+
     try {
-      const res = await fetch('/api/search-listings', {
+      const res = await fetch('/api/search-listings-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item_id, sku, title, account_id: accountId ? parseInt(accountId) : '' })
+        body: JSON.stringify({
+          item_id, sku, title,
+          account_id: accountId ? parseInt(accountId) : '',
+          page_size: 80,
+          cursor: loadMore ? searchNextCursor : null
+        })
       });
-      const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Error al buscar', 'error'); return; }
-      searchResultsData = data;
-      renderSearchResults(data);
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Error buscando');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '', hasMore = false, nextCursor = null, scanned = 0;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const msg = JSON.parse(line);
+
+          if (msg.type === 'item') {
+            searchAccumulated.push(msg.row);
+            renderSearchResults(searchAccumulated, true, hasMore, scanned);
+          } else if (msg.type === 'progress') {
+            scanned = msg.scanned || scanned;
+            const st = document.getElementById('searchStreamStatus');
+            if (st) st.textContent = `Revisadas ${scanned} publicaciones — encontradas ${searchAccumulated.length}`;
+          } else if (msg.type === 'done') {
+            hasMore = !!msg.has_more;
+            nextCursor = msg.cursor || null;
+            scanned = msg.scanned || scanned;
+          } else if (msg.type === 'error') {
+            throw new Error(msg.error || 'Error buscando');
+          }
+        }
+      }
+
+      searchNextCursor = nextCursor;
+
+      if (!searchAccumulated.length) {
+        document.getElementById('searchResults').innerHTML = '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>';
+      } else {
+        renderSearchResults(searchAccumulated, true, hasMore, scanned);
+      }
     } catch(e) {
-      showToast('Error de conexión: ' + e.message, 'error');
+      showToast(e.message, 'error');
+      if (!loadMore) document.getElementById('searchResults').innerHTML = `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
     } finally {
-      btn.disabled = false; btn.textContent = '🔍 Buscar';
+      if (btn) { btn.disabled = false; btn.innerHTML = oldText; }
     }
   }
 
-
-  async function copyListingUrl(url, itemId) {
-    const finalUrl = url || ('https://articulo.mercadolibre.com.ar/' + itemId);
-    try {
-      await navigator.clipboard.writeText(finalUrl);
-      showToast('URL copiada', 'success');
-    } catch(e) {
-      const tmp = document.createElement('textarea');
-      tmp.value = finalUrl;
-      document.body.appendChild(tmp);
-      tmp.select();
-      document.execCommand('copy');
-      tmp.remove();
-      showToast('URL copiada', 'success');
-    }
+  async function loadMoreSearchResults() {
+    if (!searchNextCursor) return;
+    await searchListings(true);
   }
 
-  function renderSearchResults(data) {
+  function renderSearchResults(data, streaming = false, hasMore = false, scanned = 0) {
     const section = document.getElementById('searchResults');
     const table = document.getElementById('searchResultsTable');
     const log = document.getElementById('searchUpdateLog');
