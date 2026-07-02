@@ -2104,7 +2104,8 @@ async function getAppToken() {
   } catch(e) { console.log('[AppToken] Excepción:', e.message); return null; }
 }
 
-// GET /api/promotions?account_id=X  — lista campañas (debug multi-URL)
+// GET /api/promotions?account_id=X  — lista campañas de un vendedor
+// Usa token de app (client_credentials): ML requiere que el caller sea la aplicación, no el usuario
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -2115,53 +2116,20 @@ route('GET', '/api/promotions', async (req, res) => {
     ? db.ml_accounts.filter(a => a.id === parseInt(accountId))
     : db.ml_accounts;
 
-  const results = [];
-  const debug = [];
+  const appTok = await getAppToken();
+  if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app. Verificar ML_CLIENT_SECRET en Render.' });
 
+  const results = [];
   for (const account of targets) {
     try {
-      const token = await getValidToken(account);
-      if (!token) { debug.push({ account: account.name, error: 'sin token' }); continue; }
-      const sid = account.seller_id;
-      const appId = String(ML_CLIENT_ID || '');
-
-      const OLD = `https://api.mercadolibre.com/seller-promotions`;
-      // Obtener token de app (client_credentials) para probar con ese
-      const appTok = await getAppToken();
-      const candidates = [
-        // API viejo con app_version (el endpoint /seller-promotions/users/{sid} existe — devuelve 400 "Invalid app_version")
-        { label: 'G1', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=2.0.0`, headers: {}, tok: token },
-        { label: 'G2', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=v2`, headers: {}, tok: token },
-        { label: 'G3', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=v1`, headers: {}, tok: token },
-        // API marketplace con token de APP (no de usuario) — "caller.id" sería la app, no el vendedor
-        { label: 'G4_appTok', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2' }, tok: appTok, appTokOk: !!appTok },
-        { label: 'G5_appTok_noH', url: `${PROMO_BASE}/users/${sid}`, headers: {}, tok: appTok, appTokOk: !!appTok },
-      ];
-
-      let found = false;
-      for (const c of candidates) {
-        if (c.tok === null || c.tok === undefined) {
-          debug.push({ account: account.name, tried: c.label, skipped: 'token no disponible', appTokOk: c.appTokOk });
-          continue;
-        }
-        try {
-          const r = await mlGet(c.url, c.tok, {}, c.headers);
-          const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-          debug.push({ account: account.name, winner: c.label, url: c.url, promos_found: promos.length, sample: JSON.stringify(r).slice(0, 200) });
-          for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
-          found = true;
-          break;
-        } catch(e) {
-          debug.push({ account: account.name, tried: c.label, url: c.url, httpStatus: e?.response?.status, mlError: e?.response?.data?.message });
-        }
-      }
-      if (!found) debug.push({ account: account.name, conclusion: 'NINGUNA URL funcionó' });
-
+      const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, appTok, {}, promoH());
+      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+      for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
     } catch(e) {
-      debug.push({ account: account.name, error: e.message });
+      console.log(`[Promotions] Error ${account.name}:`, e?.response?.data || e.message);
     }
   }
-  sendJSON(res, 200, { results, debug });
+  sendJSON(res, 200, results);
 });
 
 // GET /api/promotion-items-stream?account_id=X&promo_id=Y  — streaming ndjson (cursor search_after, max 50)
@@ -2176,8 +2144,9 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === accountId);
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-  const token = await getValidToken(account);
-  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+  // API de ítems de promoción también requiere token de app, igual que la lista de campañas
+  const appTok = await getAppToken();
+  if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app' });
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
 
@@ -2186,7 +2155,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     try {
       let url = `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=${limit}`;
       if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
-      const r = await mlGet(url, token, {}, promoH());
+      const r = await mlGet(url, appTok, {}, promoH());
       const items = r.results || (Array.isArray(r) ? r : []);
       if (total === null) {
         total = r.paging?.total ?? items.length;
@@ -2291,12 +2260,14 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
     try { accountTokens[account.id] = await getValidToken(account); } catch(e) {}
   }
 
+  // Chequeo de estado en promo también necesita token de app
+  const appTokForSearch = await getAppToken();
   const results = await Promise.all(foundItems.map(async (item) => {
-    const token = accountTokens[item.account_id];
-    if (!token) return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
+    if (!appTokForSearch) return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     try {
-      const url = `${PROMO_BASE}/promotions/${promo_id}/items?user_id=${item.account_seller_id || item.account_id}&item_id=${item.item_id}`;
-      const r = await mlGet(url, token, {}, promoH());
+      const sellerIdForSearch = (targets.find(a => a.id === item.account_id) || {}).seller_id || '';
+      const url = `${PROMO_BASE}/promotions/${promo_id}/items?user_id=${sellerIdForSearch}&item_id=${item.item_id}`;
+      const r = await mlGet(url, appTokForSearch, {}, promoH());
       const arr = r?.results || (Array.isArray(r) ? r : []);
       const it = arr[0] || r;
       const active = it?.status && it.status !== 'INACTIVE' && it.status !== 'FINISHED' && it.status !== 'DELETED';
