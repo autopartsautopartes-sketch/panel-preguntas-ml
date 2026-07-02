@@ -931,7 +931,19 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
             const ids = page.results || [], nextScrollId = page.scroll_id || null;
             if(!ids.length) break;
             scanned += ids.length;
-            for (const r of await details(account, token, ids)) { emit(r); if(sent>=PAGE_SIZE){ res.write(JSON.stringify({type:'done', count:sent, has_more:!!nextScrollId || si<statuses.length-1 || ai<targets.length-1, cursor:enc({mode:'title', acc_index:ai, status_index:si, scroll_ids:{[`${ai}:${status}`]:nextScrollId}}), scanned})+'\n'); return res.end(); } }
+            for (const r of await details(account, token, ids)) {
+              emit(r);
+              if(sent>=PAGE_SIZE){
+                res.write(JSON.stringify({
+                  type:'done',
+                  count:sent,
+                  has_more:!!nextScrollId || si<statuses.length-1 || ai<targets.length-1,
+                  cursor:enc({mode:'title', acc_index:ai, status_index:si, scroll_ids:{[`${ai}:${status}`]:nextScrollId}}),
+                  scanned
+                })+'\n');
+                return res.end();
+              }
+            }
             res.write(JSON.stringify({type:'progress', scanned, found:sent, account:account.name, status})+'\n');
             scrollId = nextScrollId; if(!scrollId) break;
           }
