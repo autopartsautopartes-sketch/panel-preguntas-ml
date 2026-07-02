@@ -2242,7 +2242,9 @@ route('GET', '/api/promotions', async (req, res) => {
   sendJSON(res, 200, { results, debug });
 });
 
-// GET /api/promotion-items-stream?account_id=X&promo_id=Y — streaming ndjson
+// GET /api/promotion-items-stream?account_id=X&promo_id=Y&promo_type=Z
+// Descarga participantes/candidatos recorriendo publicaciones y consultando promociones por item.
+// Esto evita el error "Invalid caller.id" del endpoint /promotions/{id}/items.
 route('GET', '/api/promotion-items-stream', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -2250,15 +2252,16 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = parseInt(urlObj.searchParams.get('account_id'));
   const promoId = urlObj.searchParams.get('promo_id');
+  const promoType = urlObj.searchParams.get('promo_type') || '';
+
   if (!promoId) return sendJSON(res, 400, { error: 'Falta promo_id' });
 
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === accountId);
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
 
-  const userToken = await getValidToken(account);
-  const appTok = await getAppToken();
-  if (!userToken && !appTok) return sendJSON(res, 401, { error: 'No hay token válido para consultar promociones' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
   res.writeHead(200, {
     'Content-Type': 'application/x-ndjson',
@@ -2267,58 +2270,243 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     'X-Accel-Buffering': 'no'
   });
 
-  try {
-    const found = await findWorkingPromoItemsCandidate(account, promoId, userToken, appTok);
-    res.write(JSON.stringify({ type: 'debug', attempts: found.debug }) + '\n');
+  const debug = [];
+  const LIMIT = 100;
+  const BATCH_SIZE = 20;
+  const DETAIL_CONCURRENCY = 4;
+  const PROMO_CONCURRENCY = 8;
 
-    if (!found.candidate) {
-      res.write(JSON.stringify({ type: 'total', total: 0 }) + '\n');
-      res.write(JSON.stringify({ type: 'done', total: 0, debug: found.debug }) + '\n');
-      return res.end();
+  let exported = 0;
+  let scanned = 0;
+  let totalListings = 0;
+
+  function normalizePromoArray(raw) {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (Array.isArray(raw.results)) return raw.results;
+    if (Array.isArray(raw.promotions)) return raw.promotions;
+    if (Array.isArray(raw.data)) return raw.data;
+    return [];
+  }
+
+  function getPromoId(p) {
+    return String(p.id || p.promotion_id || p.offer_id || p.campaign_id || '');
+  }
+
+  function getPromoType(p) {
+    return String(p.type || p.promotion_type || p.offer_type || '');
+  }
+
+  function isSamePromo(p) {
+    const id = getPromoId(p);
+    const type = getPromoType(p);
+    if (id !== String(promoId)) return false;
+    if (promoType && type && type !== promoType) return false;
+    return true;
+  }
+
+  async function getItemDetails(ids) {
+    const map = {};
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const batch = ids.slice(i, i + BATCH_SIZE);
+      try {
+        const data = await mlGet(
+          `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,price,status,attributes`,
+          token
+        );
+        for (const entry of (Array.isArray(data) ? data : [])) {
+          const b = entry.body || entry;
+          if (!b || !b.id) continue;
+          let sku = b.seller_custom_field || '';
+          if (!sku && Array.isArray(b.attributes)) {
+            sku = b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '';
+          }
+          map[b.id] = {
+            item_id: b.id,
+            title: b.title || '',
+            seller_sku: sku,
+            original_price: b.price ?? '',
+            item_status: b.status || ''
+          };
+        }
+      } catch(e) {
+        debug.push({
+          step: 'item_details',
+          ids: batch,
+          status: e?.response?.status || null,
+          error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
+        });
+      }
+    }
+    return map;
+  }
+
+  async function getItemPromotions(itemId) {
+    const candidates = [
+      {
+        label: 'item_old_v2_type',
+        url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2&promotion_type=${encodeURIComponent(promoType || '')}`,
+        headers: {},
+        token
+      },
+      {
+        label: 'item_old_v2_plain',
+        url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`,
+        headers: {},
+        token
+      },
+      {
+        label: 'item_old_2_0_0_type',
+        url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=2.0.0&promotion_type=${encodeURIComponent(promoType || '')}`,
+        headers: {},
+        token
+      },
+      {
+        label: 'marketplace_item_v2',
+        url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,
+        headers: promoH(),
+        token
+      }
+    ];
+
+    for (const c of candidates) {
+      if (c.label.includes('_type') && !promoType) continue;
+      try {
+        const raw = await mlGet(c.url, c.token, {}, c.headers);
+        const arr = normalizePromoArray(raw);
+        if (arr.length || raw) {
+          if (debug.length < 20) debug.push({
+            step: 'item_promos_success',
+            tried: c.label,
+            item_id: itemId,
+            count: arr.length,
+            keys: raw && typeof raw === 'object' ? Object.keys(raw).slice(0, 12) : []
+          });
+        }
+        return arr;
+      } catch(e) {
+        if (debug.length < 30) {
+          debug.push({
+            step: 'item_promos_error',
+            tried: c.label,
+            item_id: itemId,
+            status: e?.response?.status || null,
+            error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
+          });
+        }
+      }
+    }
+    return [];
+  }
+
+  async function processIds(ids) {
+    const details = await getItemDetails(ids);
+
+    for (let i = 0; i < ids.length; i += PROMO_CONCURRENCY) {
+      const chunk = ids.slice(i, i + PROMO_CONCURRENCY);
+      const results = await Promise.all(chunk.map(async (itemId) => {
+        const promos = await getItemPromotions(itemId);
+        const match = promos.find(isSamePromo);
+        if (!match) return null;
+
+        const d = details[itemId] || { item_id: itemId, title: '', seller_sku: '', original_price: '' };
+
+        return {
+          item_id: itemId,
+          title: match.title || match.item_title || d.title || '',
+          seller_sku: match.seller_sku || match.sku || d.seller_sku || '',
+          original_price: match.original_price ?? match.price ?? d.original_price ?? '',
+          new_price: match.new_price ?? match.offer_price ?? match.price_discounted ?? '',
+          discount: match.discount ?? match.discount_percentage ?? '',
+          status: match.status || match.promotion_status || '',
+          promotion_id: getPromoId(match) || promoId,
+          promotion_type: getPromoType(match) || promoType,
+          item_status: d.item_status || '',
+          raw_status: match.status || ''
+        };
+      }));
+
+      for (const row of results) {
+        scanned++;
+        if (row) {
+          exported++;
+          res.write(JSON.stringify({ type: 'item', data: row }) + '\n');
+        }
+      }
+
+      res.write(JSON.stringify({
+        type: 'progress',
+        done: scanned,
+        total: totalListings,
+        exported
+      }) + '\n');
+    }
+  }
+
+  try {
+    const [activeFirst, pausedFirst] = await Promise.all([
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active' }).catch(e => ({ paging: { total: 0 }, _error: e })),
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused' }).catch(e => ({ paging: { total: 0 }, _error: e }))
+    ]);
+
+    const activeTotal = activeFirst.paging?.total || 0;
+    const pausedTotal = pausedFirst.paging?.total || 0;
+    totalListings = activeTotal + pausedTotal;
+
+    res.write(JSON.stringify({ type: 'total', total: totalListings, mode: 'scan_items' }) + '\n');
+
+    async function scanStatus(status, statusTotal) {
+      let scrollId = null;
+      let fetched = 0;
+
+      while (fetched < statusTotal) {
+        const params = { limit: LIMIT, status };
+        if (scrollId) params.scroll_id = scrollId;
+
+        let pageData;
+        try {
+          pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
+        } catch(e) {
+          debug.push({
+            step: 'items_search',
+            status,
+            httpStatus: e?.response?.status || null,
+            error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
+          });
+          break;
+        }
+
+        scrollId = pageData.scroll_id || null;
+        const ids = pageData.results || [];
+        if (!ids.length) break;
+
+        fetched += ids.length;
+
+        for (let i = 0; i < ids.length; i += (BATCH_SIZE * DETAIL_CONCURRENCY)) {
+          const block = ids.slice(i, i + (BATCH_SIZE * DETAIL_CONCURRENCY));
+          await processIds(block);
+        }
+
+        if (!scrollId) break;
+      }
     }
 
-    const limit = 50;
-    let total = null;
-    let sent = 0;
-    let searchAfter = null;
-    let first = true;
-    let winnerLabel = found.candidate.label;
+    await scanStatus('active', activeTotal);
+    await scanStatus('paused', pausedTotal);
 
-    do {
-      let r;
-      if (first) {
-        r = found.firstResponse;
-        first = false;
-      } else {
-        const pageCandidate = promoItemCandidates(account, promoId, userToken, appTok, limit, searchAfter)
-          .find(c => c.label === winnerLabel);
-        if (!pageCandidate) break;
-        r = await mlGet(pageCandidate.url, pageCandidate.token, {}, pageCandidate.headers);
-      }
-
-      const items = arrFromPromoResponse(r);
-      if (total === null) {
-        total = r?.paging?.total ?? r?.total ?? items.length;
-        res.write(JSON.stringify({ type: 'winner', winner: winnerLabel }) + '\n');
-        res.write(JSON.stringify({ type: 'total', total }) + '\n');
-      }
-
-      for (const it of items) {
-        res.write(JSON.stringify({ type: 'item', data: it }) + '\n');
-        sent++;
-      }
-
-      if (items.length) res.write(JSON.stringify({ type: 'progress', done: sent, total }) + '\n');
-      searchAfter = r?.paging?.search_after || null;
-    } while (searchAfter);
-
-    res.write(JSON.stringify({ type: 'done', total: sent, winner: winnerLabel }) + '\n');
+    res.write(JSON.stringify({
+      type: 'done',
+      total: exported,
+      scanned,
+      debug
+    }) + '\n');
   } catch(e) {
     res.write(JSON.stringify({
       type: 'error',
       status: e?.response?.status || null,
       message: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e),
-      raw: e?.response?.data || null
+      raw: e?.response?.data || null,
+      debug
     }) + '\n');
   }
 
