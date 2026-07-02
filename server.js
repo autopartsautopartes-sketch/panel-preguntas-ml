@@ -2240,6 +2240,94 @@ route('GET', '/api/stats', async (req, res) => {
   });
 });
 
+// DASHBOARD CHART — datos diarios de ventas/dinero/unidades/preguntas para el período
+route('GET', '/api/dashboard-chart', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
+  if (user?.view_dashboard === false) return sendJSON(res, 403, { error: 'Sin permiso' });
+
+  const urlObj = new URL(req.url, 'http://localhost');
+  const period = Math.max(1, Math.min(30, parseInt(urlObj.searchParams.get('period') || '7')));
+  const accountId = urlObj.searchParams.get('account_id') || '';
+
+  // Argentina = UTC-3
+  const now = new Date();
+  const argNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  // Inicio del día actual en Argentina (= 03:00 UTC)
+  const todayArgStart = new Date(Date.UTC(argNow.getUTCFullYear(), argNow.getUTCMonth(), argNow.getUTCDate(), 3, 0, 0));
+  // Inicio del período
+  const periodStart = new Date(todayArgStart.getTime() - (period - 1) * 24 * 60 * 60 * 1000);
+  const dateFrom = periodStart.toISOString();
+
+  // Mapa de días: clave = 'YYYY-MM-DD' en hora argentina
+  const dayData = {};
+  for (let i = 0; i < period; i++) {
+    const utcMs = periodStart.getTime() + i * 24 * 60 * 60 * 1000;
+    const argD = new Date(utcMs - 3 * 60 * 60 * 1000); // display en ARG
+    const key = argD.toISOString().slice(0, 10);
+    dayData[key] = { sales: 0, revenue: 0, units: 0, questions: 0 };
+  }
+
+  const targets = accountId
+    ? db.ml_accounts.filter(a => String(a.id) === accountId)
+    : db.ml_accounts;
+
+  for (const account of targets) {
+    const token = await getValidToken(account);
+    if (!token) continue;
+
+    // Ventas del período
+    try {
+      let offset = 0;
+      while (true) {
+        const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
+          seller: account.seller_id, sort: 'date_desc',
+          'order.date_created.from': dateFrom,
+          limit: 50, offset
+        });
+        const results = ordersData.results || [];
+        for (const order of results) {
+          if (order.status === 'cancelled') continue;
+          const orderUtc = new Date(order.date_created);
+          const orderArg = new Date(orderUtc.getTime() - 3 * 60 * 60 * 1000);
+          const key = orderArg.toISOString().slice(0, 10);
+          if (dayData[key]) {
+            dayData[key].sales++;
+            dayData[key].revenue += order.total_amount || 0;
+            for (const it of (order.order_items || [])) dayData[key].units += it.quantity || 0;
+          }
+        }
+        offset += results.length;
+        if (!results.length || offset >= (ordersData.paging?.total || 0) || offset >= 500) break;
+      }
+    } catch(e) {}
+
+    // Preguntas respondidas en el período
+    try {
+      const qData = await mlGet('https://api.mercadolibre.com/questions/search', token, {
+        seller_id: account.seller_id, status: 'ANSWERED', limit: 50
+      });
+      for (const q of (qData.questions || [])) {
+        if (!q.date_created || q.date_created < dateFrom) continue;
+        const qArg = new Date(new Date(q.date_created).getTime() - 3 * 60 * 60 * 1000);
+        const key = qArg.toISOString().slice(0, 10);
+        if (dayData[key]) dayData[key].questions++;
+      }
+    } catch(e) {}
+  }
+
+  const days = Object.keys(dayData).sort();
+  sendJSON(res, 200, {
+    days,
+    sales: days.map(d => dayData[d].sales),
+    revenue: days.map(d => Math.round(dayData[d].revenue)),
+    units: days.map(d => dayData[d].units),
+    questions: days.map(d => dayData[d].questions),
+  });
+});
+
 // DELETE ACCOUNT
 route('DELETE', '/api/accounts/delete', async (req, res) => {
   const sess = requireAuth(req);
