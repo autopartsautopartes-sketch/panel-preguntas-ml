@@ -2240,6 +2240,44 @@ route('GET', '/api/stats', async (req, res) => {
   });
 });
 
+// MERCADO PAGO BALANCE — saldo total y por cuenta
+route('GET', '/api/mp-balance', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
+  if (user?.view_dashboard === false) return sendJSON(res, 403, { error: 'Sin permiso' });
+
+  let totalAmount = 0, availableBalance = 0, unavailableBalance = 0;
+  const accounts = [];
+
+  await Promise.all(db.ml_accounts.map(async account => {
+    const token = await getValidToken(account);
+    if (!token) return;
+    try {
+      const data = await mlGet('https://api.mercadopago.com/v1/account/balance', token);
+      const ta = data.total_amount || 0;
+      const ab = data.available_balance || 0;
+      const ub = data.unavailable_balance || 0;
+      totalAmount += ta;
+      availableBalance += ab;
+      unavailableBalance += ub;
+      accounts.push({ name: account.name, total_amount: ta, available_balance: ab, unavailable_balance: ub });
+    } catch(e) {
+      console.log(`[MP-BALANCE] Error ${account.name}:`, e.response?.data?.message || e.message || '');
+      accounts.push({ name: account.name, total_amount: 0, available_balance: 0, unavailable_balance: 0, error: true });
+    }
+  }));
+
+  // Ordenar por total_amount descendente
+  accounts.sort((a, b) => b.total_amount - a.total_amount);
+
+  sendJSON(res, 200, {
+    total: { total_amount: totalAmount, available_balance: availableBalance, unavailable_balance: unavailableBalance },
+    accounts
+  });
+});
+
 // DASHBOARD CHART — datos diarios de ventas/dinero/unidades/preguntas para el período
 route('GET', '/api/dashboard-chart', async (req, res) => {
   const sess = requireAuth(req);
