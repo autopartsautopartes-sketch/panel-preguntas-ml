@@ -2381,7 +2381,27 @@
     searchResultsData = [];
   }
 
-    let searchNextCursor = null;
+  
+  function getSearchResultsEl() {
+    let el = document.getElementById('searchResults');
+    if (el) return el;
+
+    const section = document.getElementById('updateSearchResults') || document.querySelector('#update-section') || document.body;
+    el = document.createElement('div');
+    el.id = 'searchResults';
+    el.style.marginTop = '12px';
+
+    // Preferir ubicarlo debajo del bloque de búsqueda si existe
+    const searchBox = document.querySelector('[data-search-box="update"]') || document.querySelector('#searchAccount')?.closest('div')?.parentElement;
+    if (searchBox && searchBox.parentElement) {
+      searchBox.parentElement.appendChild(el);
+    } else {
+      section.appendChild(el);
+    }
+    return el;
+  }
+
+  let searchNextCursor = null;
   let searchAccumulated = [];
 
   async function searchListings(loadMore = false) {
@@ -2395,7 +2415,7 @@
     if (!loadMore) {
       searchNextCursor = null;
       searchAccumulated = [];
-      document.getElementById('searchResults').innerHTML = '<p style="padding:16px;color:#666">⏳ Buscando...</p>';
+      getSearchResultsEl().innerHTML = '<p style="padding:16px;color:#666">⏳ Buscando...</p>';
     }
 
     const btn = event?.target;
@@ -2454,13 +2474,13 @@
       searchNextCursor = nextCursor;
 
       if (!searchAccumulated.length) {
-        document.getElementById('searchResults').innerHTML = '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>';
+        getSearchResultsEl().innerHTML = '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>';
       } else {
         renderSearchResults(searchAccumulated, true, hasMore, scanned);
       }
     } catch(e) {
       showToast(e.message, 'error');
-      if (!loadMore) document.getElementById('searchResults').innerHTML = `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
+      if (!loadMore) getSearchResultsEl().innerHTML = `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
     } finally {
       if (btn) { btn.disabled = false; btn.innerHTML = oldText; }
     }
