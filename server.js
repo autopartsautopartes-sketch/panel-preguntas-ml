@@ -830,8 +830,8 @@ route('POST', '/api/search-listings', async (req, res) => {
   const userPerm2 = dbPerm2.users.find(u => u.id === sess.userId);
   const canSearch = sess.role === 'admin' || userPerm2?.can_search_update === true;
   if (!canSearch) return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { sku, title, account_id } = await parseBody(req);
-  if (!sku && !title) return sendJSON(res, 400, { error: 'Ingresá SKU o título para buscar' });
+  const { item_id, sku, title, account_id } = await parseBody(req);
+  if (!item_id && !sku && !title) return sendJSON(res, 400, { error: 'Ingresá Item ID, SKU o título para buscar' });
 
   const db = loadDB();
   const allAccounts = db.ml_accounts || [];
@@ -840,6 +840,7 @@ route('POST', '/api/search-listings', async (req, res) => {
     : allAccounts;
 
   const results = [];
+  const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
   const skuLower = sku ? sku.trim().toLowerCase() : '';
   const titleLower = title ? title.trim().toLowerCase() : '';
 
@@ -851,9 +852,14 @@ route('POST', '/api/search-listings', async (req, res) => {
 
       let itemIds = null;
 
+      // Búsqueda directa por item_id
+      if (itemIdSearch) {
+        itemIds = new Set([itemIdSearch]);
+      }
+
       // Búsqueda por SKU
-      if (skuLower) {
-        itemIds = new Set();
+      if (skuLower && !itemIdSearch) {
+        if (itemIds === null) itemIds = new Set();
 
         // Armar lista de términos a buscar:
         // - siempre el término exacto ingresado
@@ -877,7 +883,7 @@ route('POST', '/api/search-listings', async (req, res) => {
       }
 
       // Búsqueda por título (keyword)
-      if (titleLower) {
+      if (titleLower && !itemIdSearch) {
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(title.trim())}&limit=200`, token);
           const titleIds = new Set(r.results || []);
@@ -898,7 +904,7 @@ route('POST', '/api/search-listings', async (req, res) => {
         const batch = ids.slice(i, i + 20);
         try {
           const items = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink`,
             token
           );
           for (const it of (Array.isArray(items) ? items : [])) {
@@ -930,7 +936,8 @@ route('POST', '/api/search-listings', async (req, res) => {
               seller_sku: rawSku,
               status: b.status || '',
               account_id: account.id,
-              account_name: account.name
+              account_name: account.name,
+              permalink: b.permalink || `https://articulo.mercadolibre.com.ar/${b.id}`
             });
           }
         } catch(e) {}
@@ -2886,6 +2893,7 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
     ? db.ml_accounts.filter(a => a.id === parseInt(account_id))
     : db.ml_accounts;
 
+  const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
   const skuLower = sku ? sku.trim().toLowerCase() : '';
   const titleLower = title ? title.trim().toLowerCase() : '';
   const foundItems = [];
