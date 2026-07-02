@@ -578,6 +578,170 @@ async function updateFlexForItem(itemId, flexStr, token) {
   return errMsg;
 }
 
+
+// ==================== PROMO SAFETY BEFORE ITEM UPDATE ====================
+// ML no permite modificar algunos campos cuando la publicación participa en promociones.
+// Antes de actualizar una publicación, buscamos promociones activas y las removemos.
+// Si no hay promociones activas o ML no devuelve datos, continúa normalmente.
+
+function normalizePromoListForItem(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw.results)) return raw.results;
+  if (Array.isArray(raw.promotions)) return raw.promotions;
+  if (Array.isArray(raw.data)) return raw.data;
+  if (Array.isArray(raw.items)) return raw.items;
+  return [];
+}
+
+function promoValueId(p) {
+  return String(p?.id || p?.promotion_id || p?.offer_id || p?.campaign_id || '');
+}
+
+function promoValueType(p) {
+  return String(p?.type || p?.promotion_type || p?.offer_type || '');
+}
+
+function isPromoCurrentlyBlocking(p) {
+  const st = String(p?.status || p?.promotion_status || p?.state || '').toUpperCase();
+  // ACTIVE/STARTED son los más comunes. CANDIDATE puede bloquear según campaña.
+  // Evitamos borrar estados claramente terminados/inactivos.
+  if (['FINISHED', 'INACTIVE', 'DELETED', 'CANCELLED', 'EXPIRED'].includes(st)) return false;
+  return true;
+}
+
+async function getActivePromotionsForItemBeforeUpdate(itemId, account, token) {
+  const appTok = await getAppToken().catch(() => null);
+  const candidates = [
+    {
+      label: 'old_user_v2',
+      url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`,
+      token,
+      headers: {}
+    },
+    {
+      label: 'old_user_2_0_0',
+      url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=2.0.0`,
+      token,
+      headers: {}
+    },
+    {
+      label: 'marketplace_user_v2',
+      url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,
+      token,
+      headers: promoH()
+    },
+    {
+      label: 'marketplace_app_v2',
+      url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,
+      token: appTok,
+      headers: promoH()
+    }
+  ];
+
+  const errors = [];
+  for (const c of candidates) {
+    if (!c.token) continue;
+    try {
+      const raw = await mlGet(c.url, c.token, {}, c.headers);
+      const arr = normalizePromoListForItem(raw).filter(p => promoValueId(p) && promoValueType(p) && isPromoCurrentlyBlocking(p));
+      return { promos: arr, source: c.label, errors };
+    } catch(e) {
+      errors.push({
+        tried: c.label,
+        status: e?.response?.status || null,
+        error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
+      });
+    }
+  }
+  return { promos: [], source: null, errors };
+}
+
+async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo) {
+  const promotionId = promoValueId(promo);
+  const promotionType = promoValueType(promo);
+  if (!promotionId || !promotionType) return { ok: false, error: 'Promoción sin id/type' };
+
+  const appTok = await getAppToken().catch(() => null);
+  const body = { promotion_id: promotionId, promotion_type: promotionType };
+  const userQ = `user_id=${account.seller_id}`;
+
+  const candidates = [
+    {
+      label: 'marketplace_user_v2',
+      url: `${PROMO_BASE}/items/${itemId}?${userQ}`,
+      token,
+      headers: { 'Content-Type': 'application/json', ...promoH() },
+      body
+    },
+    {
+      label: 'marketplace_app_v2',
+      url: `${PROMO_BASE}/items/${itemId}?${userQ}`,
+      token: appTok,
+      headers: { 'Content-Type': 'application/json', ...promoH() },
+      body
+    },
+    {
+      label: 'old_user_v2',
+      url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`,
+      token,
+      headers: { 'Content-Type': 'application/json' },
+      body
+    },
+    {
+      label: 'old_user_2_0_0',
+      url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=2.0.0`,
+      token,
+      headers: { 'Content-Type': 'application/json' },
+      body
+    }
+  ];
+
+  const errors = [];
+  for (const c of candidates) {
+    if (!c.token) continue;
+    try {
+      const r = await fetch(c.url, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${c.token}`, ...c.headers },
+        body: JSON.stringify(c.body)
+      });
+      const text = await r.text().catch(() => '');
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
+      if (r.ok || r.status === 204 || r.status === 404) {
+        return { ok: true, removed: promotionId, type: promotionType, via: c.label, response: data };
+      }
+      errors.push({ tried: c.label, status: r.status, error: data.message || data.error || text.slice(0, 200) });
+    } catch(e) {
+      errors.push({ tried: c.label, error: e.message || String(e) });
+    }
+  }
+
+  return { ok: false, removed: promotionId, type: promotionType, error: errors.map(e => `${e.tried}: ${e.status || ''} ${e.error}`).join(' | ') };
+}
+
+async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
+  const found = await getActivePromotionsForItemBeforeUpdate(itemId, account, token);
+  const promos = found.promos || [];
+  if (!promos.length) return { ok: true, removed: [], source: found.source, errors: found.errors };
+
+  const removed = [];
+  const errors = [];
+  for (const promo of promos) {
+    const r = await removePromotionFromItemBeforeUpdate(itemId, account, token, promo);
+    if (r.ok) removed.push(r);
+    else errors.push(r);
+  }
+
+  return {
+    ok: errors.length === 0,
+    source: found.source,
+    removed,
+    errors
+  };
+}
+
 // BULK UPDATE — streaming ndjson, 10 llamadas paralelas
 route('POST', '/api/bulk-update', async (req, res) => {
   const sess = requireAuth(req);
@@ -613,24 +777,37 @@ route('POST', '/api/bulk-update', async (req, res) => {
         }
 
         const errors = [];
+        const warnings = [];
+
+        // 0. Si hay cambios reales, primero quitar promociones activas.
+        // ML suele bloquear precio/stock/status/SKU cuando el ítem participa en campañas.
+        if (Object.keys(payload).length || hasFlex) {
+          const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
+          if (promoClean.removed?.length) {
+            warnings.push(`Promos removidas: ${promoClean.removed.map(p => `${p.removed}/${p.type}`).join(', ')}`);
+          }
+          if (!promoClean.ok) {
+            errors.push('No se pudieron remover promociones activas: ' + (promoClean.errors || []).map(e => e.error || JSON.stringify(e)).join(' | '));
+          }
+        }
 
         // 1. Actualizar campos normales (precio, stock, status, etc.)
-        if (Object.keys(payload).length) {
+        if (!errors.length && Object.keys(payload).length) {
           try {
             await mlPut(`https://api.mercadolibre.com/items/${item.item_id}`, payload, token);
           } catch(e) {
-            errors.push(e?.response?.data?.message || e?.message || 'Error al actualizar');
+            errors.push(e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar');
           }
         }
 
         // 2. Actualizar flex via endpoint dedicado
-        if (hasFlex) {
+        if (!errors.length && hasFlex) {
           const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
           if (flexErr) errors.push(flexErr);
         }
 
         if (errors.length) return { item_id: item.item_id, ok: false, error: errors.join(' | ') };
-        return { item_id: item.item_id, ok: true };
+        return { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
       } catch(e) {
         return { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
       }
