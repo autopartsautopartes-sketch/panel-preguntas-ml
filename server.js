@@ -850,7 +850,8 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
   function norm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim(); }
   const words = norm(titleRaw).split(' ').filter(w => w.length >= 2);
   const hasTitle = words.length > 0;
-  const titleOk = t => !hasTitle || words.every(w => norm(t).includes(w));
+  // Palabra completa: " gol " no matchea "golpe" ni "paragolpe"
+  const titleOk = t => !hasTitle || words.every(w => (' ' + norm(t) + ' ').includes(' ' + w + ' '));
   const skuOk = raw => {
     if (!skuLower) return true;
     const s = String(raw||'').toLowerCase();
@@ -915,41 +916,49 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
     }
 
     if (hasTitle) {
-      let state = dec(cursor);
-      if (!state || state.mode !== 'title') state = {mode:'title', acc_index:0, status_index:0, scroll_ids:{}};
+      // Búsqueda rápida por índice ML: por cada palabra usa ?q=word, luego intersecta los ID sets (AND).
+      // Evita escanear TODO el catálogo con search_type:scan — reduce llamadas de ~120 a ~6-10.
       const statuses = ['active','paused'];
-      let scanned = 0;
-      for (let ai=state.acc_index||0; ai<targets.length; ai++) {
-        const account = targets[ai], token = await getValidToken(account); if(!token) continue;
-        for (let si=(ai===(state.acc_index||0)?(state.status_index||0):0); si<statuses.length; si++) {
-          const status = statuses[si];
-          let scrollId = state.scroll_ids?.[`${ai}:${status}`] || null;
-          while (true) {
-            const params = {limit:100, status, search_type:'scan'};
-            if(scrollId) params.scroll_id = scrollId;
-            let page; try { page = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params); } catch(e){ break; }
-            const ids = page.results || [], nextScrollId = page.scroll_id || null;
-            if(!ids.length) break;
-            scanned += ids.length;
-            for (const r of await details(account, token, ids)) {
-              emit(r);
-              if(sent>=PAGE_SIZE){
-                res.write(JSON.stringify({
-                  type:'done',
-                  count:sent,
-                  has_more:!!nextScrollId || si<statuses.length-1 || ai<targets.length-1,
-                  cursor:enc({mode:'title', acc_index:ai, status_index:si, scroll_ids:{[`${ai}:${status}`]:nextScrollId}}),
-                  scanned
-                })+'\n');
-                return res.end();
-              }
-            }
-            res.write(JSON.stringify({type:'progress', scanned, found:sent, account:account.name, status})+'\n');
-            scrollId = nextScrollId; if(!scrollId) break;
-          }
+      let totalScanned = 0;
+
+      async function fastWordSearch(sellerId, token, word, status) {
+        const ids = new Set();
+        let offset = 0;
+        const LIMIT = 200;
+        let safety = 0;
+        while (safety++ < 50) {
+          let page;
+          try { page = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(word)}&status=${status}&limit=${LIMIT}&offset=${offset}`, token); } catch(e){ break; }
+          const results = page.results || [];
+          results.forEach(id => ids.add(id));
+          const total = page.paging?.total || 0;
+          offset += results.length;
+          if (!results.length || offset >= total) break;
         }
+        return ids;
       }
-      res.write(JSON.stringify({type:'done', count:sent, has_more:false, scanned})+'\n'); return res.end();
+
+      for (const account of targets) {
+        const token = await getValidToken(account); if(!token) continue;
+        res.write(JSON.stringify({type:'progress', scanned:totalScanned, found:sent, account:account.name, status:'buscando...'})+'\n');
+
+        const allIds = new Set();
+        for (const status of statuses) {
+          // Para cada palabra obtener IDs y luego intersectar (AND entre palabras)
+          const wordSets = await Promise.all(words.map(w => fastWordSearch(account.seller_id, token, w, status)));
+          if (!wordSets.length) continue;
+          let intersection = wordSets[0];
+          for (let i = 1; i < wordSets.length; i++) {
+            intersection = new Set([...intersection].filter(id => wordSets[i].has(id)));
+          }
+          intersection.forEach(id => allIds.add(id));
+        }
+
+        totalScanned += allIds.size;
+        for (const r of await details(account, token, [...allIds])) emit(r);
+        res.write(JSON.stringify({type:'progress', scanned:totalScanned, found:sent, account:account.name, status:'listo'})+'\n');
+      }
+      res.write(JSON.stringify({type:'done', count:sent, has_more:false, scanned:totalScanned})+'\n'); return res.end();
     }
 
     res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); res.end();
@@ -1000,8 +1009,9 @@ route('POST', '/api/search-listings', async (req, res) => {
 
   function titleMatches(t) {
     if (!hasTitleFilter) return true;
-    const nt = normText(t);
-    return titleWords.every(w => nt.includes(w));
+    // Palabra completa: rodea con espacios para que "gol" no matchee "golpe" ni "paragolpe"
+    const nt = ' ' + normText(t) + ' ';
+    return titleWords.every(w => nt.includes(' ' + w + ' '));
   }
 
   function skuMatches(rawSku) {
@@ -1102,33 +1112,47 @@ route('POST', '/api/search-listings', async (req, res) => {
     }
   }
 
-  // Helper: escaneo completo por título, preciso.
+  // Búsqueda rápida por índice ML (reemplaza el escaneo total con search_type:scan).
+  // Por cada palabra llama a ?q=word&status=..., luego intersecta los IDs (AND).
   async function scanAccountByTitle(account, token) {
-    const LIMIT = 100;
     const statuses = ['active', 'paused'];
-    for (const status of statuses) {
-      let scrollId = null;
+
+    async function fastWordIds(sellerId, word, status) {
+      const ids = new Set();
+      let offset = 0;
+      const LIMIT = 200;
       let safety = 0;
-
-      while (safety++ < 1000) {
-        const params = { limit: LIMIT, status, search_type: 'scan' };
-        if (scrollId) params.scroll_id = scrollId;
-
+      while (safety++ < 50) {
         let page;
         try {
-          page = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
-        } catch(e) {
-          break;
-        }
-
-        const ids = page.results || [];
-        if (!ids.length) break;
-
-        await fetchDetailsAndPush(account, token, ids);
-
-        scrollId = page.scroll_id || null;
-        if (!scrollId) break;
+          page = await mlGet(
+            `https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(word)}&status=${status}&limit=${LIMIT}&offset=${offset}`,
+            token
+          );
+        } catch(e) { break; }
+        const results = page.results || [];
+        results.forEach(id => ids.add(id));
+        const total = page.paging?.total || 0;
+        offset += results.length;
+        if (!results.length || offset >= total) break;
       }
+      return ids;
+    }
+
+    const allIds = new Set();
+    for (const status of statuses) {
+      // Buscar cada palabra en paralelo y luego intersectar (AND entre todas)
+      const wordSets = await Promise.all(titleWords.map(w => fastWordIds(account.seller_id, w, status)));
+      if (!wordSets.length) continue;
+      let intersection = wordSets[0];
+      for (let i = 1; i < wordSets.length; i++) {
+        intersection = new Set([...intersection].filter(id => wordSets[i].has(id)));
+      }
+      intersection.forEach(id => allIds.add(id));
+    }
+
+    if (allIds.size > 0) {
+      await fetchDetailsAndPush(account, token, [...allIds]);
     }
   }
 
