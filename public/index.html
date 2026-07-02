@@ -976,7 +976,7 @@
           <div style="display:flex;flex-wrap:wrap;gap:10px">
             ${data.accounts.map(a => `
               <div style="background:white;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;min-width:210px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">
-                <div style="font-weight:700;color:#0f172a;font-size:12px;margin-bottom:10px;border-bottom:1px solid #f1f5f9;padding-bottom:6px">${a.name}${a.error ? ` <span style="color:#e74c3c;font-size:11px" title="${escapeHtml(a.error_detail || 'Error')}">(error)</span>` : ''}</div>
+                <div style="font-weight:700;color:#0f172a;font-size:12px;margin-bottom:10px;border-bottom:1px solid #f1f5f9;padding-bottom:6px">${a.name}${a.error ? ` <span style="color:#e74c3c;font-size:11px" title="${escapeHtml(a.error_detail || 'Error')}">${a.connect_required ? '(conectar MP)' : '(error)'}</span>` : ''}</div>
                 <div style="display:flex;flex-direction:column;gap:5px;font-size:12px">
                   <div style="display:flex;justify-content:space-between;align-items:center">
                     <span style="color:#64748b">En cuenta</span>
@@ -990,6 +990,12 @@
                     <span style="color:#64748b">A liquidar</span>
                     <span style="font-weight:700;color:#d97706">${fmt(a.unavailable_balance)}</span>
                   </div>
+                  ${(a.connect_required || a.reconnect_required) ? `
+                    <button onclick="window.location.href='/auth/mercadopago?account_id=${encodeURIComponent(a.account_id)}'"
+                      style="margin-top:8px;padding:7px 10px;background:#009ee3;color:white;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer">
+                      ${a.reconnect_required ? 'Reconectar Mercado Pago' : 'Conectar Mercado Pago'}
+                    </button>
+                  ` : ''}
                 </div>
               </div>
             `).join('')}
