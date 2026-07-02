@@ -2241,6 +2241,8 @@ route('GET', '/api/stats', async (req, res) => {
 });
 
 // MERCADO PAGO BALANCE — saldo total y por cuenta
+// FIX: usar el balance MP asociado al usuario ML.
+// El endpoint anterior (/v1/account/balance) puede devolver error con tokens OAuth de MercadoLibre.
 route('GET', '/api/mp-balance', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2248,32 +2250,138 @@ route('GET', '/api/mp-balance', async (req, res) => {
   const user = db.users.find(u => u.id === sess.userId);
   if (user?.view_dashboard === false) return sendJSON(res, 403, { error: 'Sin permiso' });
 
+  const urlObj = new URL(req.url, 'http://localhost');
+  const debugMode = urlObj.searchParams.get('debug') === '1';
+
   let totalAmount = 0, availableBalance = 0, unavailableBalance = 0;
   const accounts = [];
 
-  await Promise.all(db.ml_accounts.map(async account => {
+  function pickNumber(obj, keys) {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v !== undefined && v !== null && v !== '' && !isNaN(Number(v))) return Number(v);
+    }
+    return 0;
+  }
+
+  function normalizeMPBalance(data) {
+    const total = pickNumber(data, [
+      'total_amount', 'total_amounts', 'total', 'amount',
+      'TOTAL_AMOUNT', 'TOTAL_AMOUNTS'
+    ]);
+    const available = pickNumber(data, [
+      'available_balance', 'available_amount', 'available',
+      'money_available', 'AVAILABLE_BALANCE', 'AVAILABLE_AMOUNT'
+    ]);
+    const unavailable = pickNumber(data, [
+      'unavailable_balance', 'unavailable_amount', 'unavailable',
+      'money_unavailable', 'UNAVAILABLE_BALANCE', 'UNAVAILABLE_AMOUNT'
+    ]);
+    return {
+      total_amount: total || (available + unavailable),
+      available_balance: available,
+      unavailable_balance: unavailable
+    };
+  }
+
+  async function getBalanceForAccount(account, token) {
+    const attempts = [
+      {
+        label: 'ml_user_mp_balance_header',
+        url: `https://api.mercadolibre.com/users/${account.seller_id}/mercadopago_account/balance`,
+        headers: { Authorization: `Bearer ${token}` }
+      },
+      {
+        label: 'ml_user_mp_balance_query',
+        url: `https://api.mercadolibre.com/users/${account.seller_id}/mercadopago_account/balance?access_token=${encodeURIComponent(token)}`,
+        headers: {}
+      },
+      {
+        label: 'mp_v1_account_balance',
+        url: 'https://api.mercadopago.com/v1/account/balance',
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    ];
+
+    const errors = [];
+    for (const a of attempts) {
+      try {
+        const r = await fetch(a.url, { headers: a.headers });
+        const text = await r.text();
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
+
+        if (!r.ok) {
+          errors.push({
+            tried: a.label,
+            status: r.status,
+            error: data.message || data.error || String(text || '').slice(0, 180)
+          });
+          continue;
+        }
+
+        const normalized = normalizeMPBalance(data);
+        return { ok: true, via: a.label, raw: data, ...normalized, errors };
+      } catch(e) {
+        errors.push({ tried: a.label, error: e.message || String(e) });
+      }
+    }
+
+    return { ok: false, total_amount: 0, available_balance: 0, unavailable_balance: 0, errors };
+  }
+
+  await Promise.all((db.ml_accounts || []).map(async account => {
     const token = await getValidToken(account);
-    if (!token) return;
-    try {
-      const data = await mlGet('https://api.mercadopago.com/v1/account/balance', token);
-      const ta = data.total_amount || 0;
-      const ab = data.available_balance || 0;
-      const ub = data.unavailable_balance || 0;
-      totalAmount += ta;
-      availableBalance += ab;
-      unavailableBalance += ub;
-      accounts.push({ name: account.name, total_amount: ta, available_balance: ab, unavailable_balance: ub });
-    } catch(e) {
-      console.log(`[MP-BALANCE] Error ${account.name}:`, e.response?.data?.message || e.message || '');
-      accounts.push({ name: account.name, total_amount: 0, available_balance: 0, unavailable_balance: 0, error: true });
+    if (!token) {
+      accounts.push({
+        name: account.name,
+        total_amount: 0,
+        available_balance: 0,
+        unavailable_balance: 0,
+        error: true,
+        error_detail: 'Token inválido'
+      });
+      return;
+    }
+
+    const result = await getBalanceForAccount(account, token);
+
+    if (result.ok) {
+      totalAmount += result.total_amount;
+      availableBalance += result.available_balance;
+      unavailableBalance += result.unavailable_balance;
+
+      accounts.push({
+        name: account.name,
+        total_amount: result.total_amount,
+        available_balance: result.available_balance,
+        unavailable_balance: result.unavailable_balance,
+        via: result.via,
+        ...(debugMode ? { raw: result.raw, errors: result.errors } : {})
+      });
+    } else {
+      const detail = (result.errors || []).map(e => `${e.tried}: ${e.status || ''} ${e.error || ''}`).join(' | ');
+      console.log(`[MP-BALANCE] Error ${account.name}:`, detail);
+      accounts.push({
+        name: account.name,
+        total_amount: 0,
+        available_balance: 0,
+        unavailable_balance: 0,
+        error: true,
+        error_detail: detail,
+        ...(debugMode ? { errors: result.errors } : {})
+      });
     }
   }));
 
-  // Ordenar por total_amount descendente
   accounts.sort((a, b) => b.total_amount - a.total_amount);
 
   sendJSON(res, 200, {
-    total: { total_amount: totalAmount, available_balance: availableBalance, unavailable_balance: unavailableBalance },
+    total: {
+      total_amount: totalAmount,
+      available_balance: availableBalance,
+      unavailable_balance: unavailableBalance
+    },
     accounts
   });
 });
