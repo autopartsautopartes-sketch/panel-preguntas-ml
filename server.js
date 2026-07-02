@@ -822,27 +822,104 @@ route('POST', '/api/bulk-update', async (req, res) => {
   console.log(`[BULK] Completado: ${items.length} items por ${sess.username}`);
 });
 
-// SEARCH LISTINGS — busca por SKU y/o título en una o todas las cuentas
+// SEARCH LISTINGS — busca por Item ID, SKU y/o título en una o todas las cuentas
 route('POST', '/api/search-listings', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+
   const dbPerm2 = loadDB();
   const userPerm2 = dbPerm2.users.find(u => u.id === sess.userId);
   const canSearch = sess.role === 'admin' || userPerm2?.can_search_update === true;
   if (!canSearch) return sendJSON(res, 403, { error: 'Acceso denegado' });
+
   const { item_id, sku, title, account_id } = await parseBody(req);
   if (!item_id && !sku && !title) return sendJSON(res, 400, { error: 'Ingresá Item ID, SKU o título para buscar' });
 
   const db = loadDB();
   const allAccounts = db.ml_accounts || [];
-  const targets = account_id
-    ? allAccounts.filter(a => a.id === parseInt(account_id))
-    : allAccounts;
+  const selectedAccountId = account_id ? parseInt(account_id) : null;
 
-  const results = [];
   const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
   const skuLower = sku ? sku.trim().toLowerCase() : '';
   const titleLower = title ? title.trim().toLowerCase() : '';
+
+  const results = [];
+
+  // Caso especial: búsqueda directa por item_id.
+  // No se debe repetir el MLA en todas las cuentas; primero se detecta el seller real.
+  if (itemIdSearch) {
+    try {
+      let itemData = null;
+
+      // Intento público: suele devolver seller_id/permalink sin token.
+      try {
+        itemData = await mlGet(`https://api.mercadolibre.com/items/${itemIdSearch}?attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`);
+      } catch(e) {}
+
+      // Si el público falla, pruebo con tokens de cuentas.
+      if (!itemData) {
+        for (const acc of allAccounts) {
+          try {
+            const tok = await getValidToken(acc);
+            if (!tok) continue;
+            itemData = await mlGet(`https://api.mercadolibre.com/items/${itemIdSearch}?attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`, tok);
+            if (itemData?.id) break;
+          } catch(e) {}
+        }
+      }
+
+      if (!itemData || !itemData.id) return sendJSON(res, 200, []);
+      if (itemData.status === 'closed' || itemData.status === 'under_review') return sendJSON(res, 200, []);
+
+      const realSellerId = String(itemData.seller_id || '');
+      const ownerAccount = allAccounts.find(a => String(a.seller_id) === realSellerId);
+
+      // Si la publicación no pertenece a ninguna cuenta conectada, no la mostramos.
+      if (!ownerAccount) return sendJSON(res, 200, []);
+
+      // Si el usuario filtró por cuenta y no coincide con el dueño real, no devuelve nada.
+      if (selectedAccountId && ownerAccount.id !== selectedAccountId) return sendJSON(res, 200, []);
+
+      let rawSku = itemData.seller_custom_field || '';
+      if (!rawSku && Array.isArray(itemData.attributes)) {
+        rawSku = itemData.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '';
+      }
+
+      if (skuLower) {
+        const itemSku = String(rawSku).toLowerCase();
+        if (skuLower.includes('_')) {
+          if (!itemSku.includes(skuLower)) return sendJSON(res, 200, []);
+        } else {
+          const itemBase = itemSku.split('_')[0];
+          if (!itemBase.includes(skuLower)) return sendJSON(res, 200, []);
+        }
+      }
+
+      if (titleLower && !String(itemData.title || '').toLowerCase().includes(titleLower)) {
+        return sendJSON(res, 200, []);
+      }
+
+      return sendJSON(res, 200, [{
+        item_id: itemData.id,
+        title: itemData.title || '',
+        available_quantity: itemData.available_quantity ?? '',
+        price: itemData.price ?? '',
+        seller_sku: rawSku,
+        status: itemData.status || '',
+        account_id: ownerAccount.id,
+        account_name: ownerAccount.name,
+        permalink: itemData.permalink || `https://articulo.mercadolibre.com.ar/${itemData.id}`
+      }]);
+    } catch(e) {
+      console.error('[SEARCH item_id]', e?.response?.data || e.message || e);
+      return sendJSON(res, 500, { error: e?.response?.data?.message || e.message || 'Error buscando item_id' });
+    }
+  }
+
+  // Búsqueda normal por SKU/Título.
+  const targets = selectedAccountId
+    ? allAccounts.filter(a => a.id === selectedAccountId)
+    : allAccounts;
 
   for (const account of targets) {
     try {
@@ -852,19 +929,10 @@ route('POST', '/api/search-listings', async (req, res) => {
 
       let itemIds = null;
 
-      // Búsqueda directa por item_id
-      if (itemIdSearch) {
-        itemIds = new Set([itemIdSearch]);
-      }
-
       // Búsqueda por SKU
-      if (skuLower && !itemIdSearch) {
-        if (itemIds === null) itemIds = new Set();
+      if (skuLower) {
+        itemIds = new Set();
 
-        // Armar lista de términos a buscar:
-        // - siempre el término exacto ingresado
-        // - si no tiene _, también probar con sufijos comunes (_D, _I, _DM, _IM, etc.)
-        //   porque ML solo hace match exacto en seller_sku
         const skuBase = sku.trim();
         const skuTerms = [skuBase];
         if (!skuLower.includes('_')) {
@@ -874,7 +942,6 @@ route('POST', '/api/search-listings', async (req, res) => {
           for (const s of sufijos) skuTerms.push(skuBase + s);
         }
 
-        // Buscar todos los términos en paralelo (mucho más rápido que scan completo)
         await Promise.all(skuTerms.map(term =>
           mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(term)}&limit=200`, token)
             .then(r => (r.results || []).forEach(id => itemIds.add(id)))
@@ -882,15 +949,14 @@ route('POST', '/api/search-listings', async (req, res) => {
         ));
       }
 
-      // Búsqueda por título (keyword)
-      if (titleLower && !itemIdSearch) {
+      // Búsqueda por título
+      if (titleLower) {
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?q=${encodeURIComponent(title.trim())}&limit=200`, token);
           const titleIds = new Set(r.results || []);
           if (itemIds === null) {
             itemIds = titleIds;
           } else {
-            // AND: intersección con resultados de SKU
             for (const id of itemIds) { if (!titleIds.has(id)) itemIds.delete(id); }
           }
         } catch(e) { if (itemIds === null) itemIds = new Set(); }
@@ -898,36 +964,38 @@ route('POST', '/api/search-listings', async (req, res) => {
 
       if (!itemIds || itemIds.size === 0) continue;
 
-      // Fetch detalles en lotes de 20
       const ids = [...itemIds];
       for (let i = 0; i < ids.length; i += 20) {
         const batch = ids.slice(i, i + 20);
         try {
           const items = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`,
             token
           );
+
           for (const it of (Array.isArray(items) ? items : [])) {
             const b = it.body || it;
             if (!b || !b.id) continue;
             if (b.status === 'closed' || b.status === 'under_review') continue;
-            // Filtro local de título por substring
+
+            // Seguridad: solo mostrar si el seller real coincide con la cuenta buscada.
+            if (b.seller_id && String(b.seller_id) !== String(account.seller_id)) continue;
+
             if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
-            // Obtener SKU: primero seller_custom_field, si está vacío buscar en attributes array
+
             const rawSku = b.seller_custom_field ||
               (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
-            // Filtro local de SKU: si la búsqueda no tiene _, compara solo la base (antes de _)
+
             if (skuLower) {
               const itemSku = String(rawSku).toLowerCase();
               if (skuLower.includes('_')) {
-                // Tiene sufijo → substring normal
                 if (!itemSku.includes(skuLower)) continue;
               } else {
-                // Sin sufijo → comparar solo la base del SKU del item (antes del _)
                 const itemBase = itemSku.split('_')[0];
                 if (!itemBase.includes(skuLower)) continue;
               }
             }
+
             results.push({
               item_id: b.id,
               title: b.title || '',
