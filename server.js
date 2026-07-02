@@ -2165,11 +2165,18 @@ route('GET', '/api/promotions', async (req, res) => {
       // C18: con tipo explicito (solo price_discount)
       { label:'C18:sp+type',     tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}&type=PRICE_DISCOUNT`, hdrs: {} },
       // C19-C23: /seller-promotions/promotions es POST-only (allow:POST en los 200 anteriores)
-      { label:'C19:sp-POST-uid', tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
-      { label:'C20:sp-POST-sid', tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ seller_id: String(sid) }) },
-      { label:'C21:sp-POST-all', tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid), status: 'all' }) },
-      { label:'C22:sp-POST-app', tok: appTok,  url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
-      { label:'C23:sp-POST-v2',  tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: { 'version':'v2' }, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      // app_version en el body con distintos valores
+      { label:'C19:POST-av-v2',   tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid), app_version: 'v2' }) },
+      { label:'C20:POST-av-v1',   tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid), app_version: 'v1' }) },
+      { label:'C21:POST-av-2',    tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid), app_version: 2 }) },
+      { label:'C22:POST-av-1',    tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid), app_version: 1 }) },
+      // app_version como query param en la URL (en vez del body)
+      { label:'C23:POST-avq-v2',  tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?app_version=v2`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      { label:'C24:POST-avq-v1',  tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?app_version=v1`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      { label:'C25:POST-avq-2',   tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?app_version=2`,  hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      // version como query param (sin "app_" prefix)
+      { label:'C26:POST-vq-v2',   tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?version=v2`,     hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      { label:'C27:POST-vq-v1',   tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?version=v1`,     hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
     ];
 
     const attemptLog = [];
