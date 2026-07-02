@@ -2164,6 +2164,12 @@ route('GET', '/api/promotions', async (req, res) => {
       { label:'C17:sp+lim',      tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}&limit=50&offset=0`, hdrs: {} },
       // C18: con tipo explicito (solo price_discount)
       { label:'C18:sp+type',     tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}&type=PRICE_DISCOUNT`, hdrs: {} },
+      // C19-C23: /seller-promotions/promotions es POST-only (allow:POST en los 200 anteriores)
+      { label:'C19:sp-POST-uid', tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      { label:'C20:sp-POST-sid', tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ seller_id: String(sid) }) },
+      { label:'C21:sp-POST-all', tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid), status: 'all' }) },
+      { label:'C22:sp-POST-app', tok: appTok,  url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: {}, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
+      { label:'C23:sp-POST-v2',  tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions`, hdrs: { 'version':'v2' }, method:'POST', body: JSON.stringify({ user_id: String(sid) }) },
     ];
 
     const attemptLog = [];
@@ -2171,9 +2177,12 @@ route('GET', '/api/promotions', async (req, res) => {
       if (!c.tok) { attemptLog.push({ label: c.label, skip: 'sin token' }); continue; }
       let httpStatus = null;
       try {
-        const resp = await fetch(c.url, {
+        const fetchOpts = {
+          method: c.method || 'GET',
           headers: { 'Authorization': `Bearer ${c.tok}`, 'Accept': 'application/json', ...c.hdrs }
-        });
+        };
+        if (c.body) { fetchOpts.body = c.body; fetchOpts.headers['Content-Type'] = 'application/json'; }
+        const resp = await fetch(c.url, fetchOpts);
         httpStatus = resp.status;
         const text = await resp.text();
         let parsed = null;
