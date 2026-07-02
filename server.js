@@ -2129,20 +2129,25 @@ route('GET', '/api/promotions', async (req, res) => {
 
     // Candidatos: distintas URLs / tokens / headers para encontrar cuál acepta ML
     const candidates = [
-      // C1: marketplace + app token + header version:v2  (lo que funcionó en debug)
+      // C1-C4 (marketplace) — requieren permisos marketplace en ML Developer Portal
       { label:'C1:mkt+app+v2h',  tok: appTok,  url: `${PROMO_BASE}/users/${sid}`,                               hdrs: { 'version':'v2' } },
-      // C2: marketplace + user token + header version:v2
       { label:'C2:mkt+usr+v2h',  tok: userTok, url: `${PROMO_BASE}/users/${sid}`,                               hdrs: { 'version':'v2' } },
-      // C3: marketplace + app token + version como query param
-      { label:'C3:mkt+app+v2q',  tok: appTok,  url: `${PROMO_BASE}/users/${sid}?version=v2`,                    hdrs: {} },
-      // C4: marketplace + user token + version como query param
-      { label:'C4:mkt+usr+v2q',  tok: userTok, url: `${PROMO_BASE}/users/${sid}?version=v2`,                    hdrs: {} },
-      // C5: sin /marketplace/, user token, sin version header
-      { label:'C5:sp+usr',       tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/users/${sid}/promotions`, hdrs: {} },
-      // C6: endpoint simple /promotions con user token
-      { label:'C6:promo+usr',    tok: userTok, url: `https://api.mercadolibre.com/promotions?user_id=${sid}`,   hdrs: {} },
-      // C7: /users/{id}/promotions con user token
-      { label:'C7:usr-promos',   tok: userTok, url: `https://api.mercadolibre.com/users/${sid}/promotions`,     hdrs: {} },
+      // C3: marketplace + user token + X-Caller-Id explícito (el sellerId como caller)
+      { label:'C3:mkt+usr+xci',  tok: userTok, url: `${PROMO_BASE}/users/${sid}`,                               hdrs: { 'version':'v2', 'X-Caller-Id': String(sid) } },
+      // C4: marketplace + app token + X-Caller-Id = sellerId (actuando en nombre del seller)
+      { label:'C4:mkt+app+xci',  tok: appTok,  url: `${PROMO_BASE}/users/${sid}`,                               hdrs: { 'version':'v2', 'X-Caller-Id': String(sid) } },
+      // C5: marketplace sin version header
+      { label:'C5:mkt+usr+nov',  tok: userTok, url: `${PROMO_BASE}/users/${sid}`,                               hdrs: {} },
+      // C6: seller-promotions sin /marketplace/ + user token
+      { label:'C6:sp+usr',       tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}`, hdrs: {} },
+      // C7: seller-promotions sin /marketplace/ + version como query param
+      { label:'C7:sp+usr+v2q',   tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}&app_version=v2`, hdrs: {} },
+      // C8: price_discounts endpoint alternativo
+      { label:'C8:pd+usr',       tok: userTok, url: `https://api.mercadolibre.com/users/${sid}/price_discounts`, hdrs: {} },
+      // C9: /users/{id}/promotions con versión
+      { label:'C9:up+usr',       tok: userTok, url: `https://api.mercadolibre.com/users/${sid}/promotions?status=active`, hdrs: {} },
+      // C10: marketplace con caller_id como query param en vez de header
+      { label:'C10:mkt+usr+ciq', tok: userTok, url: `${PROMO_BASE}/users/${sid}?caller_id=${sid}`,              hdrs: { 'version':'v2' } },
     ];
 
     const attemptLog = [];
