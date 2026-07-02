@@ -2240,230 +2240,71 @@ route('GET', '/api/stats', async (req, res) => {
   });
 });
 
-// MERCADO PAGO BALANCE — saldo total y por cuenta desde MercadoLibre
-// No usa OAuth separado de Mercado Pago.
-// Usa el recurso que MercadoLibre expone para el resumen de cuenta MP del vendedor.
+// MERCADO PAGO BALANCE — saldo total y por cuenta
 route('GET', '/api/mp-balance', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-
   const db = loadDB();
   const user = db.users.find(u => u.id === sess.userId);
   if (user?.view_dashboard === false) return sendJSON(res, 403, { error: 'Sin permiso' });
 
-  const urlObj = new URL(req.url, 'http://localhost');
-  const debugMode = urlObj.searchParams.get('debug') === '1';
-
-  let totalAmount = 0;
-  let availableBalance = 0;
-  let unavailableBalance = 0;
+  let totalAmount = 0, availableBalance = 0, unavailableBalance = 0;
   const accounts = [];
 
-  function pickNumberDeep(obj, keys) {
-    const stack = [obj];
-    const seen = new Set();
-
-    while (stack.length) {
-      const cur = stack.shift();
-      if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
-      seen.add(cur);
-
-      for (const k of keys) {
-        const v = cur[k];
-        if (v !== undefined && v !== null && v !== '' && !isNaN(Number(v))) {
-          return Number(v);
-        }
-      }
-
-      for (const v of Object.values(cur)) {
-        if (v && typeof v === 'object') stack.push(v);
-      }
-    }
-
-    return 0;
-  }
-
-  function sumReasons(data) {
-    const possibleArrays = [
-      data?.unavailable_balance_by_reason,
-      data?.unavailable_by_reason,
-      data?.to_release,
-      data?.reasons,
-      data?.details
-    ].filter(Array.isArray);
-
-    let total = 0;
-    for (const arr of possibleArrays) {
-      for (const x of arr) {
-        const v = Number(x.amount ?? x.total_amount ?? x.value ?? x.balance ?? 0);
-        if (!isNaN(v)) total += v;
-      }
-    }
-    return total;
-  }
-
-  function normalizeBalance(data) {
-    const total = pickNumberDeep(data, [
-      'total_amount', 'total_amounts', 'total', 'amount',
-      'money_in_account', 'account_money'
-    ]);
-
-    const available = pickNumberDeep(data, [
-      'available_balance', 'available_amount', 'available',
-      'money_available', 'available_money'
-    ]);
-
-    let unavailable = pickNumberDeep(data, [
-      'unavailable_balance', 'unavailable_amount', 'unavailable',
-      'money_unavailable', 'to_be_available', 'to_release_amount'
-    ]);
-
-    if (!unavailable) unavailable = sumReasons(data);
-
-    return {
-      total_amount: total || (available + unavailable),
-      available_balance: available,
-      unavailable_balance: unavailable
-    };
-  }
-
-  async function fetchJsonAttempt(attempt) {
-    const r = await fetch(attempt.url, { headers: attempt.headers || {} });
-    const text = await r.text();
-    let data = {};
-    try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
-
-    if (!r.ok) {
-      throw {
-        status: r.status,
-        data,
-        message: data.message || data.error || String(text || '').slice(0, 200)
-      };
-    }
-
-    return data;
-  }
-
-  async function getMLBalance(account, token) {
-    const sid = account.seller_id;
-    const encodedToken = encodeURIComponent(token);
-
-    // El endpoint histórico documentado por ML es:
-    // /users/{user_id}/mercadopago_account/balance?access_token=...
-    // Lo ponemos primero, porque muchas veces funciona mejor que Bearer para este recurso viejo.
-    const attempts = [
-      {
-        label: 'ml_balance_access_token_query',
-        url: `https://api.mercadolibre.com/users/${sid}/mercadopago_account/balance?access_token=${encodedToken}`,
-        headers: {}
-      },
-      {
-        label: 'ml_balance_bearer',
-        url: `https://api.mercadolibre.com/users/${sid}/mercadopago_account/balance`,
-        headers: { Authorization: `Bearer ${token}` }
-      },
-      {
-        label: 'ml_balance_query_and_caller',
-        url: `https://api.mercadolibre.com/users/${sid}/mercadopago_account/balance?caller.id=${encodeURIComponent(sid)}&access_token=${encodedToken}`,
-        headers: {}
-      },
-      {
-        label: 'ml_balance_bearer_with_caller',
-        url: `https://api.mercadolibre.com/users/${sid}/mercadopago_account/balance?caller.id=${encodeURIComponent(sid)}`,
-        headers: { Authorization: `Bearer ${token}` }
-      }
-    ];
-
-    const errors = [];
-
-    for (const a of attempts) {
-      try {
-        const data = await fetchJsonAttempt(a);
-        const normalized = normalizeBalance(data);
-
-        return {
-          ok: true,
-          via: a.label,
-          raw: data,
-          ...normalized,
-          errors
-        };
-      } catch(e) {
-        errors.push({
-          tried: a.label,
-          status: e.status || null,
-          error: e.message || String(e),
-          raw: e.data || null
-        });
-      }
-    }
-
-    return {
-      ok: false,
-      total_amount: 0,
-      available_balance: 0,
-      unavailable_balance: 0,
-      errors
-    };
-  }
-
-  await Promise.all((db.ml_accounts || []).map(async account => {
+  await Promise.all(db.ml_accounts.map(async account => {
     const token = await getValidToken(account);
+    if (!token) { accounts.push({ name: account.name, total_amount: 0, available_balance: 0, unavailable_balance: 0, error: 'Sin token' }); return; }
+    let data = null;
+    let lastErr = '';
 
-    if (!token) {
-      accounts.push({
-        account_id: account.id,
-        name: account.name,
-        total_amount: 0,
-        available_balance: 0,
-        unavailable_balance: 0,
-        error: true,
-        error_detail: 'Token ML inválido o vencido'
-      });
-      return;
+    // Intento 1: endpoint ML con seller_id — el mismo token ML tiene acceso
+    try {
+      data = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/mercadopago_account`, token);
+      if (data && data.total_amount === undefined && data.available_balance === undefined) {
+        console.log(`[MP-BALANCE] Intento1 ${account.name} formato inesperado:`, JSON.stringify(data).slice(0, 300));
+        lastErr = 'Formato inesperado: ' + JSON.stringify(data).slice(0, 120);
+        data = null;
+      }
+    } catch(e) {
+      const errDetail = JSON.stringify(e.response?.data || e.message || e);
+      console.log(`[MP-BALANCE] Intento1 ${account.name} status=${e.response?.status}:`, errDetail);
+      lastErr = `${e.response?.status || ''} ${e.response?.data?.message || e.response?.data?.error || e.message || ''}`.trim();
     }
 
-    const result = await getMLBalance(account, token);
+    // Intento 2: variante con _balance al final
+    if (!data) {
+      try {
+        data = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/mercadopago_account_balance`, token);
+        if (data && data.total_amount === undefined && data.available_balance === undefined) {
+          console.log(`[MP-BALANCE] Intento2 ${account.name} formato inesperado:`, JSON.stringify(data).slice(0, 300));
+          lastErr = 'Formato inesperado: ' + JSON.stringify(data).slice(0, 120);
+          data = null;
+        }
+      } catch(e) {
+        const errDetail = JSON.stringify(e.response?.data || e.message || e);
+        console.log(`[MP-BALANCE] Intento2 ${account.name} status=${e.response?.status}:`, errDetail);
+        lastErr = `${e.response?.status || ''} ${e.response?.data?.message || e.response?.data?.error || e.message || ''}`.trim();
+      }
+    }
 
-    if (result.ok) {
-      totalAmount += result.total_amount;
-      availableBalance += result.available_balance;
-      unavailableBalance += result.unavailable_balance;
-
-      accounts.push({
-        account_id: account.id,
-        name: account.name,
-        total_amount: result.total_amount,
-        available_balance: result.available_balance,
-        unavailable_balance: result.unavailable_balance,
-        via: result.via,
-        ...(debugMode ? { raw: result.raw, errors: result.errors } : {})
-      });
+    if (data) {
+      const ta = data.total_amount || 0;
+      const ab = data.available_balance || 0;
+      const ub = data.unavailable_balance || 0;
+      totalAmount += ta;
+      availableBalance += ab;
+      unavailableBalance += ub;
+      accounts.push({ name: account.name, total_amount: ta, available_balance: ab, unavailable_balance: ub });
     } else {
-      const detail = (result.errors || []).map(e => `${e.tried}: ${e.status || ''} ${e.error || ''}`).join(' | ');
-      console.log(`[ML-BALANCE] Error ${account.name}:`, detail);
-
-      accounts.push({
-        account_id: account.id,
-        name: account.name,
-        total_amount: 0,
-        available_balance: 0,
-        unavailable_balance: 0,
-        error: true,
-        error_detail: detail || 'No se pudo consultar el resumen ML/MP',
-        ...(debugMode ? { errors: result.errors } : {})
-      });
+      accounts.push({ name: account.name, total_amount: 0, available_balance: 0, unavailable_balance: 0, error: lastErr.slice(0, 150) });
     }
   }));
 
+  // Ordenar por total_amount descendente
   accounts.sort((a, b) => b.total_amount - a.total_amount);
 
   sendJSON(res, 200, {
-    total: {
-      total_amount: totalAmount,
-      available_balance: availableBalance,
-      unavailable_balance: unavailableBalance
-    },
+    total: { total_amount: totalAmount, available_balance: availableBalance, unavailable_balance: unavailableBalance },
     accounts
   });
 });
