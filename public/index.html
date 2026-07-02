@@ -2382,6 +2382,31 @@
   }
 
   
+
+  function safeSetHTML(id, html) {
+    let el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = id;
+      el.style.marginTop = '12px';
+
+      const anchor =
+        document.getElementById('searchAccount')?.closest('div')?.parentElement?.parentElement ||
+        document.getElementById('updateContent') ||
+        document.querySelector('.content') ||
+        document.body;
+
+      anchor.appendChild(el);
+    }
+    el.innerHTML = html;
+    return el;
+  }
+
+  function safeText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
   function getSearchResultsEl() {
     let el = document.getElementById('searchResults');
     if (el) return el;
@@ -2415,7 +2440,7 @@
     if (!loadMore) {
       searchNextCursor = null;
       searchAccumulated = [];
-      getSearchResultsEl().innerHTML = '<p style="padding:16px;color:#666">⏳ Buscando...</p>';
+      safeSetHTML('searchResults', '<p style="padding:16px;color:#666">⏳ Buscando...</p>');
     }
 
     const btn = event?.target;
@@ -2459,8 +2484,7 @@
             renderSearchResults(searchAccumulated, true, hasMore, scanned);
           } else if (msg.type === 'progress') {
             scanned = msg.scanned || scanned;
-            const st = document.getElementById('searchStreamStatus');
-            if (st) st.textContent = `Revisadas ${scanned} publicaciones — encontradas ${searchAccumulated.length}`;
+            safeText('searchStreamStatus', `Revisadas ${scanned} publicaciones — encontradas ${searchAccumulated.length}`);
           } else if (msg.type === 'done') {
             hasMore = !!msg.has_more;
             nextCursor = msg.cursor || null;
@@ -2474,13 +2498,13 @@
       searchNextCursor = nextCursor;
 
       if (!searchAccumulated.length) {
-        getSearchResultsEl().innerHTML = '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>';
+        safeSetHTML('searchResults', '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>');
       } else {
         renderSearchResults(searchAccumulated, true, hasMore, scanned);
       }
     } catch(e) {
       showToast(e.message, 'error');
-      if (!loadMore) getSearchResultsEl().innerHTML = `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
+      if (!loadMore) safeSetHTML('searchResults', `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`);
     } finally {
       if (btn) { btn.disabled = false; btn.innerHTML = oldText; }
     }
@@ -2540,7 +2564,7 @@
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Stock</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Precio</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">SKU</th>
-    </tr>`;
+    </tr>`);
 
     data.forEach((r, i) => {
       const activeOpt = r.status === 'active' ? 'selected' : '';
