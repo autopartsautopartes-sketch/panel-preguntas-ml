@@ -44,13 +44,13 @@
     /* LAYOUT */
     .app { display: none; }
     .header {
-      background: #ffffff; padding: 12px 24px; display: flex; justify-content: space-between;
-      align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      background: #475569; padding: 12px 24px; display: flex; justify-content: space-between;
+      align-items: center; box-shadow: 0 1px 4px rgba(0,0,0,0.18);
       position: sticky; top: 0; z-index: 50;
     }
-    .header h1 { font-size: 19px; color: #2563eb; font-weight: 700; letter-spacing: -0.3px; }
+    .header h1 { font-size: 19px; color: #ffffff; font-weight: 800; letter-spacing: 0.2px; }
     .header-right { display: flex; align-items: center; gap: 12px; }
-    .header-right span { font-size: 13px; color: #64748b; }
+    .header-right span { font-size: 13px; color: rgba(255,255,255,0.8); }
     .header-right button {
       padding: 7px 16px; background: #2563eb; color: white; border: none;
       border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; font-family: inherit; transition: background 0.2s;
@@ -759,16 +759,22 @@
         </div>
         ${salesHTML}
         <div id="dashChartSection" style="margin-top:24px;background:white;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+            <label style="font-size:12px;color:#64748b;font-weight:600;white-space:nowrap">Cuenta:</label>
+            <select id="dashAccountFilter" onchange="setDashAccount(this.value)" style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:13px;color:#0f172a;background:white;cursor:pointer;font-family:inherit;min-width:160px">
+              <option value="">Todas las cuentas</option>
+            </select>
+          </div>
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
             <h3 style="font-size:15px;font-weight:700;color:#0f172a">Evolución</h3>
             <div style="display:flex;gap:6px">
-              <button onclick="setDashPeriod(1)" id="dcp-1" style="padding:5px 14px;border-radius:20px;border:1px solid #e2e8f0;font-size:12px;cursor:pointer;font-weight:600;background:#2563eb;color:white">Hoy</button>
+              <button onclick="setDashPeriod(1)" id="dcp-1" style="padding:5px 14px;border-radius:20px;border:1px solid #e2e8f0;font-size:12px;cursor:pointer;font-weight:600;background:white;color:#64748b">Hoy</button>
               <button onclick="setDashPeriod(7)" id="dcp-7" style="padding:5px 14px;border-radius:20px;border:1px solid #e2e8f0;font-size:12px;cursor:pointer;font-weight:600;background:white;color:#64748b">7 días</button>
               <button onclick="setDashPeriod(30)" id="dcp-30" style="padding:5px 14px;border-radius:20px;border:1px solid #e2e8f0;font-size:12px;cursor:pointer;font-weight:600;background:white;color:#64748b">30 días</button>
             </div>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-            <button onclick="setDashMetric('sales')" id="dcm-sales" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#eff6ff;color:#2563eb;border-bottom:2px solid #2563eb">Ventas</button>
+            <button onclick="setDashMetric('sales')" id="dcm-sales" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#f8fafc;color:#64748b">Ventas</button>
             <button onclick="setDashMetric('revenue')" id="dcm-revenue" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#f8fafc;color:#64748b">Dinero</button>
             <button onclick="setDashMetric('units')" id="dcm-units" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#f8fafc;color:#64748b">Unidades</button>
             <button onclick="setDashMetric('questions')" id="dcm-questions" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#f8fafc;color:#64748b">Preguntas</button>
@@ -781,8 +787,37 @@
           <div id="dashChartLoader" style="text-align:center;padding:40px;color:#94a3b8;font-size:13px">Cargando...</div>
         </div>
       `;
-      // Inicializar gráfico después de renderizar el HTML
-      _dashPeriod = 1; _dashMetric = 'sales'; _dashData = null;
+      // Inicializar gráfico — NO resetear _dashPeriod/_dashMetric ni _dashAccountId
+      // para conservar la selección del usuario entre refrescos automáticos.
+      _dashData = null;
+      // Aplicar estilos activos en botones de período
+      [1,7,30].forEach(n => {
+        const btn = document.getElementById('dcp-' + n);
+        if (!btn) return;
+        btn.style.background = n === _dashPeriod ? '#2563eb' : 'white';
+        btn.style.color      = n === _dashPeriod ? 'white'   : '#64748b';
+      });
+      // Aplicar estilos activos en tabs de métrica
+      ['sales','revenue','units','questions'].forEach(k => {
+        const btn = document.getElementById('dcm-' + k);
+        if (!btn) return;
+        if (k === _dashMetric) { btn.style.background = '#eff6ff'; btn.style.color = '#2563eb'; btn.style.borderBottom = '2px solid #2563eb'; }
+        else                   { btn.style.background = '#f8fafc'; btn.style.color = '#64748b'; btn.style.borderBottom = 'none'; }
+      });
+      // Poblar selector de cuentas y respetar selección actual
+      fetch('/api/accounts').then(r => r.json()).then(accounts => {
+        const sel = document.getElementById('dashAccountFilter');
+        if (!sel) return;
+        // Conservar opciones ya existentes (solo "Todas") y agregar cuentas
+        while (sel.options.length > 1) sel.remove(1);
+        accounts.forEach(a => {
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = a.name;
+          if (String(a.id) === String(_dashAccountId)) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }).catch(() => {});
       if (typeof Chart !== 'undefined') loadDashboardChart();
       else { const l = document.getElementById('dashChartLoader'); if(l) l.textContent = 'Chart.js no disponible'; }
     } catch (e) {
@@ -796,6 +831,7 @@
   let _dashChart = null;
   let _dashPeriod = 1;
   let _dashMetric = 'sales';
+  let _dashAccountId = '';   // '' = todas las cuentas
   let _dashData = null;
 
   const DASH_METRIC_LABELS = { sales: 'Ventas', revenue: 'Dinero ($)', units: 'Unidades', questions: 'Preguntas' };
@@ -805,6 +841,12 @@
     units: v => v,
     questions: v => v
   };
+
+  function setDashAccount(id) {
+    _dashAccountId = id;
+    _dashData = null;
+    loadDashboardChart();
+  }
 
   function setDashPeriod(p) {
     _dashPeriod = p;
@@ -892,7 +934,7 @@
     canvas.style.display = 'none';
     if (_dashChart) { _dashChart.destroy(); _dashChart = null; }
     try {
-      const res = await fetch(`/api/dashboard-chart?period=${_dashPeriod}`);
+      const res = await fetch(`/api/dashboard-chart?period=${_dashPeriod}&account_id=${encodeURIComponent(_dashAccountId)}`);
       if (!res.ok) throw new Error('Error');
       _dashData = await res.json();
       renderDashChart(_dashData);
@@ -4849,23 +4891,40 @@
     document.removeEventListener('click', requestNotifPerm);
   }, { once: true });
 
-  function showNotification(count, type) {
+  // richItems: array of question objects (with .account_name, .item_title, .text)
+  //            or conversation objects (with .account_name, .buyer_name, .messages[0].text)
+  function showNotification(count, type, richItems) {
     const isQ = type === 'questions';
-    const icon = isQ ? '❓' : '💬';
-    const title = isQ
-      ? (count === 1 ? '¡Nueva pregunta!' : `¡${count} preguntas nuevas!`)
-      : (count === 1 ? '¡Nuevo mensaje!' : `¡${count} mensajes nuevos!`);
+
+    // Build notification title and body from rich data when available
+    let notifTitle, notifBody;
+    if (richItems && richItems.length > 0) {
+      const first = richItems[0];
+      const acct = first.account_name ? `[${first.account_name}] ` : '';
+      if (isQ) {
+        const itemPart = first.item_title ? `Te preguntaron en: ${first.item_title}` : 'Nueva pregunta';
+        notifTitle = acct + itemPart;
+        notifBody = (first.text || '').slice(0, 140);
+      } else {
+        notifTitle = acct + (first.buyer_name ? `Mensaje de ${first.buyer_name}` : 'Nuevo mensaje');
+        notifBody = (first.messages?.[0]?.text || '').slice(0, 140);
+      }
+      if (count > 1) notifBody += ` (+${count - 1} más)`;
+    } else {
+      notifTitle = isQ
+        ? (count === 1 ? '¡Nueva pregunta!' : `¡${count} preguntas nuevas!`)
+        : (count === 1 ? '¡Nuevo mensaje!' : `¡${count} mensajes nuevos!`);
+      notifBody = 'Tocá para ver';
+    }
 
     // Vibrate on mobile
-    if ('vibrate' in navigator) {
-      navigator.vibrate([200, 100, 200]);
-    }
+    if ('vibrate' in navigator) navigator.vibrate([200, 100, 200]);
 
     // Try service worker notification first (works in PWA/background)
     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
       navigator.serviceWorker.ready.then(reg => {
-        reg.showNotification('AUTOCHAP VENTAS', {
-          body: title,
+        reg.showNotification(notifTitle, {
+          body: notifBody,
           icon: '/icon-192.png',
           badge: '/icon-192.png',
           tag: type,
@@ -4876,10 +4935,9 @@
       }).catch(() => {});
     } else if ('Notification' in window && Notification.permission === 'granted') {
       // Fallback: regular desktop notification
-      const desktopNotif = new Notification('AUTOCHAP VENTAS', {
-        body: title,
-        icon: isQ ? 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">❓</text></svg>'
-              : 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">💬</text></svg>',
+      const desktopNotif = new Notification(notifTitle, {
+        body: notifBody,
+        icon: '/icon-192.png',
         tag: type,
         requireInteraction: false
       });
@@ -4887,7 +4945,7 @@
       setTimeout(() => desktopNotif.close(), 10000);
     }
 
-    // Also show in-page notification as fallback
+    // Also show in-page notification popup
     const notifId = type === 'questions' ? 'newQuestionsNotif' : 'newMessagesNotif';
     const existing = document.getElementById(notifId);
     if (existing) existing.remove();
@@ -4895,18 +4953,18 @@
     const topPos = isQ ? '20px' : '90px';
     const notif = document.createElement('div');
     notif.id = notifId;
-    notif.style.cssText = `position:fixed;top:${topPos};right:20px;background:${isQ ? '#2d3277' : '#27ae60'};color:white;padding:16px 24px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);z-index:9999;animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:center;gap:12px;font-size:15px;max-width:400px`;
+    notif.style.cssText = `position:fixed;top:${topPos};right:20px;background:${isQ ? '#2d3277' : '#155e3e'};color:white;padding:14px 18px;border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,0.35);z-index:9999;animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:flex-start;gap:12px;max-width:360px`;
     notif.innerHTML = `
-      <span style="font-size:28px">${icon}</span>
-      <div>
-        <div style="font-weight:700">${title}</div>
-        <div style="font-size:12px;opacity:0.8;margin-top:2px">Hacé click para ver</div>
+      <span style="font-size:22px;flex-shrink:0;margin-top:1px">${isQ ? '❓' : '💬'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13px;line-height:1.3;margin-bottom:3px">${notifTitle}</div>
+        ${notifBody ? `<div style="font-size:12px;opacity:0.85;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${notifBody}</div>` : ''}
       </div>
-      <span onclick="event.stopPropagation();this.parentElement.remove()" style="margin-left:auto;opacity:0.6;cursor:pointer;font-size:18px">✕</span>
+      <span onclick="event.stopPropagation();this.parentElement.remove()" style="flex-shrink:0;opacity:0.55;cursor:pointer;font-size:17px;line-height:1;margin-top:1px">✕</span>
     `;
     notif.onclick = () => { notif.remove(); showSection(type); };
     document.body.appendChild(notif);
-    setTimeout(() => { if (notif.parentElement) notif.remove(); }, 10000);
+    setTimeout(() => { if (notif.parentElement) notif.remove(); }, 12000);
   }
 
   // Check if user is typing in any textarea
@@ -4978,7 +5036,8 @@
         // Sound + popup notification (if user has alerts enabled)
         if (currentUser?.alerts_questions) {
           playNotificationSound();
-          showNotification(newIds.length, 'questions');
+          const newQs = questions.filter(q => newIds.includes(q.id));
+          showNotification(newIds.length, 'questions', newQs);
         }
 
         if (currentSection === 'questions') {
@@ -5037,7 +5096,8 @@
 
       if (notificationsReady && hadKnownBefore && newIds.length > 0 && currentUser?.alerts_messages) {
         playNotificationSound();
-        showNotification(newIds.length, 'messages');
+        const newConvs = conversations.filter(c => newIds.includes(c.messages?.[0]?.id));
+        showNotification(newIds.length, 'messages', newConvs);
         // Don't auto-refresh messages if user is typing
         if (currentSection === 'messages' && !isUserTyping()) loadMessages();
       }
