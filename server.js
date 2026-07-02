@@ -2104,7 +2104,8 @@ async function getAppToken() {
   } catch(e) { console.log('[AppToken] Excepción:', e.message); return null; }
 }
 
-// GET /api/promotions?account_id=X  — lista campañas (debug activo para identificar ganador)
+// GET /api/promotions?account_id=X  — lista campañas
+// Requiere token de app (client_credentials) + header version:v2
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -2116,46 +2117,19 @@ route('GET', '/api/promotions', async (req, res) => {
     : db.ml_accounts;
 
   const appTok = await getAppToken();
-  const results = [];
-  const debug = [];
+  if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app. Verificar ML_CLIENT_SECRET en Render.' });
 
+  const results = [];
   for (const account of targets) {
     try {
-      const token = await getValidToken(account);
-      if (!token) { debug.push({ account: account.name, error: 'sin token de usuario' }); continue; }
-      const sid = account.seller_id;
-      const appId = String(ML_CLIENT_ID || '');
-      const OLD = 'https://api.mercadolibre.com/seller-promotions';
-
-      const candidates = [
-        { label: 'G1', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=2.0.0`, headers: {}, tok: token },
-        { label: 'G2', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=v2`,    headers: {}, tok: token },
-        { label: 'G3', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=v1`,    headers: {}, tok: token },
-        { label: 'G4', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2' }, tok: appTok },
-        { label: 'G5', url: `${PROMO_BASE}/users/${sid}`, headers: {},                 tok: appTok },
-      ];
-
-      let found = false;
-      for (const c of candidates) {
-        if (!c.tok) { debug.push({ account: account.name, tried: c.label, skipped: 'sin token' }); continue; }
-        try {
-          const r = await mlGet(c.url, c.tok, {}, c.headers);
-          const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-          debug.push({ account: account.name, GANADOR: c.label, url: c.url, campañas: promos.length });
-          for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
-          found = true;
-          break;
-        } catch(e) {
-          debug.push({ account: account.name, tried: c.label, httpStatus: e?.response?.status, error: e?.response?.data?.message });
-        }
-      }
-      if (!found) debug.push({ account: account.name, conclusion: 'NINGUNO funcionó' });
-
+      const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, appTok, {}, promoH());
+      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+      for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
     } catch(e) {
-      debug.push({ account: account.name, error: e.message });
+      console.log(`[Promotions] ${account.name}:`, e?.response?.status, e?.response?.data?.message || e.message);
     }
   }
-  sendJSON(res, 200, { results, debug });
+  sendJSON(res, 200, results);
 });
 
 // GET /api/promotion-items-stream?account_id=X&promo_id=Y  — streaming ndjson (cursor search_after, max 50)
