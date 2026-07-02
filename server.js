@@ -2106,13 +2106,16 @@ route('GET', '/api/promotions', async (req, res) => {
       const sid = account.seller_id;
       const appId = String(ML_CLIENT_ID || '');
 
-      // Probar variantes hasta encontrar la que acepta ML
+      // A1 sigue siendo el más prometedor para marketplace; F1-F4 prueban el API viejo con sufijo /promotions
+      const OLD = `https://api.mercadolibre.com/seller-promotions`;
       const candidates = [
+        // API viejo — /promotions al final, distintas combinaciones de app_id y version
+        { label: 'F1', url: `${OLD}/users/${sid}/promotions?app_id=${appId}`, headers: {} },
+        { label: 'F2', url: `${OLD}/users/${sid}/promotions?app_id=${appId}&version=v1`, headers: {} },
+        { label: 'F3', url: `${OLD}/users/${sid}/promotions?app_id=${appId}&version=v2`, headers: {} },
+        { label: 'F4', url: `${OLD}/users/${sid}/promotions`, headers: { 'version': 'v2' } },
+        // API marketplace con X-Caller-Id = seller_id (por si acaso)
         { label: 'A1', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2' } },
-        { label: 'A2', url: `${PROMO_BASE}/users/${sid}?app_id=${appId}`, headers: { 'version': 'v2' } },
-        { label: 'A3', url: `${PROMO_BASE}/users/${sid}`, headers: {} },
-        { label: 'A4', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2', 'X-Caller-Id': sid } },
-        { label: 'E',  url: `https://api.mercadolibre.com/seller-promotions/users/${sid}`, headers: {} },
       ];
 
       let found = false;
