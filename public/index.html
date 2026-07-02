@@ -2381,53 +2381,20 @@
     searchResultsData = [];
   }
 
-  
+    let searchNextCursor = null;
+  let searchAccumulated = [];
 
-  function safeSetHTML(id, html) {
-    let el = document.getElementById(id);
+  function ensureSearchResultsBox() {
+    let el = document.getElementById('searchResults');
     if (!el) {
       el = document.createElement('div');
-      el.id = id;
-      el.style.marginTop = '12px';
-
-      const anchor =
-        document.getElementById('searchAccount')?.closest('div')?.parentElement?.parentElement ||
-        document.getElementById('updateContent') ||
-        document.querySelector('.content') ||
-        document.body;
-
-      anchor.appendChild(el);
-    }
-    el.innerHTML = html;
-    return el;
-  }
-
-  function safeText(id, text) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
-  }
-
-  function getSearchResultsEl() {
-    let el = document.getElementById('searchResults');
-    if (el) return el;
-
-    const section = document.getElementById('updateSearchResults') || document.querySelector('#update-section') || document.body;
-    el = document.createElement('div');
-    el.id = 'searchResults';
-    el.style.marginTop = '12px';
-
-    // Preferir ubicarlo debajo del bloque de búsqueda si existe
-    const searchBox = document.querySelector('[data-search-box="update"]') || document.querySelector('#searchAccount')?.closest('div')?.parentElement;
-    if (searchBox && searchBox.parentElement) {
-      searchBox.parentElement.appendChild(el);
-    } else {
-      section.appendChild(el);
+      el.id = 'searchResults';
+      const btn = document.querySelector('button[onclick="searchListings()"]');
+      const container = btn?.closest('div')?.parentElement?.parentElement || document.body;
+      container.appendChild(el);
     }
     return el;
   }
-
-  let searchNextCursor = null;
-  let searchAccumulated = [];
 
   async function searchListings(loadMore = false) {
     const item_id = document.getElementById('searchItemId')?.value.trim() || '';
@@ -2437,15 +2404,17 @@
 
     if (!item_id && !sku && !title) return showToast('Ingresá Item ID, SKU o título para buscar', 'error');
 
+    const resultsBox = ensureSearchResultsBox();
+
     if (!loadMore) {
       searchNextCursor = null;
       searchAccumulated = [];
-      safeSetHTML('searchResults', '<p style="padding:16px;color:#666">⏳ Buscando...</p>');
+      resultsBox.innerHTML = '<p style="padding:16px;color:#666">⏳ Buscando...</p>';
     }
 
-    const btn = event?.target;
-    const oldText = btn?.innerHTML;
-    if (btn) { btn.disabled = true; btn.innerHTML = loadMore ? '⏳ Cargando...' : '⏳ Buscando...'; }
+    const clickedBtn = window.event?.target;
+    const oldText = clickedBtn?.innerHTML;
+    if (clickedBtn) { clickedBtn.disabled = true; clickedBtn.innerHTML = loadMore ? '⏳ Cargando...' : '⏳ Buscando...'; }
 
     try {
       const res = await fetch('/api/search-listings-stream', {
@@ -2481,10 +2450,11 @@
 
           if (msg.type === 'item') {
             searchAccumulated.push(msg.row);
-            renderSearchResults(searchAccumulated, true, hasMore, scanned);
+            renderSearchResultsPaged(searchAccumulated, hasMore, scanned);
           } else if (msg.type === 'progress') {
             scanned = msg.scanned || scanned;
-            safeText('searchStreamStatus', `Revisadas ${scanned} publicaciones — encontradas ${searchAccumulated.length}`);
+            const st = document.getElementById('searchStreamStatus');
+            if (st) st.textContent = `Revisadas ${scanned} publicaciones — encontradas ${searchAccumulated.length}`;
           } else if (msg.type === 'done') {
             hasMore = !!msg.has_more;
             nextCursor = msg.cursor || null;
@@ -2498,15 +2468,15 @@
       searchNextCursor = nextCursor;
 
       if (!searchAccumulated.length) {
-        safeSetHTML('searchResults', '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>');
+        resultsBox.innerHTML = '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>';
       } else {
-        renderSearchResults(searchAccumulated, true, hasMore, scanned);
+        renderSearchResultsPaged(searchAccumulated, hasMore, scanned);
       }
     } catch(e) {
       showToast(e.message, 'error');
-      if (!loadMore) safeSetHTML('searchResults', `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`);
+      if (!loadMore) resultsBox.innerHTML = `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
     } finally {
-      if (btn) { btn.disabled = false; btn.innerHTML = oldText; }
+      if (clickedBtn) { clickedBtn.disabled = false; clickedBtn.innerHTML = oldText; }
     }
   }
 
@@ -2515,7 +2485,24 @@
     await searchListings(true);
   }
 
-  function renderSearchResults(data, streaming = false, hasMore = false, scanned = 0) {
+  function renderSearchResultsPaged(data, hasMore = false, scanned = 0) {
+    renderSearchResults(data);
+    const box = ensureSearchResultsBox();
+    const info = document.createElement('div');
+    info.id = 'searchStreamStatus';
+    info.style.cssText = 'padding:8px 10px;color:#666;font-size:12px';
+    info.textContent = `Mostrando ${data.length} resultados${scanned ? ` — revisadas ${scanned} publicaciones` : ''}`;
+    box.prepend(info);
+
+    if (hasMore) {
+      const more = document.createElement('div');
+      more.style.cssText = 'padding:14px;text-align:center';
+      more.innerHTML = '<button onclick="loadMoreSearchResults()" style="padding:9px 18px;background:#3483fa;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">Cargar más resultados</button>';
+      box.appendChild(more);
+    }
+  }
+
+  function renderSearchResults(data) {
     const section = document.getElementById('searchResults');
     const table = document.getElementById('searchResultsTable');
     const log = document.getElementById('searchUpdateLog');
@@ -2564,7 +2551,7 @@
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Stock</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Precio</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">SKU</th>
-    </tr>`);
+    </tr>`;
 
     data.forEach((r, i) => {
       const activeOpt = r.status === 'active' ? 'selected' : '';
