@@ -2243,8 +2243,9 @@ route('GET', '/api/promotions', async (req, res) => {
 });
 
 // GET /api/promotion-items-stream?account_id=X&promo_id=Y&promo_type=Z
-// Descarga participantes/candidatos recorriendo publicaciones y consultando promociones por item.
-// Esto evita el error "Invalid caller.id" del endpoint /promotions/{id}/items.
+// v5 inteligente:
+// 1) intenta endpoints directos/acotados por campaña
+// 2) si no obtiene datos, usa fallback de escaneo completo con search_type=scan
 route('GET', '/api/promotion-items-stream', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -2253,6 +2254,8 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   const accountId = parseInt(urlObj.searchParams.get('account_id'));
   const promoId = urlObj.searchParams.get('promo_id');
   const promoType = urlObj.searchParams.get('promo_type') || '';
+  const requestedConcurrency = parseInt(urlObj.searchParams.get('concurrency') || '25');
+  const safeConcurrency = Math.max(5, Math.min(50, isNaN(requestedConcurrency) ? 25 : requestedConcurrency));
 
   if (!promoId) return sendJSON(res, 400, { error: 'Falta promo_id' });
 
@@ -2263,6 +2266,8 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
+  const appTok = await getAppToken().catch(() => null);
+
   res.writeHead(200, {
     'Content-Type': 'application/x-ndjson',
     'Transfer-Encoding': 'chunked',
@@ -2271,30 +2276,24 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   });
 
   const debug = [];
-  const LIMIT = 100;
-  const BATCH_SIZE = 20;
-  const DETAIL_CONCURRENCY = 4;
-  const PROMO_CONCURRENCY = 8;
-
   let exported = 0;
-  let scanned = 0;
-  let totalListings = 0;
 
-  function normalizePromoArray(raw) {
+  function normalizeArray(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) return raw;
     if (Array.isArray(raw.results)) return raw.results;
-    if (Array.isArray(raw.promotions)) return raw.promotions;
+    if (Array.isArray(raw.items)) return raw.items;
     if (Array.isArray(raw.data)) return raw.data;
+    if (Array.isArray(raw.promotions)) return raw.promotions;
     return [];
   }
 
   function getPromoId(p) {
-    return String(p.id || p.promotion_id || p.offer_id || p.campaign_id || '');
+    return String(p?.id || p?.promotion_id || p?.offer_id || p?.campaign_id || '');
   }
 
   function getPromoType(p) {
-    return String(p.type || p.promotion_type || p.offer_type || '');
+    return String(p?.type || p?.promotion_type || p?.offer_type || '');
   }
 
   function isSamePromo(p) {
@@ -2305,8 +2304,27 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     return true;
   }
 
+  function normalizeItemRow(it, fallbackPromo = null) {
+    const promo = fallbackPromo || it || {};
+    const itemId = it.item_id || it.id || it.item?.id || promo.item_id || promo.item?.id || '';
+    return {
+      item_id: itemId,
+      title: it.title || it.item_title || it.name || it.item?.title || '',
+      seller_sku: it.seller_sku || it.sku || it.seller_custom_field || it.item?.seller_sku || '',
+      original_price: it.original_price ?? it.price ?? it.item?.price ?? '',
+      new_price: it.new_price ?? it.offer_price ?? it.price_discounted ?? it.discount_price ?? '',
+      discount: it.discount ?? it.discount_percentage ?? it.percent_off ?? '',
+      status: it.status || it.promotion_status || '',
+      promotion_id: getPromoId(promo) || promoId,
+      promotion_type: getPromoType(promo) || promoType,
+      item_status: it.item_status || it.item?.status || '',
+      raw_status: it.status || ''
+    };
+  }
+
   async function getItemDetails(ids) {
     const map = {};
+    const BATCH_SIZE = 20;
     for (let i = 0; i < ids.length; i += BATCH_SIZE) {
       const batch = ids.slice(i, i + BATCH_SIZE);
       try {
@@ -2341,6 +2359,148 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     return map;
   }
 
+  async function emitRows(rows, mode) {
+    for (const row of rows) {
+      if (!row || !row.item_id) continue;
+      exported++;
+      res.write(JSON.stringify({ type: 'item', mode, data: row }) + '\n');
+      if (exported % 100 === 0) {
+        res.write(JSON.stringify({ type: 'progress', mode, done: exported, total: exported, exported }) + '\n');
+      }
+    }
+  }
+
+  async function tryDirectCampaignDownload() {
+    const OLD = 'https://api.mercadolibre.com/seller-promotions';
+    const directCandidates = [
+      {
+        label: 'marketplace_app_v2_promo_items',
+        url: `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=50`,
+        token: appTok,
+        headers: promoH(),
+        pagination: 'search_after'
+      },
+      {
+        label: 'marketplace_user_v2_promo_items',
+        url: `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=50`,
+        token,
+        headers: promoH(),
+        pagination: 'search_after'
+      },
+      {
+        label: 'old_user_v2_type_promo_items',
+        url: `${OLD}/promotions/${promoId}/items?user_id=${account.seller_id}&promotion_type=${encodeURIComponent(promoType)}&app_version=v2&limit=50`,
+        token,
+        headers: {},
+        pagination: 'offset'
+      },
+      {
+        label: 'old_user_v2_type_promo_items_appid',
+        url: `${OLD}/promotions/${promoId}/items?user_id=${account.seller_id}&promotion_type=${encodeURIComponent(promoType)}&app_id=${ML_CLIENT_ID}&app_version=v2&limit=50`,
+        token,
+        headers: {},
+        pagination: 'offset'
+      },
+      {
+        label: 'old_user_2_0_0_type_promo_items_appid',
+        url: `${OLD}/promotions/${promoId}/items?user_id=${account.seller_id}&promotion_type=${encodeURIComponent(promoType)}&app_id=${ML_CLIENT_ID}&app_version=2.0.0&limit=50`,
+        token,
+        headers: {},
+        pagination: 'offset'
+      },
+      {
+        label: 'old_app_v2_type_promo_items_appid',
+        url: `${OLD}/promotions/${promoId}/items?user_id=${account.seller_id}&promotion_type=${encodeURIComponent(promoType)}&app_id=${ML_CLIENT_ID}&app_version=v2&limit=50`,
+        token: appTok,
+        headers: {},
+        pagination: 'offset'
+      }
+    ];
+
+    for (const c of directCandidates) {
+      if (!c.token) {
+        debug.push({ mode: 'direct', tried: c.label, skipped: 'sin token' });
+        continue;
+      }
+      if (c.label.includes('_type') && !promoType) {
+        debug.push({ mode: 'direct', tried: c.label, skipped: 'sin promo_type' });
+        continue;
+      }
+
+      let rows = [];
+      let searchAfter = null;
+      let offset = 0;
+      let page = 0;
+      let firstKeys = null;
+
+      try {
+        while (true) {
+          let url = c.url;
+          if (c.pagination === 'search_after' && searchAfter) {
+            url += `&search_after=${encodeURIComponent(searchAfter)}`;
+          }
+          if (c.pagination === 'offset') {
+            url += `&offset=${offset}`;
+          }
+
+          const raw = await mlGet(url, c.token, {}, c.headers);
+          if (!firstKeys && raw && typeof raw === 'object') firstKeys = Object.keys(raw).slice(0, 20);
+
+          const arr = normalizeArray(raw);
+          const filtered = arr
+            .filter(x => {
+              const pid = getPromoId(x);
+              if (!pid) return true; // direct endpoint already scoped by promo
+              return isSamePromo(x);
+            })
+            .map(x => normalizeItemRow(x, x));
+
+          rows.push(...filtered);
+
+          const total = raw?.paging?.total ?? raw?.total ?? null;
+          res.write(JSON.stringify({
+            type: 'debug',
+            mode: 'direct',
+            tried: c.label,
+            page,
+            got: arr.length,
+            kept: filtered.length,
+            total: total ?? undefined
+          }) + '\n');
+
+          searchAfter = raw?.paging?.search_after || null;
+          page++;
+
+          if (c.pagination === 'search_after') {
+            if (!searchAfter || !arr.length) break;
+          } else {
+            if (!arr.length) break;
+            offset += arr.length;
+            if (total != null && offset >= total) break;
+            if (page > 1000) break;
+          }
+        }
+
+        debug.push({ mode: 'direct', winner: c.label, rows: rows.length, keys: firstKeys });
+        if (rows.length > 0) {
+          res.write(JSON.stringify({ type: 'total', total: rows.length, mode: 'direct', winner: c.label }) + '\n');
+          await emitRows(rows, 'direct');
+          res.write(JSON.stringify({ type: 'done', total: exported, mode: 'direct', winner: c.label, debug }) + '\n');
+          return true;
+        }
+      } catch(e) {
+        debug.push({
+          mode: 'direct',
+          tried: c.label,
+          status: e?.response?.status || null,
+          error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
+        });
+      }
+    }
+
+    return false;
+  }
+
   async function getItemPromotions(itemId) {
     const candidates = [
       {
@@ -2373,20 +2533,11 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       if (c.label.includes('_type') && !promoType) continue;
       try {
         const raw = await mlGet(c.url, c.token, {}, c.headers);
-        const arr = normalizePromoArray(raw);
-        if (arr.length || raw) {
-          if (debug.length < 20) debug.push({
-            step: 'item_promos_success',
-            tried: c.label,
-            item_id: itemId,
-            count: arr.length,
-            keys: raw && typeof raw === 'object' ? Object.keys(raw).slice(0, 12) : []
-          });
-        }
-        return arr;
+        return normalizeArray(raw);
       } catch(e) {
-        if (debug.length < 30) {
+        if (debug.length < 40) {
           debug.push({
+            mode: 'scan',
             step: 'item_promos_error',
             tried: c.label,
             item_id: itemId,
@@ -2399,54 +2550,63 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     return [];
   }
 
-  async function processIds(ids) {
-    const details = await getItemDetails(ids);
+  async function scanAllListingsFallback() {
+    const LIMIT = 100;
+    const BATCH_SIZE = 20;
+    const DETAIL_CONCURRENCY = 8;
+    const PROMO_CONCURRENCY = safeConcurrency;
 
-    for (let i = 0; i < ids.length; i += PROMO_CONCURRENCY) {
-      const chunk = ids.slice(i, i + PROMO_CONCURRENCY);
-      const results = await Promise.all(chunk.map(async (itemId) => {
-        const promos = await getItemPromotions(itemId);
-        const match = promos.find(isSamePromo);
-        if (!match) return null;
+    let scanned = 0;
+    let totalListings = 0;
 
-        const d = details[itemId] || { item_id: itemId, title: '', seller_sku: '', original_price: '' };
+    async function processIds(ids) {
+      const details = await getItemDetails(ids);
 
-        return {
-          item_id: itemId,
-          title: match.title || match.item_title || d.title || '',
-          seller_sku: match.seller_sku || match.sku || d.seller_sku || '',
-          original_price: match.original_price ?? match.price ?? d.original_price ?? '',
-          new_price: match.new_price ?? match.offer_price ?? match.price_discounted ?? '',
-          discount: match.discount ?? match.discount_percentage ?? '',
-          status: match.status || match.promotion_status || '',
-          promotion_id: getPromoId(match) || promoId,
-          promotion_type: getPromoType(match) || promoType,
-          item_status: d.item_status || '',
-          raw_status: match.status || ''
-        };
-      }));
+      for (let i = 0; i < ids.length; i += PROMO_CONCURRENCY) {
+        const chunk = ids.slice(i, i + PROMO_CONCURRENCY);
+        const results = await Promise.all(chunk.map(async (itemId) => {
+          const promos = await getItemPromotions(itemId);
+          const match = promos.find(isSamePromo);
+          if (!match) return null;
 
-      for (const row of results) {
-        scanned++;
-        if (row) {
-          exported++;
-          res.write(JSON.stringify({ type: 'item', data: row }) + '\n');
+          const d = details[itemId] || { item_id: itemId, title: '', seller_sku: '', original_price: '' };
+
+          return {
+            item_id: itemId,
+            title: match.title || match.item_title || d.title || '',
+            seller_sku: match.seller_sku || match.sku || d.seller_sku || '',
+            original_price: match.original_price ?? match.price ?? d.original_price ?? '',
+            new_price: match.new_price ?? match.offer_price ?? match.price_discounted ?? '',
+            discount: match.discount ?? match.discount_percentage ?? '',
+            status: match.status || match.promotion_status || '',
+            promotion_id: getPromoId(match) || promoId,
+            promotion_type: getPromoType(match) || promoType,
+            item_status: d.item_status || '',
+            raw_status: match.status || ''
+          };
+        }));
+
+        for (const row of results) {
+          scanned++;
+          if (row) {
+            exported++;
+            res.write(JSON.stringify({ type: 'item', mode: 'scan', data: row }) + '\n');
+          }
         }
+
+        res.write(JSON.stringify({
+          type: 'progress',
+          mode: 'scan',
+          done: scanned,
+          total: totalListings,
+          exported
+        }) + '\n');
       }
-
-      res.write(JSON.stringify({
-        type: 'progress',
-        done: scanned,
-        total: totalListings,
-        exported
-      }) + '\n');
     }
-  }
 
-  try {
     const [activeFirst, pausedFirst] = await Promise.all([
-      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active' }).catch(e => ({ paging: { total: 0 }, _error: e })),
-      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused' }).catch(e => ({ paging: { total: 0 }, _error: e }))
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active', search_type: 'scan' }).catch(e => ({ paging: { total: 0 }, _error: e })),
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused', search_type: 'scan' }).catch(e => ({ paging: { total: 0 }, _error: e }))
     ]);
 
     const activeTotal = activeFirst.paging?.total || 0;
@@ -2468,6 +2628,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
           pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
         } catch(e) {
           debug.push({
+            mode: 'scan',
             step: 'items_search',
             status,
             httpStatus: e?.response?.status || null,
@@ -2499,9 +2660,27 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       total: exported,
       scanned,
       total_listings: totalListings,
+      mode: 'scan',
       pagination_mode: 'search_type_scan',
+      promo_concurrency: PROMO_CONCURRENCY,
+      detail_concurrency: DETAIL_CONCURRENCY,
       debug
     }) + '\n');
+  }
+
+  try {
+    res.write(JSON.stringify({ type: 'debug', mode: 'start', promo_id: promoId, promo_type: promoType, concurrency: safeConcurrency }) + '\n');
+
+    const directOk = await tryDirectCampaignDownload();
+    if (directOk) return res.end();
+
+    res.write(JSON.stringify({
+      type: 'debug',
+      mode: 'fallback',
+      message: 'No funcionó descarga directa/acotada. Iniciando escaneo completo de publicaciones.'
+    }) + '\n');
+
+    await scanAllListingsFallback();
   } catch(e) {
     res.write(JSON.stringify({
       type: 'error',
