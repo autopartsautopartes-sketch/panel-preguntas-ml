@@ -2120,16 +2120,26 @@ route('GET', '/api/promotions', async (req, res) => {
   if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app. Verificar ML_CLIENT_SECRET en Render.' });
 
   const results = [];
+  const errors = [];
   for (const account of targets) {
     try {
       const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, appTok, {}, promoH());
       const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
       for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+      if (!promos.length) errors.push({ account: account.name, msg: 'ML devolvió vacío', raw: JSON.stringify(r).slice(0,400) });
     } catch(e) {
-      console.log(`[Promotions] ${account.name}:`, e?.response?.status, e?.response?.data?.message || e.message);
+      const errInfo = { account: account.name, status: e?.response?.status, msg: e?.response?.data?.message || e.message, raw: JSON.stringify(e?.response?.data||{}).slice(0,400) };
+      errors.push(errInfo);
+      console.log(`[Promotions] ${account.name}:`, errInfo.status, errInfo.msg);
     }
   }
-  sendJSON(res, 200, results);
+  if (results.length > 0) {
+    sendJSON(res, 200, results);
+  } else if (errors.length > 0) {
+    sendJSON(res, 503, { error: 'Error al obtener campañas', debug: errors });
+  } else {
+    sendJSON(res, 200, []);
+  }
 });
 
 // GET /api/promotion-items-stream?account_id=X&promo_id=Y  — streaming ndjson (cursor search_after, max 50)
@@ -2160,9 +2170,10 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
 
       if (firstPageRaw === null) firstPageRaw = { url, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0, 500) };
 
-      const items = r.results || (Array.isArray(r) ? r : []);
+      // ML puede devolver ítems en distintas claves según el tipo de promoción
+      const items = r.results || r.data || r.content || r.items || (Array.isArray(r) ? r : []);
       if (total === null) {
-        total = r.paging?.total ?? items.length;
+        total = r.paging?.total ?? r.pagination?.total ?? items.length;
         res.write(JSON.stringify({ type: 'total', total }) + '\n');
       }
       for (const it of items) {
@@ -2170,7 +2181,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         sent++;
       }
       if (items.length) res.write(JSON.stringify({ type: 'progress', done: sent, total }) + '\n');
-      searchAfter = r.paging?.search_after || null;
+      searchAfter = r.paging?.search_after || r.pagination?.search_after || r.cursor || null;
     } catch(e) {
       const errInfo = { type: 'error', message: e?.response?.data?.message || e.message, status: e?.response?.status };
       if (firstPageRaw === null) firstPageRaw = errInfo;
