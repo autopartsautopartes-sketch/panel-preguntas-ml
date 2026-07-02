@@ -2082,78 +2082,8 @@ function serveStatic(req, res) {
 // ==================== PROMOTIONS ====================
 
 const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
-const PROMO_OLD_BASE = 'https://api.mercadolibre.com/seller-promotions';
 // Header obligatorio para la API marketplace de seller-promotions
 const promoH = () => ({ 'version': 'v2' });
-
-function arrFromPromoResponse(r) {
-  if (Array.isArray(r)) return r;
-  return r?.results || r?.items || r?.data || r?.promotions || [];
-}
-
-function buildPromoItemsUrl(baseUrl, promoId, sellerId, limit, searchAfter, itemId) {
-  let url = baseUrl;
-  const sep = url.includes('?') ? '&' : '?';
-  url += `${sep}user_id=${encodeURIComponent(sellerId)}&limit=${encodeURIComponent(limit)}`;
-  if (itemId) url += `&item_id=${encodeURIComponent(itemId)}`;
-  if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
-  return url;
-}
-
-function promoItemCandidates(account, promoId, userToken, appTok, limit = 50, searchAfter = null, itemId = null) {
-  const sid = account.seller_id;
-  const appId = String(ML_CLIENT_ID || '');
-  const commonNew = `${PROMO_BASE}/promotions/${promoId}/items`;
-  const commonOld = `${PROMO_OLD_BASE}/promotions/${promoId}/items`;
-  const oldWithApp200 = `${commonOld}?app_id=${encodeURIComponent(appId)}&app_version=2.0.0`;
-  const oldWithAppV2 = `${commonOld}?app_id=${encodeURIComponent(appId)}&app_version=v2`;
-  const oldPlain = `${commonOld}`;
-
-  return [
-    { label: 'marketplace_app_v2', token: appTok, headers: promoH(), url: buildPromoItemsUrl(commonNew, promoId, sid, limit, searchAfter, itemId) },
-    { label: 'marketplace_user_v2', token: userToken, headers: promoH(), url: buildPromoItemsUrl(commonNew, promoId, sid, limit, searchAfter, itemId) },
-    { label: 'old_user_app_2_0_0', token: userToken, headers: {}, url: buildPromoItemsUrl(oldWithApp200, promoId, sid, limit, searchAfter, itemId) },
-    { label: 'old_user_app_v2', token: userToken, headers: {}, url: buildPromoItemsUrl(oldWithAppV2, promoId, sid, limit, searchAfter, itemId) },
-    { label: 'old_user_plain', token: userToken, headers: {}, url: buildPromoItemsUrl(oldPlain, promoId, sid, limit, searchAfter, itemId) },
-    { label: 'old_app_app_2_0_0', token: appTok, headers: {}, url: buildPromoItemsUrl(oldWithApp200, promoId, sid, limit, searchAfter, itemId) }
-  ].filter(c => c.token);
-}
-
-async function findWorkingPromoItemsCandidate(account, promoId, userToken, appTok, itemId = null) {
-  const debug = [];
-  for (const c of promoItemCandidates(account, promoId, userToken, appTok, 50, null, itemId)) {
-    try {
-      const r = await mlGet(c.url, c.token, {}, c.headers);
-      const items = arrFromPromoResponse(r);
-      const total = r?.paging?.total ?? r?.total ?? items.length ?? 0;
-      debug.push({ tried: c.label, status: 200, total, items: items.length, keys: Object.keys(r || {}) });
-      if (items.length > 0 || total > 0) return { candidate: c, firstResponse: r, firstItems: items, debug };
-    } catch (e) {
-      debug.push({
-        tried: c.label,
-        status: e?.response?.status || null,
-        error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
-      });
-    }
-  }
-  return { candidate: null, firstResponse: null, firstItems: [], debug };
-}
-
-async function getPromoItemStatus(account, promoId, itemId, userToken, appTok) {
-  const found = await findWorkingPromoItemsCandidate(account, promoId, userToken, appTok, itemId);
-  const arr = arrFromPromoResponse(found.firstResponse);
-  const it = arr.find(x => String(x.item_id || x.id || x.item?.id || '') === String(itemId)) || arr[0] || null;
-  if (!it) return { in_promo: false, new_price: null, discount: null, promo_status: null, debug: found.debug };
-  const status = String(it.status || it.item_status || '').toUpperCase();
-  const active = status && !['INACTIVE','FINISHED','DELETED','REMOVED','CANCELLED'].includes(status);
-  return {
-    in_promo: !!active,
-    new_price: it.new_price ?? it.price ?? it.promotion_price ?? null,
-    discount: it.discount ?? it.discount_percentage ?? null,
-    promo_status: it.status ?? null,
-    debug: found.debug
-  };
-}
 
 // Token de app (client_credentials) — algunos endpoints ML exigen que el caller sea la APP, no el usuario
 let _appToken = null, _appTokenExp = 0;
@@ -2174,11 +2104,11 @@ async function getAppToken() {
   } catch(e) { console.log('[AppToken] Excepción:', e.message); return null; }
 }
 
-// GET /api/promotions?account_id=X — lista campañas
+// GET /api/promotions?account_id=X  — lista campañas
+// Requiere token de app (client_credentials) + header version:v2
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = urlObj.searchParams.get('account_id');
   const db = loadDB();
@@ -2187,329 +2117,105 @@ route('GET', '/api/promotions', async (req, res) => {
     : db.ml_accounts;
 
   const appTok = await getAppToken();
+  if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app. Verificar ML_CLIENT_SECRET en Render.' });
+
   const results = [];
-  const debug = [];
-
+  const errors = [];
   for (const account of targets) {
+    let success = false;
+    const attempts = [];
+
+    // Intento 1: app token (client_credentials) + marketplace URL + version:v2
     try {
-      const token = await getValidToken(account);
-      if (!token) { debug.push({ account: account.name, error: 'sin token de usuario' }); continue; }
+      const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, appTok, {}, promoH());
+      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+      for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+      success = true;
+    } catch(e1) {
+      attempts.push({ token: 'app', status: e1?.response?.status, msg: e1?.response?.data?.message || e1.message });
+    }
 
-      const sid = account.seller_id;
-      const appId = String(ML_CLIENT_ID || '');
-
-      const candidates = [
-        { label: 'old_user_app_2_0_0', url: `${PROMO_OLD_BASE}/users/${sid}?app_id=${encodeURIComponent(appId)}&app_version=2.0.0`, headers: {}, tok: token },
-        { label: 'old_user_app_v2',    url: `${PROMO_OLD_BASE}/users/${sid}?app_id=${encodeURIComponent(appId)}&app_version=v2`, headers: {}, tok: token },
-        { label: 'old_user_app_v1',    url: `${PROMO_OLD_BASE}/users/${sid}?app_id=${encodeURIComponent(appId)}&app_version=v1`, headers: {}, tok: token },
-        { label: 'marketplace_app_v2', url: `${PROMO_BASE}/users/${sid}`, headers: promoH(), tok: appTok },
-        { label: 'marketplace_user_v2', url: `${PROMO_BASE}/users/${sid}`, headers: promoH(), tok: token },
-      ];
-
-      let found = false;
-      for (const c of candidates) {
-        if (!c.tok) { debug.push({ account: account.name, tried: c.label, skipped: 'sin token' }); continue; }
-        try {
-          const r = await mlGet(c.url, c.tok, {}, c.headers);
-          const promos = arrFromPromoResponse(r);
-          debug.push({ account: account.name, GANADOR: c.label, campañas: promos.length, keys: Object.keys(r || {}) });
-          for (const p of promos) {
-            results.push({
-              ...p,
-              account_id: account.id,
-              account_name: account.name,
-              seller_id: account.seller_id,
-              _source: c.label
-            });
-          }
-          found = true;
-          break;
-        } catch(e) {
-          debug.push({
-            account: account.name,
-            tried: c.label,
-            httpStatus: e?.response?.status || null,
-            error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
-          });
+    // Intento 2 (fallback): user OAuth token + marketplace URL + version:v2
+    if (!success) {
+      try {
+        const userTok = await getValidToken(account);
+        if (userTok) {
+          const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, userTok, {}, promoH());
+          const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
+          for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+          success = true;
+        } else {
+          attempts.push({ token: 'user', msg: 'No hay token OAuth válido' });
         }
+      } catch(e2) {
+        attempts.push({ token: 'user', status: e2?.response?.status, msg: e2?.response?.data?.message || e2.message });
       }
-      if (!found) debug.push({ account: account.name, conclusion: 'NINGUNO funcionó' });
-    } catch(e) {
-      debug.push({ account: account.name, error: e.message || String(e) });
+    }
+
+    if (!success) {
+      errors.push({ account: account.name, attempts });
+      console.log(`[Promotions] ${account.name}: ambos tokens fallaron`, JSON.stringify(attempts));
     }
   }
 
-  sendJSON(res, 200, { results, debug });
+  if (results.length > 0) {
+    sendJSON(res, 200, results);
+  } else if (errors.length > 0) {
+    sendJSON(res, 503, { error: 'Error al obtener campañas', debug: errors });
+  } else {
+    sendJSON(res, 200, []);
+  }
 });
 
-// GET /api/promotion-items-stream?account_id=X&promo_id=Y&promo_type=Z
-// Descarga participantes/candidatos recorriendo publicaciones y consultando promociones por item.
-// Esto evita el error "Invalid caller.id" del endpoint /promotions/{id}/items.
+// GET /api/promotion-items-stream?account_id=X&promo_id=Y  — streaming ndjson (cursor search_after, max 50)
 route('GET', '/api/promotion-items-stream', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = parseInt(urlObj.searchParams.get('account_id'));
   const promoId = urlObj.searchParams.get('promo_id');
-  const promoType = urlObj.searchParams.get('promo_type') || '';
-
   if (!promoId) return sendJSON(res, 400, { error: 'Falta promo_id' });
 
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === accountId);
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  // API de ítems de promoción también requiere token de app, igual que la lista de campañas
+  const appTok = await getAppToken();
+  if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app' });
 
-  const token = await getValidToken(account);
-  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
 
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson',
-    'Transfer-Encoding': 'chunked',
-    'Cache-Control': 'no-cache',
-    'X-Accel-Buffering': 'no'
-  });
+  const limit = 50; let total = null; let sent = 0; let searchAfter = null;
+  let firstPageRaw = null;
+  do {
+    try {
+      let url = `${PROMO_BASE}/promotions/${promoId}/items?user_id=${account.seller_id}&limit=${limit}`;
+      if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
+      const r = await mlGet(url, appTok, {}, promoH());
 
-  const debug = [];
-  const LIMIT = 100;
-  const BATCH_SIZE = 20;
-  const DETAIL_CONCURRENCY = 4;
-  const PROMO_CONCURRENCY = 8;
+      if (firstPageRaw === null) firstPageRaw = { url, keys: Object.keys(r||{}), sample: JSON.stringify(r).slice(0, 500) };
 
-  let exported = 0;
-  let scanned = 0;
-  let totalListings = 0;
-
-  function normalizePromoArray(raw) {
-    if (!raw) return [];
-    if (Array.isArray(raw)) return raw;
-    if (Array.isArray(raw.results)) return raw.results;
-    if (Array.isArray(raw.promotions)) return raw.promotions;
-    if (Array.isArray(raw.data)) return raw.data;
-    return [];
-  }
-
-  function getPromoId(p) {
-    return String(p.id || p.promotion_id || p.offer_id || p.campaign_id || '');
-  }
-
-  function getPromoType(p) {
-    return String(p.type || p.promotion_type || p.offer_type || '');
-  }
-
-  function isSamePromo(p) {
-    const id = getPromoId(p);
-    const type = getPromoType(p);
-    if (id !== String(promoId)) return false;
-    if (promoType && type && type !== promoType) return false;
-    return true;
-  }
-
-  async function getItemDetails(ids) {
-    const map = {};
-    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-      const batch = ids.slice(i, i + BATCH_SIZE);
-      try {
-        const data = await mlGet(
-          `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,price,status,attributes`,
-          token
-        );
-        for (const entry of (Array.isArray(data) ? data : [])) {
-          const b = entry.body || entry;
-          if (!b || !b.id) continue;
-          let sku = b.seller_custom_field || '';
-          if (!sku && Array.isArray(b.attributes)) {
-            sku = b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '';
-          }
-          map[b.id] = {
-            item_id: b.id,
-            title: b.title || '',
-            seller_sku: sku,
-            original_price: b.price ?? '',
-            item_status: b.status || ''
-          };
-        }
-      } catch(e) {
-        debug.push({
-          step: 'item_details',
-          ids: batch,
-          status: e?.response?.status || null,
-          error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
-        });
+      // ML puede devolver ítems en distintas claves según el tipo de promoción
+      const items = r.results || r.data || r.content || r.items || (Array.isArray(r) ? r : []);
+      if (total === null) {
+        total = r.paging?.total ?? r.pagination?.total ?? items.length;
+        res.write(JSON.stringify({ type: 'total', total }) + '\n');
       }
+      for (const it of items) {
+        res.write(JSON.stringify({ type: 'item', data: it }) + '\n');
+        sent++;
+      }
+      if (items.length) res.write(JSON.stringify({ type: 'progress', done: sent, total }) + '\n');
+      searchAfter = r.paging?.search_after || r.pagination?.search_after || r.cursor || null;
+    } catch(e) {
+      const errInfo = { type: 'error', message: e?.response?.data?.message || e.message, status: e?.response?.status };
+      if (firstPageRaw === null) firstPageRaw = errInfo;
+      res.write(JSON.stringify(errInfo) + '\n');
+      break;
     }
-    return map;
-  }
+  } while (searchAfter);
 
-  async function getItemPromotions(itemId) {
-    const candidates = [
-      {
-        label: 'item_old_v2_type',
-        url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2&promotion_type=${encodeURIComponent(promoType || '')}`,
-        headers: {},
-        token
-      },
-      {
-        label: 'item_old_v2_plain',
-        url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`,
-        headers: {},
-        token
-      },
-      {
-        label: 'item_old_2_0_0_type',
-        url: `https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=2.0.0&promotion_type=${encodeURIComponent(promoType || '')}`,
-        headers: {},
-        token
-      },
-      {
-        label: 'marketplace_item_v2',
-        url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,
-        headers: promoH(),
-        token
-      }
-    ];
-
-    for (const c of candidates) {
-      if (c.label.includes('_type') && !promoType) continue;
-      try {
-        const raw = await mlGet(c.url, c.token, {}, c.headers);
-        const arr = normalizePromoArray(raw);
-        if (arr.length || raw) {
-          if (debug.length < 20) debug.push({
-            step: 'item_promos_success',
-            tried: c.label,
-            item_id: itemId,
-            count: arr.length,
-            keys: raw && typeof raw === 'object' ? Object.keys(raw).slice(0, 12) : []
-          });
-        }
-        return arr;
-      } catch(e) {
-        if (debug.length < 30) {
-          debug.push({
-            step: 'item_promos_error',
-            tried: c.label,
-            item_id: itemId,
-            status: e?.response?.status || null,
-            error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
-          });
-        }
-      }
-    }
-    return [];
-  }
-
-  async function processIds(ids) {
-    const details = await getItemDetails(ids);
-
-    for (let i = 0; i < ids.length; i += PROMO_CONCURRENCY) {
-      const chunk = ids.slice(i, i + PROMO_CONCURRENCY);
-      const results = await Promise.all(chunk.map(async (itemId) => {
-        const promos = await getItemPromotions(itemId);
-        const match = promos.find(isSamePromo);
-        if (!match) return null;
-
-        const d = details[itemId] || { item_id: itemId, title: '', seller_sku: '', original_price: '' };
-
-        return {
-          item_id: itemId,
-          title: match.title || match.item_title || d.title || '',
-          seller_sku: match.seller_sku || match.sku || d.seller_sku || '',
-          original_price: match.original_price ?? match.price ?? d.original_price ?? '',
-          new_price: match.new_price ?? match.offer_price ?? match.price_discounted ?? '',
-          discount: match.discount ?? match.discount_percentage ?? '',
-          status: match.status || match.promotion_status || '',
-          promotion_id: getPromoId(match) || promoId,
-          promotion_type: getPromoType(match) || promoType,
-          item_status: d.item_status || '',
-          raw_status: match.status || ''
-        };
-      }));
-
-      for (const row of results) {
-        scanned++;
-        if (row) {
-          exported++;
-          res.write(JSON.stringify({ type: 'item', data: row }) + '\n');
-        }
-      }
-
-      res.write(JSON.stringify({
-        type: 'progress',
-        done: scanned,
-        total: totalListings,
-        exported
-      }) + '\n');
-    }
-  }
-
-  try {
-    const [activeFirst, pausedFirst] = await Promise.all([
-      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active' }).catch(e => ({ paging: { total: 0 }, _error: e })),
-      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused' }).catch(e => ({ paging: { total: 0 }, _error: e }))
-    ]);
-
-    const activeTotal = activeFirst.paging?.total || 0;
-    const pausedTotal = pausedFirst.paging?.total || 0;
-    totalListings = activeTotal + pausedTotal;
-
-    res.write(JSON.stringify({ type: 'total', total: totalListings, mode: 'scan_items' }) + '\n');
-
-    async function scanStatus(status, statusTotal) {
-      let scrollId = null;
-      let fetched = 0;
-
-      while (fetched < statusTotal) {
-        const params = { limit: LIMIT, status };
-        if (scrollId) params.scroll_id = scrollId;
-
-        let pageData;
-        try {
-          pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
-        } catch(e) {
-          debug.push({
-            step: 'items_search',
-            status,
-            httpStatus: e?.response?.status || null,
-            error: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e)
-          });
-          break;
-        }
-
-        scrollId = pageData.scroll_id || null;
-        const ids = pageData.results || [];
-        if (!ids.length) break;
-
-        fetched += ids.length;
-
-        for (let i = 0; i < ids.length; i += (BATCH_SIZE * DETAIL_CONCURRENCY)) {
-          const block = ids.slice(i, i + (BATCH_SIZE * DETAIL_CONCURRENCY));
-          await processIds(block);
-        }
-
-        if (!scrollId) break;
-      }
-    }
-
-    await scanStatus('active', activeTotal);
-    await scanStatus('paused', pausedTotal);
-
-    res.write(JSON.stringify({
-      type: 'done',
-      total: exported,
-      scanned,
-      debug
-    }) + '\n');
-  } catch(e) {
-    res.write(JSON.stringify({
-      type: 'error',
-      status: e?.response?.status || null,
-      message: e?.response?.data?.message || e?.response?.data?.error || e?.message || String(e),
-      raw: e?.response?.data || null,
-      debug
-    }) + '\n');
-  }
-
+  res.write(JSON.stringify({ type: 'done', total: sent, debug: firstPageRaw }) + '\n');
   res.end();
 });
 
@@ -2517,7 +2223,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
 route('POST', '/api/promotion-search-items', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, promo_id, sku, title } = body;
   if (!sku && !title) return sendJSON(res, 400, { error: 'Ingresá SKU o título' });
@@ -2567,30 +2272,21 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
         const batch = idArr.slice(i, i + 20);
         try {
           const details = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,price,status,attributes`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,price,status`,
             token
           );
           for (const it of (Array.isArray(details) ? details : [])) {
             const b = it.body || it;
             if (!b?.id || b.status === 'closed' || b.status === 'under_review') continue;
-
-            const rawSku = b.seller_custom_field ||
-              (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
-            const itemSku = String(rawSku || '').toLowerCase();
-
+            const itemSku = String(b.seller_custom_field || '').toLowerCase();
             if (skuLower) {
               if (skuLower.includes('_')) { if (!itemSku.includes(skuLower)) continue; }
               else { if (!itemSku.split('_')[0].includes(skuLower)) continue; }
             }
             if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
-
             foundItems.push({
-              item_id: b.id,
-              title: b.title || '',
-              sku: rawSku,
-              original_price: b.price ?? 0,
-              account_id: account.id,
-              account_name: account.name,
+              item_id: b.id, title: b.title || '', sku: b.seller_custom_field || '',
+              original_price: b.price ?? 0, account_id: account.id, account_name: account.name,
               seller_id: account.seller_id
             });
           }
@@ -2601,13 +2297,17 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
 
   if (!foundItems.length) return sendJSON(res, 200, []);
 
+  // Chequeo de estado en promo — usa token de app + seller_id del ítem
   const appTokForSearch = await getAppToken();
   const results = await Promise.all(foundItems.map(async (item) => {
-    const account = targets.find(a => String(a.seller_id) === String(item.seller_id)) || targets[0];
-    const userToken = await getValidToken(account);
+    if (!appTokForSearch) return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     try {
-      const st = await getPromoItemStatus(account, promo_id, item.item_id, userToken, appTokForSearch);
-      return { ...item, ...st };
+      const url = `${PROMO_BASE}/promotions/${promo_id}/items?user_id=${item.seller_id}&item_id=${item.item_id}`;
+      const r = await mlGet(url, appTokForSearch, {}, promoH());
+      const arr = r?.results || (Array.isArray(r) ? r : []);
+      const it = arr[0] || r;
+      const active = it?.status && it.status !== 'INACTIVE' && it.status !== 'FINISHED' && it.status !== 'DELETED';
+      return { ...item, in_promo: !!active, new_price: it?.new_price ?? null, discount: it?.discount ?? null, promo_status: it?.status ?? null };
     } catch(e) {
       return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     }
@@ -2620,7 +2320,6 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
 route('POST', '/api/promotion-toggle', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, promo_id, promo_type, item_id, participate, price, discount } = body;
 
@@ -2631,48 +2330,48 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
   const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
+  const ph = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() };
   const userQ = `user_id=${account.seller_id}`;
-  const endpoints = [
-    { label: 'marketplace_user_v2', url: `${PROMO_BASE}/items/${item_id}?${userQ}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() } },
-    { label: 'old_user', url: `${PROMO_OLD_BASE}/items/${item_id}?${userQ}&app_id=${encodeURIComponent(ML_CLIENT_ID || '')}&app_version=2.0.0`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
-  ];
-
   try {
-    let lastErr = null;
-    for (const ep of endpoints) {
-      if (participate) {
-        const addBody = { promotion_id: promo_id, promotion_type: promo_type };
-        if (!isDeal) {
-          const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
-          if (p > 0) addBody.price = p; else if (disc > 0) addBody.discount = disc;
-        }
-
-        const r = await fetch(ep.url, { method: 'POST', headers: ep.headers, body: JSON.stringify(addBody) });
-        const d = await r.json().catch(() => ({}));
-        if (r.ok) return sendJSON(res, 200, { ok: true, endpoint: ep.label });
-        lastErr = d.message || d.error || `HTTP ${r.status}`;
-      } else {
-        const r = await fetch(ep.url, {
-          method: 'DELETE',
-          headers: ep.headers,
+    if (participate) {
+      if (isDeal) {
+        // DEAL: POST /items/{item_id}?user_id=... body:{promotion_id, promotion_type}
+        const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQ}`, {
+          method: 'POST', headers: ph,
           body: JSON.stringify({ promotion_id: promo_id, promotion_type: promo_type })
         });
-        if (r.ok || r.status === 204) return sendJSON(res, 200, { ok: true, endpoint: ep.label });
         const d = await r.json().catch(() => ({}));
-        lastErr = d.message || d.error || `HTTP ${r.status}`;
+        if (r.ok) return sendJSON(res, 200, { ok: true });
+        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}`, raw: d });
+      } else {
+        // PRICE_DISCOUNT: POST /items/{item_id}?user_id=... body:{promotion_id, promotion_type, price? / discount?}
+        const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
+        const addBody = { promotion_id: promo_id, promotion_type: promo_type };
+        if (p > 0) addBody.price = p; else if (disc > 0) addBody.discount = disc;
+        const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQ}`, {
+          method: 'POST', headers: ph, body: JSON.stringify(addBody)
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) return sendJSON(res, 200, { ok: true });
+        return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}`, raw: d });
       }
+    } else {
+      // Quitar de promoción: DELETE /items/{item_id}?user_id=... body:{promotion_id, promotion_type}
+      const r = await fetch(`${PROMO_BASE}/items/${item_id}?${userQ}`, {
+        method: 'DELETE', headers: ph,
+        body: JSON.stringify({ promotion_id: promo_id, promotion_type: promo_type })
+      });
+      if (r.ok || r.status === 204) return sendJSON(res, 200, { ok: true });
+      const d = await r.json().catch(() => ({}));
+      return sendJSON(res, 400, { error: d.message || `HTTP ${r.status}`, raw: d });
     }
-    return sendJSON(res, 400, { error: lastErr || 'No se pudo actualizar la promoción' });
-  } catch(e) {
-    sendJSON(res, 500, { error: e.message || String(e) });
-  }
+  } catch(e) { sendJSON(res, 500, { error: e.message }); }
 });
 
-// POST /api/promotion-bulk-stream {account_id, promo_id, promo_type, items:[...]} streaming ndjson
+// POST /api/promotion-bulk-stream {account_id, promo_id, promo_type, items:[...]}  streaming ndjson
 route('POST', '/api/promotion-bulk-stream', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, promo_id, promo_type, items } = body;
   if (!items?.length) return sendJSON(res, 400, { error: 'Sin ítems' });
@@ -2684,53 +2383,40 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
-
   const total = items.length;
   let done = 0, errCount = 0;
   const errorRows = [];
   res.write(JSON.stringify({ type: 'start', total }) + '\n');
-
   const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
+  const bh = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() };
   const uq = `user_id=${account.seller_id}`;
-  const endpointsForItem = (itemId) => [
-    { label: 'marketplace_user_v2', url: `${PROMO_BASE}/items/${itemId}?${uq}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() } },
-    { label: 'old_user', url: `${PROMO_OLD_BASE}/items/${itemId}?${uq}&app_id=${encodeURIComponent(ML_CLIENT_ID || '')}&app_version=2.0.0`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
-  ];
 
   for (const item of items) {
     const { item_id, participar, precio_promo, descuento_pct } = item;
     const participate = ['si','sí','yes','true','1'].includes(String(participar || '').toLowerCase().trim());
-    let ok = false, errMsg = null;
-
-    for (const ep of endpointsForItem(item_id)) {
-      try {
-        if (participate) {
-          const addBody = { promotion_id: promo_id, promotion_type: promo_type };
-          if (!isDeal) {
-            const p = parseFloat(precio_promo) || 0, disc = parseFloat(descuento_pct) || 0;
-            if (p > 0) addBody.price = p; else if (disc > 0) addBody.discount = disc;
-          }
-          const r = await fetch(ep.url, { method: 'POST', headers: ep.headers, body: JSON.stringify(addBody) });
-          if (r.ok) { ok = true; break; }
-          const d = await r.json().catch(() => ({}));
-          errMsg = d.message || d.error || `HTTP ${r.status}`;
-        } else {
-          const r = await fetch(ep.url, {
-            method: 'DELETE',
-            headers: ep.headers,
-            body: JSON.stringify({ promotion_id: promo_id, promotion_type: promo_type })
-          });
-          if (r.ok || r.status === 204) { ok = true; break; }
-          const d = await r.json().catch(() => ({}));
-          errMsg = d.message || d.error || `HTTP ${r.status}`;
+    let ok = true, errMsg = null;
+    try {
+      if (participate) {
+        const addBody = { promotion_id: promo_id, promotion_type: promo_type };
+        if (!isDeal) {
+          const p = parseFloat(precio_promo) || 0, disc = parseFloat(descuento_pct) || 0;
+          if (p > 0) addBody.price = p; else if (disc > 0) addBody.discount = disc;
         }
-      } catch(e) {
-        errMsg = e.message || String(e);
+        const r = await fetch(`${PROMO_BASE}/items/${item_id}?${uq}`, {
+          method: 'POST', headers: bh, body: JSON.stringify(addBody)
+        });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); ok = false; errMsg = d.message || `HTTP ${r.status}`; }
+      } else {
+        const r = await fetch(`${PROMO_BASE}/items/${item_id}?${uq}`, {
+          method: 'DELETE', headers: bh,
+          body: JSON.stringify({ promotion_id: promo_id, promotion_type: promo_type })
+        });
+        if (!r.ok && r.status !== 204) { ok = false; errMsg = `HTTP ${r.status}`; }
       }
-    }
+    } catch(e) { ok = false; errMsg = e.message; }
 
     done++;
-    if (!ok) { errCount++; errorRows.push({ item_id, participar, precio_promo, descuento_pct, error: errMsg || 'Error' }); }
+    if (!ok) { errCount++; errorRows.push({ item_id, participar, precio_promo, descuento_pct, error: errMsg }); }
     if (done % 100 === 0 || done === total) {
       res.write(JSON.stringify({ type: 'progress', done, total, errors: errCount }) + '\n');
     }
@@ -2744,7 +2430,6 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
 route('POST', '/api/promotion-create', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, name, start_date, end_date } = body;
   if (!account_id || !name || !start_date || !end_date) return sendJSON(res, 400, { error: 'Faltan datos' });
@@ -2755,34 +2440,15 @@ route('POST', '/api/promotion-create', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
 
-  const payload = {
-    type: 'PRICE_DISCOUNT',
-    name,
-    start_date: new Date(start_date).toISOString(),
-    end_date: new Date(end_date).toISOString(),
-    status: 'active'
-  };
-
-  const endpoints = [
-    { label: 'marketplace_user_v2', url: `${PROMO_BASE}/promotions?user_id=${account.seller_id}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() } },
-    { label: 'old_user', url: `${PROMO_OLD_BASE}/promotions?user_id=${account.seller_id}&app_id=${encodeURIComponent(ML_CLIENT_ID || '')}&app_version=2.0.0`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
-  ];
-
-  let lastErr = null;
-  for (const ep of endpoints) {
-    try {
-      const r = await fetch(ep.url, { method: 'POST', headers: ep.headers, body: JSON.stringify(payload) });
-      const d = await r.json().catch(() => ({}));
-      if (r.ok) return sendJSON(res, 200, { ...d, endpoint: ep.label });
-      lastErr = d.message || d.error || `HTTP ${r.status}`;
-    } catch(e) {
-      lastErr = e.message || String(e);
-    }
-  }
-
-  sendJSON(res, 400, { error: lastErr || 'No se pudo crear la campaña' });
+  // POST /marketplace/seller-promotions/promotions?user_id={seller_id}
+  const r = await fetch(`${PROMO_BASE}/promotions?user_id=${account.seller_id}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() },
+    body: JSON.stringify({ type: 'PRICE_DISCOUNT', name, start_date: new Date(start_date).toISOString(), end_date: new Date(end_date).toISOString(), status: 'active' })
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) return sendJSON(res, 200, d);
+  sendJSON(res, 400, { error: d.message || `HTTP ${r.status}` });
 });
-
 
 // ==================== SERVER ====================
 
