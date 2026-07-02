@@ -2085,6 +2085,25 @@ const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
 // Header obligatorio para la API marketplace de seller-promotions
 const promoH = () => ({ 'version': 'v2' });
 
+// Token de app (client_credentials) — algunos endpoints ML exigen que el caller sea la APP, no el usuario
+let _appToken = null, _appTokenExp = 0;
+async function getAppToken() {
+  if (_appToken && Date.now() < _appTokenExp) return _appToken;
+  try {
+    const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=client_credentials&client_id=${ML_CLIENT_ID}&client_secret=${ML_CLIENT_SECRET}`
+    });
+    if (!r.ok) { console.log('[AppToken] Error:', r.status, await r.text()); return null; }
+    const d = await r.json();
+    _appToken = d.access_token;
+    _appTokenExp = Date.now() + ((d.expires_in || 21600) - 300) * 1000;
+    console.log('[AppToken] Obtenido OK');
+    return _appToken;
+  } catch(e) { console.log('[AppToken] Excepción:', e.message); return null; }
+}
+
 // GET /api/promotions?account_id=X  — lista campañas (debug multi-URL)
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
@@ -2106,22 +2125,27 @@ route('GET', '/api/promotions', async (req, res) => {
       const sid = account.seller_id;
       const appId = String(ML_CLIENT_ID || '');
 
-      // A1 sigue siendo el más prometedor para marketplace; F1-F4 prueban el API viejo con sufijo /promotions
       const OLD = `https://api.mercadolibre.com/seller-promotions`;
+      // Obtener token de app (client_credentials) para probar con ese
+      const appTok = await getAppToken();
       const candidates = [
-        // API viejo — /promotions al final, distintas combinaciones de app_id y version
-        { label: 'F1', url: `${OLD}/users/${sid}/promotions?app_id=${appId}`, headers: {} },
-        { label: 'F2', url: `${OLD}/users/${sid}/promotions?app_id=${appId}&version=v1`, headers: {} },
-        { label: 'F3', url: `${OLD}/users/${sid}/promotions?app_id=${appId}&version=v2`, headers: {} },
-        { label: 'F4', url: `${OLD}/users/${sid}/promotions`, headers: { 'version': 'v2' } },
-        // API marketplace con X-Caller-Id = seller_id (por si acaso)
-        { label: 'A1', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2' } },
+        // API viejo con app_version (el endpoint /seller-promotions/users/{sid} existe — devuelve 400 "Invalid app_version")
+        { label: 'G1', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=2.0.0`, headers: {}, tok: token },
+        { label: 'G2', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=v2`, headers: {}, tok: token },
+        { label: 'G3', url: `${OLD}/users/${sid}?app_id=${appId}&app_version=v1`, headers: {}, tok: token },
+        // API marketplace con token de APP (no de usuario) — "caller.id" sería la app, no el vendedor
+        { label: 'G4_appTok', url: `${PROMO_BASE}/users/${sid}`, headers: { 'version': 'v2' }, tok: appTok, appTokOk: !!appTok },
+        { label: 'G5_appTok_noH', url: `${PROMO_BASE}/users/${sid}`, headers: {}, tok: appTok, appTokOk: !!appTok },
       ];
 
       let found = false;
       for (const c of candidates) {
+        if (c.tok === null || c.tok === undefined) {
+          debug.push({ account: account.name, tried: c.label, skipped: 'token no disponible', appTokOk: c.appTokOk });
+          continue;
+        }
         try {
-          const r = await mlGet(c.url, token, {}, c.headers);
+          const r = await mlGet(c.url, c.tok, {}, c.headers);
           const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
           debug.push({ account: account.name, winner: c.label, url: c.url, promos_found: promos.length, sample: JSON.stringify(r).slice(0, 200) });
           for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
