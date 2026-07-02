@@ -2156,6 +2156,14 @@ route('GET', '/api/promotions', async (req, res) => {
       { label:'C13:sp+app',      tok: appTok,  url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}`, hdrs: {} },
       // C14: /users/{id}/promotions sin status filter
       { label:'C14:up2+usr',     tok: userTok, url: `https://api.mercadolibre.com/users/${sid}/promotions`,     hdrs: {} },
+      // C15: seller-promotions con x-format-new (header ML interno para nuevas versiones)
+      { label:'C15:sp+xfn',      tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}`, hdrs: { 'x-format-new': 'true' } },
+      // C16: seller-promotions con Accept ML vendor
+      { label:'C16:sp+vnd',      tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}`, hdrs: { 'Accept': 'application/vnd.mercadolibre.v2+json' } },
+      // C17: seller-promotions con limit explícito
+      { label:'C17:sp+lim',      tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}&limit=50&offset=0`, hdrs: {} },
+      // C18: con tipo explicito (solo price_discount)
+      { label:'C18:sp+type',     tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/promotions?user_id=${sid}&type=PRICE_DISCOUNT`, hdrs: {} },
     ];
 
     const attemptLog = [];
@@ -2178,8 +2186,10 @@ route('GET', '/api/promotions', async (req, res) => {
         }
 
         if (parsed === null) {
-          // body vacío o no-JSON → capturamos para diagnóstico
-          attemptLog.push({ label: c.label, status: httpStatus, msg: 'OK pero body vacío/no-JSON', raw: text.slice(0, 200) });
+          // body vacío o no-JSON → capturamos headers y raw para diagnóstico
+          const hdrsSnap = {};
+          for (const [k,v] of resp.headers.entries()) hdrsSnap[k] = v;
+          attemptLog.push({ label: c.label, status: httpStatus, msg: 'OK pero body vacío/no-JSON', raw: text.slice(0, 200), respHeaders: hdrsSnap });
           continue;
         }
 
