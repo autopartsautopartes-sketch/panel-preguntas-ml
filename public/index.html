@@ -2324,6 +2324,10 @@
               document.getElementById('bulkCounters').innerHTML =
                 `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount}</span>` +
                 (errCount ? `<span style="padding:4px 12px;background:#f8d7da;color:#e74c3c;border-radius:20px;font-size:13px;font-weight:600">❌ ${errCount}</span>` : '');
+              if (msg.warning) {
+                const log = logEl();
+                if (log) log.innerHTML += `<div style="padding:7px 12px;border-bottom:1px solid #f5f5f5;font-size:12px;color:#e67e22">⚠️ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.warning)}</div>`;
+              }
               if (!msg.ok) {
                 const log = logEl();
                 if (log) log.innerHTML += `<div style="padding:7px 12px;border-bottom:1px solid #f5f5f5;font-size:12px;color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || '')}</div>`;
@@ -2581,6 +2585,7 @@
               const msg = JSON.parse(line);
               if (msg.type === 'result') {
                 if (msg.ok) totalOk++; else { totalErr++; }
+                if (msg.warning && applyLog) applyLog.innerHTML += `<div style="color:#e67e22">⚠️ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.warning)}</div>`;
                 if (!msg.ok && applyLog) applyLog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || '')}</div>`;
               }
             } catch(_) {}
