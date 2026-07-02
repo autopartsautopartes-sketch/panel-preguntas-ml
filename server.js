@@ -822,6 +822,131 @@ route('POST', '/api/bulk-update', async (req, res) => {
   console.log(`[BULK] Completado: ${items.length} items por ${sess.username}`);
 });
 
+// SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
+route('POST', '/api/search-listings-stream', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+
+  const dbPerm2 = loadDB();
+  const userPerm2 = dbPerm2.users.find(u => u.id === sess.userId);
+  const canSearch = sess.role === 'admin' || userPerm2?.can_search_update === true;
+  if (!canSearch) return sendJSON(res, 403, { error: 'Acceso denegado' });
+
+  const { item_id, sku, title, account_id, cursor, page_size } = await parseBody(req);
+  if (!item_id && !sku && !title) return sendJSON(res, 400, { error: 'Ingresá Item ID, SKU o título para buscar' });
+
+  const db = loadDB();
+  const allAccounts = db.ml_accounts || [];
+  const selectedAccountId = account_id ? parseInt(account_id) : null;
+  const targets = selectedAccountId ? allAccounts.filter(a => a.id === selectedAccountId) : allAccounts;
+
+  const PAGE_SIZE = Math.max(10, Math.min(200, parseInt(page_size || '80') || 80));
+  const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
+  const skuLower = sku ? String(sku).trim().toLowerCase() : '';
+  const titleRaw = title ? String(title).trim() : '';
+
+  function enc(o){ return Buffer.from(JSON.stringify(o)).toString('base64url'); }
+  function dec(s){ if(!s) return null; try { return JSON.parse(Buffer.from(String(s), 'base64url').toString('utf8')); } catch(e){ return null; } }
+  function norm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim(); }
+  const words = norm(titleRaw).split(' ').filter(w => w.length >= 2);
+  const hasTitle = words.length > 0;
+  const titleOk = t => !hasTitle || words.every(w => norm(t).includes(w));
+  const skuOk = raw => {
+    if (!skuLower) return true;
+    const s = String(raw||'').toLowerCase();
+    return skuLower.includes('_') ? s.includes(skuLower) : s.split('_')[0].includes(skuLower);
+  };
+  const getSku = b => b.seller_custom_field || (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
+  const row = (b,a) => ({ item_id:b.id, title:b.title||'', available_quantity:b.available_quantity??'', price:b.price??'', seller_sku:getSku(b), status:b.status||'', account_id:a.id, account_name:a.name, permalink:b.permalink || `https://articulo.mercadolibre.com.ar/${b.id}` });
+
+  res.writeHead(200, {'Content-Type':'application/x-ndjson','Transfer-Encoding':'chunked','Cache-Control':'no-cache','X-Accel-Buffering':'no'});
+  let sent = 0, seen = new Set();
+  const emit = r => { const k = `${r.account_id}:${r.item_id}`; if(seen.has(k)) return; seen.add(k); sent++; res.write(JSON.stringify({type:'item', row:r})+'\n'); };
+
+  async function details(account, token, ids){
+    const rows = [];
+    for (let i=0;i<ids.length;i+=20){
+      const batch = ids.slice(i,i+20);
+      try {
+        const items = await mlGet(`https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`, token);
+        for (const it of (Array.isArray(items)?items:[])){
+          const b = it.body || it;
+          if(!b?.id || b.status==='closed' || b.status==='under_review') continue;
+          if(b.seller_id && String(b.seller_id)!==String(account.seller_id)) continue;
+          const rawSku = getSku(b);
+          if(!skuOk(rawSku) || !titleOk(b.title||'')) continue;
+          rows.push(row(b, account));
+        }
+      } catch(e){}
+    }
+    return rows;
+  }
+
+  try {
+    res.write(JSON.stringify({type:'start', page_size: PAGE_SIZE})+'\n');
+
+    if (itemIdSearch) {
+      let itemData = null;
+      try { itemData = await mlGet(`https://api.mercadolibre.com/items/${itemIdSearch}?attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`); } catch(e){}
+      if (!itemData) {
+        for (const acc of allAccounts) {
+          try { const tok = await getValidToken(acc); if(!tok) continue; itemData = await mlGet(`https://api.mercadolibre.com/items/${itemIdSearch}?attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`, tok); if(itemData?.id) break; } catch(e){}
+        }
+      }
+      if (itemData?.id && itemData.status !== 'closed' && itemData.status !== 'under_review') {
+        const owner = allAccounts.find(a => String(a.seller_id) === String(itemData.seller_id || ''));
+        if (owner && (!selectedAccountId || owner.id === selectedAccountId) && skuOk(getSku(itemData)) && titleOk(itemData.title||'')) emit(row(itemData, owner));
+      }
+      res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); return res.end();
+    }
+
+    if (skuLower) {
+      const state = dec(cursor);
+      const start = state?.mode === 'sku' ? state.acc_index || 0 : 0;
+      for (let ai=start; ai<targets.length; ai++) {
+        const account = targets[ai], token = await getValidToken(account); if(!token) continue;
+        const ids = new Set(), base = String(sku||'').trim();
+        const terms = [base];
+        if (!skuLower.includes('_')) ['_D','_I','_DM','_IM','_DER','_IZQ','_T','_TD','_TI','_d','_i','_dm','_im','_der','_izq','_t','_1','_2','_3','_A','_B','_C','_E','_F'].forEach(s => terms.push(base+s));
+        await Promise.all(terms.map(term => mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search?seller_sku=${encodeURIComponent(term)}&limit=200`, token).then(r => (r.results||[]).forEach(id=>ids.add(id))).catch(()=>{})));
+        for (const r of await details(account, token, [...ids])) { emit(r); if(sent>=PAGE_SIZE){ res.write(JSON.stringify({type:'done', count:sent, has_more:ai<targets.length-1, cursor:enc({mode:'sku', acc_index:ai+1})})+'\n'); return res.end(); } }
+      }
+      res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); return res.end();
+    }
+
+    if (hasTitle) {
+      let state = dec(cursor);
+      if (!state || state.mode !== 'title') state = {mode:'title', acc_index:0, status_index:0, scroll_ids:{}};
+      const statuses = ['active','paused'];
+      let scanned = 0;
+      for (let ai=state.acc_index||0; ai<targets.length; ai++) {
+        const account = targets[ai], token = await getValidToken(account); if(!token) continue;
+        for (let si=(ai===(state.acc_index||0)?(state.status_index||0):0); si<statuses.length; si++) {
+          const status = statuses[si];
+          let scrollId = state.scroll_ids?.[`${ai}:${status}`] || null;
+          while (true) {
+            const params = {limit:100, status, search_type:'scan'};
+            if(scrollId) params.scroll_id = scrollId;
+            let page; try { page = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params); } catch(e){ break; }
+            const ids = page.results || [], nextScrollId = page.scroll_id || null;
+            if(!ids.length) break;
+            scanned += ids.length;
+            for (const r of await details(account, token, ids)) { emit(r); if(sent>=PAGE_SIZE){ res.write(JSON.stringify({type:'done', count:sent, has_more:!!nextScrollId || si<statuses.length-1 || ai<targets.length-1, cursor:enc({mode:'title', acc_index:ai, status_index:si, scroll_ids:{[`${ai}:${status}`]:nextScrollId}}), scanned})+'\n'); return res.end(); } }
+            res.write(JSON.stringify({type:'progress', scanned, found:sent, account:account.name, status})+'\n');
+            scrollId = nextScrollId; if(!scrollId) break;
+          }
+        }
+      }
+      res.write(JSON.stringify({type:'done', count:sent, has_more:false, scanned})+'\n'); return res.end();
+    }
+
+    res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); res.end();
+  } catch(e) {
+    res.write(JSON.stringify({type:'error', error:e?.response?.data?.message || e?.response?.data?.error || e.message || String(e), raw:e?.response?.data || null})+'\n'); res.end();
+  }
+});
+
+
 // SEARCH LISTINGS — busca por Item ID, SKU y/o título en una o todas las cuentas
 // Motor mejorado:
 // - Item ID: detecta dueño real y devuelve una sola fila.
