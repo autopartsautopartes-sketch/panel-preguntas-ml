@@ -3733,7 +3733,7 @@
       const statusBadge = { active:'<span style="color:#27ae60;font-weight:600">● Activa</span>', inactive:'<span style="color:#999">○ Inactiva</span>', upcoming:'<span style="color:#e67e22;font-weight:600">◎ Próxima</span>', finished:'<span style="color:#aaa">✓ Finalizada</span>' };
 
       let rows = '';
-      for (const p of data) {
+      for (const p of promos) {
         const label = typeLabel[p.type] || p.type || '—';
         const badge = statusBadge[p.status] || `<span style="color:#888">${escapeHtml(p.status||'')}</span>`;
         const from = p.start_date ? new Date(p.start_date).toLocaleDateString('es-AR') : '—';
@@ -3998,7 +3998,7 @@
       </div>`;
     }
 
-    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}`;
+    const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}&promo_type=${encodeURIComponent(promosCurrentPromoType)}`;
     const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
 
     function normPromoItem(it) {
