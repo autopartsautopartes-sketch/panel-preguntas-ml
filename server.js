@@ -2117,45 +2117,52 @@ route('GET', '/api/promotions', async (req, res) => {
     : db.ml_accounts;
 
   const appTok = await getAppToken();
-  if (!appTok) return sendJSON(res, 500, { error: 'No se pudo obtener token de app. Verificar ML_CLIENT_SECRET en Render.' });
+  // No bloqueamos si no hay appTok; algunas variantes solo necesitan userTok
 
   const results = [];
   const errors = [];
+
   for (const account of targets) {
     let success = false;
-    const attempts = [];
+    const sid = account.seller_id;
+    const userTok = await getValidToken(account);
 
-    // Intento 1: app token (client_credentials) + marketplace URL + version:v2
-    try {
-      const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, appTok, {}, promoH());
-      const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-      for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
-      success = true;
-    } catch(e1) {
-      attempts.push({ token: 'app', status: e1?.response?.status, msg: e1?.response?.data?.message || e1.message });
-    }
+    // Candidatos: distintas URLs / tokens / headers para encontrar cuál acepta ML
+    const candidates = [
+      // C1: marketplace + app token + header version:v2  (lo que funcionó en debug)
+      { label:'C1:mkt+app+v2h',  tok: appTok,  url: `${PROMO_BASE}/users/${sid}`,                               hdrs: { 'version':'v2' } },
+      // C2: marketplace + user token + header version:v2
+      { label:'C2:mkt+usr+v2h',  tok: userTok, url: `${PROMO_BASE}/users/${sid}`,                               hdrs: { 'version':'v2' } },
+      // C3: marketplace + app token + version como query param
+      { label:'C3:mkt+app+v2q',  tok: appTok,  url: `${PROMO_BASE}/users/${sid}?version=v2`,                    hdrs: {} },
+      // C4: marketplace + user token + version como query param
+      { label:'C4:mkt+usr+v2q',  tok: userTok, url: `${PROMO_BASE}/users/${sid}?version=v2`,                    hdrs: {} },
+      // C5: sin /marketplace/, user token, sin version header
+      { label:'C5:sp+usr',       tok: userTok, url: `https://api.mercadolibre.com/seller-promotions/users/${sid}/promotions`, hdrs: {} },
+      // C6: endpoint simple /promotions con user token
+      { label:'C6:promo+usr',    tok: userTok, url: `https://api.mercadolibre.com/promotions?user_id=${sid}`,   hdrs: {} },
+      // C7: /users/{id}/promotions con user token
+      { label:'C7:usr-promos',   tok: userTok, url: `https://api.mercadolibre.com/users/${sid}/promotions`,     hdrs: {} },
+    ];
 
-    // Intento 2 (fallback): user OAuth token + marketplace URL + version:v2
-    if (!success) {
+    const attemptLog = [];
+    for (const c of candidates) {
+      if (!c.tok) { attemptLog.push({ label: c.label, skip: 'sin token' }); continue; }
       try {
-        const userTok = await getValidToken(account);
-        if (userTok) {
-          const r = await mlGet(`${PROMO_BASE}/users/${account.seller_id}`, userTok, {}, promoH());
-          const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || []);
-          for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
-          success = true;
-        } else {
-          attempts.push({ token: 'user', msg: 'No hay token OAuth válido' });
-        }
-      } catch(e2) {
-        attempts.push({ token: 'user', status: e2?.response?.status, msg: e2?.response?.data?.message || e2.message });
+        const r = await mlGet(c.url, c.tok, {}, c.hdrs);
+        const promos = Array.isArray(r) ? r : (r.results || r.data || r.promotions || r.content || []);
+        for (const p of promos) results.push({ ...p, account_id: account.id, account_name: account.name });
+        console.log(`[Promotions] ${account.name} OK con ${c.label}, ${promos.length} campañas`);
+        success = true;
+        break; // primer candidato que funcione, usamos ese
+      } catch(e) {
+        const info = { label: c.label, status: e?.response?.status, msg: e?.response?.data?.message || e.message };
+        attemptLog.push(info);
+        console.log(`[Promotions] ${account.name} ${c.label}:`, info.status, info.msg);
       }
     }
 
-    if (!success) {
-      errors.push({ account: account.name, attempts });
-      console.log(`[Promotions] ${account.name}: ambos tokens fallaron`, JSON.stringify(attempts));
-    }
+    if (!success) errors.push({ account: account.name, attempts: attemptLog });
   }
 
   if (results.length > 0) {
