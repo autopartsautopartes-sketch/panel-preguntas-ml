@@ -2375,9 +2375,12 @@
     document.getElementById('searchTitle').value = '';
     const accEl = document.getElementById('searchAccount');
     if (accEl) accEl.value = '';
-    document.getElementById('searchResults').style.display = 'none';
-    document.getElementById('searchResultsTable').innerHTML = '';
-    document.getElementById('searchUpdateLog').innerHTML = '';
+    const box = ensureSearchResultsBox();
+    box.style.display = 'none';
+    const table = document.getElementById('searchResultsTable');
+    if (table) table.innerHTML = '';
+    const log = document.getElementById('searchUpdateLog');
+    if (log) log.innerHTML = '';
     searchResultsData = [];
   }
 
@@ -2389,10 +2392,38 @@
     if (!el) {
       el = document.createElement('div');
       el.id = 'searchResults';
+      el.style.display = 'none';
+      el.style.marginTop = '12px';
+
       const btn = document.querySelector('button[onclick="searchListings()"]');
       const container = btn?.closest('div')?.parentElement?.parentElement || document.body;
       container.appendChild(el);
     }
+
+    let table = document.getElementById('searchResultsTable');
+    if (!table) {
+      el.innerHTML = `
+        <div style="overflow-x:auto">
+          <table id="searchResultsTable" style="border-collapse:collapse;font-size:12px;width:100%;min-width:700px"></table>
+        </div>
+        <div id="searchUpdateLog" style="margin-top:10px"></div>
+      `;
+    } else {
+      if (!el.contains(table)) {
+        const wrap = document.createElement('div');
+        wrap.style.overflowX = 'auto';
+        table.parentElement?.removeChild(table);
+        wrap.appendChild(table);
+        el.appendChild(wrap);
+      }
+      if (!document.getElementById('searchUpdateLog')) {
+        const log = document.createElement('div');
+        log.id = 'searchUpdateLog';
+        log.style.marginTop = '10px';
+        el.appendChild(log);
+      }
+    }
+
     return el;
   }
 
@@ -2409,7 +2440,11 @@
     if (!loadMore) {
       searchNextCursor = null;
       searchAccumulated = [];
-      resultsBox.innerHTML = '<p style="padding:16px;color:#666">⏳ Buscando...</p>';
+      resultsBox.style.display = 'block';
+      const table = document.getElementById('searchResultsTable');
+      const log = document.getElementById('searchUpdateLog');
+      if (table) table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#666;text-align:center">⏳ Buscando...</td></tr>';
+      if (log) log.innerHTML = '';
     }
 
     const clickedBtn = window.event?.target;
@@ -2468,13 +2503,17 @@
       searchNextCursor = nextCursor;
 
       if (!searchAccumulated.length) {
-        resultsBox.innerHTML = '<p style="padding:16px;color:#999">No se encontraron publicaciones.</p>';
+        const table = document.getElementById('searchResultsTable');
+        if (table) table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#999;text-align:center">No se encontraron publicaciones.</td></tr>';
       } else {
         renderSearchResultsPaged(searchAccumulated, hasMore, scanned);
       }
     } catch(e) {
       showToast(e.message, 'error');
-      if (!loadMore) resultsBox.innerHTML = `<p style="padding:16px;color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
+      if (!loadMore) {
+        const table = document.getElementById('searchResultsTable');
+        if (table) table.innerHTML = `<tr><td colspan="9" style="padding:16px;color:#e74c3c;text-align:center">Error: ${escapeHtml(e.message)}</td></tr>`;
+      }
     } finally {
       if (clickedBtn) { clickedBtn.disabled = false; clickedBtn.innerHTML = oldText; }
     }
@@ -2488,6 +2527,8 @@
   function renderSearchResultsPaged(data, hasMore = false, scanned = 0) {
     renderSearchResults(data);
     const box = ensureSearchResultsBox();
+    document.getElementById('searchStreamStatus')?.remove();
+    document.getElementById('searchLoadMoreWrap')?.remove();
     const info = document.createElement('div');
     info.id = 'searchStreamStatus';
     info.style.cssText = 'padding:8px 10px;color:#666;font-size:12px';
@@ -2496,6 +2537,7 @@
 
     if (hasMore) {
       const more = document.createElement('div');
+      more.id = 'searchLoadMoreWrap';
       more.style.cssText = 'padding:14px;text-align:center';
       more.innerHTML = '<button onclick="loadMoreSearchResults()" style="padding:9px 18px;background:#3483fa;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:700">Cargar más resultados</button>';
       box.appendChild(more);
@@ -2503,10 +2545,14 @@
   }
 
   function renderSearchResults(data) {
-    const section = document.getElementById('searchResults');
+    const section = ensureSearchResultsBox();
     const table = document.getElementById('searchResultsTable');
     const log = document.getElementById('searchUpdateLog');
-    log.innerHTML = '';
+    if (!table) {
+      showToast('No se pudo crear la tabla de resultados', 'error');
+      return;
+    }
+    if (log) log.innerHTML = '';
     if (!data.length) {
       section.style.display = 'block';
       table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
