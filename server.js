@@ -341,7 +341,7 @@ function sendJSON(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
-const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2MB limit to mitigate large-payload DoS
+const MAX_BODY_BYTES = 25 * 1024 * 1024; // 25MB: permite Excel grandes de actualización masiva
 
 function parseBody(req) {
   return new Promise((resolve, reject) => {
@@ -756,55 +756,211 @@ function cleanBulkJobs() {
 async function runBulkJob(jobId, items, account, initialToken) {
   const job = bulkJobs[jobId];
   if (!job) return;
+
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   let token = initialToken;
 
-  // Rate limiter adaptativo: empieza en 150ms, se dobla en 429, baja 20% cada 20 éxitos
-  let itemPause = 150;
-  const PAUSE_MIN = 150, PAUSE_MAX = 4000;
-  const WAVE_SIZE = 2;          // PUTs simultáneos por wave
-  let successStreak = 0;
-  const STREAK_TO_SPEEDUP = 20;
-  let rateLimitHit = false;
-  let tokenRefreshing = false;  // lock para evitar refreshes simultáneos
+  // Motor v2: cola + workers + rate limit adaptativo.
+  // Objetivo: ir más rápido que el modo secuencial sin volver al método viejo de 10 paralelas que genera too_many_requests.
+  const MIN_WORKERS = 2;
+  const START_WORKERS = 3;
+  const MAX_WORKERS = 5;
+  let desiredWorkers = START_WORKERS;
+  let globalCooldownUntil = 0;
+  let successSince429 = 0;
+  const SPEEDUP_EVERY = 300;
+  const ERROR_ITEMS_MAX = 800;
 
-  async function bgPutWithRetry(url, payload) {
+  job.mode = 'smart_workers_v2';
+  job.min_workers = MIN_WORKERS;
+  job.max_workers = MAX_WORKERS;
+  job.desired_workers = desiredWorkers;
+  job.active_workers = 0;
+  job.rate_limits = 0;
+  job.retries = 0;
+  job.promotions_removed = 0;
+  job.promo_retry_ok = 0;
+  job.started_at = Date.now();
+  job.velocity = 0;
+
+  function mark429(waitMs) {
+    job.rate_limits = (job.rate_limits || 0) + 1;
+    desiredWorkers = Math.max(MIN_WORKERS, desiredWorkers - 1);
+    job.desired_workers = desiredWorkers;
+    job.last_429_at = new Date().toISOString();
+    globalCooldownUntil = Math.max(globalCooldownUntil, Date.now() + waitMs);
+    successSince429 = 0;
+    console.log(`[BG-BULK-v2] 429 detectado — workers => ${desiredWorkers}, cooldown ${waitMs}ms`);
+  }
+
+  function markSuccess() {
+    successSince429++;
+    if (successSince429 >= SPEEDUP_EVERY && desiredWorkers < MAX_WORKERS) {
+      desiredWorkers++;
+      job.desired_workers = desiredWorkers;
+      successSince429 = 0;
+      console.log(`[BG-BULK-v2] ${SPEEDUP_EVERY} éxitos sin 429 — workers => ${desiredWorkers}`);
+    }
+  }
+
+  function parseMLError(e) {
+    const data = e?.response?.data || {};
+    const cause = data.cause;
+    const causeDetail = Array.isArray(cause) && cause.length
+      ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
+      : null;
+    return causeDetail || data.message || data.error || e?.message || 'Error al actualizar';
+  }
+
+  function isPromoBlockingError(errMsg, status) {
+    const s = String(errMsg || '').toLowerCase();
+    return status === 400 && (
+      s.includes('promotion') ||
+      s.includes('promoción') ||
+      s.includes('promocion') ||
+      s.includes('campaign') ||
+      s.includes('campaña') ||
+      s.includes('offer') ||
+      s.includes('deal') ||
+      s.includes('participa') ||
+      s.includes('belongs to') ||
+      s.includes('cannot update price') ||
+      s.includes('price is locked')
+    );
+  }
+
+  async function putWithRetry(url, payload, workerId) {
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
       if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
+
+      const waitGlobal = globalCooldownUntil - Date.now();
+      if (waitGlobal > 0) await sleep(waitGlobal);
+
       try {
+        if (attempt > 0) job.retries = (job.retries || 0) + 1;
         return await mlPut(url, payload, token);
       } catch(e) {
         lastErr = e;
         const status = e?.response?.status;
+
         if (status === 401) {
-          if (tokenRefreshing) { await sleep(3000); continue; } // esperar que el otro hilo refresque
-          tokenRefreshing = true;
-          try {
-            const refreshed = await refreshToken(account);
-            if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
-            token = refreshed;
-          } finally { tokenRefreshing = false; }
+          const refreshed = await refreshToken(account);
+          if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
+          token = refreshed;
           continue;
         }
+
         if (status === 429) {
-          rateLimitHit = true;
-          const wait = [8000, 20000, 40000][attempt] || 40000;
-          console.log(`[BG-BULK] 429 — esperando ${wait}ms (intento ${attempt + 1}, pausa=${itemPause}ms)`);
+          const wait = [15000, 35000, 70000, 120000][attempt] || 120000;
+          mark429(wait);
           await sleep(wait);
           continue;
         }
+
         throw e;
       }
     }
     throw lastErr;
   }
 
+  async function flexWithRetry(itemId, flexStr, workerId) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
+      const waitGlobal = globalCooldownUntil - Date.now();
+      if (waitGlobal > 0) await sleep(waitGlobal);
+
+      const err = await updateFlexForItem(itemId, flexStr, token);
+      if (!err) return null;
+      lastErr = err;
+      if (String(err).includes('429') || String(err).toLowerCase().includes('too_many_requests')) {
+        const wait = [15000, 35000, 70000][attempt] || 70000;
+        mark429(wait);
+        await sleep(wait);
+        continue;
+      }
+      return err;
+    }
+    return lastErr || 'Error flex';
+  }
+
+  async function updateOne(item, workerId) {
+    if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
+
+    const payload = buildItemPayload(item);
+    const flexStr = String(item.flex ?? '').toLowerCase().trim();
+    const hasFlex = item.flex !== '' && item.flex != null &&
+      ['si','sí','yes','true','1','no','false','0'].includes(flexStr);
+
+    if (!Object.keys(payload).length && !hasFlex) {
+      return { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
+    }
+
+    const warnings = [];
+
+    async function attemptUpdateOnce() {
+      const errors = [];
+
+      if (Object.keys(payload).length) {
+        try {
+          await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
+        } catch(e) {
+          if (e._cancelled) throw e;
+          const msg = parseMLError(e);
+          errors.push({ kind: 'payload', status: e?.response?.status || null, message: msg });
+        }
+      }
+
+      if (!errors.length && hasFlex) {
+        const flexErr = await flexWithRetry(item.item_id, flexStr, workerId);
+        if (flexErr) errors.push({ kind: 'flex', status: String(flexErr).includes('429') ? 429 : null, message: flexErr });
+      }
+
+      return errors;
+    }
+
+    // 1) Intento directo. La mayoría entra por acá y ahorra todas las llamadas de promociones.
+    let errors = await attemptUpdateOnce();
+    if (!errors.length) return { item_id: item.item_id, ok: true };
+
+    // 2) Solo si ML bloquea por promoción, recién ahí se limpian promociones y se reintenta.
+    const promoBlocked = errors.some(e => isPromoBlockingError(e.message, e.status));
+    if (promoBlocked) {
+      try {
+        const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
+        if (promoClean.removed?.length) {
+          job.promotions_removed = (job.promotions_removed || 0) + promoClean.removed.length;
+          warnings.push(`Promos removidas: ${promoClean.removed.map(p => `${p.removed}/${p.type}`).join(', ')}`);
+        }
+        if (!promoClean.ok) {
+          return {
+            item_id: item.item_id,
+            ok: false,
+            error: 'ML bloqueó por promoción y no se pudo remover: ' + (promoClean.errors || []).map(e => e.error || JSON.stringify(e)).join(' | ')
+          };
+        }
+        await sleep(2000);
+        job.retries = (job.retries || 0) + 1;
+        errors = await attemptUpdateOnce();
+        if (!errors.length) {
+          job.promo_retry_ok = (job.promo_retry_ok || 0) + 1;
+          return { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
+        }
+      } catch(e) {
+        if (e._cancelled) throw e;
+        return { item_id: item.item_id, ok: false, error: parseMLError(e) };
+      }
+    }
+
+    return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' | ') };
+  }
+
   try {
     // ---- FASE 0: pre-fetch del estado actual en ML ----
     job.phase = 'prefetch';
     const PREFETCH_BATCH = 20;
-    const PREFETCH_CONCURRENCY = 4;
+    const PREFETCH_CONCURRENCY = 5;
     const itemIds = items.map(i => i.item_id).filter(Boolean);
     job.prefetch_total = itemIds.length;
     job.prefetch_done = 0;
@@ -813,9 +969,7 @@ async function runBulkJob(jobId, items, account, initialToken) {
     let prefetchOk = true;
 
     const prefetchBatches = [];
-    for (let i = 0; i < itemIds.length; i += PREFETCH_BATCH) {
-      prefetchBatches.push(itemIds.slice(i, i + PREFETCH_BATCH));
-    }
+    for (let i = 0; i < itemIds.length; i += PREFETCH_BATCH) prefetchBatches.push(itemIds.slice(i, i + PREFETCH_BATCH));
 
     for (let i = 0; i < prefetchBatches.length; i += PREFETCH_CONCURRENCY) {
       if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
@@ -841,11 +995,12 @@ async function runBulkJob(jobId, items, account, initialToken) {
           }
         } catch(e) {
           prefetchOk = false;
-          console.log(`[BG-BULK] Pre-fetch falló para lote: ${e?.response?.status || e?.message || e}`);
+          console.log(`[BG-BULK-v2] Pre-fetch falló para lote: ${e?.response?.status || e?.message || e}`);
         }
       }));
-      if (i + PREFETCH_CONCURRENCY < prefetchBatches.length) await sleep(150);
+      if (i + PREFETCH_CONCURRENCY < prefetchBatches.length) await sleep(120);
     }
+    job.prefetch_done = itemIds.length;
 
     function needsUpdate(item) {
       if (!item.item_id) return false;
@@ -865,124 +1020,88 @@ async function runBulkJob(jobId, items, account, initialToken) {
       return false;
     }
 
-    const totalToUpdate = prefetchOk
-      ? items.filter(item => !item.item_id || needsUpdate(item)).length
-      : items.length;
-    const totalSkipped = items.length - totalToUpdate;
+    const queue = [];
+    const skippedItems = [];
+    for (const item of items) {
+      if (prefetchOk && item.item_id && !needsUpdate(item)) skippedItems.push(item.item_id);
+      else queue.push(item);
+    }
 
-    job.to_update = totalToUpdate;
-    job.skipped = totalSkipped;
+    job.to_update = queue.length;
+    job.skipped = skippedItems.length;
     job.prefetch_ok = prefetchOk;
     job.phase = 'running';
-    console.log(`[BG-BULK] Pre-fetch: ${totalToUpdate} necesitan actualización, ${totalSkipped} ya están al día (job=${jobId})`);
+    job.status = 'running';
+    job.queue_total = queue.length;
+    job.started_updates_at = Date.now();
 
-    // ---- FASE 1: clasificar (instantáneo) y luego actualizar en waves de WAVE_SIZE ----
-    let done = 0, okCount = 0, errCount = 0;
-    let doneUpdates = 0, startTimeUpdates = null;
-    const okItems = [], skippedItems = []; // para el reporte final
+    console.log(`[BG-BULK-v2] Job ${jobId}: ${queue.length} con cambios, ${skippedItems.length} saltados, workers=${desiredWorkers}-${MAX_WORKERS}`);
 
-    // Helper: procesar un solo ítem y devolver resultado (nunca lanza excepto _cancelled)
-    async function processOneItem(item) {
-      if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
-      try {
-        const payload = buildItemPayload(item);
-        const hasFlex = item.flex !== '' && item.flex != null &&
-          ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
+    let nextIndex = 0;
+    let done = skippedItems.length;
+    let okCount = 0;
+    let errCount = 0;
+    const okItems = [];
 
-        if (!Object.keys(payload).length && !hasFlex) return { item_id: item.item_id, ok: true };
+    job.done = done;
+    job.ok = okCount;
+    job.errors = errCount;
 
-        const errors = [];
-        if (Object.keys(payload).length) {
-          try {
-            await bgPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
-          } catch(e) {
-            if (e._cancelled) throw e; // propagar cancelación
-            const cause = e?.response?.data?.cause;
-            const causeDetail = Array.isArray(cause) && cause.length
-              ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
-              : null;
-            const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
-            console.log(`[BG-BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} err=${errMsg}`);
-            errors.push(errMsg);
-          }
-        }
-        if (!errors.length && hasFlex) {
-          const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
-          if (flexErr) errors.push(flexErr);
-        }
-        return errors.length ? { item_id: item.item_id, ok: false, error: errors.join('; ') } : { item_id: item.item_id, ok: true };
-      } catch(e) {
-        if (e._cancelled) throw e;
-        return { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
-      }
-    }
-
-    // Clasificar: separar skipped (ya al día) de los que necesitan PUT
-    const toUpdate = [];
-    for (const item of items) {
-      if (prefetchOk && item.item_id && !needsUpdate(item)) {
-        skippedItems.push(item.item_id);
-        done++;
-      } else {
-        toUpdate.push(item);
-      }
-    }
-    job.done = done; // actualizar progreso con skipped ya contados
-
-    console.log(`[BG-BULK] Clasificación: ${toUpdate.length} PUTs pendientes, ${skippedItems.length} saltados — job=${jobId}`);
-
-    // Procesar en waves de WAVE_SIZE PUTs simultáneos
-    for (let i = 0; i < toUpdate.length; i += WAVE_SIZE) {
-      if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
-
-      rateLimitHit = false;
-      if (!startTimeUpdates) startTimeUpdates = Date.now();
-      const wave = toUpdate.slice(i, i + WAVE_SIZE);
-
-      // Lanzar wave en paralelo; capturar errores individualmente
-      let waveResults;
-      try {
-        waveResults = await Promise.all(wave.map(item => processOneItem(item)));
-      } catch(e) {
-        // Sólo llega aquí si _cancelled fue lanzado
-        if (job.cancelled || e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
-        // Error inesperado: registrar y continuar
-        waveResults = wave.map(item => ({ item_id: item.item_id || '?', ok: false, error: e?.message || 'Error inesperado en wave' }));
-      }
-
-      for (const r of waveResults) {
-        done++;
-        doneUpdates++;
-        if (r.ok) { okCount++; okItems.push(r.item_id); }
-        else { errCount++; job.error_items.push(r); }
-      }
-
+    function updateStats() {
+      const elapsed = Math.max(1, (Date.now() - job.started_updates_at) / 1000);
+      const processedUpdates = okCount + errCount;
+      job.velocity = Math.round((processedUpdates / elapsed) * 10) / 10;
+      const remaining = Math.max(0, queue.length - processedUpdates);
+      job.eta_sec = job.velocity > 0 ? Math.round(remaining / job.velocity) : null;
       job.done = done;
       job.ok = okCount;
       job.errors = errCount;
+      job.desired_workers = desiredWorkers;
+    }
 
-      // ETA basada en el tiempo promedio real por ítem (sobre los que realmente se actualizan)
-      if (startTimeUpdates && doneUpdates > WAVE_SIZE && toUpdate.length > doneUpdates) {
-        const avgMs = (Date.now() - startTimeUpdates) / doneUpdates;
-        job.eta_sec = Math.round(avgMs * (toUpdate.length - doneUpdates) / 1000);
-      }
+    async function worker(workerId) {
+      while (!job.cancelled) {
+        if (workerId > desiredWorkers) { await sleep(500); continue; }
 
-      // Pausa adaptativa entre waves (no pausar después de la última)
-      if (i + WAVE_SIZE < toUpdate.length) {
-        if (rateLimitHit) {
-          itemPause = Math.min(PAUSE_MAX, itemPause * 2);
-          successStreak = 0;
-          console.log(`[BG-BULK] Rate limit — pausa → ${itemPause}ms`);
-        } else {
-          successStreak++;
-          if (successStreak >= STREAK_TO_SPEEDUP && itemPause > PAUSE_MIN) {
-            itemPause = Math.max(PAUSE_MIN, Math.round(itemPause * 0.8));
-            successStreak = 0;
-            console.log(`[BG-BULK] ${STREAK_TO_SPEEDUP} éxitos — pausa → ${itemPause}ms`);
-          }
+        const idx = nextIndex++;
+        if (idx >= queue.length) break;
+        const item = queue[idx];
+
+        job.active_workers = (job.active_workers || 0) + 1;
+        updateStats();
+
+        let r;
+        try {
+          r = await updateOne(item, workerId);
+        } catch(e) {
+          if (e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
+          r = { item_id: item.item_id || '?', ok: false, error: parseMLError(e) };
+        } finally {
+          job.active_workers = Math.max(0, (job.active_workers || 1) - 1);
         }
-        await sleep(itemPause);
+
+        done++;
+        if (r.ok) {
+          okCount++;
+          okItems.push(r.item_id);
+          markSuccess();
+        } else {
+          errCount++;
+          if (job.error_items.length < ERROR_ITEMS_MAX) job.error_items.push(r);
+        }
+        updateStats();
       }
+    }
+
+    const workers = [];
+    for (let w = 1; w <= MAX_WORKERS; w++) workers.push(worker(w));
+    await Promise.all(workers);
+
+    if (job.cancelled || job.status === 'cancelled') {
+      job.status = 'cancelled';
+      job.phase = 'cancelled';
+      updateStats();
+      return;
     }
 
     job.status = 'done';
@@ -990,15 +1109,17 @@ async function runBulkJob(jobId, items, account, initialToken) {
     job.done = items.length;
     job.ok = okCount;
     job.errors = errCount;
-    // Reporte completo disponible al finalizar
+    job.active_workers = 0;
+    job.finished_at = Date.now();
     job.report = { ok_items: okItems, skipped_items: skippedItems, error_items: job.error_items };
-    console.log(`[BG-BULK] Completado: ${items.length} ítems (${totalToUpdate} actualizados, ${totalSkipped} sin cambios) job=${jobId}`);
+    updateStats();
+    console.log(`[BG-BULK-v2] Completado job=${jobId}: ${okCount} OK, ${errCount} errores, ${skippedItems.length} saltados, 429=${job.rate_limits}, promos=${job.promotions_removed}`);
   } catch(e) {
     if (!job.cancelled) {
       job.status = 'error';
       job.phase = 'error';
       job.error_msg = e?.message || 'Error inesperado';
-      console.log(`[BG-BULK] Error inesperado job=${jobId}: ${e?.message}`);
+      console.log(`[BG-BULK-v2] Error inesperado job=${jobId}: ${e?.message || e}`);
     }
   }
 }
@@ -1276,6 +1397,14 @@ route('POST', '/api/bulk-update-bg', async (req, res) => {
     to_update: null,
     skipped: null,
     eta_sec: null,
+    velocity: 0,
+    active_workers: 0,
+    desired_workers: 3,
+    max_workers: 5,
+    rate_limits: 0,
+    retries: 0,
+    promotions_removed: 0,
+    promo_retry_ok: 0,
     error_items: [],
     report: null,
     cancelled: false,
