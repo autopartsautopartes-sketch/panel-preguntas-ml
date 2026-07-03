@@ -2749,12 +2749,50 @@
       (job.skipped ? `<span style="padding:4px 12px;background:#f8f9fa;color:#888;border-radius:20px;font-size:13px">⏭ ${job.skipped} sin cambios</span>` : '');
   }
 
+  // Traduce códigos de error de la API de MercadoLibre al español con acción clara
+  function translateBulkError(errorStr) {
+    if (!errorStr) return errorStr;
+    const MAP = {
+      'attributes.duplicated':
+        'Atributo duplicado en la ficha — revisá que no se repita el campo Marca u otro atributo',
+      'shipping.lost_me1_by_user':
+        'Se desactivó Mercado Envíos Clásico (ME1) — revisá las opciones de envío de la publicación',
+      'shipping.lost_me2_by_restrictions':
+        'Se desactivó Mercado Envíos Full/Flex (ME2) — restricción de categoría o cuenta del vendedor',
+      'shipping.lost_me2_by_dimensions':
+        'Se desactivó Mercado Envíos Full/Flex (ME2) — el paquete supera las dimensiones o peso máximo permitido',
+      'item.user_product.repeated.conflict':
+        'Publicación duplicada — ya tenés otro anuncio activo para este mismo producto; pausá o cerrá el duplicado',
+      'item.cannot_change_price_closed_status':
+        'No se puede cambiar el precio de una publicación cerrada — reactivá la publicación primero',
+      'item.cannot_change_status':
+        'No se puede cambiar el estado en este momento — la publicación puede estar bajo revisión',
+      'price.not_in_range':
+        'Precio fuera del rango permitido para esta categoría — verificá el precio mínimo/máximo',
+      'item.quantity_not_allowed':
+        'Stock no permitido para este tipo de publicación (ej: MercadoShops sin inventario)',
+    };
+    // Partir por ";", traducir cada parte única, eliminar repetidos
+    const parts = errorStr.split(/\s*;\s*/);
+    const seen = new Set();
+    const translated = [];
+    for (const part of parts) {
+      const key = part.trim();
+      const t = MAP[key] || key; // si no está en el mapa, mostrar el código original
+      if (!seen.has(t)) { seen.add(t); translated.push(t); }
+    }
+    return translated.join(' · ');
+  }
+
   function onBulkJobDone(job) {
     if (!window.XLSX) { loadXLSX(); return; }
     const report = job.report || {};
     const okItems = report.ok_items || [];
     const skippedItems = report.skipped_items || [];
-    const errorItems = report.error_items || job.error_items || [];
+    const errorItems = (report.error_items || job.error_items || []).map(r => ({
+      ...r,
+      error: translateBulkError(r.error)
+    }));
 
     const wb = XLSX.utils.book_new();
 
