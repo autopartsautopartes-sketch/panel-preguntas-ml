@@ -2726,8 +2726,16 @@
       const etaTxt = (job.eta_sec && done > 5)
         ? (() => { const s = job.eta_sec; return s >= 3600 ? `~${Math.round(s/3600)}h restantes` : s >= 60 ? `~${Math.round(s/60)} min restantes` : `~${s}s restantes`; })()
         : '';
-      statusTxt = `${done} / ${total} publicaciones${etaTxt ? '  —  ' + etaTxt : ''}`;
-      if (job.to_update !== null) noteHtml = `📊 ${job.to_update} con cambios · ${job.skipped} sin cambios (saltados)`;
+      const velTxt = job.velocity ? ` · ${job.velocity} pub/s` : '';
+      const workersTxt = job.desired_workers ? ` · workers ${job.active_workers || 0}/${job.desired_workers}` : '';
+      statusTxt = `${done} / ${total} publicaciones${etaTxt ? '  —  ' + etaTxt : ''}${velTxt}${workersTxt}`;
+      if (job.to_update !== null) {
+        noteHtml = `📊 ${job.to_update} con cambios · ${job.skipped} sin cambios (saltados)` +
+          ` · ⚙️ modo inteligente` +
+          (job.rate_limits ? ` · ⚠️ ${job.rate_limits} rate limits` : '') +
+          (job.promotions_removed ? ` · 📣 ${job.promotions_removed} promos removidas` : '') +
+          (job.retries ? ` · 🔁 ${job.retries} reintentos` : '');
+      }
     } else if (job.phase === 'done') {
       statusTxt = `✅ Completado: ${job.ok} actualizados${job.errors ? `, ${job.errors} con errores` : ''}`;
       barEl.style.background = '#27ae60';
@@ -2746,7 +2754,10 @@
     if (cntEl) cntEl.innerHTML =
       (okCount ? `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount} OK</span>` : '') +
       (errCount ? `<span style="padding:4px 12px;background:#f8d7da;color:#e74c3c;border-radius:20px;font-size:13px;font-weight:600">❌ ${errCount} errores</span>` : '') +
-      (job.skipped ? `<span style="padding:4px 12px;background:#f8f9fa;color:#888;border-radius:20px;font-size:13px">⏭ ${job.skipped} sin cambios</span>` : '');
+      (job.skipped ? `<span style="padding:4px 12px;background:#f8f9fa;color:#888;border-radius:20px;font-size:13px">⏭ ${job.skipped} sin cambios</span>` : '') +
+      (job.rate_limits ? `<span style="padding:4px 12px;background:#fff3cd;color:#856404;border-radius:20px;font-size:13px">⚠️ ${job.rate_limits} 429</span>` : '') +
+      (job.promotions_removed ? `<span style="padding:4px 12px;background:#e7f3ff;color:#0969da;border-radius:20px;font-size:13px">📣 ${job.promotions_removed} promos</span>` : '') +
+      (job.velocity ? `<span style="padding:4px 12px;background:#eef2ff;color:#4338ca;border-radius:20px;font-size:13px">⚡ ${job.velocity} pub/s</span>` : '');
   }
 
   // Traduce códigos de error de la API de MercadoLibre al español con acción clara
