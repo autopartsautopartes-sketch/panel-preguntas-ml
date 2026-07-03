@@ -760,8 +760,17 @@ route('POST', '/api/bulk-update', async (req, res) => {
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  // Rate limiter ADAPTATIVO: empieza rápido (300ms/ítem) y se auto-regula.
+  // Si ML devuelve 429 → duplica la pausa. Si 40 ítems seguidos sin 429 → reduce la pausa.
+  // Esto permite encontrar automáticamente el ritmo que acepta cada cuenta de ML.
+  let itemPause = 300;           // pausa inicial entre ítems (ms)
+  const PAUSE_MIN = 300;         // mínimo: ~3 ítems/seg
+  const PAUSE_MAX = 4000;        // máximo: frenar cuando hay muchos 429
+  let successStreak = 0;         // ítems sin 429 consecutivos
+  const STREAK_TO_SPEEDUP = 40;  // tras N éxitos, intentar reducir pausa 20%
+  let rateLimitHit = false;      // flag: ¿hubo 429 durante el ítem actual?
+
   // Helper: ejecuta mlPut con reintentos automáticos para 401 (token) y 429 (rate limit).
-  // Procesamiento SECUENCIAL (sin concurrencia) para respetar el rate limit de ML.
   async function mlPutWithRetry(url, payload) {
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -775,15 +784,16 @@ route('POST', '/api/bulk-update', async (req, res) => {
           const refreshed = await refreshToken(account);
           if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
           token = refreshed;
-          continue; // reintentar con nuevo token
+          continue;
         }
         if (status === 429) {
-          const wait = [10000, 25000, 45000][attempt] || 45000;
-          console.log(`[BULK] 429 too_many_requests en ${url} — esperando ${wait}ms antes de reintentar (intento ${attempt + 1})`);
+          rateLimitHit = true;
+          const wait = [8000, 20000, 40000][attempt] || 40000;
+          console.log(`[BULK] 429 too_many_requests en ${url} — esperando ${wait}ms (intento ${attempt + 1}, pausa_actual=${itemPause}ms)`);
           await sleep(wait);
-          continue; // reintentar después de esperar
+          continue;
         }
-        throw e; // otro error, no reintentar
+        throw e;
       }
     }
     throw lastErr;
@@ -792,12 +802,16 @@ route('POST', '/api/bulk-update', async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
   res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
 
-  // Procesamiento SECUENCIAL: 1 ítem a la vez con pausa entre cada uno.
-  // Evita el error 429 (too_many_requests) al no acumular llamadas simultáneas a ML.
   let done = 0;
+  const startTime = Date.now();
+
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
+    rateLimitHit = false;
     let r;
+
+    let madeApiCall = false; // ¿este ítem hizo alguna llamada a ML?
+
     if (!item.item_id) {
       r = { item_id: '?', ok: false, error: 'Sin item_id' };
     } else {
@@ -807,13 +821,14 @@ route('POST', '/api/bulk-update', async (req, res) => {
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
 
         if (!Object.keys(payload).length && !hasFlex) {
+          // No hay cambios — se omite sin hacer llamada a ML
           r = { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
         } else {
+          madeApiCall = true;
           const errors = [];
           const warnings = [];
 
           // 0. Quitar promociones activas antes de modificar (solo si no se indicó skip).
-          // ML suele bloquear precio/stock/status/SKU cuando el ítem participa en campañas.
           if (!skip_promo_clean && (Object.keys(payload).length || hasFlex)) {
             const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
             if (promoClean.removed?.length) {
@@ -856,10 +871,31 @@ route('POST', '/api/bulk-update', async (req, res) => {
         r = { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
       }
     }
+
     done++;
-    res.write(JSON.stringify({ type: 'result', done, total: items.length, ...r }) + '\n');
-    // Pausa de 1200ms entre ítems para respetar el rate limit de ML (~1 req/seg máximo)
-    if (i < items.length - 1) await sleep(1200);
+    // Calcular ETA y enviarla junto con el resultado
+    const elapsed = Date.now() - startTime;
+    const avgMs = elapsed / done;
+    const remaining = items.length - done;
+    const etaSec = Math.round((avgMs * remaining) / 1000);
+    res.write(JSON.stringify({ type: 'result', done, total: items.length, eta_sec: etaSec, ...r }) + '\n');
+
+    // Solo pausamos si realmente se hizo una llamada a ML (ítems sin cambios no requieren pausa)
+    if (i < items.length - 1 && madeApiCall) {
+      if (rateLimitHit) {
+        itemPause = Math.min(PAUSE_MAX, itemPause * 2);
+        successStreak = 0;
+        console.log(`[BULK] Rate limit detectado — aumentando pausa a ${itemPause}ms`);
+      } else {
+        successStreak++;
+        if (successStreak >= STREAK_TO_SPEEDUP && itemPause > PAUSE_MIN) {
+          itemPause = Math.max(PAUSE_MIN, Math.round(itemPause * 0.8));
+          successStreak = 0;
+          console.log(`[BULK] ${STREAK_TO_SPEEDUP} éxitos consecutivos — reduciendo pausa a ${itemPause}ms`);
+        }
+      }
+      await sleep(itemPause);
+    }
   }
   res.write(JSON.stringify({ type: 'done', total: items.length }) + '\n');
   res.end();
