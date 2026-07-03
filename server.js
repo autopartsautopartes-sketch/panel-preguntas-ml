@@ -750,7 +750,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
   const userPerm = dbPerm.users.find(u => u.id === sess.userId);
   const canBulk = sess.role === 'admin' || userPerm?.can_search_update === true;
   if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { account_id, items } = await parseBody(req);
+  const { account_id, items, skip_promo_clean } = await parseBody(req);
   if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
@@ -793,9 +793,9 @@ route('POST', '/api/bulk-update', async (req, res) => {
         const errors = [];
         const warnings = [];
 
-        // 0. Si hay cambios reales, primero quitar promociones activas.
+        // 0. Quitar promociones activas antes de modificar (solo si no se indicó skip).
         // ML suele bloquear precio/stock/status/SKU cuando el ítem participa en campañas.
-        if (Object.keys(payload).length || hasFlex) {
+        if (!skip_promo_clean && (Object.keys(payload).length || hasFlex)) {
           const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
           if (promoClean.removed?.length) {
             warnings.push(`Promos removidas: ${promoClean.removed.map(p => `${p.removed}/${p.type}`).join(', ')}`);
