@@ -755,8 +755,22 @@ route('POST', '/api/bulk-update', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-  const token = await getValidToken(account);
-  if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML' });
+  let token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
+
+  // Helper: ejecuta mlPut y, si ML responde 401, refresca el token y reintenta una vez.
+  async function mlPutWithRetry(url, payload) {
+    try {
+      return await mlPut(url, payload, token);
+    } catch(e) {
+      if (e?.response?.status !== 401) throw e;
+      console.log(`[BULK] 401 en ${url} — intentando refresh de token para ${account.name}`);
+      const refreshed = await refreshToken(account);
+      if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
+      token = refreshed; // actualizar token para las próximas llamadas del batch
+      return await mlPut(url, payload, token);
+    }
+  }
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
   res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
@@ -773,7 +787,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
 
         if (!Object.keys(payload).length && !hasFlex) {
-          return { item_id: item.item_id, ok: false, error: 'Sin cambios' };
+          return { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
         }
 
         const errors = [];
@@ -791,12 +805,22 @@ route('POST', '/api/bulk-update', async (req, res) => {
           }
         }
 
-        // 1. Actualizar campos normales (precio, stock, status, etc.)
+        // 1. Actualizar campos normales — con auto-retry si ML devuelve 401
         if (!errors.length && Object.keys(payload).length) {
           try {
-            await mlPut(`https://api.mercadolibre.com/items/${item.item_id}`, payload, token);
+            await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
           } catch(e) {
-            errors.push(e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar');
+            const cause = e?.response?.data?.cause;
+            const causeDetail = Array.isArray(cause) && cause.length
+              ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
+              : null;
+            const errMsg = causeDetail
+              || e?.response?.data?.message
+              || e?.response?.data?.error
+              || e?.message
+              || 'Error al actualizar';
+            console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
+            errors.push(errMsg);
           }
         }
 
