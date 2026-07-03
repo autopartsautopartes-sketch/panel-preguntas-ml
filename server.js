@@ -758,24 +758,39 @@ route('POST', '/api/bulk-update', async (req, res) => {
   let token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
 
-  // Helper: ejecuta mlPut y, si ML responde 401, refresca el token y reintenta una vez.
+  // Helper: ejecuta mlPut con reintentos automáticos para 401 (token) y 429 (rate limit).
   async function mlPutWithRetry(url, payload) {
-    try {
-      return await mlPut(url, payload, token);
-    } catch(e) {
-      if (e?.response?.status !== 401) throw e;
-      console.log(`[BULK] 401 en ${url} — intentando refresh de token para ${account.name}`);
-      const refreshed = await refreshToken(account);
-      if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
-      token = refreshed; // actualizar token para las próximas llamadas del batch
-      return await mlPut(url, payload, token);
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return await mlPut(url, payload, token);
+      } catch(e) {
+        lastErr = e;
+        const status = e?.response?.status;
+        if (status === 401) {
+          console.log(`[BULK] 401 en ${url} — intentando refresh de token para ${account.name}`);
+          const refreshed = await refreshToken(account);
+          if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
+          token = refreshed;
+          continue; // reintentar con nuevo token
+        }
+        if (status === 429) {
+          const wait = [2000, 5000, 10000][attempt] || 10000;
+          console.log(`[BULK] 429 too_many_requests en ${url} — esperando ${wait}ms antes de reintentar (intento ${attempt + 1})`);
+          await sleep(wait);
+          continue; // reintentar después de esperar
+        }
+        throw e; // otro error, no reintentar
+      }
     }
+    throw lastErr;
   }
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
   res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
 
-  const CONCURRENCY = 10;
+  const CONCURRENCY = 5; // reducido de 10 a 5 para evitar rate limiting de ML
   let done = 0;
   for (let i = 0; i < items.length; i += CONCURRENCY) {
     const batch = items.slice(i, i + CONCURRENCY);
@@ -840,6 +855,8 @@ route('POST', '/api/bulk-update', async (req, res) => {
     for (const r of batchResults) {
       res.write(JSON.stringify({ type: 'result', done, total: items.length, ...r }) + '\n');
     }
+    // Pausa entre batches para no saturar el rate limit de ML
+    if (i + CONCURRENCY < items.length) await new Promise(r => setTimeout(r, 300));
   }
   res.write(JSON.stringify({ type: 'done', total: items.length }) + '\n');
   res.end();
