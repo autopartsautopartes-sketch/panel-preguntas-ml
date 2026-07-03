@@ -2377,6 +2377,8 @@
   // ==================== ACTUALIZAR (BULK UPDATE) ====================
 
   let updateParsedData = [];
+  let bulkPollInterval = null;
+  let bulkCurrentJobId = null;
 
   async function loadUpdate() {
     const isAdmin = currentUser?.role === 'admin';
@@ -2507,6 +2509,29 @@
 
     // Load SheetJS lazily
     await loadXLSX();
+
+    // Si hay un job en progreso (browser cerrado y reabierto), retomar el polling
+    const savedJobId = localStorage.getItem('bulk_job_id');
+    if (savedJobId) {
+      try {
+        const r = await fetch('/api/bulk-status?job_id=' + encodeURIComponent(savedJobId));
+        if (r.ok) {
+          const job = await r.json();
+          if (!['done','cancelled','error'].includes(job.status)) {
+            // Job todavía en progreso — mostrar barra y continuar polling
+            document.getElementById('resultsSection').style.display = 'block';
+            setupBulkProgressUI(savedJobId);
+            startBulkPolling(savedJobId);
+          } else {
+            localStorage.removeItem('bulk_job_id');
+            localStorage.removeItem('bulk_job_account');
+          }
+        } else {
+          localStorage.removeItem('bulk_job_id');
+          localStorage.removeItem('bulk_job_account');
+        }
+      } catch(e) {}
+    }
   }
 
   async function loadXLSX() {
@@ -2586,103 +2611,207 @@
     const accountId = document.getElementById('updateAccount')?.value;
     if (!accountId) return showToast('Seleccioná una cuenta ML', 'error');
     if (!updateParsedData.length) return showToast('No hay datos para aplicar', 'error');
-    const btn = document.getElementById('btnApply');
-    btn.disabled = true; btn.textContent = '⏳ Aplicando...';
-    document.getElementById('resultsSection').style.display = 'block';
-    document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
 
+    const btn = document.getElementById('btnApply');
+    btn.disabled = true;
+    btn.textContent = '⏳ Enviando…';
+
+    try {
+      const res = await fetch('/api/bulk-update-bg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: parseInt(accountId), items: updateParsedData })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Error al iniciar proceso', 'error');
+        btn.disabled = false; btn.textContent = '✅ Aplicar cambios';
+        return;
+      }
+      const jobId = data.job_id;
+      bulkCurrentJobId = jobId;
+      localStorage.setItem('bulk_job_id', jobId);
+      localStorage.setItem('bulk_job_account', accountId);
+
+      document.getElementById('resultsSection').style.display = 'block';
+      document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+      setupBulkProgressUI(jobId);
+      startBulkPolling(jobId);
+      btn.textContent = '⏳ Procesando en segundo plano…';
+    } catch(e) {
+      showToast('Error de conexión: ' + e.message, 'error');
+      btn.disabled = false; btn.textContent = '✅ Aplicar cambios';
+    }
+  }
+
+  function setupBulkProgressUI(jobId) {
     const progressEl = document.getElementById('resultsProgress');
     const listEl = document.getElementById('resultsList');
+    if (!progressEl) return;
     progressEl.innerHTML = `
       <div style="margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;font-size:13px;color:#666;margin-bottom:6px">
-          <span id="bulkProgressText">Iniciando…</span>
-          <span id="bulkProgressPct">0%</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap">
+          <span id="bulkProgressText" style="font-size:13px;color:#666">Iniciando…</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="bulkProgressPct" style="font-size:13px;color:#666;font-weight:600">0%</span>
+            <button id="btnCancelBulk" onclick="cancelBulkJob('${jobId}')"
+              style="padding:4px 14px;background:#e74c3c;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">✖ Cancelar</button>
+          </div>
         </div>
         <div style="background:#e9ecef;border-radius:8px;height:10px;overflow:hidden">
           <div id="bulkProgressBar" style="background:#3483fa;height:100%;width:0%;transition:width .3s;border-radius:8px"></div>
         </div>
       </div>
-      <div id="bulkCounters" style="display:flex;gap:12px;flex-wrap:wrap"></div>`;
-    listEl.innerHTML = '<div id="bulkResultsLog" style="max-height:300px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:8px;margin-top:12px"></div>';
+      <div id="bulkCounters" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px"></div>
+      <div id="bulkPhaseNote" style="font-size:12px;color:#888"></div>`;
+    if (listEl) listEl.innerHTML = '';
+  }
 
-    let okCount = 0, errCount = 0;
-    const errorRows = [];
-    const logEl = () => document.getElementById('bulkResultsLog');
+  function startBulkPolling(jobId) {
+    if (bulkPollInterval) clearInterval(bulkPollInterval);
+    bulkCurrentJobId = jobId;
 
+    bulkPollInterval = setInterval(async () => {
+      try {
+        const r = await fetch('/api/bulk-status?job_id=' + encodeURIComponent(jobId));
+        if (!r.ok) {
+          if (r.status === 404) {
+            clearInterval(bulkPollInterval); bulkPollInterval = null;
+            localStorage.removeItem('bulk_job_id');
+            const txt = document.getElementById('bulkProgressText');
+            if (txt) txt.textContent = 'Job no encontrado o expirado';
+          }
+          return;
+        }
+        const job = await r.json();
+        updateBulkProgressUI(job);
+
+        if (['done','cancelled','error'].includes(job.status)) {
+          clearInterval(bulkPollInterval); bulkPollInterval = null;
+          localStorage.removeItem('bulk_job_id');
+          localStorage.removeItem('bulk_job_account');
+          const btn = document.getElementById('btnApply');
+          if (btn) { btn.disabled = false; btn.textContent = '✅ Aplicar cambios'; }
+          const cancelBtn = document.getElementById('btnCancelBulk');
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          if (job.status === 'done') onBulkJobDone(job);
+        }
+      } catch(e) { /* error de red — reintentará en el próximo tick */ }
+    }, 2000);
+  }
+
+  function updateBulkProgressUI(job) {
+    const total = job.total || 1;
+    const done = job.done || 0;
+    const pct = Math.round((done / total) * 100);
+
+    const barEl = document.getElementById('bulkProgressBar');
+    const pctEl = document.getElementById('bulkProgressPct');
+    const txtEl = document.getElementById('bulkProgressText');
+    const cntEl = document.getElementById('bulkCounters');
+    const noteEl = document.getElementById('bulkPhaseNote');
+    if (!barEl) return;
+
+    barEl.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = pct + '%';
+
+    let statusTxt = '', noteHtml = '';
+    if (job.phase === 'starting') {
+      statusTxt = 'Iniciando…';
+    } else if (job.phase === 'prefetch') {
+      const pf = job.prefetch_done || 0, pt = job.prefetch_total || total;
+      statusTxt = `Analizando publicaciones… (${pf} / ${pt})`;
+      noteHtml = '🔍 Comparando con el estado actual en MercadoLibre para saltear los que ya están al día';
+    } else if (job.phase === 'running') {
+      const etaTxt = (job.eta_sec && done > 5)
+        ? (() => { const s = job.eta_sec; return s >= 3600 ? `~${Math.round(s/3600)}h restantes` : s >= 60 ? `~${Math.round(s/60)} min restantes` : `~${s}s restantes`; })()
+        : '';
+      statusTxt = `${done} / ${total} publicaciones${etaTxt ? '  —  ' + etaTxt : ''}`;
+      if (job.to_update !== null) noteHtml = `📊 ${job.to_update} con cambios · ${job.skipped} sin cambios (saltados)`;
+    } else if (job.phase === 'done') {
+      statusTxt = `✅ Completado: ${job.ok} actualizados${job.errors ? `, ${job.errors} con errores` : ''}`;
+      barEl.style.background = '#27ae60';
+    } else if (job.phase === 'cancelled') {
+      statusTxt = `❌ Cancelado (${done} / ${total} procesados)`;
+      barEl.style.background = '#e74c3c';
+    } else if (job.phase === 'error') {
+      statusTxt = `❌ Error: ${escapeHtml(job.error_msg || 'Error inesperado')}`;
+      barEl.style.background = '#e74c3c';
+    }
+
+    if (txtEl) txtEl.textContent = statusTxt;
+    if (noteEl) noteEl.innerHTML = noteHtml;
+
+    const okCount = job.ok || 0, errCount = job.errors || 0;
+    if (cntEl) cntEl.innerHTML =
+      (okCount ? `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount} OK</span>` : '') +
+      (errCount ? `<span style="padding:4px 12px;background:#f8d7da;color:#e74c3c;border-radius:20px;font-size:13px;font-weight:600">❌ ${errCount} errores</span>` : '') +
+      (job.skipped ? `<span style="padding:4px 12px;background:#f8f9fa;color:#888;border-radius:20px;font-size:13px">⏭ ${job.skipped} sin cambios</span>` : '');
+  }
+
+  function onBulkJobDone(job) {
+    if (!window.XLSX) { loadXLSX(); return; }
+    const report = job.report || {};
+    const okItems = report.ok_items || [];
+    const skippedItems = report.skipped_items || [];
+    const errorItems = report.error_items || job.error_items || [];
+
+    const wb = XLSX.utils.book_new();
+
+    // Hoja 1: Actualizados exitosamente
+    if (okItems.length) {
+      const wsOk = XLSX.utils.aoa_to_sheet([['item_id'], ...okItems.map(id => [id])]);
+      wsOk['!cols'] = [{ wch: 20 }];
+      XLSX.utils.book_append_sheet(wb, wsOk, 'Actualizados');
+    }
+
+    // Hoja 2: Errores (con detalle del error)
+    if (errorItems.length) {
+      const wsErr = XLSX.utils.aoa_to_sheet([
+        ['item_id','error'],
+        ...errorItems.map(r => [r.item_id, r.error || ''])
+      ]);
+      wsErr['!cols'] = [{ wch: 20 }, { wch: 50 }];
+      XLSX.utils.book_append_sheet(wb, wsErr, 'Errores');
+    }
+
+    // Hoja 3: Sin cambios (ya estaban al día)
+    if (skippedItems.length) {
+      const wsSkip = XLSX.utils.aoa_to_sheet([['item_id'], ...skippedItems.map(id => [id])]);
+      wsSkip['!cols'] = [{ wch: 20 }];
+      XLSX.utils.book_append_sheet(wb, wsSkip, 'Sin cambios');
+    }
+
+    if (wb.SheetNames.length === 0) return; // nada que reportar
+
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2,'0');
+    const mm = String(now.getMonth()+1).padStart(2,'0');
+    XLSX.writeFile(wb, `reporte_bulk_${dd}${mm}.xlsx`);
+
+    // Mostrar mensaje con resumen del reporte
+    const listEl = document.getElementById('resultsList');
+    if (listEl) {
+      listEl.innerHTML = `<div style="margin-top:12px;padding:12px 16px;background:#f0fff4;border:1px solid #c3e6cb;border-radius:8px;font-size:13px;color:#27ae60">
+        📥 <strong>Reporte descargado:</strong> reporte_bulk_${dd}${mm}.xlsx
+        ${okItems.length ? `&nbsp;·&nbsp; ✅ ${okItems.length} actualizados` : ''}
+        ${errorItems.length ? `&nbsp;·&nbsp; ❌ ${errorItems.length} con errores` : ''}
+        ${skippedItems.length ? `&nbsp;·&nbsp; ⏭ ${skippedItems.length} sin cambios` : ''}
+      </div>`;
+    }
+  }
+
+  async function cancelBulkJob(jobId) {
     try {
-      const res = await fetch('/api/bulk-update', {
+      await fetch('/api/bulk-cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: parseInt(accountId), items: updateParsedData, skip_promo_clean: true })
+        body: JSON.stringify({ job_id: jobId })
       });
-      if (!res.ok) {
-        const d = await res.json();
-        progressEl.innerHTML = `<p style="color:#e74c3c">${escapeHtml(d.error || 'Error')}</p>`;
-        btn.disabled = false; btn.textContent = '✅ Aplicar cambios'; return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n'); buf = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const msg = JSON.parse(line);
-            if (msg.type === 'result') {
-              if (msg.ok) okCount++; else errCount++;
-              const pct = Math.round((msg.done / msg.total) * 100);
-              document.getElementById('bulkProgressBar').style.width = pct + '%';
-              document.getElementById('bulkProgressPct').textContent = pct + '%';
-              const etaTxt = (msg.eta_sec && msg.done > 5)
-                ? (() => { const s = msg.eta_sec; return s >= 3600 ? `~${Math.round(s/3600)}h restantes` : s >= 60 ? `~${Math.round(s/60)} min restantes` : `~${s}s restantes`; })()
-                : '';
-              document.getElementById('bulkProgressText').textContent = `${msg.done} / ${msg.total} publicaciones${etaTxt ? '  —  ' + etaTxt : ''}`;
-              document.getElementById('bulkCounters').innerHTML =
-                `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount}</span>` +
-                (errCount ? `<span style="padding:4px 12px;background:#f8d7da;color:#e74c3c;border-radius:20px;font-size:13px;font-weight:600">❌ ${errCount}</span>` : '');
-              if (msg.warning) {
-                const log = logEl();
-                if (log) log.innerHTML += `<div style="padding:7px 12px;border-bottom:1px solid #f5f5f5;font-size:12px;color:#e67e22">⚠️ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.warning)}</div>`;
-              }
-              if (!msg.ok) {
-                const log = logEl();
-                if (log) log.innerHTML += `<div style="padding:7px 12px;border-bottom:1px solid #f5f5f5;font-size:12px;color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || '')}</div>`;
-                // Guardar fila original + error para el Excel de errores
-                const original = updateParsedData.find(r => r.item_id === msg.item_id) || { item_id: msg.item_id };
-                errorRows.push({ ...original, error: msg.error || '' });
-              }
-            } else if (msg.type === 'done') {
-              document.getElementById('bulkProgressText').textContent = `✅ Completado: ${okCount} exitosos${errCount ? `, ${errCount} con errores` : ''}`;
-              document.getElementById('bulkProgressBar').style.background = '#27ae60';
-              // Descargar Excel con errores si los hay
-              if (errCount > 0 && window.XLSX) {
-                const wsData = [
-                  ['item_id','available_quantity','status','price','marca','flex','item_sku','error'],
-                  ...errorRows.map(r => [r.item_id, r.available_quantity||'', r.status||'', r.price||'', r.marca||'', r.flex||'', r.item_sku||'', r.error||''])
-                ];
-                const ws = XLSX.utils.aoa_to_sheet(wsData);
-                ws['!cols'] = [18,16,10,10,15,8,15,40].map(w => ({ wch: w }));
-                const wb2 = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb2, ws, 'Errores');
-                const now = new Date();
-                const dd = String(now.getDate()).padStart(2,'0');
-                const mm = String(now.getMonth()+1).padStart(2,'0');
-                XLSX.writeFile(wb2, `errores_bulk_${dd}${mm}.xlsx`);
-              }
-            }
-          } catch(_) {}
-        }
-      }
+      showToast('Cancelando proceso…', 'success');
     } catch(e) {
-      progressEl.innerHTML += `<p style="color:#e74c3c;margin-top:8px">Error de conexión: ${escapeHtml(e.message)}</p>`;
+      showToast('Error al cancelar: ' + e.message, 'error');
     }
-    btn.disabled = false; btn.textContent = '✅ Aplicar cambios';
   }
 
   let searchResultsData = [];
