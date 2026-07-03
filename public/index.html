@@ -2915,6 +2915,7 @@
   }
 
   function renderSearchResults(data) {
+    searchResultsData = data; // sincronizar índices con data-idx de la tabla
     const section = ensureSearchResultsBox();
     const table = document.getElementById('searchResultsTable');
     const log = document.getElementById('searchUpdateLog');
