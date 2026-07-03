@@ -3163,7 +3163,7 @@
       </div>`;
     exportSection.scrollIntoView({ behavior: 'smooth' });
 
-    const csvRows = [['item_id','flex','local_pick_up','shipping','titulo','available_quantity','status','price','seller_sku']];
+    const csvRows = [['item_id','flex','local_pick_up','shipping','titulo','available_quantity','status','price','item_sku']];
 
     try {
       const res = await fetch(`/api/export-listings?account_id=${accountId}`);
