@@ -758,9 +758,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
   let token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
 
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
   // Helper: ejecuta mlPut con reintentos automáticos para 401 (token) y 429 (rate limit).
+  // Procesamiento SECUENCIAL (sin concurrencia) para respetar el rate limit de ML.
   async function mlPutWithRetry(url, payload) {
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
@@ -776,7 +778,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
           continue; // reintentar con nuevo token
         }
         if (status === 429) {
-          const wait = [2000, 5000, 10000][attempt] || 10000;
+          const wait = [10000, 25000, 45000][attempt] || 45000;
           console.log(`[BULK] 429 too_many_requests en ${url} — esperando ${wait}ms antes de reintentar (intento ${attempt + 1})`);
           await sleep(wait);
           continue; // reintentar después de esperar
@@ -790,73 +792,74 @@ route('POST', '/api/bulk-update', async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
   res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
 
-  const CONCURRENCY = 5; // reducido de 10 a 5 para evitar rate limiting de ML
+  // Procesamiento SECUENCIAL: 1 ítem a la vez con pausa entre cada uno.
+  // Evita el error 429 (too_many_requests) al no acumular llamadas simultáneas a ML.
   let done = 0;
-  for (let i = 0; i < items.length; i += CONCURRENCY) {
-    const batch = items.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.all(batch.map(async (item) => {
-      if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    let r;
+    if (!item.item_id) {
+      r = { item_id: '?', ok: false, error: 'Sin item_id' };
+    } else {
       try {
         const payload = buildItemPayload(item);
         const hasFlex = item.flex !== '' && item.flex != null &&
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
 
         if (!Object.keys(payload).length && !hasFlex) {
-          return { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
-        }
+          r = { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
+        } else {
+          const errors = [];
+          const warnings = [];
 
-        const errors = [];
-        const warnings = [];
-
-        // 0. Quitar promociones activas antes de modificar (solo si no se indicó skip).
-        // ML suele bloquear precio/stock/status/SKU cuando el ítem participa en campañas.
-        if (!skip_promo_clean && (Object.keys(payload).length || hasFlex)) {
-          const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
-          if (promoClean.removed?.length) {
-            warnings.push(`Promos removidas: ${promoClean.removed.map(p => `${p.removed}/${p.type}`).join(', ')}`);
+          // 0. Quitar promociones activas antes de modificar (solo si no se indicó skip).
+          // ML suele bloquear precio/stock/status/SKU cuando el ítem participa en campañas.
+          if (!skip_promo_clean && (Object.keys(payload).length || hasFlex)) {
+            const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
+            if (promoClean.removed?.length) {
+              warnings.push(`Promos removidas: ${promoClean.removed.map(p => `${p.removed}/${p.type}`).join(', ')}`);
+            }
+            if (!promoClean.ok) {
+              errors.push('No se pudieron remover promociones activas: ' + (promoClean.errors || []).map(e => e.error || JSON.stringify(e)).join(' | '));
+            }
           }
-          if (!promoClean.ok) {
-            errors.push('No se pudieron remover promociones activas: ' + (promoClean.errors || []).map(e => e.error || JSON.stringify(e)).join(' | '));
+
+          // 1. Actualizar campos normales — con auto-retry si ML devuelve 401 o 429
+          if (!errors.length && Object.keys(payload).length) {
+            try {
+              await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
+            } catch(e) {
+              const cause = e?.response?.data?.cause;
+              const causeDetail = Array.isArray(cause) && cause.length
+                ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
+                : null;
+              const errMsg = causeDetail
+                || e?.response?.data?.message
+                || e?.response?.data?.error
+                || e?.message
+                || 'Error al actualizar';
+              console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
+              errors.push(errMsg);
+            }
           }
-        }
 
-        // 1. Actualizar campos normales — con auto-retry si ML devuelve 401
-        if (!errors.length && Object.keys(payload).length) {
-          try {
-            await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
-          } catch(e) {
-            const cause = e?.response?.data?.cause;
-            const causeDetail = Array.isArray(cause) && cause.length
-              ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
-              : null;
-            const errMsg = causeDetail
-              || e?.response?.data?.message
-              || e?.response?.data?.error
-              || e?.message
-              || 'Error al actualizar';
-            console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
-            errors.push(errMsg);
+          // 2. Actualizar flex via endpoint dedicado
+          if (!errors.length && hasFlex) {
+            const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
+            if (flexErr) errors.push(flexErr);
           }
-        }
 
-        // 2. Actualizar flex via endpoint dedicado
-        if (!errors.length && hasFlex) {
-          const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
-          if (flexErr) errors.push(flexErr);
+          if (errors.length) r = { item_id: item.item_id, ok: false, error: errors.join(' | ') };
+          else r = { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
         }
-
-        if (errors.length) return { item_id: item.item_id, ok: false, error: errors.join(' | ') };
-        return { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
       } catch(e) {
-        return { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
+        r = { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
       }
-    }));
-    done += batch.length;
-    for (const r of batchResults) {
-      res.write(JSON.stringify({ type: 'result', done, total: items.length, ...r }) + '\n');
     }
-    // Pausa entre batches para no saturar el rate limit de ML
-    if (i + CONCURRENCY < items.length) await new Promise(r => setTimeout(r, 300));
+    done++;
+    res.write(JSON.stringify({ type: 'result', done, total: items.length, ...r }) + '\n');
+    // Pausa de 1200ms entre ítems para respetar el rate limit de ML (~1 req/seg máximo)
+    if (i < items.length - 1) await sleep(1200);
   }
   res.write(JSON.stringify({ type: 'done', total: items.length }) + '\n');
   res.end();
