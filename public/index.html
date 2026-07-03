@@ -2639,7 +2639,10 @@
               const pct = Math.round((msg.done / msg.total) * 100);
               document.getElementById('bulkProgressBar').style.width = pct + '%';
               document.getElementById('bulkProgressPct').textContent = pct + '%';
-              document.getElementById('bulkProgressText').textContent = `${msg.done} / ${msg.total} publicaciones`;
+              const etaTxt = (msg.eta_sec && msg.done > 5)
+                ? (() => { const s = msg.eta_sec; return s >= 3600 ? `~${Math.round(s/3600)}h restantes` : s >= 60 ? `~${Math.round(s/60)} min restantes` : `~${s}s restantes`; })()
+                : '';
+              document.getElementById('bulkProgressText').textContent = `${msg.done} / ${msg.total} publicaciones${etaTxt ? '  —  ' + etaTxt : ''}`;
               document.getElementById('bulkCounters').innerHTML =
                 `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount}</span>` +
                 (errCount ? `<span style="padding:4px 12px;background:#f8d7da;color:#e74c3c;border-radius:20px;font-size:13px;font-weight:600">❌ ${errCount}</span>` : '');
