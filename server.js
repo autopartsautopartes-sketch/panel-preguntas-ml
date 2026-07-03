@@ -742,7 +742,251 @@ async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
   };
 }
 
-// BULK UPDATE — streaming ndjson, 10 llamadas paralelas
+// ==================== BACKGROUND JOB STORE (bulk update — opción 4) ====================
+const bulkJobs = {};
+const BULK_JOB_TTL = 8 * 60 * 60 * 1000; // 8 horas
+
+function cleanBulkJobs() {
+  const cutoff = Date.now() - BULK_JOB_TTL;
+  for (const id of Object.keys(bulkJobs)) {
+    if (bulkJobs[id].created < cutoff) delete bulkJobs[id];
+  }
+}
+
+async function runBulkJob(jobId, items, account, initialToken) {
+  const job = bulkJobs[jobId];
+  if (!job) return;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let token = initialToken;
+
+  // Rate limiter adaptativo: empieza en 300ms, se dobla en 429, baja 20% cada 40 éxitos
+  let itemPause = 300;
+  const PAUSE_MIN = 300, PAUSE_MAX = 4000;
+  let successStreak = 0;
+  const STREAK_TO_SPEEDUP = 40;
+  let rateLimitHit = false;
+
+  async function bgPutWithRetry(url, payload) {
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
+      try {
+        return await mlPut(url, payload, token);
+      } catch(e) {
+        lastErr = e;
+        const status = e?.response?.status;
+        if (status === 401) {
+          const refreshed = await refreshToken(account);
+          if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
+          token = refreshed;
+          continue;
+        }
+        if (status === 429) {
+          rateLimitHit = true;
+          const wait = [8000, 20000, 40000][attempt] || 40000;
+          console.log(`[BG-BULK] 429 — esperando ${wait}ms (intento ${attempt + 1}, pausa=${itemPause}ms)`);
+          await sleep(wait);
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastErr;
+  }
+
+  try {
+    // ---- FASE 0: pre-fetch del estado actual en ML ----
+    job.phase = 'prefetch';
+    const PREFETCH_BATCH = 20;
+    const PREFETCH_CONCURRENCY = 4;
+    const itemIds = items.map(i => i.item_id).filter(Boolean);
+    job.prefetch_total = itemIds.length;
+    job.prefetch_done = 0;
+
+    const currentState = {};
+    let prefetchOk = true;
+
+    const prefetchBatches = [];
+    for (let i = 0; i < itemIds.length; i += PREFETCH_BATCH) {
+      prefetchBatches.push(itemIds.slice(i, i + PREFETCH_BATCH));
+    }
+
+    for (let i = 0; i < prefetchBatches.length; i += PREFETCH_CONCURRENCY) {
+      if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
+      const wave = prefetchBatches.slice(i, i + PREFETCH_CONCURRENCY);
+      job.prefetch_done = Math.min(i * PREFETCH_BATCH, itemIds.length);
+      await Promise.all(wave.map(async batch => {
+        try {
+          const data = await mlGet(
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping`,
+            token
+          );
+          for (const entry of (Array.isArray(data) ? data : [])) {
+            if (entry.code === 200 && entry.body) {
+              const it = entry.body;
+              currentState[it.id] = {
+                price: it.price ?? null,
+                available_quantity: it.available_quantity ?? null,
+                status: it.status ?? '',
+                seller_custom_field: it.seller_custom_field ?? '',
+                logistic_type: it.shipping?.logistic_type ?? ''
+              };
+            }
+          }
+        } catch(e) {
+          prefetchOk = false;
+          console.log(`[BG-BULK] Pre-fetch falló para lote: ${e?.response?.status || e?.message || e}`);
+        }
+      }));
+      if (i + PREFETCH_CONCURRENCY < prefetchBatches.length) await sleep(150);
+    }
+
+    function needsUpdate(item) {
+      if (!item.item_id) return false;
+      const cur = currentState[item.item_id];
+      if (!cur) return true;
+      const payload = buildItemPayload(item);
+      if (Object.keys(payload).length) {
+        if (payload.price !== undefined && Math.abs(parseFloat(payload.price) - parseFloat(cur.price ?? 0)) >= 0.01) return true;
+        if (payload.available_quantity !== undefined && parseInt(payload.available_quantity) !== parseInt(cur.available_quantity ?? -1)) return true;
+        if (payload.status !== undefined && payload.status !== cur.status) return true;
+        if (payload.seller_custom_field !== undefined && String(payload.seller_custom_field).trim() !== String(cur.seller_custom_field).trim()) return true;
+        if (payload.attributes !== undefined) return true;
+      }
+      const flexStr = String(item.flex ?? '').toLowerCase().trim();
+      if (['si','sí','yes','true','1'].includes(flexStr) && cur.logistic_type !== 'self_service') return true;
+      if (['no','false','0'].includes(flexStr) && cur.logistic_type === 'self_service') return true;
+      return false;
+    }
+
+    const totalToUpdate = prefetchOk
+      ? items.filter(item => !item.item_id || needsUpdate(item)).length
+      : items.length;
+    const totalSkipped = items.length - totalToUpdate;
+
+    job.to_update = totalToUpdate;
+    job.skipped = totalSkipped;
+    job.prefetch_ok = prefetchOk;
+    job.phase = 'running';
+    console.log(`[BG-BULK] Pre-fetch: ${totalToUpdate} necesitan actualización, ${totalSkipped} ya están al día (job=${jobId})`);
+
+    // ---- FASE 1: actualizar solo los ítems que cambiaron ----
+    let done = 0, okCount = 0, errCount = 0;
+    let doneUpdates = 0, startTimeUpdates = null;
+    const okItems = [], skippedItems = []; // para el reporte final
+
+    for (let i = 0; i < items.length; i++) {
+      if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
+      const item = items[i];
+
+      if (prefetchOk && item.item_id && !needsUpdate(item)) {
+        done++;
+        job.done = done;
+        skippedItems.push(item.item_id);
+        continue;
+      }
+
+      rateLimitHit = false;
+      if (!startTimeUpdates) startTimeUpdates = Date.now();
+      let r;
+      let madeApiCall = false;
+
+      if (!item.item_id) {
+        r = { item_id: '?', ok: false, error: 'Sin item_id' };
+      } else {
+        try {
+          const payload = buildItemPayload(item);
+          const hasFlex = item.flex !== '' && item.flex != null &&
+            ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
+
+          if (!Object.keys(payload).length && !hasFlex) {
+            r = { item_id: item.item_id, ok: true };
+          } else {
+            madeApiCall = true;
+            const errors = [];
+
+            if (Object.keys(payload).length) {
+              try {
+                await bgPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
+              } catch(e) {
+                if (e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
+                const cause = e?.response?.data?.cause;
+                const causeDetail = Array.isArray(cause) && cause.length
+                  ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
+                  : null;
+                const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
+                console.log(`[BG-BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} err=${errMsg}`);
+                errors.push(errMsg);
+              }
+            }
+
+            if (!errors.length && hasFlex) {
+              const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
+              if (flexErr) errors.push(flexErr);
+            }
+
+            if (errors.length) r = { item_id: item.item_id, ok: false, error: errors.join(' | ') };
+            else r = { item_id: item.item_id, ok: true };
+          }
+        } catch(e) {
+          if (e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
+          r = { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
+        }
+      }
+
+      done++;
+      doneUpdates++;
+      if (r.ok) okCount++; else errCount++;
+
+      let etaSec = null;
+      if (startTimeUpdates && doneUpdates > 2 && totalToUpdate > doneUpdates) {
+        const avgMs = (Date.now() - startTimeUpdates) / doneUpdates;
+        etaSec = Math.round(avgMs * (totalToUpdate - doneUpdates) / 1000);
+      }
+
+      job.done = done;
+      job.ok = okCount;
+      job.errors = errCount;
+      job.eta_sec = etaSec;
+      if (r.ok) okItems.push(r.item_id);
+      else job.error_items.push(r);
+
+      if (i < items.length - 1 && madeApiCall) {
+        if (rateLimitHit) {
+          itemPause = Math.min(PAUSE_MAX, itemPause * 2);
+          successStreak = 0;
+          console.log(`[BG-BULK] Rate limit — pausa → ${itemPause}ms`);
+        } else {
+          successStreak++;
+          if (successStreak >= STREAK_TO_SPEEDUP && itemPause > PAUSE_MIN) {
+            itemPause = Math.max(PAUSE_MIN, Math.round(itemPause * 0.8));
+            successStreak = 0;
+            console.log(`[BG-BULK] ${STREAK_TO_SPEEDUP} éxitos — pausa → ${itemPause}ms`);
+          }
+        }
+        await sleep(itemPause);
+      }
+    }
+
+    job.status = 'done';
+    job.phase = 'done';
+    job.done = items.length;
+    job.ok = okCount;
+    job.errors = errCount;
+    // Reporte completo disponible al finalizar
+    job.report = { ok_items: okItems, skipped_items: skippedItems, error_items: job.error_items };
+    console.log(`[BG-BULK] Completado: ${items.length} ítems (${totalToUpdate} actualizados, ${totalSkipped} sin cambios) job=${jobId}`);
+  } catch(e) {
+    if (!job.cancelled) {
+      job.status = 'error';
+      job.phase = 'error';
+      job.error_msg = e?.message || 'Error inesperado';
+      console.log(`[BG-BULK] Error inesperado job=${jobId}: ${e?.message}`);
+    }
+  }
+}
+
+// BULK UPDATE — con pre-fetch para saltar ítems sin cambios reales
 route('POST', '/api/bulk-update', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
@@ -761,16 +1005,13 @@ route('POST', '/api/bulk-update', async (req, res) => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Rate limiter ADAPTATIVO: empieza rápido (300ms/ítem) y se auto-regula.
-  // Si ML devuelve 429 → duplica la pausa. Si 40 ítems seguidos sin 429 → reduce la pausa.
-  // Esto permite encontrar automáticamente el ritmo que acepta cada cuenta de ML.
-  let itemPause = 300;           // pausa inicial entre ítems (ms)
-  const PAUSE_MIN = 300;         // mínimo: ~3 ítems/seg
-  const PAUSE_MAX = 4000;        // máximo: frenar cuando hay muchos 429
-  let successStreak = 0;         // ítems sin 429 consecutivos
-  const STREAK_TO_SPEEDUP = 40;  // tras N éxitos, intentar reducir pausa 20%
-  let rateLimitHit = false;      // flag: ¿hubo 429 durante el ítem actual?
+  let itemPause = 300;
+  const PAUSE_MIN = 300;
+  const PAUSE_MAX = 4000;
+  let successStreak = 0;
+  const STREAK_TO_SPEEDUP = 40;
+  let rateLimitHit = false;
 
-  // Helper: ejecuta mlPut con reintentos automáticos para 401 (token) y 429 (rate limit).
   async function mlPutWithRetry(url, payload) {
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -780,7 +1021,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
         lastErr = e;
         const status = e?.response?.status;
         if (status === 401) {
-          console.log(`[BULK] 401 en ${url} — intentando refresh de token para ${account.name}`);
+          console.log(`[BULK] 401 — refresh token para ${account.name}`);
           const refreshed = await refreshToken(account);
           if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
           token = refreshed;
@@ -789,7 +1030,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
         if (status === 429) {
           rateLimitHit = true;
           const wait = [8000, 20000, 40000][attempt] || 40000;
-          console.log(`[BULK] 429 too_many_requests en ${url} — esperando ${wait}ms (intento ${attempt + 1}, pausa_actual=${itemPause}ms)`);
+          console.log(`[BULK] 429 — esperando ${wait}ms (intento ${attempt + 1}, pausa=${itemPause}ms)`);
           await sleep(wait);
           continue;
         }
@@ -800,17 +1041,109 @@ route('POST', '/api/bulk-update', async (req, res) => {
   }
 
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
+
+  // ===== FASE 0: PRE-FETCH del estado actual (GET batch de 20, 4 paralelos) =====
+  // Objetivo: saber qué ítems realmente cambiaron y saltar los que ya están al día.
+  // GET /items?ids=... es mucho más permisivo en rate limit que PUT /items/{id}.
+  const PREFETCH_BATCH = 20;
+  const PREFETCH_CONCURRENCY = 4;
+  const itemIds = items.map(i => i.item_id).filter(Boolean);
+
+  res.write(JSON.stringify({ type: 'prefetch_start', total: items.length, fetching: itemIds.length }) + '\n');
+  console.log(`[BULK] Pre-fetch de ${itemIds.length} ítems para ${account.name}...`);
+
+  const currentState = {}; // item_id → {price, available_quantity, status, seller_custom_field, logistic_type}
+  let prefetchOk = true;
+
+  try {
+    const prefetchBatches = [];
+    for (let i = 0; i < itemIds.length; i += PREFETCH_BATCH) {
+      prefetchBatches.push(itemIds.slice(i, i + PREFETCH_BATCH));
+    }
+    for (let i = 0; i < prefetchBatches.length; i += PREFETCH_CONCURRENCY) {
+      const wave = prefetchBatches.slice(i, i + PREFETCH_CONCURRENCY);
+      await Promise.all(wave.map(async batch => {
+        try {
+          const data = await mlGet(
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping`,
+            token
+          );
+          for (const entry of (Array.isArray(data) ? data : [])) {
+            if (entry.code === 200 && entry.body) {
+              const it = entry.body;
+              currentState[it.id] = {
+                price: it.price ?? null,
+                available_quantity: it.available_quantity ?? null,
+                status: it.status ?? '',
+                seller_custom_field: it.seller_custom_field ?? '',
+                logistic_type: it.shipping?.logistic_type ?? ''
+              };
+            }
+          }
+        } catch(e) {
+          prefetchOk = false;
+          console.log(`[BULK] Pre-fetch falló para lote: ${e?.response?.status || e?.message || e}`);
+        }
+      }));
+      if (i + PREFETCH_CONCURRENCY < prefetchBatches.length) await sleep(150);
+    }
+  } catch(e) {
+    prefetchOk = false;
+  }
+
+  // Determina si un ítem del archivo realmente difiere del estado actual en ML
+  function needsUpdate(item) {
+    if (!item.item_id) return false;
+    const cur = currentState[item.item_id];
+    if (!cur) return true; // sin datos de prefetch → actualizar (safe default)
+
+    const payload = buildItemPayload(item);
+    if (!Object.keys(payload).length) {
+      // Sin payload, revisar solo flex
+    } else {
+      if (payload.price !== undefined && Math.abs(parseFloat(payload.price) - parseFloat(cur.price ?? 0)) >= 0.01) return true;
+      if (payload.available_quantity !== undefined && parseInt(payload.available_quantity) !== parseInt(cur.available_quantity ?? -1)) return true;
+      if (payload.status !== undefined && payload.status !== cur.status) return true;
+      if (payload.seller_custom_field !== undefined && String(payload.seller_custom_field).trim() !== String(cur.seller_custom_field).trim()) return true;
+      if (payload.attributes !== undefined) return true; // marca: siempre actualizar si viene en el archivo
+    }
+
+    const flexStr = String(item.flex ?? '').toLowerCase().trim();
+    if (['si','sí','yes','true','1'].includes(flexStr) && cur.logistic_type !== 'self_service') return true;
+    if (['no','false','0'].includes(flexStr) && cur.logistic_type === 'self_service') return true;
+
+    return false; // nada cambió
+  }
+
+  const totalToUpdate = prefetchOk
+    ? items.filter(item => !item.item_id || needsUpdate(item)).length
+    : items.length;
+  const totalSkipped = items.length - totalToUpdate;
+
+  console.log(`[BULK] Pre-fetch: ${totalToUpdate} necesitan actualización, ${totalSkipped} ya están al día`);
+  res.write(JSON.stringify({ type: 'prefetch_done', total: items.length, to_update: totalToUpdate, skipped: totalSkipped, prefetch_ok: prefetchOk }) + '\n');
   res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
 
+  // ===== FASE 1: ACTUALIZAR solo los ítems que cambiaron =====
   let done = 0;
-  const startTime = Date.now();
+  let doneUpdates = 0;
+  let startTimeUpdates = null;
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    rateLimitHit = false;
-    let r;
 
-    let madeApiCall = false; // ¿este ítem hizo alguna llamada a ML?
+    // Si el pre-fetch fue exitoso y el ítem no cambió: enviar resultado instantáneo, sin pausa
+    if (prefetchOk && item.item_id && !needsUpdate(item)) {
+      done++;
+      res.write(JSON.stringify({ type: 'result', done, total: items.length, item_id: item.item_id, ok: true, warning: 'Sin cambios — ya actualizado' }) + '\n');
+      continue;
+    }
+
+    // Ítem con cambios: procesar con rate limiter adaptativo
+    rateLimitHit = false;
+    if (!startTimeUpdates) startTimeUpdates = Date.now();
+    let r;
+    let madeApiCall = false;
 
     if (!item.item_id) {
       r = { item_id: '?', ok: false, error: 'Sin item_id' };
@@ -821,14 +1154,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
 
         if (!Object.keys(payload).length && !hasFlex) {
-          // No hay cambios — se omite sin hacer llamada a ML
           r = { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
         } else {
           madeApiCall = true;
-          const errors = [];
-          const warnings = [];
+          const errors = [], warnings = [];
 
-          // 0. Quitar promociones activas antes de modificar (solo si no se indicó skip).
           if (!skip_promo_clean && (Object.keys(payload).length || hasFlex)) {
             const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
             if (promoClean.removed?.length) {
@@ -839,7 +1169,6 @@ route('POST', '/api/bulk-update', async (req, res) => {
             }
           }
 
-          // 1. Actualizar campos normales — con auto-retry si ML devuelve 401 o 429
           if (!errors.length && Object.keys(payload).length) {
             try {
               await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
@@ -848,17 +1177,12 @@ route('POST', '/api/bulk-update', async (req, res) => {
               const causeDetail = Array.isArray(cause) && cause.length
                 ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
                 : null;
-              const errMsg = causeDetail
-                || e?.response?.data?.message
-                || e?.response?.data?.error
-                || e?.message
-                || 'Error al actualizar';
+              const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
               console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
               errors.push(errMsg);
             }
           }
 
-          // 2. Actualizar flex via endpoint dedicado
           if (!errors.length && hasFlex) {
             const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
             if (flexErr) errors.push(flexErr);
@@ -873,33 +1197,111 @@ route('POST', '/api/bulk-update', async (req, res) => {
     }
 
     done++;
-    // Calcular ETA y enviarla junto con el resultado
-    const elapsed = Date.now() - startTime;
-    const avgMs = elapsed / done;
-    const remaining = items.length - done;
-    const etaSec = Math.round((avgMs * remaining) / 1000);
+    doneUpdates++;
+
+    // ETA basada solo en los ítems que realmente se actualizan (excluye los skipped)
+    let etaSec = null;
+    if (startTimeUpdates && doneUpdates > 2 && totalToUpdate > doneUpdates) {
+      const avgMs = (Date.now() - startTimeUpdates) / doneUpdates;
+      etaSec = Math.round(avgMs * (totalToUpdate - doneUpdates) / 1000);
+    }
+
     res.write(JSON.stringify({ type: 'result', done, total: items.length, eta_sec: etaSec, ...r }) + '\n');
 
-    // Solo pausamos si realmente se hizo una llamada a ML (ítems sin cambios no requieren pausa)
     if (i < items.length - 1 && madeApiCall) {
       if (rateLimitHit) {
         itemPause = Math.min(PAUSE_MAX, itemPause * 2);
         successStreak = 0;
-        console.log(`[BULK] Rate limit detectado — aumentando pausa a ${itemPause}ms`);
+        console.log(`[BULK] Rate limit — pausa → ${itemPause}ms`);
       } else {
         successStreak++;
         if (successStreak >= STREAK_TO_SPEEDUP && itemPause > PAUSE_MIN) {
           itemPause = Math.max(PAUSE_MIN, Math.round(itemPause * 0.8));
           successStreak = 0;
-          console.log(`[BULK] ${STREAK_TO_SPEEDUP} éxitos consecutivos — reduciendo pausa a ${itemPause}ms`);
+          console.log(`[BULK] ${STREAK_TO_SPEEDUP} éxitos — pausa → ${itemPause}ms`);
         }
       }
       await sleep(itemPause);
     }
   }
+
   res.write(JSON.stringify({ type: 'done', total: items.length }) + '\n');
   res.end();
-  console.log(`[BULK] Completado: ${items.length} items por ${sess.username}`);
+  console.log(`[BULK] Completado: ${items.length} ítems (${totalToUpdate} actualizados, ${totalSkipped} sin cambios) por ${sess.username}`);
+});
+
+// BULK UPDATE BG — versión background job para importación Excel (opción 4)
+route('POST', '/api/bulk-update-bg', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const dbPerm = loadDB();
+  const userPerm = dbPerm.users.find(u => u.id === sess.userId);
+  const canBulk = sess.role === 'admin' || userPerm?.can_search_update === true;
+  if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { account_id, items } = await parseBody(req);
+  if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
+
+  cleanBulkJobs();
+  const jobId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  bulkJobs[jobId] = {
+    id: jobId,
+    status: 'starting',
+    phase: 'starting',
+    total: items.length,
+    done: 0,
+    ok: 0,
+    errors: 0,
+    to_update: null,
+    skipped: null,
+    eta_sec: null,
+    error_items: [],
+    report: null,
+    cancelled: false,
+    created: Date.now(),
+    username: sess.username
+  };
+
+  // Fire-and-forget: corre en segundo plano, independiente de la conexión HTTP
+  runBulkJob(jobId, items, account, token).catch(e => {
+    if (bulkJobs[jobId] && !['done','cancelled'].includes(bulkJobs[jobId].status)) {
+      bulkJobs[jobId].status = 'error';
+      bulkJobs[jobId].phase = 'error';
+      bulkJobs[jobId].error_msg = e?.message || 'Error inesperado';
+    }
+  });
+
+  console.log(`[BG-BULK] Job ${jobId} creado: ${items.length} ítems para ${account.name} (${sess.username})`);
+  return sendJSON(res, 200, { job_id: jobId, total: items.length });
+});
+
+// GET /api/bulk-status?job_id=xxx — polling del estado del job
+route('GET', '/api/bulk-status', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const params = new URLSearchParams((req.url.split('?')[1] || ''));
+  const jobId = params.get('job_id');
+  if (!jobId) return sendJSON(res, 400, { error: 'job_id requerido' });
+  const job = bulkJobs[jobId];
+  if (!job) return sendJSON(res, 404, { error: 'Job no encontrado o expirado' });
+  return sendJSON(res, 200, job);
+});
+
+// POST /api/bulk-cancel — cancelar un job en progreso
+route('POST', '/api/bulk-cancel', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const { job_id } = await parseBody(req);
+  if (!job_id) return sendJSON(res, 400, { error: 'job_id requerido' });
+  const job = bulkJobs[job_id];
+  if (!job) return sendJSON(res, 404, { error: 'Job no encontrado' });
+  job.cancelled = true;
+  console.log(`[BG-BULK] Job ${job_id} cancelado por ${sess.username}`);
+  return sendJSON(res, 200, { ok: true });
 });
 
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
