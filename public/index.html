@@ -3124,11 +3124,10 @@
     const hasErrors = totalErr > 0 || logContent;
     log.innerHTML = `<div style="background:${hasErrors ? '#fff8f8' : '#f0fff4'};border:1px solid ${hasErrors ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:12px;font-size:13px">
       <b>${hasErrors ? '⚠️' : '✅'} Completado: ${totalOk} exitosos${totalErr ? `, ${totalErr} con errores` : ''}</b>
+      ${totalOk > 0 ? `<button onclick="searchListings()" style="margin-left:12px;padding:3px 12px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600">↻ Actualizar resultados</button>` : ''}
       ${logContent ? '<div style="max-height:200px;overflow-y:auto;margin-top:8px;font-size:12px;border-top:1px solid #f0f0f0;padding-top:8px">' + logContent + '</div>' : ''}
     </div>`;
     btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados';
-    // Refrescar resultados
-    if (totalOk > 0) searchListings();
   }
 
   async function downloadCurrentListings() {
