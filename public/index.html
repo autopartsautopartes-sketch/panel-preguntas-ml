@@ -2614,7 +2614,7 @@
       const res = await fetch('/api/bulk-update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: parseInt(accountId), items: updateParsedData })
+        body: JSON.stringify({ account_id: parseInt(accountId), items: updateParsedData, skip_promo_clean: true })
       });
       if (!res.ok) {
         const d = await res.json();
