@@ -759,12 +759,14 @@ async function runBulkJob(jobId, items, account, initialToken) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   let token = initialToken;
 
-  // Rate limiter adaptativo: empieza en 300ms, se dobla en 429, baja 20% cada 40 éxitos
-  let itemPause = 300;
-  const PAUSE_MIN = 300, PAUSE_MAX = 4000;
+  // Rate limiter adaptativo: empieza en 150ms, se dobla en 429, baja 20% cada 20 éxitos
+  let itemPause = 150;
+  const PAUSE_MIN = 150, PAUSE_MAX = 4000;
+  const WAVE_SIZE = 2;          // PUTs simultáneos por wave
   let successStreak = 0;
-  const STREAK_TO_SPEEDUP = 40;
+  const STREAK_TO_SPEEDUP = 20;
   let rateLimitHit = false;
+  let tokenRefreshing = false;  // lock para evitar refreshes simultáneos
 
   async function bgPutWithRetry(url, payload) {
     let lastErr;
@@ -776,9 +778,13 @@ async function runBulkJob(jobId, items, account, initialToken) {
         lastErr = e;
         const status = e?.response?.status;
         if (status === 401) {
-          const refreshed = await refreshToken(account);
-          if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
-          token = refreshed;
+          if (tokenRefreshing) { await sleep(3000); continue; } // esperar que el otro hilo refresque
+          tokenRefreshing = true;
+          try {
+            const refreshed = await refreshToken(account);
+            if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
+            token = refreshed;
+          } finally { tokenRefreshing = false; }
           continue;
         }
         if (status === 429) {
@@ -870,88 +876,99 @@ async function runBulkJob(jobId, items, account, initialToken) {
     job.phase = 'running';
     console.log(`[BG-BULK] Pre-fetch: ${totalToUpdate} necesitan actualización, ${totalSkipped} ya están al día (job=${jobId})`);
 
-    // ---- FASE 1: actualizar solo los ítems que cambiaron ----
+    // ---- FASE 1: clasificar (instantáneo) y luego actualizar en waves de WAVE_SIZE ----
     let done = 0, okCount = 0, errCount = 0;
     let doneUpdates = 0, startTimeUpdates = null;
     const okItems = [], skippedItems = []; // para el reporte final
 
-    for (let i = 0; i < items.length; i++) {
-      if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
-      const item = items[i];
+    // Helper: procesar un solo ítem y devolver resultado (nunca lanza excepto _cancelled)
+    async function processOneItem(item) {
+      if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
+      try {
+        const payload = buildItemPayload(item);
+        const hasFlex = item.flex !== '' && item.flex != null &&
+          ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
 
-      if (prefetchOk && item.item_id && !needsUpdate(item)) {
-        done++;
-        job.done = done;
-        skippedItems.push(item.item_id);
-        continue;
+        if (!Object.keys(payload).length && !hasFlex) return { item_id: item.item_id, ok: true };
+
+        const errors = [];
+        if (Object.keys(payload).length) {
+          try {
+            await bgPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
+          } catch(e) {
+            if (e._cancelled) throw e; // propagar cancelación
+            const cause = e?.response?.data?.cause;
+            const causeDetail = Array.isArray(cause) && cause.length
+              ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
+              : null;
+            const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
+            console.log(`[BG-BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} err=${errMsg}`);
+            errors.push(errMsg);
+          }
+        }
+        if (!errors.length && hasFlex) {
+          const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
+          if (flexErr) errors.push(flexErr);
+        }
+        return errors.length ? { item_id: item.item_id, ok: false, error: errors.join('; ') } : { item_id: item.item_id, ok: true };
+      } catch(e) {
+        if (e._cancelled) throw e;
+        return { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
       }
+    }
+
+    // Clasificar: separar skipped (ya al día) de los que necesitan PUT
+    const toUpdate = [];
+    for (const item of items) {
+      if (prefetchOk && item.item_id && !needsUpdate(item)) {
+        skippedItems.push(item.item_id);
+        done++;
+      } else {
+        toUpdate.push(item);
+      }
+    }
+    job.done = done; // actualizar progreso con skipped ya contados
+
+    console.log(`[BG-BULK] Clasificación: ${toUpdate.length} PUTs pendientes, ${skippedItems.length} saltados — job=${jobId}`);
+
+    // Procesar en waves de WAVE_SIZE PUTs simultáneos
+    for (let i = 0; i < toUpdate.length; i += WAVE_SIZE) {
+      if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
 
       rateLimitHit = false;
       if (!startTimeUpdates) startTimeUpdates = Date.now();
-      let r;
-      let madeApiCall = false;
+      const wave = toUpdate.slice(i, i + WAVE_SIZE);
 
-      if (!item.item_id) {
-        r = { item_id: '?', ok: false, error: 'Sin item_id' };
-      } else {
-        try {
-          const payload = buildItemPayload(item);
-          const hasFlex = item.flex !== '' && item.flex != null &&
-            ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
-
-          if (!Object.keys(payload).length && !hasFlex) {
-            r = { item_id: item.item_id, ok: true };
-          } else {
-            madeApiCall = true;
-            const errors = [];
-
-            if (Object.keys(payload).length) {
-              try {
-                await bgPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
-              } catch(e) {
-                if (e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
-                const cause = e?.response?.data?.cause;
-                const causeDetail = Array.isArray(cause) && cause.length
-                  ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
-                  : null;
-                const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
-                console.log(`[BG-BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} err=${errMsg}`);
-                errors.push(errMsg);
-              }
-            }
-
-            if (!errors.length && hasFlex) {
-              const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
-              if (flexErr) errors.push(flexErr);
-            }
-
-            if (errors.length) r = { item_id: item.item_id, ok: false, error: errors.join(' | ') };
-            else r = { item_id: item.item_id, ok: true };
-          }
-        } catch(e) {
-          if (e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
-          r = { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
-        }
+      // Lanzar wave en paralelo; capturar errores individualmente
+      let waveResults;
+      try {
+        waveResults = await Promise.all(wave.map(item => processOneItem(item)));
+      } catch(e) {
+        // Sólo llega aquí si _cancelled fue lanzado
+        if (job.cancelled || e._cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
+        // Error inesperado: registrar y continuar
+        waveResults = wave.map(item => ({ item_id: item.item_id || '?', ok: false, error: e?.message || 'Error inesperado en wave' }));
       }
 
-      done++;
-      doneUpdates++;
-      if (r.ok) okCount++; else errCount++;
-
-      let etaSec = null;
-      if (startTimeUpdates && doneUpdates > 2 && totalToUpdate > doneUpdates) {
-        const avgMs = (Date.now() - startTimeUpdates) / doneUpdates;
-        etaSec = Math.round(avgMs * (totalToUpdate - doneUpdates) / 1000);
+      for (const r of waveResults) {
+        done++;
+        doneUpdates++;
+        if (r.ok) { okCount++; okItems.push(r.item_id); }
+        else { errCount++; job.error_items.push(r); }
       }
 
       job.done = done;
       job.ok = okCount;
       job.errors = errCount;
-      job.eta_sec = etaSec;
-      if (r.ok) okItems.push(r.item_id);
-      else job.error_items.push(r);
 
-      if (i < items.length - 1 && madeApiCall) {
+      // ETA basada en el tiempo promedio real por ítem (sobre los que realmente se actualizan)
+      if (startTimeUpdates && doneUpdates > WAVE_SIZE && toUpdate.length > doneUpdates) {
+        const avgMs = (Date.now() - startTimeUpdates) / doneUpdates;
+        job.eta_sec = Math.round(avgMs * (toUpdate.length - doneUpdates) / 1000);
+      }
+
+      // Pausa adaptativa entre waves (no pausar después de la última)
+      if (i + WAVE_SIZE < toUpdate.length) {
         if (rateLimitHit) {
           itemPause = Math.min(PAUSE_MAX, itemPause * 2);
           successStreak = 0;
