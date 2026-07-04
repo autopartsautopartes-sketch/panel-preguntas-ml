@@ -152,6 +152,7 @@ let migrated7 = false;
 for (const u of dbMigrate7.users) {
   if (u.can_view_promos === undefined) { u.can_view_promos = false; migrated7 = true; }
 }
+if (!dbMigrate7.bulk_completed_jobs) { dbMigrate7.bulk_completed_jobs = []; migrated7 = true; }
 if (migrated7) saveDB(dbMigrate7);
 
 // ==================== SESSION STORE (persistent) ====================
@@ -1136,6 +1137,30 @@ async function runBulkJob(jobId, items, account, initialToken) {
     job.report = { ok_items: okItems, skipped_items: skippedItems, error_items: job.error_items };
     updateStats();
     console.log(`[BG-BULK-v2] Completado job=${jobId}: ${okCount} OK, ${errCount} errores, ${skippedItems.length} saltados, 429=${job.rate_limits}, promos=${job.promotions_removed}`);
+
+    // Persistir reporte en data.json para sobrevivir reinicios del servidor
+    try {
+      const dbSave = loadDB();
+      if (!dbSave.bulk_completed_jobs) dbSave.bulk_completed_jobs = [];
+      // Limpiar entradas antiguas (>48h) y limitar a las últimas 20
+      const cutoff48h = Date.now() - 48 * 60 * 60 * 1000;
+      dbSave.bulk_completed_jobs = dbSave.bulk_completed_jobs
+        .filter(j => j.finished_at > cutoff48h)
+        .slice(-20);
+      dbSave.bulk_completed_jobs.push({
+        id: jobId, status: 'done', phase: 'done',
+        total: items.length, done: items.length, ok: okCount, errors: errCount,
+        skipped: skippedItems.length, to_update: queue.length,
+        rate_limits: job.rate_limits || 0, retries: job.retries || 0,
+        promotions_removed: job.promotions_removed || 0,
+        finished_at: job.finished_at,
+        report: job.report
+      });
+      saveDB(dbSave);
+      console.log(`[BG-BULK-v2] Reporte persistido en data.json para job=${jobId}`);
+    } catch(eSave) {
+      console.error(`[BG-BULK-v2] Error persistiendo reporte: ${eSave.message}`);
+    }
   } catch(e) {
     if (!job.cancelled) {
       job.status = 'error';
@@ -1455,7 +1480,13 @@ route('GET', '/api/bulk-status', async (req, res) => {
   const jobId = params.get('job_id');
   if (!jobId) return sendJSON(res, 400, { error: 'job_id requerido' });
   const job = bulkJobs[jobId];
-  if (!job) return sendJSON(res, 404, { error: 'Job no encontrado o expirado' });
+  if (!job) {
+    // Buscar en reporte persistido (sobrevive reinicios del servidor)
+    const dbPersist = loadDB();
+    const persisted = (dbPersist.bulk_completed_jobs || []).find(j => j.id === jobId);
+    if (persisted) return sendJSON(res, 200, persisted);
+    return sendJSON(res, 404, { error: 'Job no encontrado o expirado' });
+  }
   return sendJSON(res, 200, job);
 });
 
