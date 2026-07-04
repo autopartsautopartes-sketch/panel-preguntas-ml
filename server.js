@@ -997,6 +997,72 @@ async function runBulkJob(jobId, items, account, initialToken) {
       }
     }
 
+    // 3) Si ML bloqueó por campos no modificables (precio/atributos), intentar precio y stock
+    //    por separado. Si alguno de los dos falla → pausar el ítem directamente.
+    const fieldsBlocked = errors.some(e =>
+      e.message.includes('item.price.not_modifiable') ||
+      e.message.includes('item.attributes.not_modifiable') ||
+      e.message.includes('field_not_updatable')
+    );
+
+    if (fieldsBlocked) {
+      const origPrice = (item.price !== '' && item.price != null) ? parseFloat(item.price) : null;
+      const origQty   = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
+      const hasPrice  = origPrice !== null && !isNaN(origPrice);
+      const hasStock  = origQty   !== null && !isNaN(origQty);
+
+      // Si no había precio ni stock en el Excel para este ítem, no hay nada que reintentar
+      if (!hasPrice && !hasStock) {
+        return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' · ') };
+      }
+
+      let priceOk = true;
+      let stockOk = true;
+
+      // Intento precio solo
+      if (hasPrice) {
+        const pricePayload = cur?.variation_ids?.length
+          ? { variations: cur.variation_ids.map(id => ({ id, price: origPrice })) }
+          : { price: origPrice };
+        try {
+          await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, pricePayload, workerId);
+        } catch(e) {
+          if (e._cancelled) throw e;
+          priceOk = false;
+        }
+      }
+
+      // Intento stock solo
+      if (hasStock) {
+        const stockPayload = cur?.variation_ids?.length
+          ? { variations: cur.variation_ids.map(id => ({ id, available_quantity: origQty })) }
+          : { available_quantity: origQty };
+        try {
+          await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, stockPayload, workerId);
+        } catch(e) {
+          if (e._cancelled) throw e;
+          stockOk = false;
+        }
+      }
+
+      // Si falló precio o stock → pausar el ítem
+      if ((hasPrice && !priceOk) || (hasStock && !stockOk)) {
+        const failedFields = [];
+        if (hasPrice && !priceOk) failedFields.push('precio');
+        if (hasStock && !stockOk) failedFields.push('stock');
+        try {
+          await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, { status: 'paused' }, workerId);
+          return { item_id: item.item_id, ok: false, error: `Pausado automáticamente — no se pudo actualizar: ${failedFields.join(' y ')}` };
+        } catch(e2) {
+          if (e2._cancelled) throw e2;
+          return { item_id: item.item_id, ok: false, error: `${failedFields.join(' y ')} no modificable y falló al pausar: ${parseMLError(e2)}` };
+        }
+      }
+
+      // Precio y stock actualizados OK — solo atributos/marca fallaron (no bloqueante)
+      return { item_id: item.item_id, ok: true, warning: 'Atributos no modificables ignorados — precio y stock actualizados' };
+    }
+
     return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' | ') };
   }
 
