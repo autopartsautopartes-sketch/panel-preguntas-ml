@@ -913,13 +913,24 @@ async function runBulkJob(jobId, items, account, initialToken) {
 
     const payload = buildItemPayload(item);
 
-    // Si el ítem tiene variaciones y se intenta cambiar el stock,
-    // ML no acepta available_quantity a nivel raíz — hay que setearlo en cada variante.
+    // Para ítems con variaciones, ML no acepta price ni available_quantity a nivel raíz.
+    // Hay que mandarlos dentro de cada variante: variations: [{id, price, available_quantity}]
     const cur = currentState[item.item_id];
-    if (payload.available_quantity !== undefined && cur?.variation_ids?.length) {
-      const qty = payload.available_quantity;
-      delete payload.available_quantity;
-      payload.variations = cur.variation_ids.map(id => ({ id, available_quantity: qty }));
+    if (cur?.variation_ids?.length) {
+      const hasQty   = payload.available_quantity !== undefined;
+      const hasPrice = payload.price !== undefined;
+      if (hasQty || hasPrice) {
+        const qty   = payload.available_quantity;
+        const price = payload.price;
+        delete payload.available_quantity;
+        delete payload.price;
+        payload.variations = cur.variation_ids.map(id => {
+          const v = { id };
+          if (hasQty)   v.available_quantity = qty;
+          if (hasPrice) v.price = price;
+          return v;
+        });
+      }
     }
 
     const flexStr = String(item.flex ?? '').toLowerCase().trim();
