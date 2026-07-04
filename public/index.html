@@ -2505,19 +2505,17 @@
             <h3 style="font-size:15px;color:#333">5. Vista previa <span id="previewCount" style="color:#888;font-weight:400"></span></h3>
             <button onclick="applyBulkUpdate()" id="btnApply" style="padding:10px 24px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">✅ Aplicar cambios</button>
           </div>
+
+          <div id="resultsSection" style="display:none;margin-bottom:16px">
+            <div id="resultsProgress"></div>
+            <div id="resultsList"></div>
+          </div>
+
           <div style="overflow-x:auto">
             <table id="previewTable" style="border-collapse:collapse;font-size:13px;width:100%;min-width:500px"></table>
           </div>
         </div>
       </div>` : ''}
-
-      <div id="resultsSection" style="display:none">
-        <div style="background:white;border-radius:12px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
-          <h3 style="font-size:15px;color:#333;margin-bottom:12px">Resultados</h3>
-          <div id="resultsProgress"></div>
-          <div id="resultsList"></div>
-        </div>
-      </div>
     `;
 
     // Load SheetJS lazily
@@ -2532,6 +2530,7 @@
           const job = await r.json();
           if (!['done','cancelled','error'].includes(job.status)) {
             // Job todavía en progreso — mostrar barra y continuar polling
+            document.getElementById('previewSection').style.display = 'block';
             document.getElementById('resultsSection').style.display = 'block';
             setupBulkProgressUI(savedJobId);
             startBulkPolling(savedJobId);
@@ -2540,6 +2539,7 @@
             localStorage.removeItem('bulk_job_account');
             // Si el job terminó mientras el browser estaba cerrado, generar el reporte ahora
             if (job.status === 'done') {
+              document.getElementById('previewSection').style.display = 'block';
               document.getElementById('resultsSection').style.display = 'block';
               setupBulkProgressUI(savedJobId);
               updateBulkProgressUI(job);
