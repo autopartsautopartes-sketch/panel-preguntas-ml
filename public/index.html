@@ -468,7 +468,7 @@
           document.getElementById('btnBackup').style.display = '';
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
-        if (currentUser.role === 'admin' || currentUser.can_search_update) {
+        if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
           document.getElementById('nav-update').style.display = '';
           const mobUpd = document.getElementById('mob-update');
           if (mobUpd) mobUpd.style.display = '';
@@ -565,7 +565,7 @@
           document.getElementById('btnBackup').style.display = '';
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
-        if (currentUser.role === 'admin' || currentUser.can_search_update) {
+        if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
           document.getElementById('nav-update').style.display = '';
           const mobUpd2 = document.getElementById('mob-update');
           if (mobUpd2) mobUpd2.style.display = '';
@@ -2227,6 +2227,10 @@
                   <input type="checkbox" ${u.can_search_update || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_search_update', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Buscar y editar
                 </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede descargar Excel con publicaciones y subir actualizaciones masivas (opciones 1-4)">
+                  <input type="checkbox" ${u.can_bulk_update || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_bulk_update', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Actualización masiva
+                </label>
               </div>
               <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;background:#f8f9fa;border-radius:8px">
                 <span style="font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.5px;min-width:80px">Permisos</span>
@@ -2383,14 +2387,15 @@
   async function loadUpdate() {
     const isAdmin = currentUser?.role === 'admin';
     const canSearch = isAdmin || currentUser?.can_search_update;
-    if (!canSearch) {
+    const canBulk = isAdmin || currentUser?.can_bulk_update;
+    if (!canSearch && !canBulk) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para esta sección.</p></div>';
       return;
     }
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
 
-      ${isAdmin ? `
+      ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
         <select id="updateAccount" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;width:100%;max-width:320px">
@@ -2399,7 +2404,7 @@
         </select>
       </div>` : ''}
 
-      ${isAdmin ? `
+      ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
           <h3 style="font-size:15px;color:#333">2. Exportar estado actual</h3>
@@ -2408,7 +2413,7 @@
         <p style="font-size:13px;color:#666">Descargá un Excel con todas tus publicaciones activas y pausadas (item_id, stock, estado, precio, SKU). Usalo como base para editar y volver a subir.</p>
       </div>` : ''}
 
-      ${isAdmin ? `
+      ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:8px">3. Estructura del archivo para subir</h3>
         <div style="overflow-x:auto;margin-bottom:10px">
@@ -2471,7 +2476,7 @@
         </div>
       </div>
 
-      ${isAdmin ? `
+      ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:12px">4. Subí tu archivo de actualizaciones</h3>
         <div id="dropZone" onclick="document.getElementById('fileInput').click()"
