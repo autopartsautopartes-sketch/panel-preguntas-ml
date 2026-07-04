@@ -2635,6 +2635,7 @@
     const btn = document.getElementById('btnApply');
     btn.disabled = true;
     btn.textContent = '⏳ Enviando…';
+    btn.style.background = '';
 
     try {
       const res = await fetch('/api/bulk-update-bg', {
@@ -2711,7 +2712,19 @@
           localStorage.removeItem('bulk_job_id');
           localStorage.removeItem('bulk_job_account');
           const btn = document.getElementById('btnApply');
-          if (btn) { btn.disabled = false; btn.textContent = '✅ Aplicar cambios'; }
+          if (btn) {
+            btn.disabled = false;
+            if (job.status === 'done') {
+              btn.textContent = '✅ Proceso completado — subir otro archivo';
+              btn.style.background = '#27ae60';
+            } else if (job.status === 'cancelled') {
+              btn.textContent = '⚠️ Cancelado — subir otro archivo';
+              btn.style.background = '';
+            } else {
+              btn.textContent = '❌ Error — subir otro archivo';
+              btn.style.background = '';
+            }
+          }
           const cancelBtn = document.getElementById('btnCancelBulk');
           if (cancelBtn) cancelBtn.style.display = 'none';
           if (job.status === 'done') await onBulkJobDone(job);
@@ -2802,6 +2815,12 @@
         'Precio fuera del rango permitido para esta categoría — verificá el precio mínimo/máximo',
       'item.quantity_not_allowed':
         'Stock no permitido para este tipo de publicación (ej: MercadoShops sin inventario)',
+      'item.available_quantity.not_updatable':
+        'Stock no modificable — la publicación está en Mercado Full (el stock lo gestiona ML desde su depósito) o tiene variaciones: en ese caso hay que actualizar el stock por cada variante individualmente',
+      'item.available_quantity.not_updatable_with_variations':
+        'Stock no modificable a nivel de publicación padre — actualizá el stock en cada variante por separado',
+      'variations.quantity.not_allowed':
+        'No se puede modificar el stock de variaciones desde este campo — actualizá cada variante individualmente',
     };
     // Partir por ";", traducir cada parte única, eliminar repetidos
     const parts = errorStr.split(/\s*;\s*/);
