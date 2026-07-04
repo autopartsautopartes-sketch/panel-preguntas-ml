@@ -989,6 +989,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
     return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' | ') };
   }
 
+  // currentState declarado aquí (fuera del try) para que updateOne() pueda accederlo
+  const currentState = {};
+
   try {
     // ---- FASE 0: pre-fetch del estado actual en ML ----
     job.phase = 'prefetch';
@@ -998,7 +1001,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
     job.prefetch_total = itemIds.length;
     job.prefetch_done = 0;
 
-    const currentState = {};
     let prefetchOk = true;
 
     const prefetchBatches = [];
