@@ -1084,7 +1084,10 @@ async function runBulkJob(jobId, items, account, initialToken) {
 
     async function worker(workerId) {
       while (!job.cancelled) {
-        if (workerId > desiredWorkers) { await sleep(500); continue; }
+        if (workerId > desiredWorkers) {
+          if (nextIndex >= queue.length) break; // no quedan ítems — salir aunque esté throttled
+          await sleep(500); continue;
+        }
 
         const idx = nextIndex++;
         if (idx >= queue.length) break;
