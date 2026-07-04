@@ -146,6 +146,14 @@ for (const u of dbMigrate6.users) {
 }
 if (migrated6) saveDB(dbMigrate6);
 
+// Migrate: add can_view_promos permission — acceso a la sección Promociones (default false para no-admin)
+const dbMigrate7 = loadDB();
+let migrated7 = false;
+for (const u of dbMigrate7.users) {
+  if (u.can_view_promos === undefined) { u.can_view_promos = false; migrated7 = true; }
+}
+if (migrated7) saveDB(dbMigrate7);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -471,7 +479,8 @@ route('GET', '/api/me', async (req, res) => {
     can_prep_manage: user?.can_prep_manage === true,
     can_prep_operate: user?.can_prep_operate === true,
     can_search_update: isAdmin || user?.can_search_update === true,
-    can_bulk_update: isAdmin || user?.can_bulk_update === true
+    can_bulk_update: isAdmin || user?.can_bulk_update === true,
+    can_view_promos: isAdmin || user?.can_view_promos === true
   });
 });
 
@@ -493,6 +502,7 @@ route('GET', '/api/users', async (req, res) => {
     can_prep_operate: u.can_prep_operate === true,
     can_search_update: u.role === 'admin' || u.can_search_update === true,
     can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
+    can_view_promos: u.role === 'admin' || u.can_view_promos === true,
     created_at: u.created_at
   })));
 });
@@ -500,7 +510,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -515,6 +525,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_prep_operate !== undefined) user.can_prep_operate = !!can_prep_operate;
   if (can_search_update !== undefined) user.can_search_update = !!can_search_update;
   if (can_bulk_update !== undefined) user.can_bulk_update = !!can_bulk_update;
+  if (can_view_promos !== undefined) user.can_view_promos = !!can_view_promos;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -3353,7 +3364,9 @@ async function getAppToken() {
 // GET /api/promotions?account_id=X — lista campañas
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbP = loadDB(); const uP = dbP.users.find(u => u.id === sess.userId);
+  if (sess.role !== 'admin' && !uP?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
 
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = urlObj.searchParams.get('account_id');
@@ -3424,7 +3437,9 @@ route('GET', '/api/promotions', async (req, res) => {
 // 2) si no obtiene datos, usa fallback de escaneo completo con search_type=scan
 route('GET', '/api/promotion-items-stream', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbP2 = loadDB(); const uP2 = dbP2.users.find(u => u.id === sess.userId);
+  if (sess.role !== 'admin' && !uP2?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
 
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = parseInt(urlObj.searchParams.get('account_id'));
@@ -3873,7 +3888,9 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
 // POST /api/promotion-search-items {account_id, promo_id, sku, title}
 route('POST', '/api/promotion-search-items', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbP3 = loadDB(); const uP3 = dbP3.users.find(u => u.id === sess.userId);
+  if (sess.role !== 'admin' && !uP3?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
 
   const body = await parseBody(req);
   const { account_id, promo_id, sku, title } = body;
@@ -3977,7 +3994,9 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
 // POST /api/promotion-toggle {account_id, promo_id, promo_type, item_id, participate, price, discount}
 route('POST', '/api/promotion-toggle', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbP4 = loadDB(); const uP4 = dbP4.users.find(u => u.id === sess.userId);
+  if (sess.role !== 'admin' && !uP4?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
 
   const body = await parseBody(req);
   const { account_id, promo_id, promo_type, item_id, participate, price, discount } = body;
@@ -4029,7 +4048,9 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
 // POST /api/promotion-bulk-stream {account_id, promo_id, promo_type, items:[...]} streaming ndjson
 route('POST', '/api/promotion-bulk-stream', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbP5 = loadDB(); const uP5 = dbP5.users.find(u => u.id === sess.userId);
+  if (sess.role !== 'admin' && !uP5?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
 
   const body = await parseBody(req);
   const { account_id, promo_id, promo_type, items } = body;
@@ -4101,7 +4122,9 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
 // POST /api/promotion-create {account_id, name, start_date, end_date}
 route('POST', '/api/promotion-create', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbP6 = loadDB(); const uP6 = dbP6.users.find(u => u.id === sess.userId);
+  if (sess.role !== 'admin' && !uP6?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
 
   const body = await parseBody(req);
   const { account_id, name, start_date, end_date } = body;
