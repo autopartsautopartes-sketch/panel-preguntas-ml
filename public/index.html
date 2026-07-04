@@ -2544,6 +2544,13 @@
               setupBulkProgressUI(savedJobId);
               updateBulkProgressUI(job);
               await onBulkJobDone(job);
+              const btn = document.getElementById('btnApply');
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🔄 Subir otro archivo';
+                btn.style.background = '#2980b9';
+                btn.onclick = resetBulkUI;
+              }
             }
           }
         } else {
@@ -2625,6 +2632,35 @@
     }
     document.getElementById('previewTable').innerHTML = html;
     document.getElementById('previewSection').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function resetBulkUI() {
+    // Limpiar datos parseados
+    updateParsedData = [];
+    // Ocultar vista previa y resultados
+    const previewSection = document.getElementById('previewSection');
+    if (previewSection) previewSection.style.display = 'none';
+    const resultsSection = document.getElementById('resultsSection');
+    if (resultsSection) { resultsSection.style.display = 'none'; resultsSection.innerHTML = ''; }
+    // Limpiar tabla de vista previa
+    const previewTable = document.getElementById('previewTable');
+    if (previewTable) previewTable.innerHTML = '';
+    const previewCount = document.getElementById('previewCount');
+    if (previewCount) previewCount.textContent = '';
+    // Resetear input de archivo
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput) fileInput.value = '';
+    // Restaurar botón al estado original
+    const btn = document.getElementById('btnApply');
+    if (btn) {
+      btn.textContent = '✅ Aplicar cambios';
+      btn.style.background = '#27ae60';
+      btn.onclick = applyBulkUpdate;
+      btn.disabled = false;
+    }
+    // Scroll al drop zone
+    const dropZone = document.getElementById('dropZone');
+    if (dropZone) dropZone.scrollIntoView({ behavior: 'smooth' });
   }
 
   async function applyBulkUpdate() {
@@ -2714,15 +2750,16 @@
           const btn = document.getElementById('btnApply');
           if (btn) {
             btn.disabled = false;
+            btn.onclick = resetBulkUI;
             if (job.status === 'done') {
-              btn.textContent = '✅ Proceso completado — subir otro archivo';
-              btn.style.background = '#27ae60';
+              btn.textContent = '🔄 Subir otro archivo';
+              btn.style.background = '#2980b9';
             } else if (job.status === 'cancelled') {
-              btn.textContent = '⚠️ Cancelado — subir otro archivo';
-              btn.style.background = '';
+              btn.textContent = '🔄 Subir otro archivo';
+              btn.style.background = '#2980b9';
             } else {
-              btn.textContent = '❌ Error — subir otro archivo';
-              btn.style.background = '';
+              btn.textContent = '🔄 Subir otro archivo';
+              btn.style.background = '#e67e22';
             }
           }
           const cancelBtn = document.getElementById('btnCancelBulk');
