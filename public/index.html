@@ -464,9 +464,11 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
-          document.getElementById('nav-promos').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
+        }
+        if (currentUser.role === 'admin' || currentUser.can_view_promos) {
+          document.getElementById('nav-promos').style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
           document.getElementById('nav-update').style.display = '';
@@ -561,9 +563,11 @@
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
-          document.getElementById('nav-promos').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
+        }
+        if (currentUser.role === 'admin' || currentUser.can_view_promos) {
+          document.getElementById('nav-promos').style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
           document.getElementById('nav-update').style.display = '';
@@ -2230,6 +2234,10 @@
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede descargar Excel con publicaciones y subir actualizaciones masivas (opciones 1-4)">
                   <input type="checkbox" ${u.can_bulk_update || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_bulk_update', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Actualización masiva
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver y gestionar promociones y campañas">
+                  <input type="checkbox" ${u.can_view_promos || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_promos', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Promociones
                 </label>
               </div>
               <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;background:#f8f9fa;border-radius:8px">
@@ -4319,7 +4327,7 @@
   let promosCurrentPromoName = '';
 
   function loadPromos() {
-    if (currentUser?.role !== 'admin') {
+    if (currentUser?.role !== 'admin' && !currentUser?.can_view_promos) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permisos para acceder a esta sección</p></div>';
       return;
     }
