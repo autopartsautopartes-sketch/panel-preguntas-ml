@@ -912,6 +912,16 @@ async function runBulkJob(jobId, items, account, initialToken) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
 
     const payload = buildItemPayload(item);
+
+    // Si el ítem tiene variaciones y se intenta cambiar el stock,
+    // ML no acepta available_quantity a nivel raíz — hay que setearlo en cada variante.
+    const cur = currentState[item.item_id];
+    if (payload.available_quantity !== undefined && cur?.variation_ids?.length) {
+      const qty = payload.available_quantity;
+      delete payload.available_quantity;
+      payload.variations = cur.variation_ids.map(id => ({ id, available_quantity: qty }));
+    }
+
     const flexStr = String(item.flex ?? '').toLowerCase().trim();
     const hasFlex = item.flex !== '' && item.flex != null &&
       ['si','sí','yes','true','1','no','false','0'].includes(flexStr);
@@ -1001,18 +1011,22 @@ async function runBulkJob(jobId, items, account, initialToken) {
       await Promise.all(wave.map(async batch => {
         try {
           const data = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping,variations`,
             token
           );
           for (const entry of (Array.isArray(data) ? data : [])) {
             if (entry.code === 200 && entry.body) {
               const it = entry.body;
+              const varIds = Array.isArray(it.variations) && it.variations.length > 0
+                ? it.variations.map(v => v.id).filter(Boolean)
+                : null;
               currentState[it.id] = {
                 price: it.price ?? null,
                 available_quantity: it.available_quantity ?? null,
                 status: it.status ?? '',
                 seller_custom_field: it.seller_custom_field ?? '',
-                logistic_type: it.shipping?.logistic_type ?? ''
+                logistic_type: it.shipping?.logistic_type ?? '',
+                variation_ids: varIds
               };
             }
           }
@@ -1032,7 +1046,10 @@ async function runBulkJob(jobId, items, account, initialToken) {
       const payload = buildItemPayload(item);
       if (Object.keys(payload).length) {
         if (payload.price !== undefined && Math.abs(parseFloat(payload.price) - parseFloat(cur.price ?? 0)) >= 0.01) return true;
-        if (payload.available_quantity !== undefined && parseInt(payload.available_quantity) !== parseInt(cur.available_quantity ?? -1)) return true;
+        if (payload.available_quantity !== undefined) {
+          if (cur.variation_ids?.length) return true; // ítem con variaciones: siempre actualizar si el usuario especificó stock
+          if (parseInt(payload.available_quantity) !== parseInt(cur.available_quantity ?? -1)) return true;
+        }
         if (payload.status !== undefined && payload.status !== cur.status) return true;
         if (payload.seller_custom_field !== undefined && String(payload.seller_custom_field).trim() !== String(cur.seller_custom_field).trim()) return true;
         if (payload.attributes !== undefined) return true;
