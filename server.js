@@ -2040,7 +2040,7 @@ route('GET', '/api/export-listings', async (req, res) => {
         for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
           const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
           const responses = await Promise.all(concurrent.map(b =>
-            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,shipping,seller_custom_field,attributes`, token)
+            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,original_price,shipping,seller_custom_field,attributes`, token)
               .catch(() => [])
           ));
           for (const itemsData of responses) {
@@ -2063,7 +2063,7 @@ route('GET', '/api/export-listings', async (req, res) => {
                 exported++;
                 res.write(JSON.stringify({
                   type: 'item', exported, total,
-                  row: [it.id, flex, localPickup, shippingMode, it.title || '', it.available_quantity ?? '', it.status ?? '', it.price ?? '', sku]
+                  row: [it.id, flex, localPickup, shippingMode, it.title || '', it.available_quantity ?? '', it.status ?? '', it.original_price ?? it.price ?? '', sku]
                 }) + '\n');
               }
             }
