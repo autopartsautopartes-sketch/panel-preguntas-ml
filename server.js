@@ -138,6 +138,14 @@ for (const u of dbMigrate5.users) {
 }
 if (migrated5) saveDB(dbMigrate5);
 
+// Migrate: add can_bulk_update permission — acceso a descarga/subida de Excel (default false para no-admin)
+const dbMigrate6 = loadDB();
+let migrated6 = false;
+for (const u of dbMigrate6.users) {
+  if (u.can_bulk_update === undefined) { u.can_bulk_update = false; migrated6 = true; }
+}
+if (migrated6) saveDB(dbMigrate6);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -462,7 +470,8 @@ route('GET', '/api/me', async (req, res) => {
     can_view_sales: isAdmin || user?.can_view_sales !== false,
     can_prep_manage: user?.can_prep_manage === true,
     can_prep_operate: user?.can_prep_operate === true,
-    can_search_update: isAdmin || user?.can_search_update === true
+    can_search_update: isAdmin || user?.can_search_update === true,
+    can_bulk_update: isAdmin || user?.can_bulk_update === true
   });
 });
 
@@ -483,6 +492,7 @@ route('GET', '/api/users', async (req, res) => {
     can_prep_manage: u.can_prep_manage === true,
     can_prep_operate: u.can_prep_operate === true,
     can_search_update: u.role === 'admin' || u.can_search_update === true,
+    can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
     created_at: u.created_at
   })));
 });
@@ -490,7 +500,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -504,6 +514,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_prep_manage !== undefined) user.can_prep_manage = !!can_prep_manage;
   if (can_prep_operate !== undefined) user.can_prep_operate = !!can_prep_operate;
   if (can_search_update !== undefined) user.can_search_update = !!can_search_update;
+  if (can_bulk_update !== undefined) user.can_bulk_update = !!can_bulk_update;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -1130,7 +1141,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
   const dbPerm = loadDB();
   const userPerm = dbPerm.users.find(u => u.id === sess.userId);
-  const canBulk = sess.role === 'admin' || userPerm?.can_search_update === true;
+  const canBulk = sess.role === 'admin' || userPerm?.can_bulk_update === true;
   if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const { account_id, items, skip_promo_clean } = await parseBody(req);
   if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
@@ -1374,7 +1385,7 @@ route('POST', '/api/bulk-update-bg', async (req, res) => {
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
   const dbPerm = loadDB();
   const userPerm = dbPerm.users.find(u => u.id === sess.userId);
-  const canBulk = sess.role === 'admin' || userPerm?.can_search_update === true;
+  const canBulk = sess.role === 'admin' || userPerm?.can_bulk_update === true;
   if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const { account_id, items } = await parseBody(req);
   if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
@@ -1837,7 +1848,11 @@ route('POST', '/api/search-listings', async (req, res) => {
 // EXPORT LISTINGS — streaming ndjson con progreso en tiempo real, 5 lotes paralelos
 route('GET', '/api/export-listings', async (req, res) => {
   const sess = requireAuth(req);
-  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const dbPermEx = loadDB();
+  const userPermEx = dbPermEx.users.find(u => u.id === sess.userId);
+  const canExport = sess.role === 'admin' || userPermEx?.can_bulk_update === true;
+  if (!canExport) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = parseInt(urlObj.searchParams.get('account_id'));
   const db = loadDB();
