@@ -2538,6 +2538,13 @@
           } else {
             localStorage.removeItem('bulk_job_id');
             localStorage.removeItem('bulk_job_account');
+            // Si el job terminó mientras el browser estaba cerrado, generar el reporte ahora
+            if (job.status === 'done') {
+              document.getElementById('resultsSection').style.display = 'block';
+              setupBulkProgressUI(savedJobId);
+              updateBulkProgressUI(job);
+              await onBulkJobDone(job);
+            }
           }
         } else {
           localStorage.removeItem('bulk_job_id');
@@ -2707,7 +2714,7 @@
           if (btn) { btn.disabled = false; btn.textContent = '✅ Aplicar cambios'; }
           const cancelBtn = document.getElementById('btnCancelBulk');
           if (cancelBtn) cancelBtn.style.display = 'none';
-          if (job.status === 'done') onBulkJobDone(job);
+          if (job.status === 'done') await onBulkJobDone(job);
         }
       } catch(e) { /* error de red — reintentará en el próximo tick */ }
     }, 2000);
@@ -2808,8 +2815,14 @@
     return translated.join(' · ');
   }
 
-  function onBulkJobDone(job) {
-    if (!window.XLSX) { loadXLSX(); return; }
+  async function onBulkJobDone(job) {
+    if (!window.XLSX) {
+      const loaded = await loadXLSX();
+      if (!loaded) {
+        showToast('No se pudo cargar la librería XLSX. Recargá la página e intentá de nuevo.', 'error');
+        return;
+      }
+    }
     const report = job.report || {};
     const okItems = report.ok_items || [];
     const skippedItems = report.skipped_items || [];
