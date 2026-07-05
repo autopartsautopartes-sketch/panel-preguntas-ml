@@ -4297,6 +4297,177 @@ route('POST', '/api/promotion-create', async (req, res) => {
 
 // ==================== SERVER ====================
 
+// ==================== API TOKEN (automatización) ====================
+const API_TOKEN = config.API_TOKEN || process.env.API_TOKEN || '';
+
+// Verifica el token de API con comparación de tiempo constante (evita timing attacks).
+// Preferido por header:  x-api-token: <API_TOKEN>
+// Alternativa (solo para pruebas rápidas):  ?token=<API_TOKEN>
+function checkApiToken(req) {
+  if (!API_TOKEN) return false; // fail-closed: sin token configurado => deshabilitado
+  let provided = req.headers['x-api-token'];
+  if (!provided) {
+    try { provided = new URL(req.url, 'http://localhost').searchParams.get('token') || ''; } catch (e) { provided = ''; }
+  }
+  if (!provided) return false;
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(API_TOKEN);
+  if (a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(a, b); } catch (e) { return false; }
+}
+
+// Resuelve la cuenta por ?account_id=ID o por ?account=NOMBRE (exacto o parcial, case-insensitive)
+function resolveApiAccount(db, url) {
+  const idRaw = url.searchParams.get('account_id');
+  const nameRaw = url.searchParams.get('account');
+  if (idRaw && String(idRaw).trim() !== '') {
+    const acc = db.ml_accounts.find(a => a.id === parseInt(idRaw));
+    if (acc) return acc;
+  }
+  if (nameRaw) {
+    const q = String(nameRaw).trim().toLowerCase();
+    return db.ml_accounts.find(a => String(a.name || '').toLowerCase() === q)
+        || db.ml_accounts.find(a => String(a.name || '').toLowerCase().includes(q))
+        || null;
+  }
+  return null;
+}
+
+// ==================== API AUTOMATIZACIÓN (token) ====================
+
+// GET /api/estado?account=MARA   (o ?account_id=1)
+// Header:  x-api-token: <API_TOKEN>
+// Exporta el estado actual (activas + pausadas) como NDJSON: una línea JSON por publicación.
+route('GET', '/api/estado', async (req, res) => {
+  if (!checkApiToken(req)) return sendJSON(res, 401, { error: 'Token de API inválido o ausente' });
+  const url = new URL(req.url, 'http://localhost');
+  const db = loadDB();
+  const account = resolveApiAccount(db, url);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada (usá ?account=NOMBRE o ?account_id=ID)' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token ML inválido, reconectá la cuenta desde Configuración' });
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
+  try {
+    const LIMIT = 100, BATCH_SIZE = 20, DETAIL_CONCURRENCY = 5;
+    let exported = 0;
+    const [activeFirst, pausedFirst] = await Promise.all([
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active' }),
+      mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused' }),
+    ]);
+    const activeTotal = activeFirst.paging?.total || 0;
+    const pausedTotal = pausedFirst.paging?.total || 0;
+    const total = activeTotal + pausedTotal;
+    res.write(JSON.stringify({ type: 'start', account: account.name, total }) + '\n');
+
+    const exportByStatus = async (status, statusTotal) => {
+      let scrollId = null, fetched = 0;
+      while (fetched < statusTotal) {
+        const params = { limit: LIMIT, status, search_type: 'scan' };
+        if (scrollId) params.scroll_id = scrollId;
+        const pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
+        scrollId = pageData.scroll_id || null;
+        const ids = pageData.results || [];
+        if (!ids.length) break;
+        fetched += ids.length;
+        const batches = [];
+        for (let j = 0; j < ids.length; j += BATCH_SIZE) batches.push(ids.slice(j, j + BATCH_SIZE));
+        for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
+          const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
+          const responses = await Promise.all(concurrent.map(b =>
+            mlGet(`https://api.mercadolibre.com/items?ids=${b.join(',')}&attributes=id,title,available_quantity,status,price,original_price,shipping,seller_custom_field,attributes`, token).catch(() => [])
+          ));
+          for (const itemsData of responses) {
+            for (const entry of (Array.isArray(itemsData) ? itemsData : [])) {
+              if (entry.code === 200 && entry.body) {
+                const it = entry.body;
+                if (it.status === 'under_review' || it.status === 'closed') continue;
+                const sh = it.shipping || {};
+                const rawMode = sh.mode || sh.logistic_type || 'not_specified';
+                const shippingMode = rawMode === 'me2' ? 'ME' : rawMode;
+                const shTags = Array.isArray(sh.tags) ? sh.tags : [];
+                const flex = shTags.includes('self_service_in') ? 'si' : shTags.includes('self_service_out') ? 'no' : 'not_available';
+                const localPickup = sh.local_pick_up ? 'si' : 'no';
+                const sku = it.seller_custom_field
+                  || (Array.isArray(it.attributes) ? (it.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '')
+                  || '';
+                exported++;
+                res.write(JSON.stringify({
+                  type: 'item',
+                  item_id: it.id, flex, local_pick_up: localPickup, shipping: shippingMode,
+                  titulo: it.title || '', available_quantity: it.available_quantity ?? '',
+                  status: it.status ?? '', price: it.original_price ?? it.price ?? '', item_sku: sku
+                }) + '\n');
+              }
+            }
+          }
+        }
+      }
+    };
+    await exportByStatus('active', activeTotal);
+    await exportByStatus('paused', pausedTotal);
+    res.write(JSON.stringify({ type: 'done', exported }) + '\n');
+  } catch (e) {
+    console.error('[API-ESTADO]', e?.response?.data || e.message);
+    res.write(JSON.stringify({ type: 'error', error: e?.response?.data?.message || e.message || 'Error al exportar' }) + '\n');
+  }
+  res.end();
+});
+
+// POST /api/actualizar   — aplica cambios en segundo plano (mismo motor que la carga manual)
+// Header:  x-api-token: <API_TOKEN>
+// Body JSON: { "account": "MARA" (o "account_id": 1), "items": [ {item_id, available_quantity, status, price, marca, flex, item_sku}, ... ] }
+route('POST', '/api/actualizar', async (req, res) => {
+  if (!checkApiToken(req)) return sendJSON(res, 401, { error: 'Token de API inválido o ausente' });
+  const body = await parseBody(req);
+  const items = body.items;
+  if (!Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Falta items[] en el body' });
+  const db = loadDB();
+  let account = null;
+  if (body.account_id) account = db.ml_accounts.find(a => a.id === parseInt(body.account_id));
+  if (!account && body.account) {
+    const q = String(body.account).trim().toLowerCase();
+    account = db.ml_accounts.find(a => String(a.name || '').toLowerCase() === q)
+           || db.ml_accounts.find(a => String(a.name || '').toLowerCase().includes(q));
+  }
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada (usá account o account_id)' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token ML inválido, reconectá la cuenta' });
+
+  cleanBulkJobs();
+  const jobId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  bulkJobs[jobId] = {
+    id: jobId, status: 'starting', phase: 'starting', total: items.length, done: 0, ok: 0, errors: 0,
+    to_update: null, skipped: null, eta_sec: null, velocity: 0, active_workers: 0, desired_workers: 3,
+    max_workers: 5, rate_limits: 0, retries: 0, promotions_removed: 0, promo_retry_ok: 0,
+    error_items: [], report: null, cancelled: false, created: Date.now(), username: 'api'
+  };
+  runBulkJob(jobId, items, account, token).catch(e => {
+    if (bulkJobs[jobId] && !['done','cancelled'].includes(bulkJobs[jobId].status)) {
+      bulkJobs[jobId].status = 'error'; bulkJobs[jobId].phase = 'error';
+      bulkJobs[jobId].error_msg = e?.message || 'Error inesperado';
+    }
+  });
+  console.log(`[API-ACTUALIZAR] Job ${jobId}: ${items.length} ítems para ${account.name}`);
+  return sendJSON(res, 200, { job_id: jobId, total: items.length, account: account.name });
+});
+
+// GET /api/actualizar-estado?job_id=xxx   — progreso/resultado del job (token)
+route('GET', '/api/actualizar-estado', async (req, res) => {
+  if (!checkApiToken(req)) return sendJSON(res, 401, { error: 'Token de API inválido o ausente' });
+  const url = new URL(req.url, 'http://localhost');
+  const jobId = url.searchParams.get('job_id');
+  if (!jobId) return sendJSON(res, 400, { error: 'job_id requerido' });
+  const job = bulkJobs[jobId];
+  if (!job) {
+    const dbP = loadDB();
+    const persisted = (dbP.bulk_completed_jobs || []).find(j => j.id === jobId);
+    if (persisted) return sendJSON(res, 200, persisted);
+    return sendJSON(res, 404, { error: 'Job no encontrado o expirado' });
+  }
+  return sendJSON(res, 200, job);
+});
+
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
 
