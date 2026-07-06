@@ -31,7 +31,17 @@ function verifyPassword(password, stored) {
 }
 // ==================== JSON DATABASE (persistent across deploys) ====================
 const DB_PATH = path.join(__dirname, 'data.json');
-const DB_BACKUP_ENV = process.env.DB_BACKUP; // base64-encoded backup from env var
+let DB_BACKUP_ENV = process.env.DB_BACKUP; // base64-encoded backup from env var
+// Si el respaldo crecio y ya no entra en una env var (limite ~128KB de Render),
+// leerlo desde un Secret File. Render los monta en /etc/secrets/<nombre>.
+if (!DB_BACKUP_ENV) {
+  for (const bp of ['/etc/secrets/db_backup.txt', path.join(__dirname, 'db_backup.txt')]) {
+    try {
+      const v = fs.readFileSync(bp, 'utf8').trim();
+      if (v) { DB_BACKUP_ENV = v; break; }
+    } catch (e) {}
+  }
+}
 function loadDB() {
   try {
     return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
@@ -2828,7 +2838,7 @@ route('GET', '/api/backup/env', async (req, res) => {
   db.sessions = sessions;
   const b64 = Buffer.from(JSON.stringify(db)).toString('base64');
   sendJSON(res, 200, {
-    instructions: 'Copia este valor y pegalo en Render > Environment > DB_BACKUP. Asi tus datos se restauran automaticamente en cada deploy.',
+    instructions: 'Copia este valor y pegalo en Render > Environment > Secret Files > db_backup.txt. Asi tus datos se restauran automaticamente en cada deploy.',
     base64: b64,
     users: db.users.length,
     accounts: (db.ml_accounts || []).length,
