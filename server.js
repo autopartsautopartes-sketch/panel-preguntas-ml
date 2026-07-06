@@ -155,6 +155,18 @@ for (const u of dbMigrate7.users) {
 if (!dbMigrate7.bulk_completed_jobs) { dbMigrate7.bulk_completed_jobs = []; migrated7 = true; }
 if (migrated7) saveDB(dbMigrate7);
 
+// Migrate: add sale_orders array
+const dbMigrateOrders = loadDB();
+if (!dbMigrateOrders.sale_orders) { dbMigrateOrders.sale_orders = []; saveDB(dbMigrateOrders); }
+
+// Migrate: add can_view_orders permission (default false para no-admin)
+const dbMigrate8 = loadDB();
+let migrated8 = false;
+for (const u of dbMigrate8.users) {
+  if (u.can_view_orders === undefined) { u.can_view_orders = false; migrated8 = true; }
+}
+if (migrated8) saveDB(dbMigrate8);
+
 // ==================== SESSION STORE (persistent) ====================
 
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
@@ -481,7 +493,8 @@ route('GET', '/api/me', async (req, res) => {
     can_prep_operate: user?.can_prep_operate === true,
     can_search_update: isAdmin || user?.can_search_update === true,
     can_bulk_update: isAdmin || user?.can_bulk_update === true,
-    can_view_promos: isAdmin || user?.can_view_promos === true
+    can_view_promos: isAdmin || user?.can_view_promos === true,
+    can_view_orders: isAdmin || user?.can_view_orders === true
   });
 });
 
@@ -504,6 +517,7 @@ route('GET', '/api/users', async (req, res) => {
     can_search_update: u.role === 'admin' || u.can_search_update === true,
     can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
     can_view_promos: u.role === 'admin' || u.can_view_promos === true,
+    can_view_orders: u.role === 'admin' || u.can_view_orders === true,
     created_at: u.created_at
   })));
 });
@@ -511,7 +525,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -527,6 +541,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_search_update !== undefined) user.can_search_update = !!can_search_update;
   if (can_bulk_update !== undefined) user.can_bulk_update = !!can_bulk_update;
   if (can_view_promos !== undefined) user.can_view_promos = !!can_view_promos;
+  if (can_view_orders !== undefined) user.can_view_orders = !!can_view_orders;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -4450,6 +4465,88 @@ route('POST', '/api/actualizar', async (req, res) => {
   });
   console.log(`[API-ACTUALIZAR] Job ${jobId}: ${items.length} ítems para ${account.name}`);
   return sendJSON(res, 200, { job_id: jobId, total: items.length, account: account.name });
+});
+
+// ==================== SALE ORDERS (PEDIDOS) ====================
+
+// POST /api/sale-orders/close  — must be registered BEFORE /api/sale-orders (exact match used, but keeping order clear)
+route('POST', '/api/sale-orders/close', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autenticado' });
+  const body = await parseBody(req);
+  const { id } = body;
+  if (!id) return sendJSON(res, 400, { error: 'Missing id' });
+  const db = loadDB();
+  const order = (db.sale_orders || []).find(o => o.id === id);
+  if (!order) return sendJSON(res, 404, { error: 'Not found' });
+  order.status = 'closed';
+  order.closed_at = Date.now();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+
+// POST /api/sale-orders  — Create or update (upsert) order for a sale
+route('POST', '/api/sale-orders', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autenticado' });
+  const body = await parseBody(req);
+  const { order_id, account_id, account_name, date, items, type } = body;
+  if (!order_id || !account_id) return sendJSON(res, 400, { error: 'Missing fields' });
+  const orderType = type === 'drop' ? 'drop' : 'pedido';
+  const db = loadDB();
+  if (!db.sale_orders) db.sale_orders = [];
+  const idx = db.sale_orders.findIndex(o => o.order_id === String(order_id) && String(o.account_id) === String(account_id) && o.status === 'open' && o.type === orderType);
+  let order;
+  if (idx !== -1) {
+    db.sale_orders[idx].items = items || [];
+    db.sale_orders[idx].updated_at = Date.now();
+    order = db.sale_orders[idx];
+  } else {
+    order = {
+      id: crypto.randomUUID(),
+      order_id: String(order_id),
+      account_id,
+      account_name: account_name || '',
+      date: date || '',
+      items: items || [],
+      type: orderType,
+      status: 'open',
+      created_at: Date.now(),
+      updated_at: Date.now()
+    };
+    db.sale_orders.push(order);
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, order });
+});
+
+// GET /api/sale-orders  — List orders with optional filters
+route('GET', '/api/sale-orders', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autenticado' });
+  const url = new URL(req.url, 'http://localhost');
+  const status = url.searchParams.get('status') || 'open';
+  const account_id = url.searchParams.get('account_id');
+  const order_id = url.searchParams.get('order_id');
+  const date_from = url.searchParams.get('date_from');
+  const date_to = url.searchParams.get('date_to');
+  const proveedor = url.searchParams.get('proveedor');
+  const codigo = url.searchParams.get('codigo');
+  const typeFilter = url.searchParams.get('type'); // 'pedido' | 'drop' | null=all
+  const db = loadDB();
+  let orders = db.sale_orders || [];
+  if (status !== 'all') orders = orders.filter(o => o.status === status);
+  // When listing open orders without an explicit type filter, exclude drops (Actuales view shows only pedidos)
+  if (status === 'open' && !typeFilter) orders = orders.filter(o => (o.type || 'pedido') !== 'drop');
+  if (typeFilter) orders = orders.filter(o => (o.type || 'pedido') === typeFilter);
+  if (account_id) orders = orders.filter(o => String(o.account_id) === String(account_id));
+  if (order_id) orders = orders.filter(o => String(o.order_id) === String(order_id));
+  if (date_from) orders = orders.filter(o => (o.date || '') >= date_from);
+  if (date_to) orders = orders.filter(o => (o.date || '') <= date_to);
+  if (codigo) orders = orders.filter(o => (o.items || []).some(i => (i.codigo || '').toLowerCase().includes(codigo.toLowerCase())));
+  if (proveedor) orders = orders.filter(o => (o.items || []).some(i => (i.proveedor || '').toLowerCase().includes(proveedor.toLowerCase())));
+  orders = orders.sort((a, b) => b.created_at - a.created_at);
+  sendJSON(res, 200, orders);
 });
 
 // GET /api/actualizar-estado?job_id=xxx   — progreso/resultado del job (token)
