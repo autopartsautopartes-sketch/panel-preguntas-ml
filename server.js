@@ -4081,6 +4081,31 @@ route('GET', '/api/actualizar-estado', async (req, res) => {
   }
   return sendJSON(res, 200, job);
 });
+// DEBUG temporal: ver la estructura de stock por deposito de un item (user_products)
+route('GET', '/api/debug-userstock', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const accountId = parseInt(u.searchParams.get('account_id'));
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+  try {
+    const item = await mlGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,available_quantity,status,seller_custom_field,user_product_id,inventory_id,variations,shipping`, token);
+    const upid = item.user_product_id;
+    let stock = null, stockErr = null;
+    if (upid) {
+      try { stock = await mlGet(`https://api.mercadolibre.com/user-products/${upid}/stock`, token); }
+      catch (e) { stockErr = (e && e.response && e.response.data) || String(e.message || e); }
+    }
+    sendJSON(res, 200, { item_id: itemId, user_product_id: upid || null, item_available_quantity: item.available_quantity, user_product_stock: stock, user_product_stock_error: stockErr });
+  } catch (e) {
+    sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
+  }
+});
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
   // Force HTTPS in production (Render terminates TLS at its edge proxy and
