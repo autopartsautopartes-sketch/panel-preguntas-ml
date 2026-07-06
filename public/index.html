@@ -458,6 +458,7 @@
   let currentUser = null;
   let accounts = [];
   const saleSKUs = {}; // orderId → [{sku, qty}] — used for SKU OK button
+  const PROVEEDORES = ['DM', 'OTERO', 'BBA', 'CROMOSOL'];
 
   // ==================== AUTH ====================
 
@@ -1944,15 +1945,6 @@
     </div>`;
   }
 
-  // Ensure datalist exists in DOM for proveedor autocomplete
-  (function ensureProveedoresList() {
-    if (!document.getElementById('proveedores-list')) {
-      const dl = document.createElement('datalist');
-      dl.id = 'proveedores-list';
-      dl.innerHTML = PROVEEDORES.map(p => `<option value="${p}">`).join('');
-      document.body.appendChild(dl);
-    }
-  })();
 
   function addPedidoRow(containerId) {
     const container = document.getElementById(containerId);
@@ -1997,8 +1989,6 @@
   }
 
   // ==================== SKU PARSER ====================
-
-  const PROVEEDORES = ['DM', 'OTERO', 'BBA', 'CROMOSOL'];
 
   function parseSku(skuStr) {
     // Provider map: abbreviations (single item) + full names (combo) — always UPPERCASE output
@@ -5970,5 +5960,11 @@
     </form>
   </div>
 </div>
+<datalist id="proveedores-list">
+  <option value="DM">
+  <option value="OTERO">
+  <option value="BBA">
+  <option value="CROMOSOL">
+</datalist>
 </body>
 </html>
