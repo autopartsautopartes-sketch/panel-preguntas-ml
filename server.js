@@ -832,12 +832,42 @@ async function runBulkJob(jobId, items, account, initialToken) {
     }
     return lastErr || 'Error flex';
   }
+  // Stock por deposito (multiorigen / user_products): el stock NO se actualiza por /items,
+  // sino por PUT /user-products/{upid}/stock/type/seller_warehouse con body {quantity}.
+  async function updateDepositStock(upid, qty, workerId) {
+    const types = ['seller_warehouse', 'selling_address'];
+    let lastErr = null;
+    for (const t of types) {
+      try {
+        await putWithRetry(`https://api.mercadolibre.com/user-products/${upid}/stock/type/${t}`, { quantity: qty }, workerId);
+        return null;
+      } catch (e) {
+        if (e._cancelled) throw e;
+        lastErr = parseMLError(e);
+        if (e?.response?.status !== 404) break; // solo si ese type no existe probamos el otro
+      }
+    }
+    return lastErr;
+  }
   async function updateOne(item, workerId) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
+    const cur = currentState[item.item_id];
+    // --- STOCK POR DEPOSITO (multiorigen) ---
+    // Si el item tiene user_product_id, sacamos el stock del payload de /items
+    // (daria not_updatable) y lo mandamos al deposito por su endpoint propio.
+    let depositErr = null;
+    if (cur?.user_product_id && item.available_quantity !== '' && item.available_quantity != null) {
+      const dqty = parseInt(item.available_quantity);
+      if (!isNaN(dqty)) {
+        try { depositErr = await updateDepositStock(cur.user_product_id, dqty, workerId); }
+        catch (e) { if (e._cancelled) throw e; depositErr = parseMLError(e); }
+        item = { ...item, available_quantity: '' }; // ya no va por /items
+      }
+    }
+    const _result = await (async () => {
     const payload = buildItemPayload(item);
     // Para ítems con variaciones, ML no acepta price ni available_quantity a nivel raíz.
     // Hay que mandarlos dentro de cada variante: variations: [{id, price, available_quantity}]
-    const cur = currentState[item.item_id];
     if (cur?.variation_ids?.length) {
       const hasQty   = payload.available_quantity !== undefined;
       const hasPrice = payload.price !== undefined;
@@ -968,6 +998,14 @@ async function runBulkJob(jobId, items, account, initialToken) {
       return { item_id: item.item_id, ok: true, warning: 'Atributos no modificables ignorados — precio y stock actualizados' };
     }
     return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' | ') };
+    })();
+    // Combinar el resultado del stock por deposito con el del item
+    if (depositErr) {
+      const dmsg = 'stock depósito: ' + (typeof depositErr === 'string' ? depositErr : JSON.stringify(depositErr));
+      if (_result.ok) return { item_id: item.item_id, ok: false, error: dmsg };
+      return { item_id: item.item_id, ok: false, error: [_result.error, dmsg].filter(Boolean).join(' | ') };
+    }
+    return _result;
   }
   // currentState declarado aquí (fuera del try) para que updateOne() pueda accederlo
   const currentState = {};
@@ -989,7 +1027,7 @@ async function runBulkJob(jobId, items, account, initialToken) {
       await Promise.all(wave.map(async batch => {
         try {
           const data = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping,variations`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping,variations,user_product_id`,
             token
           );
           for (const entry of (Array.isArray(data) ? data : [])) {
@@ -1004,7 +1042,8 @@ async function runBulkJob(jobId, items, account, initialToken) {
                 status: it.status ?? '',
                 seller_custom_field: it.seller_custom_field ?? '',
                 logistic_type: it.shipping?.logistic_type ?? '',
-                variation_ids: varIds
+                variation_ids: varIds,
+                user_product_id: it.user_product_id ?? null
               };
             }
           }
@@ -4128,32 +4167,29 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
     const stockUrl = `https://api.mercadolibre.com/user-products/${upid}/stock`;
     const cur = await mlGet(stockUrl, token);
     const loc = (cur.locations || [])[0] || {};
+    const locType = loc.type || 'seller_warehouse';
     const qty = (qtyParam === null || qtyParam === '') ? loc.quantity : parseInt(qtyParam);
-    async function tryStock(method, bodyObj) {
-      const r = await fetch(stockUrl, {
-        method,
+    async function tryPut(t) {
+      const url = `https://api.mercadolibre.com/user-products/${upid}/stock/type/${t}`;
+      const r = await fetch(url, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(bodyObj)
+        body: JSON.stringify({ quantity: qty })
       });
       const text = await r.text();
       let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
       if (!r.ok) throw { response: { status: r.status, data } };
-      return { status: r.status, data };
+      return { url, status: r.status, data };
     }
-    const candidates = [
-      { label: 'PUT_store_type_qty', method: 'PUT', body: { locations: [{ store_id: loc.store_id, type: loc.type, quantity: qty }] } },
-      { label: 'PUT_store_qty', method: 'PUT', body: { locations: [{ store_id: loc.store_id, quantity: qty }] } },
-      { label: 'POST_store_type_qty', method: 'POST', body: { locations: [{ store_id: loc.store_id, type: loc.type, quantity: qty }] } },
-      { label: 'PUT_full_loc', method: 'PUT', body: { locations: [{ ...loc, quantity: qty }] } }
-    ];
     const attempts = [];
-    for (const c of candidates) {
+    for (const t of [locType, 'seller_warehouse', 'selling_address']) {
+      if (attempts.some(a => a.tried === t)) continue;
       try {
-        const r = await tryStock(c.method, c.body);
+        const r = await tryPut(t);
         const after = await mlGet(stockUrl, token).catch(() => null);
-        return sendJSON(res, 200, { upid, qty_actual: loc.quantity, qty_enviado: qty, ganador: c.label, sent: c.body, put_result: r, stock_despues: after, attempts });
+        return sendJSON(res, 200, { upid, type: t, qty_actual: loc.quantity, qty_enviado: qty, ganador: t, put_result: r, stock_despues: after, attempts });
       } catch (e) {
-        attempts.push({ tried: c.label, status: (e && e.response && e.response.status) || null, error: (e && e.response && e.response.data) || String(e.message || e) });
+        attempts.push({ tried: t, status: (e && e.response && e.response.status) || null, error: (e && e.response && e.response.data) || String(e.message || e) });
       }
     }
     return sendJSON(res, 200, { upid, qty_actual: loc.quantity, qty_enviado: qty, ganador: null, attempts });
