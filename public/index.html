@@ -14,10 +14,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #f1f5f9; color: #1e293b; }
-
     /* LOGIN */
     .login-container {
       display: flex; justify-content: center; align-items: center; min-height: 100vh;
@@ -40,7 +38,6 @@
     }
     .login-box button:hover { background: #1d4ed8; }
     .login-error { color: #ef4444; text-align: center; margin-bottom: 12px; font-size: 14px; display: none; }
-
     /* LAYOUT */
     .app { display: none; }
     .header {
@@ -56,9 +53,7 @@
       border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; font-family: inherit; transition: background 0.2s;
     }
     .header-right button:hover { background: #1d4ed8; }
-
     .main { display: flex; min-height: calc(100vh - 57px); }
-
     /* SIDEBAR */
     .sidebar {
       width: 220px; background: #0f172a; color: white; padding: 16px 0;
@@ -85,10 +80,8 @@
       padding: 16px 16px 6px; font-size: 10.5px; text-transform: uppercase;
       color: #475569; letter-spacing: 1.2px; font-weight: 600; margin: 0 8px;
     }
-
     /* CONTENT */
     .content { flex: 1; padding: 24px; overflow-y: auto; }
-
     /* QUICK REPLIES PANEL */
     .quick-replies-panel {
       width: 200px; min-width: 200px; background: #f8f5ff; border-left: 1px solid #e8e0f8;
@@ -106,7 +99,6 @@
       font-size: 11px; cursor: pointer; color: #5a3e8e; margin-bottom: 6px; text-align: center;
     }
     .qr-admin-btn:hover { background: #f5f3ff; }
-
     /* STATS */
     .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
     .stat-card {
@@ -115,7 +107,6 @@
     }
     .stat-card .label { font-size: 12px; color: #64748b; margin-bottom: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
     .stat-card .value { font-size: 28px; font-weight: 700; color: #0f172a; letter-spacing: -0.5px; }
-
     /* FILTERS */
     .filters {
       display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;
@@ -126,7 +117,6 @@
     }
     .filters button.active { background: #2563eb; color: white; border-color: #2563eb; }
     .filters button:hover:not(.active) { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
-
     /* QUESTION / MESSAGE CARD */
     .card {
       background: white; border-radius: 12px; padding: 20px; margin-bottom: 12px;
@@ -147,7 +137,6 @@
     .card-question { font-size: 15px; line-height: 1.6; margin-bottom: 12px; padding: 12px 16px; background: #f8fafc; border-radius: 10px; color: #1e293b; border-left: 3px solid #2563eb; }
     .card-answer { font-size: 14px; color: #475569; padding: 12px 16px; background: #f0fdf4; border-radius: 10px; margin-bottom: 12px; border-left: 3px solid #22c55e; }
     .card-answer strong { color: #16a34a; }
-
     /* REPLY BOX */
     .reply-box { display: flex; gap: 8px; }
     .reply-box textarea {
@@ -161,7 +150,6 @@
     }
     .reply-box button:hover { background: #1d4ed8; }
     .reply-box button:disabled { background: #cbd5e1; cursor: not-allowed; color: #94a3b8; }
-
     /* MESSAGES */
     .msg-conversation { margin-bottom: 16px; }
     .msg-bubble {
@@ -172,7 +160,6 @@
     .msg-bubble.seller { background: #2563eb; color: white; margin-left: auto; border-bottom-right-radius: 4px; }
     .msg-bubble .msg-date { font-size: 11px; opacity: 0.7; margin-top: 4px; text-align: right; }
     .msg-bubble.seller .msg-date { color: rgba(255,255,255,0.75); }
-
     /* SALES */
     .sales-filters { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #f1f5f9; }
     .sales-filters h4 { font-size: 12px; color: #64748b; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -226,7 +213,6 @@
     .sale-actions .btn-print:hover { background: #c2410c; border-color: #c2410c; color: white; }
     .sale-notes { margin-top: 8px; }
     .sale-notes button:hover { border-color: #2563eb !important; background: #eff6ff !important; color: #2563eb !important; }
-
     /* ACCOUNTS MANAGEMENT */
     .account-card {
       background: white; border-radius: 12px; padding: 20px; margin-bottom: 12px;
@@ -238,20 +224,16 @@
     .btn-danger:hover { background: #b91c1c !important; }
     .btn-success { background: #16a34a !important; padding: 10px 20px; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; font-family: inherit; }
     .btn-success:hover { background: #15803d !important; }
-
     /* USERS MANAGEMENT */
     .user-form { display: flex; gap: 8px; margin-bottom: 20px; }
     .user-form input { padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 14px; font-family: inherit; outline: none; }
     .user-form input:focus { border-color: #2563eb; }
-
     /* LOADING */
     .loading { text-align: center; padding: 40px; color: #94a3b8; }
     .spinner { display: inline-block; width: 30px; height: 30px; border: 3px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-
     .empty { text-align: center; padding: 60px 20px; color: #94a3b8; }
     .empty svg { width: 64px; height: 64px; margin-bottom: 16px; opacity: 0.3; }
-
     .toast {
       position: fixed; bottom: 20px; right: 20px; padding: 12px 24px; border-radius: 10px;
       color: white; font-size: 14px; z-index: 1000; animation: fadeIn 0.3s; font-weight: 500;
@@ -260,7 +242,6 @@
     .toast.success { background: #16a34a; }
     .toast.error { background: #dc2626; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
     /* MOBILE BOTTOM NAV */
     .mobile-nav {
       display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
@@ -279,7 +260,6 @@
       background: #ef4444; color: white; font-size: 9px; padding: 1px 5px;
       border-radius: 8px; min-width: 16px; text-align: center; font-weight: 700;
     }
-
     @media (max-width: 768px) {
       .sidebar { display: none; }
       .mobile-nav { display: flex; }
@@ -311,7 +291,6 @@
       .account-card { flex-direction: column; gap: 12px; text-align: center; }
       .user-form { flex-direction: column; }
     }
-
     @media (max-width: 400px) {
       .stats { grid-template-columns: 1fr; }
       .content { padding: 10px 8px 70px 8px; }
@@ -337,7 +316,6 @@
   </style>
 </head>
 <body spellcheck="true">
-
 <!-- LOGIN -->
 <div class="login-container" id="loginScreen">
   <div class="login-box">
@@ -349,7 +327,6 @@
     <button onclick="doLogin()">Ingresar</button>
   </div>
 </div>
-
 <!-- APP -->
 <div class="app" id="app">
   <div class="header">
@@ -439,7 +416,6 @@
     </a>
   </div>
 </div>
-
 <script>
   // Escape untrusted text before inserting into innerHTML (prevents XSS from
   // buyer/comprador data coming from MercadoLibre - names, messages, questions)
@@ -452,16 +428,13 @@
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
   }
-
   let currentSection = 'dashboard';
   let navToken = 0; // se incrementa en cada navegación para cancelar cargas anteriores
   let currentUser = null;
   let accounts = [];
   const saleSKUs = {}; // orderId → [{sku, qty}] — used for SKU OK button
   const PROVEEDORES = ['DM', 'OTERO', 'BBA', 'CROMOSOL'];
-
   // ==================== AUTH ====================
-
   async function checkAuth() {
     try {
       const res = await fetch('/api/me');
@@ -522,7 +495,6 @@
       }
     } catch (e) {}
   }
-
   function handleDeepLink() {
     const urlParams = new URLSearchParams(location.search);
     const targetSection = urlParams.get('section');
@@ -557,12 +529,10 @@
       }
     }
   }
-
   async function doLogin() {
     const username = document.getElementById('loginUser').value;
     const password = document.getElementById('loginPass').value;
     const errorEl = document.getElementById('loginError');
-
     try {
       const res = await fetch('/api/login', {
         method: 'POST',
@@ -613,16 +583,13 @@
       errorEl.style.display = 'block';
     }
   }
-
   document.getElementById('loginPass').addEventListener('keypress', e => {
     if (e.key === 'Enter') doLogin();
   });
-
   async function doLogout() {
     await fetch('/api/logout', { method: 'POST' });
     location.reload();
   }
-
   async function doBackup() {
     try {
       const res = await fetch('/api/backup/env');
@@ -642,24 +609,19 @@
       }
     }
   }
-
   // ==================== NAVIGATION ====================
-
   function showSection(section, skipLoad) {
     currentSection = section;
     navToken++; // cancela cualquier carga async anterior
     document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
     const nav = document.getElementById('nav-' + section);
     if (nav) nav.classList.add('active');
-
     // Update mobile nav active state
     document.querySelectorAll('.mobile-nav a').forEach(a => a.classList.remove('active'));
     const mobNav = document.getElementById('mob-' + section);
     if (mobNav) mobNav.classList.add('active');
-
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
-
     // Show quick replies panel on questions and messages
     const qrPanel = document.getElementById('quickRepliesPanel');
     if (section === 'questions' || section === 'messages') {
@@ -668,9 +630,7 @@
     } else {
       qrPanel.classList.remove('visible');
     }
-
     if (skipLoad) return; // deep link will handle loading
-
     switch (section) {
       case 'dashboard': loadDashboard(); break;
       case 'questions': loadQuestions(); break;
@@ -684,16 +644,13 @@
       case 'promos': loadPromos(); break;
     }
   }
-
   // ==================== ACCOUNTS ====================
-
   async function loadAccounts() {
     try {
       const res = await fetch('/api/accounts');
       accounts = await res.json();
     } catch (e) {}
   }
-
   function accountFilterHTML() {
     let html = '<option value="">Todas las cuentas</option>';
     for (const a of accounts) {
@@ -701,9 +658,7 @@
     }
     return html;
   }
-
   // ==================== DASHBOARD ====================
-
   async function loadDashboard() {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) {
@@ -714,7 +669,6 @@
       const res = await fetch('/api/stats');
       const stats = await res.json();
       if (navToken !== myNav) return;
-
       // Update question/message badges — only update upward here; hiding is owned by
       // checkNewQuestions/checkNewMessages (per-id sticky tracking) to avoid fighting
       // over the badge and causing flicker or false re-alerts.
@@ -723,13 +677,11 @@
         badge.textContent = stats.unanswered;
         badge.style.display = '';
       }
-
       const msgBadge = document.getElementById('badge-unread-messages');
       if (stats.unread_messages > 0 && stats.unread_messages > knownMessageIds.size) {
         msgBadge.textContent = stats.unread_messages;
         msgBadge.style.display = '';
       }
-
       const salesHTML = stats.can_view_dashboard ? `
         <h3 style="margin:24px 0 12px;color:#2d3277">Ventas del día</h3>
         <div class="stats">
@@ -760,7 +712,6 @@
           </div>
         ` : ''}
       ` : '';
-
       document.getElementById('content').innerHTML = `
         <h2 style="margin-bottom:20px;color:#2d3277">Dashboard</h2>
         <div class="stats">
@@ -782,7 +733,6 @@
           </div>
         </div>
         ${salesHTML}
-
         <div id="dashChartSection" style="margin-top:24px;background:white;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
             <label style="font-size:12px;color:#64748b;font-weight:600;white-space:nowrap">Cuenta:</label>
@@ -850,15 +800,12 @@
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar el dashboard</p></div>';
     }
   }
-
   // ==================== DASHBOARD CHART ====================
-
   let _dashChart = null;
   let _dashPeriod = 1;
   let _dashMetric = 'sales';
   let _dashAccountId = '';   // '' = todas las cuentas
   let _dashData = null;
-
   const DASH_METRIC_LABELS = { sales: 'Ventas', revenue: 'Dinero ($)', units: 'Unidades', questions: 'Preguntas' };
   const DASH_METRIC_FORMAT = {
     sales: v => v,
@@ -866,13 +813,11 @@
     units: v => v,
     questions: v => v
   };
-
   function setDashAccount(id) {
     _dashAccountId = id;
     _dashData = null;
     loadDashboardChart();
   }
-
   function setDashPeriod(p) {
     _dashPeriod = p;
     [1,7,30].forEach(n => {
@@ -883,7 +828,6 @@
     });
     loadDashboardChart();
   }
-
   function setDashMetric(m) {
     _dashMetric = m;
     ['sales','revenue','units','questions'].forEach(k => {
@@ -894,7 +838,6 @@
     });
     if (_dashData) renderDashChart(_dashData);
   }
-
   function renderDashChart(data) {
     const values = data[_dashMetric] || [];
     const total = values.reduce((s,v) => s + v, 0);
@@ -904,20 +847,16 @@
     const avgEl = document.getElementById('dcs-avg');
     if (totalEl) totalEl.textContent = fmt(Math.round(total));
     if (avgEl) avgEl.textContent = fmt(Math.round(avg * 10) / 10);
-
     const labels = (data.days || []).map(d => {
       const [y,m,day] = d.split('-');
       return `${day}/${m}`;
     });
-
     const canvas = document.getElementById('dashChart');
     if (!canvas) return;
     canvas.style.display = '';
     const loader = document.getElementById('dashChartLoader');
     if (loader) loader.style.display = 'none';
-
     if (_dashChart) { _dashChart.destroy(); _dashChart = null; }
-
     _dashChart = new Chart(canvas.getContext('2d'), {
       type: 'line',
       data: {
@@ -949,7 +888,6 @@
       }
     });
   }
-
   async function loadDashboardChart() {
     const loader = document.getElementById('dashChartLoader');
     const canvas = document.getElementById('dashChart');
@@ -967,11 +905,8 @@
       loader.textContent = 'Error al cargar gráfico';
     }
   }
-
   // ==================== QUESTIONS ====================
-
   let questionStatus = 'UNANSWERED';
-
   async function loadQuestions(accountId = '') {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_questions) {
@@ -982,7 +917,6 @@
     try {
       const res = await fetch(`/api/questions?status=${questionStatus}&account_id=${accountId}`);
       const questions = await res.json();
-
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Preguntas</h2>
         <div class="filters">
@@ -991,7 +925,6 @@
           <select onchange="loadQuestions(this.value)">${accountFilterHTML()}</select>
         </div>
       `;
-
       if (questions.length === 0) {
         html += `<div class="empty"><p>${questionStatus === 'UNANSWERED' ? '¡No hay preguntas pendientes!' : 'No hay preguntas respondidas'}</p></div>`;
       } else {
@@ -1039,7 +972,6 @@
         }
       }
       if (navToken !== myNav) return;
-
       // Guardar estado de acordeones de preguntas anteriores que estaban abiertos
       const expandedPrevQ = new Map();
       content.querySelectorAll('.prev-q-wrapper').forEach(wrapper => {
@@ -1049,9 +981,7 @@
           expandedPrevQ.set(key, box.innerHTML);
         }
       });
-
       content.innerHTML = html;
-
       // Restaurar acordeones que estaban abiertos
       if (expandedPrevQ.size > 0) {
         content.querySelectorAll('.prev-q-wrapper').forEach(wrapper => {
@@ -1066,7 +996,6 @@
           }
         });
       }
-
       // Verificar en paralelo si cada comprador tiene preguntas anteriores.
       // Solo muestra el botón "Ver preguntas anteriores" cuando hay al menos una.
       // (Solo para wrappers que NO fueron ya restaurados arriba)
@@ -1089,22 +1018,18 @@
           }
         } catch(e) {}
       });
-
     } catch (e) {
       if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
     }
   }
-
   async function answerQuestion(questionId, accountId) {
     const textarea = document.getElementById('reply-' + questionId);
     const text = textarea.value.trim();
     if (!text) return;
-
     const btn = textarea.nextElementSibling;
     btn.disabled = true;
     btn.textContent = 'Enviando...';
-
     try {
       const res = await fetch('/api/questions/answer', {
         method: 'POST',
@@ -1131,7 +1056,6 @@
       btn.textContent = 'Responder';
     }
   }
-
   async function togglePrevQuestions(btn, buyerId, accountId, itemId) {
     const box = btn.nextElementSibling;
     const arrow = btn.querySelector('.pq-arrow');
@@ -1161,11 +1085,8 @@
       box.innerHTML = '<span style="color:#e74c3c;font-size:12px">Error al cargar.</span>';
     }
   }
-
   // ==================== QUICK REPLIES ====================
-
   let quickRepliesData = [];
-
   async function loadQuickReplies() {
     try {
       const res = await fetch('/api/quick-replies');
@@ -1173,7 +1094,6 @@
       renderQuickReplies();
     } catch (e) {}
   }
-
   function renderQuickReplies() {
     const list = document.getElementById('quickRepliesList');
     if (!list) return;
@@ -1185,7 +1105,6 @@
       `<button class="qr-btn" onclick="insertQuickReply(${i})" title="${escapeHtml(r.text)}">${escapeHtml(r.label)}</button>`
     ).join('');
   }
-
   function insertQuickReply(index) {
     const reply = quickRepliesData[index];
     if (!reply) return;
@@ -1201,7 +1120,6 @@
       }
     }
     if (!target && textareas.length > 0) target = textareas[0];
-
     if (target) {
       // Insert at cursor position or append
       const start = target.selectionStart;
@@ -1218,12 +1136,10 @@
       showToast('No hay pregunta abierta para responder', 'error');
     }
   }
-
   function openQuickRepliesAdmin() {
     const panel = document.getElementById('quickRepliesList');
     let html = '<div style="display:flex;flex-direction:column;gap:6px">';
     html += '<p style="font-size:11px;color:#5a3e8e;text-align:center;margin:4px 0">Nombre del botón y texto de respuesta</p>';
-
     for (let i = 0; i < quickRepliesData.length; i++) {
       const r = quickRepliesData[i];
       html += `
@@ -1234,7 +1150,6 @@
           <button onclick="removeQuickReply(${i})" style="background:#e74c3c;color:white;border:none;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;margin-top:2px">Eliminar</button>
         </div>`;
     }
-
     html += `
       <button onclick="addQuickReply()" style="background:#27ae60;color:white;border:none;border-radius:12px;padding:6px;font-size:11px;cursor:pointer;font-weight:600">+ Agregar</button>
       <div style="display:flex;gap:4px">
@@ -1244,7 +1159,6 @@
     </div>`;
     panel.innerHTML = html;
   }
-
   function addQuickReply() {
     quickRepliesData.push({ label: '', text: '' });
     openQuickRepliesAdmin();
@@ -1252,12 +1166,10 @@
     const newInput = document.getElementById('qr-label-' + (quickRepliesData.length - 1));
     if (newInput) newInput.focus();
   }
-
   function removeQuickReply(index) {
     quickRepliesData.splice(index, 1);
     openQuickRepliesAdmin();
   }
-
   async function saveQuickReplies() {
     // Read values from inputs
     const updated = [];
@@ -1283,14 +1195,11 @@
       showToast('Error al guardar', 'error');
     }
   }
-
   // ==================== MESSAGES ====================
-
   let messageStatus = 'unread';
   let msgBuyerSearch = '';
   let msgAccountFilter = '';
   let allConversationsCache = [];
-
   async function loadMessages(accountId) {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_messages) {
@@ -1309,14 +1218,12 @@
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
     }
   }
-
   function renderMessagesList() {
     const content = document.getElementById('content');
     const search = msgBuyerSearch.trim().toLowerCase();
     const conversations = search
       ? allConversationsCache.filter(c => c.buyer_name?.toLowerCase().includes(search))
       : allConversationsCache;
-
     let html = `
       <h2 style="margin-bottom:16px;color:#2d3277">Mensajes de compras</h2>
       <div class="filters" style="flex-wrap:wrap;gap:8px">
@@ -1328,7 +1235,6 @@
           style="flex:1;min-width:160px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
       </div>
     `;
-
     if (conversations.length === 0) {
       html += `<div class="empty"><p>${search ? 'No hay resultados para "'+escapeHtml(search)+'"' : messageStatus === 'unread' ? 'No hay mensajes sin leer' : 'No hay mensajes respondidos'}</p></div>`;
     } else {
@@ -1396,9 +1302,7 @@
     document.querySelectorAll('[id^="msgexp-"]').forEach(el => {
       if (el.style.display !== 'none') expandedMsgIds.add(el.id);
     });
-
     content.innerHTML = html;
-
     // Restaurar historial de mensajes expandido
     expandedMsgIds.forEach(id => {
       const box = document.getElementById(id);
@@ -1407,21 +1311,17 @@
       const btn = box.nextElementSibling;
       if (btn && btn.tagName === 'BUTTON') btn.textContent = 'Ocultar mensajes anteriores ▲';
     });
-
     // Restore search input focus position if user was typing
     const searchInput = document.getElementById('msg-buyer-search');
     if (searchInput && document.activeElement !== searchInput && msgBuyerSearch) searchInput.focus();
   }
-
   async function replyMessage(orderId, accountId) {
     const textarea = document.getElementById('msg-' + orderId);
     const text = textarea.value.trim();
     if (!text) return;
-
     const btn = textarea.nextElementSibling;
     btn.disabled = true;
     btn.textContent = 'Enviando...';
-
     try {
       const res = await fetch('/api/messages/reply', {
         method: 'POST',
@@ -1443,7 +1343,6 @@
       btn.textContent = 'Enviar';
     }
   }
-
   async function dismissMessage(packId, btn) {
     if (!packId || packId === 'null' || packId === 'undefined') {
       showToast('No se pudo identificar el pack de mensajes', 'error');
@@ -1473,9 +1372,7 @@
       btn.textContent = orig;
     }
   }
-
   // ==================== BUYER-FILTERED VIEWS ====================
-
   async function loadMessagesForBuyer(buyerId, accountId, orderId) {
     const myNav = navToken;
     const content = document.getElementById('content');
@@ -1487,12 +1384,10 @@
       if (accountId) params.set('account_id', accountId);
       const res = await fetch(`/api/messages?${params.toString()}`);
       const conversations = await res.json();
-
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Mensajes del comprador</h2>
         <a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">← Volver al panel</a>
       `;
-
       if (conversations.length === 0) {
         html += '<div class="empty"><p>No hay mensajes con este comprador</p></div>';
       } else {
@@ -1544,7 +1439,6 @@
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
     }
   }
-
   async function loadQuestionsForBuyer(buyerId, accountId) {
     const myNav = navToken;
     const content = document.getElementById('content');
@@ -1555,12 +1449,10 @@
       if (accountId) params.set('account_id', accountId);
       const res = await fetch(`/api/questions?${params.toString()}`);
       const questions = await res.json();
-
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Preguntas del comprador</h2>
         <a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">← Volver al panel</a>
       `;
-
       if (questions.length === 0) {
         html += '<div class="empty"><p>Este comprador no tiene preguntas anteriores</p></div>';
       } else {
@@ -1597,9 +1489,7 @@
       content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
     }
   }
-
   // ==================== SALES SECTION ====================
-
   let salesStatusFilters = [];
   let salesShippingFilters = [];
   let salesDateFrom = '';
@@ -1608,7 +1498,6 @@
   let salesAccountFilter = '';
   let salesPedidoFilter = ''; // '' | 'pedido' | 'sin_pedir'
   let salesLoaded = false;
-
   const STATUS_LABELS = {
     pending: 'Pendientes para acordar',
     ready_to_print: 'Etiquetas para imprimir',
@@ -1619,20 +1508,17 @@
     cancelled: 'Canceladas',
     delivered: 'Entregadas'
   };
-
   const SHIPPING_LABELS = {
     flex: 'Envíos Flex',
     drop_off: 'Puntos de despacho',
     agreement: 'Acuerdo con el comprador'
   };
-
   function searchByOrderId() {
     const input = document.getElementById('salesOrderIdFilter');
     const orderId = (input ? input.value : '').trim();
     if (!orderId) { showToast('Ingresá un número de orden', 'error'); return; }
     loadSalesForOrder(orderId);
   }
-
   function toggleSalesFilterNoLoad(type, value) {
     const arr = type === 'status' ? salesStatusFilters : salesShippingFilters;
     const idx = arr.indexOf(value);
@@ -1641,7 +1527,6 @@
     const el = event.target.closest('.chip');
     if (el) el.classList.toggle('checked');
   }
-
   function toggleSalesPedidoFilter(val) {
     salesPedidoFilter = (salesPedidoFilter === val) ? '' : val;
     // Update chip visuals
@@ -1654,7 +1539,6 @@
       if (cb) cb.checked = isActive;
     });
   }
-
   function applySalesFilters() {
     // Read values from DOM before fetching
     const accSel = document.getElementById('salesAccountSel');
@@ -1667,7 +1551,6 @@
     if (timeCutEl) salesTimeCut = timeCutEl.value;
     loadSales(true);
   }
-
   function clearSalesFilters() {
     salesDateFrom = ''; salesDateTo = ''; salesTimeCut = '';
     salesStatusFilters = []; salesShippingFilters = [];
@@ -1675,7 +1558,6 @@
     salesPedidoFilter = '';
     loadSales(true);
   }
-
   async function loadSales(doFetch = false) {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_sales) {
@@ -1683,7 +1565,6 @@
       return;
     }
     const content = document.getElementById('content');
-
     // Build filter panel HTML (always shown)
     let html = `
       <h2 style="margin-bottom:20px;color:#2d3277">Ventas</h2>
@@ -1735,15 +1616,12 @@
         </div>
       </div>
     `;
-
     // Always fetch sales when entering the section
     if (!doFetch) doFetch = true;
-
     // Show loading
     html += '<div class="loading"><div class="spinner"></div><p>Cargando ventas...</p></div>';
     content.innerHTML = html;
     if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
-
     const params = new URLSearchParams();
     if (salesAccountFilter) params.set('account_id', salesAccountFilter);
     if (salesStatusFilters.length) params.set('status', salesStatusFilters.join(','));
@@ -1751,12 +1629,10 @@
     if (salesDateFrom) params.set('date_from', salesDateFrom);
     if (salesDateTo) params.set('date_to', salesDateTo);
     if (salesTimeCut) params.set('time_cut', salesTimeCut);
-
     try {
       const res = await fetch(`/api/sales?${params.toString()}`);
       let sales = await res.json();
       salesLoaded = true;
-
       // Client-side time cut filter
       if (salesTimeCut) {
         const [cutH, cutM] = salesTimeCut.split(':').map(Number);
@@ -1765,7 +1641,6 @@
           return d.getHours() < cutH || (d.getHours() === cutH && d.getMinutes() <= cutM);
         });
       }
-
       // Pedido filter: fetch open orders and filter
       if (salesPedidoFilter) {
         let orderedIds = new Set();
@@ -1780,7 +1655,6 @@
           return salesPedidoFilter === 'pedido' ? hasOrder : !hasOrder;
         });
       }
-
       // Remove loading, rebuild with filters + results
       // Re-render entire content to keep filters
       let fullHtml = `
@@ -1833,7 +1707,6 @@
           </div>
         </div>
       `;
-
       if (sales.length === 0) {
         fullHtml += '<div class="empty"><p>No hay ventas para los filtros seleccionados</p></div>';
       } else {
@@ -1851,7 +1724,6 @@
           // Collect SKU data for SKU OK button
           const saleSkuItems = sale.items.filter(i => i.sku).map(i => ({ sku: i.sku, qty: i.quantity }));
           if (saleSkuItems.length) saleSKUs[String(orderId)] = saleSkuItems;
-
           fullHtml += `
             <div class="sale-card">
               <div id="prep-badge-${firstOrderId}" style="float:right;margin-bottom:4px"></div>
@@ -1917,10 +1789,8 @@
       if (salesAccountFilter) document.getElementById('salesAccountSel').value = salesAccountFilter;
       // Apply prep status badges after rendering
       applyPrepStatusBadges(sales);
-
       // Fetch notes from ML after sales are rendered
       fetchSalesNotes(sales);
-
       // Load pedido display for each sale
       for (const sale of sales) {
         const fId = sale.pack_id ? sale.pack_id : (sale.order_ids ? sale.order_ids[0] : sale.order_id);
@@ -1933,9 +1803,7 @@
       if (loadingEl) loadingEl.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
     }
   }
-
   // ==================== PEDIDOS (SALE ORDERS) ====================
-
   async function loadSaleOrderDisplay(orderId, accountId, accountName, dateStr) {
     try {
       const res = await fetch(`/api/sale-orders?order_id=${orderId}&account_id=${accountId}&status=open`);
@@ -1950,7 +1818,6 @@
       }
     } catch(e) {}
   }
-
   function renderPedidoDone(el, orderId, accountId, accountName, dateStr, order) {
     const itemsSummary = order.items.map(i => `${i.codigo} ×${i.cantidad} (${i.proveedor})`).join(', ');
     el.innerHTML = `
@@ -1963,7 +1830,6 @@
       </div>
     `;
   }
-
   function renderPedidoForm(el, orderId, accountId, accountName, dateStr, existingOrder) {
     const items = existingOrder?.items || [{ codigo: '', cantidad: '', proveedor: '' }];
     const rowsHtml = items.map((item, i) => renderPedidoRow(i, item)).join('');
@@ -1992,7 +1858,6 @@
       </div>
     `;
   }
-
   function renderPedidoRow(index, item = {}) {
     return `<div style="display:grid;grid-template-columns:1fr 80px 1fr auto;gap:4px;margin-bottom:4px" class="pedido-row">
       <input type="text" placeholder="Código" value="${escapeHtml(item.codigo||'')}" style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
@@ -2001,8 +1866,6 @@
       <button onclick="this.closest('.pedido-row').remove()" style="width:28px;height:28px;border:1px solid #fca5a5;border-radius:4px;background:white;color:#ef4444;cursor:pointer;font-size:14px">×</button>
     </div>`;
   }
-
-
   function addPedidoRow(containerId) {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -2010,7 +1873,6 @@
     div.innerHTML = renderPedidoRow(Date.now());
     container.appendChild(div.firstElementChild);
   }
-
   function editPedido(orderId, accountId, accountName, dateStr) {
     fetch(`/api/sale-orders?order_id=${orderId}&account_id=${accountId}&status=open`)
       .then(r => r.json()).then(orders => {
@@ -2018,7 +1880,6 @@
         if (el) renderPedidoForm(el, orderId, accountId, accountName, dateStr, orders[0] || null);
       });
   }
-
   async function enviarPedido(orderId, accountId, accountName, dateStr, isDrop) {
     const rowsContainer = document.getElementById(`pedido-rows-${orderId}`);
     if (!rowsContainer) return;
@@ -2044,9 +1905,7 @@
       await loadSaleOrderDisplay(orderId, accountId, accountName, dateStr);
     } catch(e) { showToast('Error al guardar pedido', 'error'); }
   }
-
   // ==================== SKU PARSER ====================
-
   function parseSku(skuStr) {
     // Provider map: abbreviations (single item) + full names (combo) — always UPPERCASE output
     const PROV_MAP = {
@@ -2077,7 +1936,6 @@
     }
     return rows;
   }
-
   function applySkuToForm(orderId) {
     const skuItems = saleSKUs[String(orderId)];
     if (!skuItems?.length) { showToast('No hay SKU disponible para esta venta', 'error'); return; }
@@ -2094,7 +1952,6 @@
     if (!allRows.length) { showToast('No se pudo parsear el SKU', 'error'); return; }
     container.innerHTML = allRows.map((item, i) => renderPedidoRow(i, item)).join('');
   }
-
   async function loadOrdersSection() {
     const content = document.getElementById('content');
     content.innerHTML = `
@@ -2108,7 +1965,6 @@
     `;
     switchOrdersTab('open');
   }
-
   async function switchOrdersTab(tab) {
     ['open','sin-pedir','history'].forEach(t => {
       const btn = document.getElementById(`orders-tab-${t}`);
@@ -2118,7 +1974,6 @@
     else if (tab === 'sin-pedir') loadSinPedir();
     else loadOrdersHistory();
   }
-
   async function loadOpenOrders() {
     const container = document.getElementById('orders-tab-content');
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
@@ -2136,7 +1991,6 @@
       container.innerHTML = html;
     } catch(e) { container.innerHTML = '<div class="empty"><p>Error al cargar pedidos</p></div>'; }
   }
-
   async function loadSinPedir() {
     const container = document.getElementById('orders-tab-content');
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando ventas...</p></div>';
@@ -2147,17 +2001,14 @@
       ]);
       const allSales = await salesRes.json();
       const openOrders = await ordersRes.json();
-
       const orderedIds = new Set(openOrders.map(o => String(o.order_id)));
       const ordersMap = {};
       for (const o of openOrders) ordersMap[String(o.order_id)] = o;
-
       const relevantSales = allSales.filter(s => s.status !== 'cancelled');
       if (!relevantSales.length) {
         container.innerHTML = '<div class="empty"><p>No hay ventas activas</p></div>';
         return;
       }
-
       const sinPedir = relevantSales.filter(s => {
         const k = s.pack_id ? String(s.pack_id) : (s.order_ids ? String(s.order_ids[0]) : String(s.order_id));
         return !orderedIds.has(k);
@@ -2166,9 +2017,7 @@
         const k = s.pack_id ? String(s.pack_id) : (s.order_ids ? String(s.order_ids[0]) : String(s.order_id));
         return orderedIds.has(k);
       });
-
       let html = `<p style="color:#999;font-size:13px;margin-bottom:16px">${sinPedir.length} sin pedir &nbsp;·&nbsp; ${conPedido.length} con pedido</p>`;
-
       for (const sale of relevantSales) {
         const saleKey = sale.pack_id ? String(sale.pack_id) : (sale.order_ids ? String(sale.order_ids[0]) : String(sale.order_id));
         const hasPedido = orderedIds.has(saleKey);
@@ -2176,7 +2025,6 @@
         const displayId = sale.pack_id ? sale.pack_id : sale.order_id;
         const dateStr = formatSaleDate(sale.date_created);
         const statusLabel = STATUS_LABELS[sale.status] || sale.status;
-
         html += `
           <div class="sale-card" style="border-left:4px solid ${hasPedido ? '#86efac' : '#e2e8f0'}">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
@@ -2214,7 +2062,6 @@
       container.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
     }
   }
-
   function renderOrderCard(order, showClose) {
     const itemsHtml = order.items.map(i => `
       <tr>
@@ -2246,7 +2093,6 @@
       </div>
     `;
   }
-
   async function cerrarPedido(orderId) {
     try {
       const res = await fetch('/api/sale-orders/close', {
@@ -2259,7 +2105,6 @@
       loadOpenOrders();
     } catch(e) { showToast('Error al cerrar pedido', 'error'); }
   }
-
   async function loadOrdersHistory() {
     const container = document.getElementById('orders-tab-content');
     container.innerHTML = `
@@ -2280,7 +2125,6 @@
       <div id="historial-results"><div class="empty"><p>Usá los filtros para buscar en el historial</p></div></div>
     `;
   }
-
   async function buscarHistorial() {
     const codigo = document.getElementById('hist-codigo')?.value.trim() || '';
     const proveedor = document.getElementById('hist-proveedor')?.value.trim() || '';
@@ -2308,7 +2152,6 @@
       container.innerHTML = html;
     } catch(e) { container.innerHTML = '<div class="empty"><p>Error al buscar</p></div>'; }
   }
-
   async function exportarPedidos(status) {
     if (!window.XLSX) { const ok = await loadXLSX(); if (!ok) { showToast('No se pudo cargar XLSX', 'error'); return; } }
     try {
@@ -2336,7 +2179,6 @@
       XLSX.writeFile(wb, `pedido_${new Date().toISOString().slice(0,10)}.xlsx`);
     } catch(e) { showToast('Error al exportar', 'error'); }
   }
-
   async function exportarHistorial() {
     if (!window.XLSX) { const ok = await loadXLSX(); if (!ok) { showToast('No se pudo cargar XLSX', 'error'); return; } }
     const rows = [['Código', 'Cantidad', 'Proveedor', 'Orden', 'Cuenta', 'Fecha']];
@@ -2372,7 +2214,6 @@
       XLSX.writeFile(wb, `historial_pedidos_${new Date().toISOString().slice(0,10)}.xlsx`);
     } catch(e) { showToast('Error al exportar', 'error'); }
   }
-
   async function loadSalesForOrder(orderId, accountId) {
     const myNav = navToken;
     const content = document.getElementById('content');
@@ -2383,10 +2224,8 @@
       if (accountId) params.set('account_id', accountId);
       const res = await fetch('/api/sales?' + params.toString());
       const sales = await res.json();
-
       let html = '<h2 style="margin-bottom:20px;color:#2d3277">Venta - Orden #' + orderId + '</h2>';
       html += '<a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">&larr; Volver al panel</a>';
-
       if (sales.length === 0) {
         html += '<div class="empty"><p>Venta no encontrada</p></div>';
       } else {
@@ -2397,7 +2236,6 @@
           const saleOrderId = sale.pack_id ? sale.pack_id : sale.order_id;
           const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
           const orderIdsJson = JSON.stringify(sale.order_ids || [sale.order_id]).replace(/"/g, '&quot;');
-
           let itemsHtml = '';
           for (const item of sale.items) {
             itemsHtml += '<div class="sale-item">';
@@ -2409,7 +2247,6 @@
             if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku;
             itemsHtml += '</div></div></div>';
           }
-
           html += '<div class="sale-card">';
           html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
           html += '<span class="card-account">' + escapeHtml(sale.account_name) + '</span>';
@@ -2451,7 +2288,6 @@
       content.innerHTML = '<div class="empty"><p>Error al cargar venta</p></div>';
     }
   }
-
   async function fetchSalesNotes(sales) {
     console.log('[NOTES] fetchSalesNotes called, sales count:', sales.length);
     // Process notes SEQUENTIALLY to avoid ML rate limiting (49 simultaneous = all fail)
@@ -2460,11 +2296,9 @@
       const firstOrderId = s.order_ids ? s.order_ids[0] : s.order_id;
       const orderIds = s.order_ids || [s.order_id];
       const accountId = s.account_id;
-
       const noteTextEl = document.getElementById('note-text-' + firstOrderId);
       const container = document.getElementById('sale-notes-' + firstOrderId);
       if (!noteTextEl || !container) continue;
-
       let foundNote = false;
       for (const oid of orderIds) {
         try {
@@ -2473,7 +2307,6 @@
           const res = await fetch(url);
           const data = await res.json();
           console.log('[NOTES] Response for', oid, '- ml_status:', data.ml_status, '- note:', data.note, '- full:', JSON.stringify(data));
-
           if (data.note) {
             noteTextEl.textContent = data.note;
             noteTextEl.style.color = '#333';
@@ -2490,7 +2323,6 @@
           console.error('[NOTES] Error fetching note for order', oid, e);
         }
       }
-
       if (!foundNote) {
         noteTextEl.textContent = 'Sin notas';
         noteTextEl.style.color = '#bbb';
@@ -2498,7 +2330,6 @@
     }
     console.log('[NOTES] All notes fetched');
   }
-
   function addEditNote(orderId) {
     const container = document.getElementById('sale-notes-' + orderId);
     const editor = document.getElementById('note-editor-' + orderId);
@@ -2511,28 +2342,23 @@
     editor.style.display = 'block';
     input.focus();
   }
-
   function editNote(orderId) {
     addEditNote(orderId);
   }
-
   function cancelNote(orderId) {
     const editor = document.getElementById('note-editor-' + orderId);
     if (editor) editor.style.display = 'none';
   }
-
   async function saveNote(orderId) {
     const container = document.getElementById('sale-notes-' + orderId);
     const editor = document.getElementById('note-editor-' + orderId);
     const input = document.getElementById('note-input-' + orderId);
     const noteTextEl = document.getElementById('note-text-' + orderId);
     if (!container || !input) return;
-
     const text = input.value.trim();
     const accountId = container.dataset.accountId;
     const noteId = container.dataset.noteId || '';
     const noteOrderId = container.dataset.noteOrderId || container.dataset.orderId;
-
     try {
       const res = await fetch('/api/sales/notes', {
         method: 'POST',
@@ -2566,18 +2392,14 @@
       showToast('Error al guardar nota', 'error');
     }
   }
-
   async function deleteNote(orderId) {
     const container = document.getElementById('sale-notes-' + orderId);
     const noteTextEl = document.getElementById('note-text-' + orderId);
     if (!container) return;
-
     const accountId = container.dataset.accountId;
     const noteId = container.dataset.noteId || '';
     const noteOrderId = container.dataset.noteOrderId || container.dataset.orderId;
-
     if (!noteId) return;
-
     try {
       const res = await fetch('/api/sales/notes', {
         method: 'POST',
@@ -2601,7 +2423,6 @@
       showToast('Error al eliminar nota', 'error');
     }
   }
-
   async function printLabel(shipmentId, accountId) {
     try {
       const res = await fetch(`/api/sales/label?shipment_id=${shipmentId}&account_id=${accountId}`);
@@ -2615,7 +2436,6 @@
       showToast('Error al obtener etiqueta', 'error');
     }
   }
-
   async function applyPrepStatusBadges(sales) {
     try {
       const res = await fetch('/api/prep/list');
@@ -2623,7 +2443,6 @@
       const prepOrders = await res.json();
       const prepMap = {};
       for (const p of prepOrders) prepMap[p.order_id] = p;
-
       for (const sale of sales) {
         const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
         const saleKey = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
@@ -2640,9 +2459,7 @@
       }
     } catch(e) {}
   }
-
   // ==================== ACCOUNTS SECTION ====================
-
   async function loadAccountsSection() {
     const myNav = navToken;
     if (currentUser?.role !== 'admin') {
@@ -2659,7 +2476,6 @@
       </div>
       <p style="color:#999;font-size:13px;margin-bottom:20px">Al agregar una cuenta se abrirá MercadoLibre para que autorices el acceso. Iniciá sesión con la cuenta que querés conectar.</p>
     `;
-
     if (accounts.length === 0) {
       html += '<div class="empty"><p>No hay cuentas conectadas</p></div>';
     } else {
@@ -2681,16 +2497,13 @@
     }
     document.getElementById('content').innerHTML = html;
   }
-
   function addAccount() {
     const name = document.getElementById('accountName')?.value || 'Cuenta ML';
     window.location.href = `/auth/mercadolibre?name=${encodeURIComponent(name)}`;
   }
-
   function reconnectAccount(name) {
     window.location.href = `/auth/mercadolibre?name=${encodeURIComponent(name)}`;
   }
-
   async function removeAccount(id) {
     if (!confirm('¿Seguro que querés eliminar esta cuenta?')) return;
     try {
@@ -2701,16 +2514,13 @@
       showToast('Error al eliminar', 'error');
     }
   }
-
   // ==================== USERS SECTION ====================
-
   async function loadUsers() {
     const myNav = navToken;
     try {
       const res = await fetch('/api/users');
       const users = await res.json();
       if (navToken !== myNav) return;
-
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Gestión de Usuarios</h2>
         <div class="user-form">
@@ -2719,7 +2529,6 @@
           <button class="btn-success" onclick="addUser()">Crear usuario</button>
         </div>
       `;
-
       for (const u of users) {
         html += `
           <div class="account-card" style="flex-wrap:wrap;gap:12px">
@@ -2802,7 +2611,6 @@
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar usuarios</p></div>';
     }
   }
-
   async function toggleAlert(userId, field, value) {
     try {
       const body = { id: userId };
@@ -2821,12 +2629,10 @@
       showToast('Error de conexión', 'error');
     }
   }
-
   async function addUser() {
     const username = document.getElementById('newUsername').value.trim();
     const password = document.getElementById('newPassword').value;
     if (!username || !password) return showToast('Completá usuario y contraseña', 'error');
-
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
@@ -2844,7 +2650,6 @@
       showToast('Error de conexión', 'error');
     }
   }
-
   async function removeUser(id) {
     if (!confirm('¿Seguro que querés eliminar este usuario?')) return;
     try {
@@ -2855,12 +2660,10 @@
       showToast('Error al eliminar', 'error');
     }
   }
-
   function openChangePassword(userId, username) {
     // Remove any existing modal
     const old = document.getElementById('changePassModal');
     if (old) old.remove();
-
     const modal = document.createElement('div');
     modal.id = 'changePassModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -2885,7 +2688,6 @@
     // Allow Enter key to submit
     modal.querySelectorAll('input').forEach(inp => inp.addEventListener('keypress', e => { if (e.key === 'Enter') doChangePassword(userId); }));
   }
-
   async function doChangePassword(userId) {
     const newPass = document.getElementById('cpNewPass')?.value || '';
     const confirmPass = document.getElementById('cpConfirmPass')?.value || '';
@@ -2912,13 +2714,10 @@
       errEl.style.display = '';
     }
   }
-
   // ==================== ACTUALIZAR (BULK UPDATE) ====================
-
   let updateParsedData = [];
   let bulkPollInterval = null;
   let bulkCurrentJobId = null;
-
   async function loadUpdate() {
     const isAdmin = currentUser?.role === 'admin';
     const canSearch = isAdmin || currentUser?.can_search_update;
@@ -2929,7 +2728,6 @@
     }
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
-
       ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
@@ -2938,7 +2736,6 @@
           ${accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
         </select>
       </div>` : ''}
-
       ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
@@ -2947,7 +2744,6 @@
         </div>
         <p style="font-size:13px;color:#666">Descargá un Excel con todas tus publicaciones activas y pausadas (item_id, stock, estado, precio, SKU). Usalo como base para editar y volver a subir.</p>
       </div>` : ''}
-
       ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:8px">3. Estructura del archivo para subir</h3>
@@ -2969,7 +2765,6 @@
         </div>
         <p style="font-size:12px;color:#888">💡 Las celdas vacías se ignoran — solo se actualizan los campos que completaste.</p>
       </div>` : ''}
-
       <!-- BUSCADOR POR SKU / TÍTULO -->
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:4px">🔍 Buscar y editar publicaciones</h3>
@@ -3010,7 +2805,6 @@
           <div id="searchUpdateLog" style="margin-top:12px"></div>
         </div>
       </div>
-
       ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:12px">4. Subí tu archivo de actualizaciones</h3>
@@ -3025,29 +2819,24 @@
           <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleUpdateFile(this.files[0])">
         </div>
       </div>
-
       <div id="previewSection" style="display:none">
         <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
             <h3 style="font-size:15px;color:#333">5. Vista previa <span id="previewCount" style="color:#888;font-weight:400"></span></h3>
             <button onclick="applyBulkUpdate()" id="btnApply" style="padding:10px 24px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">✅ Aplicar cambios</button>
           </div>
-
           <div id="resultsSection" style="display:none;margin-bottom:16px">
             <div id="resultsProgress"></div>
             <div id="resultsList"></div>
           </div>
-
           <div style="overflow-x:auto">
             <table id="previewTable" style="border-collapse:collapse;font-size:13px;width:100%;min-width:500px"></table>
           </div>
         </div>
       </div>` : ''}
     `;
-
     // Load SheetJS lazily
     await loadXLSX();
-
     // Si hay un job en progreso (browser cerrado y reabierto), retomar el polling
     const savedJobId = localStorage.getItem('bulk_job_id');
     if (savedJobId) {
@@ -3087,7 +2876,6 @@
       } catch(e) {}
     }
   }
-
   async function loadXLSX() {
     if (window.XLSX) return true;
     const cdns = [
@@ -3109,7 +2897,6 @@
     }
     return false;
   }
-
   function handleUpdateFile(file) {
     if (!file) return;
     if (!window.XLSX) { showToast('Librería no cargada, recargá la página', 'error'); return; }
@@ -3140,7 +2927,6 @@
     };
     reader.readAsArrayBuffer(file);
   }
-
   function showUpdatePreview() {
     if (!updateParsedData.length) { showToast('El archivo no tiene datos válidos', 'error'); return; }
     document.getElementById('previewSection').style.display = 'block';
@@ -3160,7 +2946,6 @@
     document.getElementById('previewTable').innerHTML = html;
     document.getElementById('previewSection').scrollIntoView({ behavior: 'smooth' });
   }
-
   function resetBulkUI() {
     // Limpiar datos parseados
     updateParsedData = [];
@@ -3189,17 +2974,14 @@
     const dropZone = document.getElementById('dropZone');
     if (dropZone) dropZone.scrollIntoView({ behavior: 'smooth' });
   }
-
   async function applyBulkUpdate() {
     const accountId = document.getElementById('updateAccount')?.value;
     if (!accountId) return showToast('Seleccioná una cuenta ML', 'error');
     if (!updateParsedData.length) return showToast('No hay datos para aplicar', 'error');
-
     const btn = document.getElementById('btnApply');
     btn.disabled = true;
     btn.textContent = '⏳ Enviando…';
     btn.style.background = '';
-
     try {
       const res = await fetch('/api/bulk-update-bg', {
         method: 'POST',
@@ -3216,7 +2998,6 @@
       bulkCurrentJobId = jobId;
       localStorage.setItem('bulk_job_id', jobId);
       localStorage.setItem('bulk_job_account', accountId);
-
       document.getElementById('resultsSection').style.display = 'block';
       document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
       setupBulkProgressUI(jobId);
@@ -3227,7 +3008,6 @@
       btn.disabled = false; btn.textContent = '✅ Aplicar cambios';
     }
   }
-
   function setupBulkProgressUI(jobId) {
     const progressEl = document.getElementById('resultsProgress');
     const listEl = document.getElementById('resultsList');
@@ -3250,11 +3030,9 @@
       <div id="bulkPhaseNote" style="font-size:12px;color:#888"></div>`;
     if (listEl) listEl.innerHTML = '';
   }
-
   function startBulkPolling(jobId) {
     if (bulkPollInterval) clearInterval(bulkPollInterval);
     bulkCurrentJobId = jobId;
-
     bulkPollInterval = setInterval(async () => {
       try {
         const r = await fetch('/api/bulk-status?job_id=' + encodeURIComponent(jobId));
@@ -3269,7 +3047,6 @@
         }
         const job = await r.json();
         updateBulkProgressUI(job);
-
         if (['done','cancelled','error'].includes(job.status)) {
           clearInterval(bulkPollInterval); bulkPollInterval = null;
           localStorage.removeItem('bulk_job_id');
@@ -3296,22 +3073,18 @@
       } catch(e) { /* error de red — reintentará en el próximo tick */ }
     }, 2000);
   }
-
   function updateBulkProgressUI(job) {
     const total = job.total || 1;
     const done = job.done || 0;
     const pct = Math.round((done / total) * 100);
-
     const barEl = document.getElementById('bulkProgressBar');
     const pctEl = document.getElementById('bulkProgressPct');
     const txtEl = document.getElementById('bulkProgressText');
     const cntEl = document.getElementById('bulkCounters');
     const noteEl = document.getElementById('bulkPhaseNote');
     if (!barEl) return;
-
     barEl.style.width = pct + '%';
     if (pctEl) pctEl.textContent = pct + '%';
-
     let statusTxt = '', noteHtml = '';
     if (job.phase === 'starting') {
       statusTxt = 'Iniciando…';
@@ -3343,10 +3116,8 @@
       statusTxt = `❌ Error: ${escapeHtml(job.error_msg || 'Error inesperado')}`;
       barEl.style.background = '#e74c3c';
     }
-
     if (txtEl) txtEl.textContent = statusTxt;
     if (noteEl) noteEl.innerHTML = noteHtml;
-
     const okCount = job.ok || 0, errCount = job.errors || 0;
     if (cntEl) cntEl.innerHTML =
       (okCount ? `<span style="padding:4px 12px;background:#d4edda;color:#27ae60;border-radius:20px;font-size:13px;font-weight:600">✅ ${okCount} OK</span>` : '') +
@@ -3356,7 +3127,6 @@
       (job.promotions_removed ? `<span style="padding:4px 12px;background:#e7f3ff;color:#0969da;border-radius:20px;font-size:13px">📣 ${job.promotions_removed} promos</span>` : '') +
       (job.velocity ? `<span style="padding:4px 12px;background:#eef2ff;color:#4338ca;border-radius:20px;font-size:13px">⚡ ${job.velocity} pub/s</span>` : '');
   }
-
   // Traduce códigos de error de la API de MercadoLibre al español con acción clara
   function translateBulkError(errorStr) {
     if (!errorStr) return errorStr;
@@ -3397,7 +3167,6 @@
     }
     return translated.join(' · ');
   }
-
   async function onBulkJobDone(job) {
     if (!window.XLSX) {
       const loaded = await loadXLSX();
@@ -3413,16 +3182,13 @@
       ...r,
       error: translateBulkError(r.error)
     }));
-
     const wb = XLSX.utils.book_new();
-
     // Hoja 1: Actualizados exitosamente
     if (okItems.length) {
       const wsOk = XLSX.utils.aoa_to_sheet([['item_id'], ...okItems.map(id => [id])]);
       wsOk['!cols'] = [{ wch: 20 }];
       XLSX.utils.book_append_sheet(wb, wsOk, 'Actualizados');
     }
-
     // Hoja 2: Errores (con detalle del error)
     if (errorItems.length) {
       const wsErr = XLSX.utils.aoa_to_sheet([
@@ -3432,21 +3198,17 @@
       wsErr['!cols'] = [{ wch: 20 }, { wch: 50 }];
       XLSX.utils.book_append_sheet(wb, wsErr, 'Errores');
     }
-
     // Hoja 3: Sin cambios (ya estaban al día)
     if (skippedItems.length) {
       const wsSkip = XLSX.utils.aoa_to_sheet([['item_id'], ...skippedItems.map(id => [id])]);
       wsSkip['!cols'] = [{ wch: 20 }];
       XLSX.utils.book_append_sheet(wb, wsSkip, 'Sin cambios');
     }
-
     if (wb.SheetNames.length === 0) return; // nada que reportar
-
     const now = new Date();
     const dd = String(now.getDate()).padStart(2,'0');
     const mm = String(now.getMonth()+1).padStart(2,'0');
     XLSX.writeFile(wb, `reporte_bulk_${dd}${mm}.xlsx`);
-
     // Mostrar mensaje con resumen del reporte
     const listEl = document.getElementById('resultsList');
     if (listEl) {
@@ -3458,7 +3220,6 @@
       </div>`;
     }
   }
-
   async function cancelBulkJob(jobId) {
     try {
       await fetch('/api/bulk-cancel', {
@@ -3471,9 +3232,7 @@
       showToast('Error al cancelar: ' + e.message, 'error');
     }
   }
-
   let searchResultsData = [];
-
   function nuevaBusqueda() {
     const itemEl = document.getElementById('searchItemId'); if (itemEl) itemEl.value = '';
     document.getElementById('searchSku').value = '';
@@ -3488,10 +3247,8 @@
     if (log) log.innerHTML = '';
     searchResultsData = [];
   }
-
     let searchNextCursor = null;
   let searchAccumulated = [];
-
   function ensureSearchResultsBox() {
     let el = document.getElementById('searchResults');
     if (!el) {
@@ -3499,12 +3256,10 @@
       el.id = 'searchResults';
       el.style.display = 'none';
       el.style.marginTop = '12px';
-
       const btn = document.querySelector('button[onclick="searchListings()"]');
       const container = btn?.closest('div')?.parentElement?.parentElement || document.body;
       container.appendChild(el);
     }
-
     let table = document.getElementById('searchResultsTable');
     if (!table) {
       el.innerHTML = `
@@ -3528,20 +3283,15 @@
         el.appendChild(log);
       }
     }
-
     return el;
   }
-
   async function searchListings(loadMore = false) {
     const item_id = document.getElementById('searchItemId')?.value.trim() || '';
     const sku = document.getElementById('searchSku').value.trim();
     const title = document.getElementById('searchTitle').value.trim();
     const accountId = document.getElementById('searchAccount').value;
-
     if (!item_id && !sku && !title) return showToast('Ingresá Item ID, SKU o título para buscar', 'error');
-
     const resultsBox = ensureSearchResultsBox();
-
     if (!loadMore) {
       searchNextCursor = null;
       searchAccumulated = [];
@@ -3557,11 +3307,9 @@
         </td></tr>`;
       if (log) log.innerHTML = '';
     }
-
     const clickedBtn = window.event?.target;
     const oldText = clickedBtn?.innerHTML;
     if (clickedBtn) { clickedBtn.disabled = true; clickedBtn.innerHTML = loadMore ? '⏳ Cargando...' : '⏳ Buscando...'; }
-
     // Puntos animados mientras carga
     let dotsInterval = null;
     if (!loadMore) {
@@ -3571,9 +3319,7 @@
         if (el) el.textContent = ['.','..',  '...'][d++ % 3];
       }, 500);
     }
-
     const stopDots = () => { if (dotsInterval) { clearInterval(dotsInterval); dotsInterval = null; } };
-
     try {
       const res = await fetch('/api/search-listings-stream', {
         method: 'POST',
@@ -3585,20 +3331,16 @@
           cursor: loadMore ? searchNextCursor : null
         })
       });
-
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Error buscando');
       }
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '', hasMore = false, nextCursor = null, scanned = 0;
-
       // firstRenderDone = false mientras estamos en el período de espera de 15s.
       // Cuando se cumple el timer (o termina el stream), se renderiza todo de una vez.
       let firstRenderDone = !!loadMore;
-
       let renderTimer = null;
       if (!loadMore) {
         renderTimer = setTimeout(() => {
@@ -3617,19 +3359,16 @@
           }
         }, 15000);
       }
-
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split('\n');
         buf = lines.pop();
-
         for (const line of lines) {
           if (!line.trim()) continue;
           let msg;
           try { msg = JSON.parse(line); } catch(e) { continue; }
-
           if (msg.type === 'item') {
             searchAccumulated.push(msg.row);
             // Si ya pasaron los 15s, actualizar en tiempo real; si no, buffereamos
@@ -3655,12 +3394,10 @@
           }
         }
       }
-
       // Stream terminó: cancelar timer, renderizar todo de una vez
       if (renderTimer) clearTimeout(renderTimer);
       stopDots();
       searchNextCursor = nextCursor;
-
       if (!searchAccumulated.length) {
         const table = document.getElementById('searchResultsTable');
         if (table) table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#999;text-align:center">No se encontraron publicaciones.</td></tr>';
@@ -3678,12 +3415,10 @@
       if (clickedBtn) { clickedBtn.disabled = false; clickedBtn.innerHTML = oldText; }
     }
   }
-
   async function loadMoreSearchResults() {
     if (!searchNextCursor) return;
     await searchListings(true);
   }
-
   function renderSearchResultsPaged(data, hasMore = false, scanned = 0) {
     renderSearchResults(data);
     const box = ensureSearchResultsBox();
@@ -3694,7 +3429,6 @@
     info.style.cssText = 'padding:8px 10px;color:#666;font-size:12px';
     info.textContent = `Mostrando ${data.length} resultados${scanned ? ` — revisadas ${scanned} publicaciones` : ''}`;
     box.prepend(info);
-
     if (hasMore) {
       const more = document.createElement('div');
       more.id = 'searchLoadMoreWrap';
@@ -3703,7 +3437,6 @@
       box.appendChild(more);
     }
   }
-
   function renderSearchResults(data) {
     searchResultsData = data; // sincronizar índices con data-idx de la tabla
     const section = ensureSearchResultsBox();
@@ -3721,7 +3454,6 @@
     }
     const inpStyle = 'padding:5px 7px;border:1px solid #cce0ff;border-radius:5px;font-size:12px;box-sizing:border-box;background:#fff';
     const selStyle = 'padding:5px 6px;border:1px solid #cce0ff;border-radius:5px;font-size:12px;background:#fff;cursor:pointer';
-
     // Fila masiva arriba de las cabeceras
     let html = `
     <tr style="background:#e8f4fd">
@@ -3759,7 +3491,6 @@
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Precio</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">SKU</th>
     </tr>`;
-
     data.forEach((r, i) => {
       const activeOpt = r.status === 'active' ? 'selected' : '';
       const pausedOpt = r.status === 'paused' ? 'selected' : '';
@@ -3795,7 +3526,6 @@
     section.scrollIntoView({ behavior: 'smooth' });
     showToast(`${data.length} publicación${data.length !== 1 ? 'es' : ''} encontrada${data.length !== 1 ? 's' : ''}`, 'success');
   }
-
   function applyBulkFill() {
     const bulkStatus = document.getElementById('bulk-status').value;
     const bulkStock  = document.getElementById('bulk-stock').value;
@@ -3822,15 +3552,12 @@
     });
     showToast('Valores aplicados a todas las filas', 'success');
   }
-
   function toggleAllSearch(checked) {
     document.querySelectorAll('.searchCheck').forEach(cb => cb.checked = checked);
   }
-
   async function applySearchUpdate() {
     const checkedBoxes = [...document.querySelectorAll('.searchCheck:checked')];
     if (!checkedBoxes.length) return showToast('Seleccioná al menos una publicación', 'error');
-
     // Construir lista de items con sus valores individuales
     const selected = checkedBoxes.map(cb => {
       const idx = parseInt(cb.dataset.idx);
@@ -3841,9 +3568,7 @@
       const sku    = document.querySelector(`.si-sku[data-idx="${idx}"]`)?.value.trim() || '';
       return { ...r, newStatus: status, newStock: stock, newPrice: price, newSku: sku };
     }).filter(r => r);
-
     if (!selected.length) return showToast('Ingresá al menos un valor a cambiar en las filas seleccionadas', 'error');
-
     const btn = document.getElementById('btnApplySearch');
     btn.disabled = true; btn.textContent = '⏳ Aplicando...';
     const log = document.getElementById('searchUpdateLog');
@@ -3851,7 +3576,6 @@
       <b>Aplicando cambios en ${selected.length} publicación${selected.length !== 1 ? 'es' : ''}…</b>
       <div id="searchApplyLog" style="max-height:200px;overflow-y:auto;margin-top:8px"></div>
     </div>`;
-
     // Agrupar por cuenta usando los valores individuales de cada fila
     const byAccount = {};
     for (const r of selected) {
@@ -3866,10 +3590,8 @@
         flex: ''
       });
     }
-
     let totalOk = 0, totalErr = 0;
     const applyLog = document.getElementById('searchApplyLog');
-
     for (const [accId, group] of Object.entries(byAccount)) {
       try {
         const res = await fetch('/api/bulk-update', {
@@ -3909,7 +3631,6 @@
         if (applyLog) applyLog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(group.name)}: ${escapeHtml(e.message)}</div>`;
       }
     }
-
     const logContent = applyLog?.innerHTML?.trim() || '';
     const hasErrors = totalErr > 0 || logContent;
     log.innerHTML = `<div style="background:${hasErrors ? '#fff8f8' : '#f0fff4'};border:1px solid ${hasErrors ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:12px;font-size:13px">
@@ -3919,13 +3640,11 @@
     </div>`;
     btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados';
   }
-
   async function downloadCurrentListings() {
     const accountId = document.getElementById('updateAccount')?.value;
     if (!accountId) return showToast('Seleccioná una cuenta ML primero', 'error');
     const btn = event.target;
     btn.disabled = true;
-
     // Cargar SheetJS si no está disponible
     const xlsxOk = await loadXLSX();
     if (!xlsxOk) {
@@ -3933,7 +3652,6 @@
       btn.disabled = false;
       return;
     }
-
     // Mostrar progress en la UI
     let exportSection = document.getElementById('exportProgress');
     if (!exportSection) {
@@ -3952,13 +3670,10 @@
         <div id="expBar" style="background:#3483fa;height:100%;width:0%;transition:width .2s;border-radius:8px"></div>
       </div>`;
     exportSection.scrollIntoView({ behavior: 'smooth' });
-
     const csvRows = [['item_id','flex','local_pick_up','shipping','titulo','available_quantity','status','price','item_sku']];
-
     try {
       const res = await fetch(`/api/export-listings?account_id=${accountId}`);
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Error'); }
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -3990,7 +3705,6 @@
           } catch(pe) { if (pe.message && !pe.message.includes('JSON')) throw pe; }
         }
       }
-
       // Generar y descargar CSV
       // Generar .xlsx con SheetJS
       const ws = XLSX.utils.aoa_to_sheet(csvRows);
@@ -4008,40 +3722,31 @@
       const fileName = `publicaciones_${accountName}_${dd}${mm}.xlsx`;
       XLSX.writeFile(wb, fileName);
       showToast(`✅ ${csvRows.length - 1} publicaciones descargadas`, 'success');
-
     } catch(e) {
       exportSection.innerHTML += `<p style="color:#e74c3c;margin-top:8px">Error: ${escapeHtml(e.message)}</p>`;
       showToast('Error al exportar: ' + e.message, 'error');
     }
     btn.disabled = false; btn.textContent = '📥 Descargar Excel actual';
   }
-
   // ==================== PREP SECTION ====================
-
   let currentPrepTab = 'sin-preparar';
   let prepOrdersCache = null;
   let prepRenderedOrderIds = new Set();
   let prepAutoRefreshTimer = null;
   let acordarPendingData = { saleKey: null, btn: null };
-
   function loadPrepSection() {
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
-
     if (!can_manage && !can_operate) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permisos para acceder a esta sección</p></div>';
       return;
     }
-
     if (!can_manage && can_operate) currentPrepTab = 'en-preparacion';
-
     renderPrepTabs();
   }
-
   function renderPrepTabs() {
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
-
     let html = `
       <h2 style="margin-bottom:16px;color:#2d3277">📦 Preparación de Órdenes</h2>
       <div class="prep-tabs">
@@ -4054,29 +3759,24 @@
     document.getElementById('content').innerHTML = html;
     loadCurrentPrepTab();
   }
-
   function switchPrepTab(tab) {
     if (tab !== 'en-preparacion') stopPrepAutoRefresh();
     currentPrepTab = tab;
     renderPrepTabs();
   }
-
   function loadCurrentPrepTab() {
     if (currentPrepTab === 'sin-preparar') loadSinPreparar();
     else if (currentPrepTab === 'en-preparacion') loadEnPreparacion();
     else loadFinalizadas();
   }
-
   let prepSalesStatusFilters = [];
   let prepSalesShippingFilters = [];
   let prepSalesDateFrom = '';
   let prepSalesDateTo = '';
   let prepSalesAccountFilter = '';
-
   async function loadSinPreparar() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
-
     let html = `
       <div class="sales-filters">
         <div class="filter-row">
@@ -4113,7 +3813,6 @@
     `;
     container.innerHTML = html;
     if (prepSalesAccountFilter) document.getElementById('prepAccountSel').value = prepSalesAccountFilter;
-
     try {
       const params = new URLSearchParams();
       if (prepSalesAccountFilter) params.set('account_id', prepSalesAccountFilter);
@@ -4121,7 +3820,6 @@
       if (prepSalesShippingFilters.length) params.set('shipping', prepSalesShippingFilters.join(','));
       if (prepSalesDateFrom) params.set('date_from', prepSalesDateFrom);
       if (prepSalesDateTo) params.set('date_to', prepSalesDateTo);
-
       const [salesRes, prepRes, claimsRes] = await Promise.all([
         fetch('/api/sales?' + params.toString()),
         fetch('/api/prep/list'),
@@ -4131,26 +3829,20 @@
       const prepOrders = await prepRes.json();
       const claimsMap = claimsRes.ok ? await claimsRes.json() : {};
       prepOrdersCache = prepOrders;
-
       const inPrepIds = new Set();
       for (const p of prepOrders) inPrepIds.add(String(p.order_id));
-
       const pendingSales = allSales.filter(sale => {
         if (sale.status === 'cancelled') return false; // Never show cancelled
         const key = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
         return !inPrepIds.has(key);
       });
-
       const listEl = document.getElementById('sinPreparar-list');
       if (!listEl) return;
-
       if (pendingSales.length === 0) {
         listEl.innerHTML = '<div class="empty"><p>No hay órdenes pendientes de preparación</p></div>';
         return;
       }
-
       let salesHtml = `<p style="color:#999;font-size:13px;margin-bottom:12px">${pendingSales.length} orden${pendingSales.length!==1?'es':''} sin preparar</p>`;
-
       for (const sale of pendingSales) {
         const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
         const displayId = sale.pack_id ? sale.pack_id : sale.order_id;
@@ -4173,7 +3865,6 @@
           total_amount: sale.total_amount,
           date_created: sale.date_created
         }).replace(/'/g, "\\'").replace(/"/g, '&quot;');
-
         const claimStatus = claimsMap[String(sale.order_id)] || claimsMap[String(sale.pack_id)] || null;
         const claimBadge = claimStatus === 'open'
           ? '<span style="padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:#f8d7da;color:#721c24;border:1px solid #f5c6cb">⚠️ Reclamo abierto</span>'
@@ -4229,23 +3920,19 @@
           </div>
         `;
       }
-
       listEl.innerHTML = salesHtml;
       fetchPrepNotes(pendingSales);
-
     } catch(e) {
       const listEl = document.getElementById('sinPreparar-list');
       if (listEl) listEl.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
     }
   }
-
   async function fetchPrepNotes(sales) {
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     for (const sale of sales) {
       const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
       const el = document.getElementById('prep-note-display-' + firstOrderId);
       if (!el) continue;
-
       let foundNote = false;
       const orderIds = sale.order_ids || [sale.order_id];
       for (const oid of orderIds) {
@@ -4303,7 +3990,6 @@
       }
     }
   }
-
   function togglePrepFilter(type, value, checkbox) {
     const arr = type === 'status' ? prepSalesStatusFilters : prepSalesShippingFilters;
     const idx = arr.indexOf(value);
@@ -4311,7 +3997,6 @@
     const chip = checkbox.closest('.chip');
     if (chip) chip.classList.toggle('checked');
   }
-
   function applyPrepSalesFilters() {
     const accSel = document.getElementById('prepAccountSel');
     const dateFromEl = document.getElementById('prepDateFrom');
@@ -4321,14 +4006,12 @@
     if (dateToEl) prepSalesDateTo = dateToEl.value;
     loadSinPreparar();
   }
-
   function clearPrepSalesFilters() {
     prepSalesDateFrom = ''; prepSalesDateTo = '';
     prepSalesStatusFilters = []; prepSalesShippingFilters = [];
     prepSalesAccountFilter = '';
     loadSinPreparar();
   }
-
   function selectPriority(btn, n) {
     const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
     const container = btn.parentElement;
@@ -4341,16 +4024,13 @@
     btn.style.color = 'white';
     btn.style.borderColor = colors[n];
   }
-
   async function pasarAPreparacion(saleKey, btn, extraData = {}) {
     const container = btn.parentElement;
     const selectedPriorityBtn = [...container.querySelectorAll('button[data-priority]')].find(b => b.style.background && b.style.background !== 'white' && b.style.background !== 'rgb(255, 255, 255)');
     const priority = selectedPriorityBtn ? parseInt(selectedPriorityBtn.dataset.priority) : 3;
-
     const saleDataStr = btn.dataset.saleJson;
     let saleData;
     try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch(e) { showToast('Error al procesar datos', 'error'); return; }
-
     const saleCard = btn.closest('.sale-card');
     let noteText = '';
     let noteId = null;
@@ -4358,10 +4038,8 @@
       const noteEl = saleCard.querySelector('[id^="prep-note-display-"]');
       if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
     }
-
     btn.disabled = true;
     btn.textContent = 'Procesando...';
-
     try {
       const res = await fetch('/api/prep/add', {
         method: 'POST',
@@ -4384,14 +4062,12 @@
       btn.textContent = '📦 Pasar a Preparación';
     }
   }
-
   async function finalizarDirecto(saleKey, finishType, btn) {
     const labels = { dropshipping: 'Dropshipping', puerta: 'Puerta' };
     const label = labels[finishType] || finishType;
     const saleDataStr = btn.dataset.saleJson;
     let saleData;
     try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch(e) { showToast('Error al procesar datos', 'error'); return; }
-
     const saleCard = btn.closest('.sale-card');
     let noteText = '';
     let noteId = null;
@@ -4399,10 +4075,8 @@
       const noteEl = saleCard.querySelector('[id^="prep-note-display-"]');
       if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
     }
-
     btn.disabled = true;
     btn.textContent = 'Procesando...';
-
     try {
       const res = await fetch('/api/prep/add', {
         method: 'POST',
@@ -4425,41 +4099,32 @@
       btn.textContent = finishType === 'dropshipping' ? '🚚 Dropshipping' : '🏠 Puerta';
     }
   }
-
   async function loadEnPreparacion() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
-
     prepRenderedOrderIds.clear();
     stopPrepAutoRefresh();
-
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
-
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
-
     try {
       const res = await fetch('/api/prep/list?status=in_prep');
       const orders = await res.json();
       orders.sort((a, b) => (a.priority || 5) - (b.priority || 5));
-
       if (orders.length === 0) {
         container.innerHTML = `<div class="empty"><p>No hay órdenes en preparación</p></div>
           <div style="text-align:center;margin-top:8px"><span id="prep-refresh-status" style="font-size:12px;color:#bbb">🔄 Verificando actualizaciones cada 30 seg...</span></div>`;
         startPrepAutoRefresh(can_manage, can_operate);
         return;
       }
-
       let html = `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <p style="color:#999;font-size:13px">${orders.length} orden${orders.length!==1?'es':''} en preparación — ordenadas por prioridad</p>
         <span id="prep-refresh-status" style="font-size:12px;color:#bbb">🔄 Actualización cada 30 seg</span>
       </div>`;
-
       orders.forEach((order, idx) => {
         html += renderEnPrepCard(order, idx === 0, can_manage, can_operate);
         prepRenderedOrderIds.add(String(order.order_id));
       });
-
       container.innerHTML = html;
       // Fetch fresh notes from ML for each order (async, non-blocking) — Fix 2: only overwrites if ML has a note
       for (const o of orders) loadPrepNoteDisplay(o.order_id, o.account_id);
@@ -4470,7 +4135,6 @@
       container.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
     }
   }
-
   async function loadPrepSaleStatuses(orders) {
     const STATUS_COLORS = {
       pending: { bg: '#fff3cd', color: '#856404', text: 'Pendiente' },
@@ -4498,7 +4162,6 @@
       } catch(e) {}
     }));
   }
-
   function renderEnPrepCard(order, expanded, can_manage, can_operate) {
     const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
     const oid = escapeHtml(String(order.order_id));
@@ -4555,7 +4218,6 @@
       </div>
     `;
   }
-
   function togglePrepCard(orderId) {
     const body = document.getElementById('prep-body-' + orderId);
     const icon = document.getElementById('prep-toggle-icon-' + orderId);
@@ -4571,11 +4233,9 @@
       if (noteContainer?.dataset.accountId) loadPrepNoteDisplay(orderId, noteContainer.dataset.accountId);
     }
   }
-
   function stopPrepAutoRefresh() {
     if (prepAutoRefreshTimer) { clearInterval(prepAutoRefreshTimer); prepAutoRefreshTimer = null; }
   }
-
   function startPrepAutoRefresh(can_manage, can_operate) {
     stopPrepAutoRefresh();
     prepAutoRefreshTimer = setInterval(async () => {
@@ -4608,7 +4268,6 @@
       } catch(e) {}
     }, 30000);
   }
-
   async function updatePriority(orderId, priority, btn) {
     try {
       const res = await fetch('/api/prep/priority', {
@@ -4627,7 +4286,6 @@
       showToast('Error de conexión', 'error');
     }
   }
-
   async function finalizarOrden(orderId, btn) {
     btn.disabled = true;
     btn.textContent = 'Procesando...';
@@ -4653,20 +4311,15 @@
       btn.textContent = '✅ FINALIZADO';
     }
   }
-
   async function loadFinalizadas() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
-
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
-
     try {
       const res = await fetch('/api/prep/list?status=done');
       const orders = await res.json();
-
       orders.sort((a, b) => new Date(b.done_at || 0) - new Date(a.done_at || 0));
-
       let html = '';
       if (can_manage) {
         html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -4676,15 +4329,12 @@
       } else {
         html += `<p style="color:#999;font-size:13px;margin-bottom:12px">${orders.length} orden${orders.length!==1?'es':''} finalizadas</p>`;
       }
-
       if (orders.length === 0) {
         html += '<div class="empty"><p>No hay órdenes finalizadas aún</p></div>';
         container.innerHTML = html;
         return;
       }
-
       const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
-
       for (const order of orders) {
         html += `
           <div class="sale-card" style="border-left:4px solid #27ae60">
@@ -4729,7 +4379,6 @@
           </div>
         `;
       }
-
       container.innerHTML = html;
       // Fetch fresh notes from ML for each order (only matters for can_manage since non-managers don't have the editor)
       if (can_manage) {
@@ -4739,16 +4388,13 @@
       container.innerHTML = '<div class="empty"><p>Error al cargar finalizadas</p></div>';
     }
   }
-
   function verVentaPrep(orderId, accountId) {
     showSection('sales', true);
     loadSalesForOrder(orderId, accountId);
   }
-
   function exportarPrep() {
     window.open('/api/prep/export', '_blank');
   }
-
   // Fetch fresh note from ML and update the prep note display
   // Only updates if ML actually returns a note — never overwrites DB-stored notes with empty
   async function loadPrepNoteDisplay(orderId, accountId) {
@@ -4768,7 +4414,6 @@
       // Keep the snapshot value already rendered, don't overwrite
     }
   }
-
   function editPrepNote(orderId) {
     const editor = document.getElementById('pne-' + orderId);
     const input = document.getElementById('pni-' + orderId);
@@ -4779,27 +4424,22 @@
     editor.style.display = 'block';
     input.focus();
   }
-
   function cancelPrepNote(orderId) {
     const editor = document.getElementById('pne-' + orderId);
     if (editor) editor.style.display = 'none';
   }
-
   async function savePrepNote(orderId) {
     const container = document.getElementById('pnc-' + orderId);
     const editor = document.getElementById('pne-' + orderId);
     const input = document.getElementById('pni-' + orderId);
     const textEl = document.getElementById('pnt-' + orderId);
     if (!container || !input) return;
-
     const text = input.value.trim();
     const accountId = container.dataset.accountId;
     const noteId = container.dataset.noteId || '';
     const noteOrderId = container.dataset.noteOrderId || orderId;
-
     const saveBtn = editor?.querySelector('button');
     if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Guardando...'; }
-
     try {
       // 1. Save to MercadoLibre
       const res = await fetch('/api/sales/notes', {
@@ -4808,25 +4448,21 @@
         body: JSON.stringify({ order_id: noteOrderId, account_id: accountId, note_id: noteId || null, notes: text })
       });
       const data = await res.json();
-
       if (data.ok) {
         if (data.note_id) container.dataset.noteId = data.note_id;
         textEl.innerHTML = text
           ? `<span style="color:#c67b00;font-weight:700">📝</span> <span style="color:#333">${escapeHtml(text)}</span>`
           : '<span style="color:#bbb">Sin notas</span>';
         if (editor) editor.style.display = 'none';
-
         // 2. Sync local prep_order.notes
         fetch('/api/prep/note', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ order_id: orderId, notes: text })
         }).catch(() => {}); // Fire and forget — ML is the source of truth
-
         // 3. Keep prep-note-display- parent dataset in sync (used by pasarAPreparacion)
         const parentNoteEl = document.getElementById('prep-note-display-' + orderId);
         if (parentNoteEl) { parentNoteEl.dataset.noteText = text; if (data.note_id) parentNoteEl.dataset.noteId = data.note_id; }
-
         showToast('Nota guardada en MercadoLibre ✓', 'success');
       } else {
         showToast(data.error || 'Error al guardar nota', 'error');
@@ -4834,10 +4470,8 @@
     } catch(e) {
       showToast('Error al guardar nota', 'error');
     }
-
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Guardar en ML'; }
   }
-
   async function volverASinPreparar(orderId, btn) {
     btn.disabled = true;
     btn.textContent = '...';
@@ -4862,9 +4496,7 @@
       btn.textContent = '↩️ Sin preparar';
     }
   }
-
   // ==================== ACORDAR MODAL ====================
-
   function openAcordarModal(saleKey, btn) {
     acordarPendingData = { saleKey, btn };
     const modal = document.getElementById('acordar-modal');
@@ -4873,13 +4505,11 @@
       modal.querySelector('form')?.reset();
     }
   }
-
   function closeAcordarModal() {
     const modal = document.getElementById('acordar-modal');
     if (modal) modal.style.display = 'none';
     acordarPendingData = { saleKey: null, btn: null };
   }
-
   async function confirmAcordarModal() {
     const form = document.getElementById('acordar-form');
     if (!form) return;
@@ -4893,9 +4523,7 @@
     closeAcordarModal();
     if (saleKey && btn) await pasarAPreparacion(saleKey, btn, { shipping_data });
   }
-
   // ==================== PRINT LABEL PDF ====================
-
   function imprimirEtiquetaEnvio(orderId) {
     const card = document.getElementById('prep-card-' + orderId);
     let sd = {};
@@ -4908,7 +4536,6 @@
     w.document.close();
     w.onload = () => { try { w.print(); } catch(e) {} };
   }
-
   function generateEtiquetaHtml(sd) {
     const fields = [
       ['Nombre', sd.nombre], ['DNI', sd.dni], ['Teléfono', sd.telefono],
@@ -4946,28 +4573,22 @@
 </div>
 </body></html>`;
   }
-
   // ==================== PROMOCIONES ====================
-
   let promosCurrentAccountId = '';
   let promosCurrentPromoId = '';
   let promosCurrentPromoType = '';
   let promosCurrentPromoName = '';
-
   function loadPromos() {
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_promos) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permisos para acceder a esta sección</p></div>';
       return;
     }
-
     let accountOptions = '<option value="">-- Seleccioná una cuenta --</option>';
     for (const a of accounts) {
       accountOptions += `<option value="${a.id}">${escapeHtml(a.name)}</option>`;
     }
-
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:16px;color:#2d3277">📣 Promociones</h2>
-
       <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:18px">
         <select id="promoAccountSel" onchange="promosCurrentAccountId=this.value;loadPromoCampaigns()"
           style="padding:8px 14px;border:1px solid #ddd;border-radius:8px;font-size:13px;min-width:200px">
@@ -4978,9 +4599,7 @@
           ➕ Nueva campaña propia
         </button>
       </div>
-
       <div id="promoCampaignsArea"></div>
-
       <div id="promoItemsArea" style="display:none;margin-top:24px">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
           <b id="promoItemsTitle" style="font-size:15px;color:#2d3277"></b>
@@ -4989,7 +4608,6 @@
             ✖ Cerrar
           </button>
         </div>
-
         <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px">
           <input id="promoSearchSku" type="text" placeholder="SKU"
             style="padding:7px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:160px"
@@ -5010,11 +4628,9 @@
             <input type="file" accept=".xlsx" style="display:none" onchange="handlePromoXLSX(this.files[0]);this.value=''">
           </label>
         </div>
-
         <div id="promoProgressArea" style="display:none;margin-bottom:12px"></div>
         <div id="promoItemsTable" style="overflow-x:auto"></div>
       </div>
-
       <!-- Modal nueva campaña -->
       <div id="createPromoModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center">
         <div style="background:white;border-radius:12px;padding:28px;width:min(480px,95vw);box-shadow:0 8px 32px rgba(0,0,0,.25)">
@@ -5057,30 +4673,23 @@
       </div>
     `;
   }
-
   async function loadPromoCampaigns() {
     const accountId = document.getElementById('promoAccountSel')?.value;
     const area = document.getElementById('promoCampaignsArea');
     if (!area) return;
     if (!accountId) { area.innerHTML = ''; return; }
-
     area.innerHTML = '<p style="color:#888;font-size:13px">⏳ Cargando campañas...</p>';
-
     const itemsArea = document.getElementById('promoItemsArea');
     if (itemsArea) itemsArea.style.display = 'none';
-
     try {
       const res = await fetch(`/api/promotions?account_id=${encodeURIComponent(accountId)}`);
       const payload = await res.json();
-
       if (!res.ok) {
         area.innerHTML = `<p style="color:#e74c3c">${escapeHtml(payload.error || 'Error al cargar campañas')}</p>`;
         return;
       }
-
       const campaigns = Array.isArray(payload) ? payload : (payload.results || payload.data || payload.promotions || []);
       const debug = Array.isArray(payload) ? [] : (payload.debug || []);
-
       if (!campaigns.length) {
         area.innerHTML = `
           <div style="background:#fff8e1;border:1px solid #f5d76e;border-radius:8px;padding:12px;font-size:13px;color:#856404">
@@ -5089,7 +4698,6 @@
           </div>`;
         return;
       }
-
       const typeLabel = {
         DEAL:'🤝 DEAL (ML)',
         LIGHTNING_DEAL:'⚡ Lightning Deal',
@@ -5098,7 +4706,6 @@
         SMART:'🧠 Smart',
         VOLUME:'📦 Volumen'
       };
-
       const statusBadge = {
         active:'<span style="color:#27ae60;font-weight:600">● Activa</span>',
         inactive:'<span style="color:#999">○ Inactiva</span>',
@@ -5107,7 +4714,6 @@
         finished:'<span style="color:#aaa">✓ Finalizada</span>',
         cancelled:'<span style="color:#e74c3c">✕ Cancelada</span>'
       };
-
       let rows = '';
       for (const p of campaigns) {
         const id = p.id || p.promotion_id || p.offer_id || '';
@@ -5118,7 +4724,6 @@
         const badge = statusBadge[String(status).toLowerCase()] || `<span style="color:#888">${escapeHtml(status || '')}</span>`;
         const from = p.start_date ? new Date(p.start_date).toLocaleDateString('es-AR') : '—';
         const to   = p.end_date   ? new Date(p.end_date).toLocaleDateString('es-AR')   : '—';
-
         rows += `<tr>
           <td style="padding:8px 10px">${escapeHtml(name)}</td>
           <td style="padding:8px 10px">${label}</td>
@@ -5133,7 +4738,6 @@
           </td>
         </tr>`;
       }
-
       area.innerHTML = `
         <div style="overflow-x:auto">
           <table style="border-collapse:collapse;font-size:13px;width:100%;min-width:600px;background:white;border-radius:8px;overflow:hidden">
@@ -5155,34 +4759,27 @@
       area.innerHTML = `<p style="color:#e74c3c">Error de conexión: ${escapeHtml(e.message)}</p>`;
     }
   }
-
   function openPromoCampaign(promoId, promoType, promoName) {
     promosCurrentPromoId   = promoId;
     promosCurrentPromoType = promoType;
     promosCurrentPromoName = promoName;
     promosCurrentAccountId = document.getElementById('promoAccountSel')?.value || '';
-
     const area = document.getElementById('promoItemsArea');
     if (!area) return;
     area.style.display = 'block';
-
     const title = document.getElementById('promoItemsTitle');
     if (title) title.textContent = `Campaña: ${promoName}`;
-
     const tableEl = document.getElementById('promoItemsTable');
     if (tableEl) tableEl.innerHTML = '';
     const progEl = document.getElementById('promoProgressArea');
     if (progEl) { progEl.style.display = 'none'; progEl.innerHTML = ''; }
-
     // Limpiar búsqueda anterior
     const skuEl = document.getElementById('promoSearchSku');
     const titEl = document.getElementById('promoSearchTitle');
     if (skuEl) skuEl.value = '';
     if (titEl) titEl.value = '';
-
     area.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-
   function cerrarCampana() {
     const area = document.getElementById('promoItemsArea');
     if (area) area.style.display = 'none';
@@ -5190,18 +4787,15 @@
     promosCurrentPromoType = '';
     promosCurrentPromoName = '';
   }
-
   async function searchPromoItems() {
     if (!promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
     const sku   = document.getElementById('promoSearchSku')?.value.trim() || '';
     const title = document.getElementById('promoSearchTitle')?.value.trim() || '';
     if (!item_id && !sku && !title) return showToast('Ingresá Item ID, SKU o título para buscar', 'error');
-
     const btn = document.getElementById('btnPromoSearch');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando...'; }
     const tableEl = document.getElementById('promoItemsTable');
     if (tableEl) tableEl.innerHTML = '<p style="color:#888;font-size:13px">Buscando ítems...</p>';
-
     try {
       const res = await fetch('/api/promotion-search-items', {
         method: 'POST',
@@ -5221,7 +4815,6 @@
       if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar'; }
     }
   }
-
   function renderPromoItemsTable(items) {
     const tableEl = document.getElementById('promoItemsTable');
     if (!tableEl) return;
@@ -5229,7 +4822,6 @@
       tableEl.innerHTML = '<p style="color:#888;font-size:13px;margin-top:8px">No se encontraron ítems.</p>';
       return;
     }
-
     const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
     let header = `<tr style="background:#f5f6fa;border-bottom:2px solid #e0e0e0">
       <th style="padding:8px 10px;text-align:left;font-weight:600;color:#555;font-size:12px">ID</th>
@@ -5242,7 +4834,6 @@
     }
     header += `<th style="padding:8px 10px;text-align:center;font-weight:600;color:#555;font-size:12px">Participar</th>
     </tr>`;
-
     let rows = '';
     for (const it of items) {
       const inPromo = it.in_promo;
@@ -5250,7 +4841,6 @@
       const safeId   = escapeHtml(it.item_id || '');
       const safeSku  = escapeHtml(it.sku || '');
       const price    = it.original_price ? `$${Number(it.original_price).toLocaleString('es-AR')}` : '—';
-
       let extraCols = '';
       if (!isDeal) {
         const curPrice = it.new_price ? `${Number(it.new_price).toLocaleString('es-AR')}` : '';
@@ -5267,7 +4857,6 @@
               style="width:60px;padding:4px 6px;border:1px solid #ddd;border-radius:5px;font-size:12px;text-align:right">
           </td>`;
       }
-
       const btnBg = inPromo ? '#e74c3c' : '#27ae60';
       const btnTxt = inPromo ? 'NO participar' : 'Participar';
       rows += `<tr style="border-bottom:1px solid #f0f0f0" id="promo-row-${safeId}">
@@ -5285,19 +4874,16 @@
         </td>
       </tr>`;
     }
-
     tableEl.innerHTML = `<table style="border-collapse:collapse;font-size:13px;width:100%;min-width:600px">
       <thead>${header}</thead>
       <tbody>${rows}</tbody>
     </table>`;
   }
-
   async function togglePromoItem(itemId, currentlyInPromo) {
     const btn = document.getElementById('promo-btn-' + itemId);
     if (!btn) return;
     const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
     const participate = !currentlyInPromo;
-
     let price = null, discount = null;
     if (!isDeal && participate) {
       const priceVal = parseFloat(document.getElementById('promo-price-' + itemId)?.value || '');
@@ -5306,10 +4892,8 @@
       if (priceVal > 0)  price    = priceVal;
       if (discVal  > 0)  discount = discVal;
     }
-
     btn.disabled = true;
     btn.textContent = '⏳';
-
     try {
       const res = await fetch('/api/promotion-toggle', {
         method: 'POST',
@@ -5348,10 +4932,8 @@
       btn.textContent = currentlyInPromo ? 'NO participar' : 'Participar';
     }
   }
-
   async function downloadPromoXLSX() {
     if (!promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
-
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement('script');
@@ -5360,7 +4942,6 @@
         document.head.appendChild(s);
       });
     }
-
     const progArea = document.getElementById('promoProgressArea');
     if (progArea) {
       progArea.style.display = 'block';
@@ -5376,10 +4957,8 @@
         </details>
       </div>`;
     }
-
     const url = `/api/promotion-items-stream?account_id=${encodeURIComponent(promosCurrentAccountId)}&promo_id=${encodeURIComponent(promosCurrentPromoId)}&promo_type=${encodeURIComponent(promosCurrentPromoType)}&concurrency=25`;
     const isDeal = promosCurrentPromoType === 'DEAL' || promosCurrentPromoType === 'LIGHTNING_DEAL';
-
     function normPromoItem(it) {
       const itemId = it.item_id || it.id || it.item?.id || '';
       const title = it.title || it.item_title || it.name || it.item?.title || '';
@@ -5392,7 +4971,6 @@
       const inPromo = ['ACTIVE','CANDIDATE','STARTED','PROGRAMMED','PENDING'].includes(statusUpper) || !!newPrice || !!discount;
       return { itemId, title, sku, originalPrice, newPrice, discount, status, inPromo };
     }
-
     try {
       const res = await fetch(url);
       if (!res.ok) {
@@ -5400,7 +4978,6 @@
         if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">${escapeHtml(d.error || 'Error al descargar')}</p>`;
         return;
       }
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '', allItems = [], total = 0, lastDebug = null, winner = '';
@@ -5408,7 +4985,6 @@
       const barStatus = document.getElementById('promoDownloadStatus');
       const debugBox = document.getElementById('promoDownloadDebugBox');
       const debugPre = document.getElementById('promoDownloadDebug');
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -5446,11 +5022,9 @@
           } catch(_) {}
         }
       }
-
       const headers = isDeal
         ? ['item_id', 'titulo', 'sku', 'precio_original', 'estado', 'participar']
         : ['item_id', 'titulo', 'sku', 'precio_original', 'precio_promo', 'descuento_%', 'participar'];
-
       const rows = allItems.map(raw => {
         const it = normPromoItem(raw);
         if (isDeal) {
@@ -5458,31 +5032,26 @@
         }
         return [it.itemId, it.title, it.sku, it.originalPrice, it.newPrice, it.discount, it.inPromo ? 'SI' : 'NO'];
       });
-
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
       ws['!cols'] = [{ wch:15 }, { wch:45 }, { wch:18 }, { wch:14 }, ...(isDeal ? [{ wch:12 }, { wch:10 }] : [{ wch:12 }, { wch:10 }, { wch:10 }])];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Promo');
-
       if (lastDebug) {
         const dbg = [['debug'], [JSON.stringify(lastDebug, null, 2)]];
         const wsDebug = XLSX.utils.aoa_to_sheet(dbg);
         wsDebug['!cols'] = [{ wch: 120 }];
         XLSX.utils.book_append_sheet(wb, wsDebug, 'Debug');
       }
-
       const today = new Date();
       const dd = today.getDate().toString().padStart(2,'0');
       const mm = (today.getMonth()+1).toString().padStart(2,'0');
       const safeName = (promosCurrentPromoName||'promo').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,30);
       XLSX.writeFile(wb, `promo_${safeName}_${dd}${mm}.xlsx`);
-
       if (!rows.length) {
         showToast('Se descargó en 0. Revisá la hoja Debug del Excel o el debug en pantalla.', 'error');
       } else {
         showToast(`✅ ${rows.length} ítems descargados`, 'success');
       }
-
       if (progArea && rows.length) {
         setTimeout(() => { progArea.style.display = 'none'; progArea.innerHTML = ''; }, 2500);
       }
@@ -5490,10 +5059,8 @@
       if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
     }
   }
-
   async function handlePromoXLSX(file) {
     if (!file || !promosCurrentPromoId) return showToast('Seleccioná una campaña primero', 'error');
-
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement('script');
@@ -5502,17 +5069,13 @@
         document.head.appendChild(s);
       });
     }
-
     const progArea = document.getElementById('promoProgressArea');
-
     try {
       const ab = await file.arrayBuffer();
       const wb = XLSX.read(ab, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
       if (!rows.length) return showToast('El archivo está vacío', 'error');
-
       // Normalize column names
       const items = rows.map(r => {
         const norm = {};
@@ -5524,9 +5087,7 @@
           descuento_pct: norm['descuento_%'] || norm['descuento_pct'] || norm['descuento'] || ''
         };
       }).filter(r => r.item_id);
-
       if (!items.length) return showToast('No se encontraron filas válidas (se requiere columna item_id)', 'error');
-
       if (progArea) {
         progArea.style.display = 'block';
         progArea.innerHTML = `<div style="background:#f0f4ff;border:1px solid #c5d0e6;border-radius:8px;padding:12px;font-size:13px">
@@ -5537,7 +5098,6 @@
           <div id="promoBulkStatus" style="margin-top:6px;color:#666;font-size:12px">0 de ${items.length}</div>
         </div>`;
       }
-
       const res = await fetch('/api/promotion-bulk-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5548,19 +5108,16 @@
           items
         })
       });
-
       if (!res.ok) {
         const d = await res.json();
         if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">${escapeHtml(d.error || 'Error al procesar')}</p>`;
         return;
       }
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf2 = '', lastMsg = null;
       const barFill   = document.getElementById('promoBulkFill');
       const barStatus = document.getElementById('promoBulkStatus');
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -5579,7 +5136,6 @@
           } catch(_) {}
         }
       }
-
       // Final summary
       if (progArea && lastMsg) {
         const hasErr = (lastMsg.errors || 0) > 0;
@@ -5598,7 +5154,6 @@
       if (progArea) progArea.innerHTML = `<p style="color:#e74c3c">Error: ${escapeHtml(e.message)}</p>`;
     }
   }
-
   async function descargarErroresPromo() {
     const rows = window._promoErrorRows;
     if (!rows?.length) return;
@@ -5618,7 +5173,6 @@
     const mm = (today.getMonth()+1).toString().padStart(2,'0');
     XLSX.writeFile(wb2, `errores_promo_${dd}${mm}.xlsx`);
   }
-
   function showCreatePromoModal() {
     const modal = document.getElementById('createPromoModal');
     if (!modal) return showToast('Cargá la sección Promociones primero', 'error');
@@ -5629,7 +5183,6 @@
     if (accSel && promosCurrentAccountId) accSel.value = promosCurrentAccountId;
     modal.style.display = 'flex';
   }
-
   async function createPromo() {
     const name  = document.getElementById('newPromoName')?.value.trim();
     const accId = document.getElementById('newPromoAccount')?.value;
@@ -5637,18 +5190,14 @@
     const end   = document.getElementById('newPromoEnd')?.value;
     const errEl = document.getElementById('createPromoError');
     const btn   = document.getElementById('btnCreatePromo');
-
     const showErr = msg => { if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; } };
-
     if (!name)  return showErr('Ingresá un nombre para la campaña');
     if (!accId) return showErr('Seleccioná una cuenta');
     if (!start) return showErr('Seleccioná fecha de inicio');
     if (!end)   return showErr('Seleccioná fecha de fin');
     if (end <= start) return showErr('La fecha de fin debe ser posterior al inicio');
-
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Creando...'; }
     if (errEl) { errEl.style.display = 'none'; }
-
     try {
       const res = await fetch('/api/promotion-create', {
         method: 'POST',
@@ -5671,9 +5220,7 @@
       if (btn) { btn.disabled = false; btn.textContent = 'Crear campaña'; }
     }
   }
-
   // ==================== HELPERS ====================
-
   function formatDate(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -5688,7 +5235,6 @@
     const m = d.getMinutes().toString().padStart(2,'0');
     return `${day} ${mon} ${h}:${m} hs`;
   }
-
   function formatDateTime(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -5699,7 +5245,6 @@
     const m = d.getMinutes().toString().padStart(2,'0');
     return `${day}/${mon}/${yr} ${h}:${m} hs`;
   }
-
   function formatSaleDate(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
@@ -5709,7 +5254,6 @@
     const m = d.getMinutes().toString().padStart(2,'0');
     return `${day} ${mon} ${h}:${m} hs`;
   }
-
   function showToast(msg, type = 'success') {
     const toast = document.createElement('div');
     toast.className = 'toast ' + type;
@@ -5717,7 +5261,6 @@
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
   }
-
   async function copyListingUrl(url, itemId) {
     const target = url || `https://articulo.mercadolibre.com.ar/${itemId}`;
     try {
@@ -5734,7 +5277,6 @@
       showToast('URL copiada', 'success');
     }
   }
-
   // Check URL params for success/error
   const params = new URLSearchParams(location.search);
   if (params.get('success') === 'account_added') {
@@ -5745,9 +5287,7 @@
     setTimeout(() => showToast('Error al conectar la cuenta', 'error'), 500);
     history.replaceState({}, '', '/');
   }
-
   // ==================== NOTIFICATIONS ====================
-
   let notificationsReady = false;
   // Per-ID sticky tracking: an id is only considered "gone" after being absent from
   // 2 consecutive successful polls. This avoids both badge flicker AND repeated/false
@@ -5757,7 +5297,6 @@
   let msgMissingStreak = {};
   let knownQuestionIds = new Set();
   let qMissingStreak = {};
-
   // Create notification sound using Web Audio API
   function playNotificationSound() {
     try {
@@ -5778,7 +5317,6 @@
       o2.start(ctx.currentTime + 0.15); o2.stop(ctx.currentTime + 0.6);
     } catch(e) {}
   }
-
   // Request desktop notification permission on first user interaction
   document.addEventListener('click', function requestNotifPerm() {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -5786,12 +5324,10 @@
     }
     document.removeEventListener('click', requestNotifPerm);
   }, { once: true });
-
   // richItems: array of question objects (with .account_name, .item_title, .text)
   //            or conversation objects (with .account_name, .buyer_name, .messages[0].text)
   function showNotification(count, type, richItems) {
     const isQ = type === 'questions';
-
     // Build notification title and body from rich data when available
     let notifTitle, notifBody;
     if (richItems && richItems.length > 0) {
@@ -5812,10 +5348,8 @@
         : (count === 1 ? '¡Nuevo mensaje!' : `¡${count} mensajes nuevos!`);
       notifBody = 'Tocá para ver';
     }
-
     // Vibrate on mobile
     if ('vibrate' in navigator) navigator.vibrate([200, 100, 200]);
-
     // Try service worker notification first (works in PWA/background)
     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
       navigator.serviceWorker.ready.then(reg => {
@@ -5840,12 +5374,10 @@
       desktopNotif.onclick = () => { window.focus(); showSection(type); desktopNotif.close(); };
       setTimeout(() => desktopNotif.close(), 10000);
     }
-
     // Also show in-page notification popup
     const notifId = type === 'questions' ? 'newQuestionsNotif' : 'newMessagesNotif';
     const existing = document.getElementById(notifId);
     if (existing) existing.remove();
-
     const topPos = isQ ? '20px' : '90px';
     const notif = document.createElement('div');
     notif.id = notifId;
@@ -5862,7 +5394,6 @@
     document.body.appendChild(notif);
     setTimeout(() => { if (notif.parentElement) notif.remove(); }, 12000);
   }
-
   // Check if user is typing in any textarea
   function isUserTyping() {
     const active = document.activeElement;
@@ -5874,9 +5405,7 @@
     }
     return false;
   }
-
   let pendingNewQuestions = 0;
-
   function showNewQuestionsBanner(count) {
     let banner = document.getElementById('newQuestionsBanner');
     if (banner) { banner.querySelector('span').textContent = `${count} pregunta${count > 1 ? 's' : ''} nueva${count > 1 ? 's' : ''} — hacé click para actualizar`; return; }
@@ -5889,7 +5418,6 @@
     const filters = content.querySelector('.filters');
     if (filters) { filters.after(banner); } else { content.prepend(banner); }
   }
-
   async function checkNewQuestions() {
     try {
       const res = await fetch('/api/questions?status=UNANSWERED&account_id=');
@@ -5897,12 +5425,10 @@
       const questions = await res.json();
       const currentIds = questions.map(q => q.id);
       const currentSet = new Set(currentIds);
-
       // Truly-new ids: present now AND not already known (avoids re-alerting on ids that
       // briefly vanished from a poll due to a transient API blip and then reappeared)
       const newIds = currentIds.filter(id => !knownQuestionIds.has(id));
       const hadKnownBefore = knownQuestionIds.size > 0;
-
       newIds.forEach(id => knownQuestionIds.add(id));
       // Reset missing-streak for ids present in this poll
       currentSet.forEach(id => { qMissingStreak[id] = 0; });
@@ -5916,7 +5442,6 @@
           }
         }
       }
-
       const qBadgeCount = knownQuestionIds.size;
       const badge = document.getElementById('badge-unanswered');
       const mobBadge = document.getElementById('mob-badge-unanswered');
@@ -5927,7 +5452,6 @@
         badge.style.display = 'none';
         if (mobBadge) { mobBadge.style.display = 'none'; }
       }
-
       if (notificationsReady && hadKnownBefore && newIds.length > 0) {
         // Sound + popup notification (if user has alerts enabled)
         if (currentUser?.alerts_questions) {
@@ -5935,7 +5459,6 @@
           const newQs = questions.filter(q => newIds.includes(q.id));
           showNotification(newIds.length, 'questions', newQs);
         }
-
         if (currentSection === 'questions') {
           if (isUserTyping()) {
             // User is typing — don't refresh, show banner instead
@@ -5949,7 +5472,6 @@
       }
     } catch(e) {}
   }
-
   async function checkNewMessages() {
     try {
       const res = await fetch('/api/messages?account_id=&status=unread');
@@ -5958,12 +5480,10 @@
       // messages[0] = newest message (ML returns newest-first) — use this for new-message detection
       const currentIds = conversations.map(c => c.messages?.[0]?.id).filter(Boolean);
       const currentSet = new Set(currentIds);
-
       // Truly-new ids: present now AND not already known (avoids re-alerting on ids that
       // briefly vanished from a poll due to a transient API blip and then reappeared)
       const newIds = currentIds.filter(id => !knownMessageIds.has(id));
       const hadKnownBefore = knownMessageIds.size > 0;
-
       newIds.forEach(id => knownMessageIds.add(id));
       // Reset missing-streak for ids present in this poll
       currentSet.forEach(id => { msgMissingStreak[id] = 0; });
@@ -5977,7 +5497,6 @@
           }
         }
       }
-
       // Update message badge in sidebar and mobile nav
       const msgBadgeCount = knownMessageIds.size;
       const msgBadge = document.getElementById('badge-unread-messages');
@@ -5989,7 +5508,6 @@
         msgBadge.style.display = 'none';
         if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
       }
-
       if (notificationsReady && hadKnownBefore && newIds.length > 0 && currentUser?.alerts_messages) {
         playNotificationSound();
         const newConvs = conversations.filter(c => newIds.includes(c.messages?.[0]?.id));
@@ -5999,19 +5517,16 @@
       }
     } catch(e) {}
   }
-
   // Add slide-in animation
   const style = document.createElement('style');
   style.textContent = '@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }';
   document.head.appendChild(style);
-
   // Check every 15 seconds
   setInterval(() => {
     checkNewQuestions();
     checkNewMessages();
     if (!notificationsReady) notificationsReady = true;
   }, 15000);
-
   // Auto-refresh current view every 15 seconds ONLY if not typing
   // El dashboard NO se refresca automáticamente para no destruir el gráfico.
   setInterval(() => {
@@ -6019,20 +5534,17 @@
     if (currentSection === 'questions') loadQuestions();
     if (currentSection === 'messages') loadMessages();
   }, 15000);
-
   // Stop prep auto-refresh when navigating away from prep section
   const _origShowSection = showSection;
   showSection = function(section, ...args) {
     if (section !== 'prep') stopPrepAutoRefresh();
     return _origShowSection(section, ...args);
   };
-
   // Register Service Worker for PWA
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').then(reg => {
       console.log('[SW] Service Worker registrado');
     }).catch(err => console.log('[SW] Error:', err));
-
     // Handle notification click navigation from SW
     navigator.serviceWorker.addEventListener('message', event => {
       if (event.data?.action === 'navigate') {
@@ -6040,11 +5552,9 @@
       }
     });
   }
-
   // Init
   checkAuth();
 </script>
-
 <!-- ACORDAR Shipping Data Modal -->
 <div id="acordar-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:10000;align-items:center;justify-content:center;padding:16px">
   <div style="background:white;border-radius:14px;padding:28px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
