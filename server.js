@@ -835,14 +835,19 @@ async function runBulkJob(jobId, items, account, initialToken) {
   // Stock por deposito (multiorigen / user_products): el stock NO se actualiza por /items,
   // sino por PUT /user-products/{upid}/stock/type/seller_warehouse con body {quantity}.
   async function updateDepositStock(upid, qty, workerId) {
-    // Leemos la location actual para mandar el store_id correcto.
-    let loc = {};
-    try {
-      const curStock = await mlGet(`https://api.mercadolibre.com/user-products/${upid}/stock`, token);
-      loc = (curStock.locations || [])[0] || {};
-    } catch (e) {}
+    const stockUrl = `https://api.mercadolibre.com/user-products/${upid}/stock`;
+    // Leemos la location + el header x-version (obligatorio para escribir).
+    async function leerStock() {
+      const g = await fetch(stockUrl, { headers: { Authorization: `Bearer ${token}` } });
+      const xv = g.headers.get('x-version');
+      const t = await g.text();
+      let d = {}; try { d = t ? JSON.parse(t) : {}; } catch (e) {}
+      return { xver: xv, loc: (d.locations || [])[0] || {} };
+    }
+    let xver = null, loc = {};
+    try { const s = await leerStock(); xver = s.xver; loc = s.loc; } catch (e) {}
     const t = loc.type || 'seller_warehouse';
-    const url = `https://api.mercadolibre.com/user-products/${upid}/stock/type/${t}`;
+    const url = `${stockUrl}/type/${t}`;
     const location = { quantity: qty };
     if (loc.store_id != null) location.store_id = loc.store_id;
     const body = { locations: [location] };
@@ -851,11 +856,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
       const waitGlobal = globalCooldownUntil - Date.now();
       if (waitGlobal > 0) await sleep(waitGlobal);
       try {
-        const r = await fetch(url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'X-Version': 'v2', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(body)
-        });
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+        if (xver != null) headers['X-Version'] = String(xver);
+        const r = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
         if (r.ok) return null;
         const text = await r.text();
         let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
@@ -867,6 +870,12 @@ async function runBulkJob(jobId, items, account, initialToken) {
         if (r.status === 429) {
           const wait = [15000, 35000, 70000, 120000][attempt] || 120000;
           mark429(wait); await sleep(wait); continue;
+        }
+        // Version desactualizada: re-leemos x-version y reintentamos
+        const msg = String((data && (data.message || data.error)) || '').toLowerCase();
+        if (r.status === 409 || msg.includes('version')) {
+          try { const s2 = await leerStock(); xver = s2.xver; } catch (e) {}
+          continue;
         }
         return (data && (data.message || data.error)) ? (data.message || data.error) : `stock HTTP ${r.status}`;
       } catch (e) {
@@ -4191,39 +4200,25 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
     const upid = item.user_product_id;
     if (!upid) return sendJSON(res, 400, { error: 'El item no tiene user_product_id (no usa deposito)' });
     const stockUrl = `https://api.mercadolibre.com/user-products/${upid}/stock`;
-    const cur = await mlGet(stockUrl, token);
+    // GET crudo: necesitamos el header x-version (obligatorio para escribir stock)
+    const g = await fetch(stockUrl, { headers: { Authorization: `Bearer ${token}` } });
+    const xver = g.headers.get('x-version');
+    const gtext = await g.text();
+    let cur = {}; try { cur = gtext ? JSON.parse(gtext) : {}; } catch (e) { cur = { raw: gtext }; }
     const loc = (cur.locations || [])[0] || {};
     const locType = loc.type || 'seller_warehouse';
     const qty = (qtyParam === null || qtyParam === '') ? loc.quantity : parseInt(qtyParam);
     const putUrl = `https://api.mercadolibre.com/user-products/${upid}/stock/type/${locType}`;
-    async function tryBody(bodyObj) {
-      const r = await fetch(putUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Version': 'v2', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(bodyObj)
-      });
-      const text = await r.text();
-      let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
-      if (!r.ok) throw { response: { status: r.status, data } };
-      return { status: r.status, data };
-    }
-    const variants = [
-      { label: 'loc_quantity', body: { locations: [{ quantity: qty }] } },
-      { label: 'loc_store_quantity', body: { locations: [{ store_id: loc.store_id, quantity: qty }] } },
-      { label: 'loc_store_node_quantity', body: { locations: [{ store_id: loc.store_id, network_node_id: loc.network_node_id, quantity: qty }] } },
-      { label: 'loc_node_quantity', body: { locations: [{ network_node_id: loc.network_node_id, quantity: qty }] } }
-    ];
-    const attempts = [];
-    for (const v of variants) {
-      try {
-        const r = await tryBody(v.body);
-        const after = await mlGet(stockUrl, token).catch(() => null);
-        return sendJSON(res, 200, { upid, type: locType, qty_actual: loc.quantity, qty_enviado: qty, ganador: v.label, sent: v.body, put_result: r, stock_despues: after, attempts });
-      } catch (e) {
-        attempts.push({ tried: v.label, status: (e && e.response && e.response.status) || null, error: (e && e.response && e.response.data) || String(e.message || e) });
-      }
-    }
-    return sendJSON(res, 200, { upid, type: locType, qty_actual: loc.quantity, qty_enviado: qty, ganador: null, attempts });
+    const body = { locations: [{ store_id: loc.store_id, quantity: qty }] };
+    const r = await fetch(putUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Version': String(xver), Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body)
+    });
+    const ptext = await r.text();
+    let pdata; try { pdata = ptext ? JSON.parse(ptext) : {}; } catch (e) { pdata = { raw: ptext }; }
+    const after = await mlGet(stockUrl, token).catch(() => null);
+    return sendJSON(res, 200, { upid, type: locType, x_version_usado: xver, qty_actual: loc.quantity, qty_enviado: qty, sent: body, put_status: r.status, put_ok: r.ok, put_result: pdata, stock_despues: after });
   } catch (e) {
     sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
   }
