@@ -1606,6 +1606,7 @@
   let salesDateTo = '';
   let salesTimeCut = '';
   let salesAccountFilter = '';
+  let salesPedidoFilter = ''; // '' | 'pedido' | 'sin_pedir'
   let salesLoaded = false;
 
   const STATUS_LABELS = {
@@ -1641,6 +1642,19 @@
     if (el) el.classList.toggle('checked');
   }
 
+  function toggleSalesPedidoFilter(val) {
+    salesPedidoFilter = (salesPedidoFilter === val) ? '' : val;
+    // Update chip visuals
+    ['pedido','sin_pedir'].forEach(v => {
+      const chip = document.getElementById('chip-pedido-' + v);
+      if (!chip) return;
+      const isActive = salesPedidoFilter === v;
+      chip.classList.toggle('checked', isActive);
+      const cb = chip.querySelector('input[type=checkbox]');
+      if (cb) cb.checked = isActive;
+    });
+  }
+
   function applySalesFilters() {
     // Read values from DOM before fetching
     const accSel = document.getElementById('salesAccountSel');
@@ -1658,6 +1672,7 @@
     salesDateFrom = ''; salesDateTo = ''; salesTimeCut = '';
     salesStatusFilters = []; salesShippingFilters = [];
     salesAccountFilter = '';
+    salesPedidoFilter = '';
     loadSales(true);
   }
 
@@ -1703,6 +1718,17 @@
             </label>
           `).join('')}
         </div>
+        <h4>Pedidos</h4>
+        <div class="filter-row">
+          <label class="chip ${salesPedidoFilter==='pedido'?'checked':''}" id="chip-pedido-pedido">
+            <input type="checkbox" ${salesPedidoFilter==='pedido'?'checked':''} onchange="toggleSalesPedidoFilter('pedido')">
+            ✅ Con pedido
+          </label>
+          <label class="chip ${salesPedidoFilter==='sin_pedir'?'checked':''}" id="chip-pedido-sin_pedir">
+            <input type="checkbox" ${salesPedidoFilter==='sin_pedir'?'checked':''} onchange="toggleSalesPedidoFilter('sin_pedir')">
+            📦 Sin pedir
+          </label>
+        </div>
         <div class="filter-row" style="margin-top:8px">
           <button onclick="applySalesFilters()" style="padding:8px 24px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔍 Filtrar</button>
           <button onclick="clearSalesFilters()" style="padding:8px 16px;border:1px solid #ddd;border-radius:6px;font-size:13px;cursor:pointer;background:#f0f2f5">Limpiar filtros</button>
@@ -1740,6 +1766,21 @@
         });
       }
 
+      // Pedido filter: fetch open orders and filter
+      if (salesPedidoFilter) {
+        let orderedIds = new Set();
+        try {
+          const ordRes = await fetch('/api/sale-orders?status=open&type=pedido');
+          const openOrds = await ordRes.json();
+          orderedIds = new Set(openOrds.map(o => String(o.order_id)));
+        } catch(e) {}
+        sales = sales.filter(s => {
+          const saleKey = s.pack_id ? String(s.pack_id) : (s.order_ids ? String(s.order_ids[0]) : String(s.order_id));
+          const hasOrder = orderedIds.has(saleKey);
+          return salesPedidoFilter === 'pedido' ? hasOrder : !hasOrder;
+        });
+      }
+
       // Remove loading, rebuild with filters + results
       // Re-render entire content to keep filters
       let fullHtml = `
@@ -1774,6 +1815,17 @@
                 ${label}
               </label>
             `).join('')}
+          </div>
+          <h4>Pedidos</h4>
+          <div class="filter-row">
+            <label class="chip ${salesPedidoFilter==='pedido'?'checked':''}" id="chip-pedido-pedido">
+              <input type="checkbox" ${salesPedidoFilter==='pedido'?'checked':''} onchange="toggleSalesPedidoFilter('pedido')">
+              ✅ Con pedido
+            </label>
+            <label class="chip ${salesPedidoFilter==='sin_pedir'?'checked':''}" id="chip-pedido-sin_pedir">
+              <input type="checkbox" ${salesPedidoFilter==='sin_pedir'?'checked':''} onchange="toggleSalesPedidoFilter('sin_pedir')">
+              📦 Sin pedir
+            </label>
           </div>
           <div class="filter-row" style="margin-top:8px">
             <button onclick="applySalesFilters()" style="padding:8px 24px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">🔍 Filtrar</button>
@@ -2043,43 +2095,13 @@
     container.innerHTML = allRows.map((item, i) => renderPedidoRow(i, item)).join('');
   }
 
-  async function loadPrepOrderDisplay(orderId, accountId) {
-    const el = document.getElementById(`prep-order-${orderId}`);
-    if (!el) return;
-    try {
-      const res = await fetch(`/api/sale-orders?order_id=${orderId}&account_id=${accountId}`);
-      const orders = await res.json();
-      const order = orders[0];
-      if (!order || !order.items?.length) return;
-      const rows = order.items.map(i => `
-        <tr>
-          <td style="padding:3px 8px;border:1px solid #e2e8f0;font-size:12px">${escapeHtml(i.codigo||'')}</td>
-          <td style="padding:3px 8px;border:1px solid #e2e8f0;font-size:12px;text-align:center">${i.cantidad||0}</td>
-          <td style="padding:3px 8px;border:1px solid #e2e8f0;font-size:12px">${escapeHtml(i.proveedor||'')}</td>
-        </tr>
-      `).join('');
-      el.innerHTML = `
-        <div style="padding:8px 10px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px">
-          <div style="font-size:12px;font-weight:600;color:#0369a1;margin-bottom:5px">📋 Pedido</div>
-          <table style="border-collapse:collapse;width:100%">
-            <thead><tr style="background:#e0f2fe">
-              <th style="padding:3px 8px;border:1px solid #bae6fd;font-size:11px;text-align:left;color:#0369a1">Código</th>
-              <th style="padding:3px 8px;border:1px solid #bae6fd;font-size:11px;text-align:center;color:#0369a1">Cant.</th>
-              <th style="padding:3px 8px;border:1px solid #bae6fd;font-size:11px;text-align:left;color:#0369a1">Proveedor</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      `;
-    } catch(e) {}
-  }
-
   async function loadOrdersSection() {
     const content = document.getElementById('content');
     content.innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">📋 Pedidos</h2>
       <div style="display:flex;gap:8px;margin-bottom:16px">
         <button id="orders-tab-open" onclick="switchOrdersTab('open')" style="padding:7px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;background:#2d3277;color:white">Actuales</button>
+        <button id="orders-tab-sin-pedir" onclick="switchOrdersTab('sin-pedir')" style="padding:7px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;background:#f8fafc;color:#64748b">Sin pedir</button>
         <button id="orders-tab-history" onclick="switchOrdersTab('history')" style="padding:7px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;background:#f8fafc;color:#64748b">Historial</button>
       </div>
       <div id="orders-tab-content"></div>
@@ -2088,11 +2110,12 @@
   }
 
   async function switchOrdersTab(tab) {
-    ['open','history'].forEach(t => {
+    ['open','sin-pedir','history'].forEach(t => {
       const btn = document.getElementById(`orders-tab-${t}`);
       if (btn) { btn.style.background = t===tab?'#2d3277':'#f8fafc'; btn.style.color = t===tab?'white':'#64748b'; }
     });
     if (tab === 'open') loadOpenOrders();
+    else if (tab === 'sin-pedir') loadSinPedir();
     else loadOrdersHistory();
   }
 
@@ -2114,6 +2137,84 @@
     } catch(e) { container.innerHTML = '<div class="empty"><p>Error al cargar pedidos</p></div>'; }
   }
 
+  async function loadSinPedir() {
+    const container = document.getElementById('orders-tab-content');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando ventas...</p></div>';
+    try {
+      const [salesRes, ordersRes] = await Promise.all([
+        fetch('/api/sales'),
+        fetch('/api/sale-orders?status=open&type=pedido')
+      ]);
+      const allSales = await salesRes.json();
+      const openOrders = await ordersRes.json();
+
+      const orderedIds = new Set(openOrders.map(o => String(o.order_id)));
+      const ordersMap = {};
+      for (const o of openOrders) ordersMap[String(o.order_id)] = o;
+
+      const relevantSales = allSales.filter(s => s.status !== 'cancelled');
+      if (!relevantSales.length) {
+        container.innerHTML = '<div class="empty"><p>No hay ventas activas</p></div>';
+        return;
+      }
+
+      const sinPedir = relevantSales.filter(s => {
+        const k = s.pack_id ? String(s.pack_id) : (s.order_ids ? String(s.order_ids[0]) : String(s.order_id));
+        return !orderedIds.has(k);
+      });
+      const conPedido = relevantSales.filter(s => {
+        const k = s.pack_id ? String(s.pack_id) : (s.order_ids ? String(s.order_ids[0]) : String(s.order_id));
+        return orderedIds.has(k);
+      });
+
+      let html = `<p style="color:#999;font-size:13px;margin-bottom:16px">${sinPedir.length} sin pedir &nbsp;·&nbsp; ${conPedido.length} con pedido</p>`;
+
+      for (const sale of relevantSales) {
+        const saleKey = sale.pack_id ? String(sale.pack_id) : (sale.order_ids ? String(sale.order_ids[0]) : String(sale.order_id));
+        const hasPedido = orderedIds.has(saleKey);
+        const order = ordersMap[saleKey];
+        const displayId = sale.pack_id ? sale.pack_id : sale.order_id;
+        const dateStr = formatSaleDate(sale.date_created);
+        const statusLabel = STATUS_LABELS[sale.status] || sale.status;
+
+        html += `
+          <div class="sale-card" style="border-left:4px solid ${hasPedido ? '#86efac' : '#e2e8f0'}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+              <span class="card-account">${escapeHtml(sale.account_name)}</span>
+              <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(sale.buyer_name)}</span>
+            </div>
+            <div class="sale-header">
+              <span class="sale-status ${sale.status}">${statusLabel}</span>
+              <a href="/?section=sales&order_id=${encodeURIComponent(String(displayId))}&account_id=${sale.account_id}" target="_blank" style="color:#3483fa;text-decoration:none;font-weight:600;font-size:13px" title="Ver venta">#${displayId}</a>
+              <span class="sale-date">${dateStr}</span>
+            </div>
+            ${sale.items.map(item => `
+              <div class="sale-item">
+                ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" onerror="this.onerror=null;this.style.visibility='hidden'">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
+                <div class="sale-item-info">
+                  <div class="sale-item-title">${escapeHtml(item.title)}</div>
+                  <div class="sale-item-meta">
+                    $ ${Number(item.unit_price).toLocaleString('es-AR',{minimumFractionDigits:2})} &middot; ${item.quantity} unidad${item.quantity!==1?'es':''}
+                    ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+            ${hasPedido && order ? `
+              <div style="margin-top:8px;padding:6px 12px;background:#f0fff4;border:1px solid #86efac;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <span style="color:#16a34a;font-weight:700;font-size:13px">✅ Pedido realizado</span>
+                <span style="font-size:12px;color:#555">${order.items.map(i => escapeHtml(i.codigo||'') + ' ×' + (i.cantidad||0) + ' (' + escapeHtml(i.proveedor||'') + ')').join(', ')}</span>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    } catch(e) {
+      container.innerHTML = '<div class="empty"><p>Error al cargar ventas</p></div>';
+    }
+  }
+
   function renderOrderCard(order, showClose) {
     const itemsHtml = order.items.map(i => `
       <tr>
@@ -2127,7 +2228,7 @@
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
           <div>
             <span class="card-account">${escapeHtml(order.account_name)}</span>
-            <span style="font-size:13px;color:#333;margin-left:8px">Orden #${escapeHtml(String(order.order_id))}</span>
+            <a href="/?section=sales&order_id=${encodeURIComponent(String(order.order_id))}" target="_blank" style="font-size:13px;color:#3483fa;margin-left:8px;text-decoration:none;font-weight:600" title="Ver venta">Orden #${escapeHtml(String(order.order_id))}</a>
             <span style="font-size:12px;color:#999;margin-left:8px">${escapeHtml(order.date||'')}</span>
           </div>
           ${showClose ? `<button onclick="cerrarPedido('${order.id}')" style="padding:5px 14px;background:#ef4444;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Cerrar pedido</button>` : ''}
@@ -4362,12 +4463,40 @@
       container.innerHTML = html;
       // Fetch fresh notes from ML for each order (async, non-blocking) — Fix 2: only overwrites if ML has a note
       for (const o of orders) loadPrepNoteDisplay(o.order_id, o.account_id);
-      // Load sale order (pedido) display for each prep order
-      for (const o of orders) loadPrepOrderDisplay(o.order_id, o.account_id);
+      // Fetch sale statuses for order number badges
+      loadPrepSaleStatuses(orders);
       startPrepAutoRefresh(can_manage, can_operate);
     } catch(e) {
       container.innerHTML = '<div class="empty"><p>Error al cargar órdenes</p></div>';
     }
+  }
+
+  async function loadPrepSaleStatuses(orders) {
+    const STATUS_COLORS = {
+      pending: { bg: '#fff3cd', color: '#856404', text: 'Pendiente' },
+      ready_to_print: { bg: '#cff4fc', color: '#055160', text: 'Para imprimir' },
+      delayed: { bg: '#f8d7da', color: '#721c24', text: 'Demorada' },
+      ready_to_ship: { bg: '#d1ecf1', color: '#0c5460', text: 'Lista para enviar' },
+      in_transit: { bg: '#d4edda', color: '#155724', text: 'En camino' },
+      not_completed: { bg: '#f8d7da', color: '#721c24', text: 'No concretada' },
+      cancelled: { bg: '#e2e3e5', color: '#383d41', text: 'Cancelada' },
+      delivered: { bg: '#d4edda', color: '#155724', text: 'Entregada' }
+    };
+    await Promise.all(orders.map(async order => {
+      try {
+        const oid = String(order.order_id);
+        const el = document.getElementById('prep-sale-status-badge-' + oid);
+        if (!el) return;
+        const res = await fetch('/api/sales?order_id=' + encodeURIComponent(oid) + '&account_id=' + encodeURIComponent(order.account_id));
+        if (!res.ok) return;
+        const sales = await res.json();
+        const sale = sales[0];
+        if (!sale) return;
+        const s = STATUS_COLORS[sale.status];
+        if (!s) return;
+        el.innerHTML = `<span style="padding:2px 8px;border-radius:10px;background:${s.bg};color:${s.color};font-weight:600">${s.text}</span>`;
+      } catch(e) {}
+    }));
   }
 
   function renderEnPrepCard(order, expanded, can_manage, can_operate) {
@@ -4381,6 +4510,8 @@
           <span class="card-account">${escapeHtml(order.account_name)}</span>
           <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(order.buyer_name)}</span>
           <span style="font-size:12px;color:#999">${formatDate(order.added_at)}</span>
+          ${(currentUser?.role === 'admin' || currentUser?.can_view_sales) ? `<a href="/?section=sales&order_id=${encodeURIComponent(oid)}&account_id=${encodeURIComponent(order.account_id)}" target="_blank" onclick="event.stopPropagation()" style="font-size:12px;color:#3483fa;text-decoration:none;font-weight:600" title="Ver venta">#${oid}</a>` : `<span style="font-size:12px;color:#999">#${oid}</span>`}
+          <span id="prep-sale-status-badge-${oid}" style="font-size:11px"></span>
           <span id="prep-toggle-icon-${oid}" style="margin-left:auto;font-size:12px;color:#3483fa;font-weight:600">${expanded ? '▲ Contraer' : '▼ Ver detalle'}</span>
         </div>
         <div id="prep-body-${oid}" style="display:${expanded?'block':'none'}">
@@ -4412,7 +4543,6 @@
               </div>
             </div>` : ''}
           </div>
-          <div id="prep-order-${oid}" style="margin-top:6px"></div>
           <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               ${order.shipping_id ? `<button class="btn-print" onclick="event.stopPropagation();printLabel(${order.shipping_id}, ${order.account_id})">🖨️ Etiqueta ML</button>` : ''}
