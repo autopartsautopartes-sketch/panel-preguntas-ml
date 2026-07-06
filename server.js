@@ -3,9 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
-
 // ==================== CONFIG ====================
-
 const CONFIG_PATH = path.join(__dirname, '.env');
 const config = {};
 try {
@@ -15,32 +13,25 @@ try {
     if (key && vals.length) config[key.trim()] = vals.join('=').trim();
   });
 } catch (e) {}
-
 const PORT = config.PORT || process.env.PORT || 3000;
 const BASE_URL = config.BASE_URL || process.env.BASE_URL || `http://localhost:${PORT}`;
 const ML_CLIENT_ID = config.ML_CLIENT_ID || process.env.ML_CLIENT_ID;
 const ML_CLIENT_SECRET = config.ML_CLIENT_SECRET || process.env.ML_CLIENT_SECRET;
 const SESSION_SECRET = config.SESSION_SECRET || process.env.SESSION_SECRET || 'panel-secret-key';
-
 // ==================== PASSWORD HASHING ====================
-
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return `${salt}:${hash}`;
 }
-
 function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(':');
   const testHash = crypto.scryptSync(password, salt, 64).toString('hex');
   return hash === testHash;
 }
-
 // ==================== JSON DATABASE (persistent across deploys) ====================
-
 const DB_PATH = path.join(__dirname, 'data.json');
 const DB_BACKUP_ENV = process.env.DB_BACKUP; // base64-encoded backup from env var
-
 function loadDB() {
   try {
     return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
@@ -48,11 +39,9 @@ function loadDB() {
     return null;
   }
 }
-
 function saveDB(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
-
 // On startup: restore from DB_BACKUP env var if data.json doesn't exist or is empty
 let db = loadDB();
 if (!db || !db.users || db.users.length === 0) {
@@ -69,9 +58,7 @@ if (!db || !db.users || db.users.length === 0) {
     }
   }
 }
-
 if (!db) db = { users: [], ml_accounts: [], nextUserId: 1, nextAccountId: 1 };
-
 // Init admin if no users exist
 if (db.users.length === 0) {
   db.users.push({
@@ -90,7 +77,6 @@ if (db.users.length === 0) {
 } else {
   saveDB(db); // ensure file exists on disk
 }
-
 // Migrate existing users: add alert fields if missing
 const dbMigrate = loadDB();
 let migrated = false;
@@ -100,7 +86,6 @@ for (const u of dbMigrate.users) {
   if (u.view_dashboard === undefined) { u.view_dashboard = true; migrated = true; }
 }
 if (migrated) saveDB(dbMigrate);
-
 // Migrate: add prep permission fields to users
 const dbMigrate2 = loadDB();
 let migrated2 = false;
@@ -111,7 +96,6 @@ for (const u of dbMigrate2.users) {
 if (!dbMigrate2.prep_orders) { dbMigrate2.prep_orders = []; migrated2 = true; }
 if (!dbMigrate2.dismissed_msg_packs) { dbMigrate2.dismissed_msg_packs = {}; migrated2 = true; }
 if (migrated2) saveDB(dbMigrate2);
-
 // Migrate: add can_view_dashboard field (default false for non-admin, admin always has access)
 const dbMigrate3 = loadDB();
 let migrated3 = false;
@@ -119,7 +103,6 @@ for (const u of dbMigrate3.users) {
   if (u.can_view_dashboard === undefined) { u.can_view_dashboard = false; migrated3 = true; }
 }
 if (migrated3) saveDB(dbMigrate3);
-
 // Migrate: add section visibility permissions (default true = keeps existing behavior for current users)
 const dbMigrate4 = loadDB();
 let migrated4 = false;
@@ -129,7 +112,6 @@ for (const u of dbMigrate4.users) {
   if (u.can_view_sales === undefined) { u.can_view_sales = true; migrated4 = true; }
 }
 if (migrated4) saveDB(dbMigrate4);
-
 // Migrate: add can_search_update permission (default false for non-admin)
 const dbMigrate5 = loadDB();
 let migrated5 = false;
@@ -137,7 +119,6 @@ for (const u of dbMigrate5.users) {
   if (u.can_search_update === undefined) { u.can_search_update = false; migrated5 = true; }
 }
 if (migrated5) saveDB(dbMigrate5);
-
 // Migrate: add can_bulk_update permission — acceso a descarga/subida de Excel (default false para no-admin)
 const dbMigrate6 = loadDB();
 let migrated6 = false;
@@ -145,7 +126,6 @@ for (const u of dbMigrate6.users) {
   if (u.can_bulk_update === undefined) { u.can_bulk_update = false; migrated6 = true; }
 }
 if (migrated6) saveDB(dbMigrate6);
-
 // Migrate: add can_view_promos permission — acceso a la sección Promociones (default false para no-admin)
 const dbMigrate7 = loadDB();
 let migrated7 = false;
@@ -154,11 +134,9 @@ for (const u of dbMigrate7.users) {
 }
 if (!dbMigrate7.bulk_completed_jobs) { dbMigrate7.bulk_completed_jobs = []; migrated7 = true; }
 if (migrated7) saveDB(dbMigrate7);
-
 // Migrate: add sale_orders array
 const dbMigrateOrders = loadDB();
 if (!dbMigrateOrders.sale_orders) { dbMigrateOrders.sale_orders = []; saveDB(dbMigrateOrders); }
-
 // Migrate: add can_view_orders permission (default false para no-admin)
 const dbMigrate8 = loadDB();
 let migrated8 = false;
@@ -166,11 +144,8 @@ for (const u of dbMigrate8.users) {
   if (u.can_view_orders === undefined) { u.can_view_orders = false; migrated8 = true; }
 }
 if (migrated8) saveDB(dbMigrate8);
-
 // ==================== SESSION STORE (persistent) ====================
-
 const SESSIONS_PATH = path.join(__dirname, 'sessions.json');
-
 function loadSessions() {
   try {
     return JSON.parse(fs.readFileSync(SESSIONS_PATH, 'utf8'));
@@ -178,11 +153,9 @@ function loadSessions() {
     return {};
   }
 }
-
 function saveSessions() {
   try { fs.writeFileSync(SESSIONS_PATH, JSON.stringify(sessions, null, 2)); } catch(e) {}
 }
-
 let sessions = loadSessions();
 // If sessions.json was empty but DB_BACKUP had sessions, restore them
 if (Object.keys(sessions).length === 0 && db.sessions && Object.keys(db.sessions).length > 0) {
@@ -192,24 +165,20 @@ if (Object.keys(sessions).length === 0 && db.sessions && Object.keys(db.sessions
 } else {
   console.log(`[STARTUP] Sesiones restauradas: ${Object.keys(sessions).length}`);
 }
-
 function generateSessionId() {
   return crypto.randomBytes(32).toString('hex');
 }
-
 function getSession(req) {
   const cookies = parseCookies(req);
   const sid = cookies.sid;
   if (sid && sessions[sid]) return sessions[sid];
   return null;
 }
-
 // Detect if the request reached us over HTTPS (Render terminates TLS at its
 // edge proxy, so we check the standard forwarded-proto header it sets).
 function isHttps(req) {
   return req.headers['x-forwarded-proto'] === 'https' || !!req.socket?.encrypted;
 }
-
 function createSession(req, res) {
   const sid = generateSessionId();
   sessions[sid] = { created: Date.now() };
@@ -218,7 +187,6 @@ function createSession(req, res) {
   saveSessions();
   return sessions[sid];
 }
-
 function destroySession(req, res) {
   const cookies = parseCookies(req);
   if (cookies.sid) delete sessions[cookies.sid];
@@ -226,7 +194,6 @@ function destroySession(req, res) {
   res.setHeader('Set-Cookie', `sid=; HttpOnly; Path=/; Max-Age=0${secureFlag}`);
   saveSessions();
 }
-
 function parseCookies(req) {
   const cookies = {};
   (req.headers.cookie || '').split(';').forEach(c => {
@@ -235,20 +202,16 @@ function parseCookies(req) {
   });
   return cookies;
 }
-
 // ==================== LOGIN RATE LIMITING (brute force protection) ====================
-
 const loginAttempts = {}; // ip -> { count, firstAttempt, blockedUntil }
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;   // 15 min window to count failed attempts
 const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 min block once exceeded
-
 function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
   if (forwarded) return forwarded.split(',')[0].trim();
   return req.socket?.remoteAddress || 'unknown';
 }
-
 function checkLoginRateLimit(ip) {
   const entry = loginAttempts[ip];
   if (!entry) return { allowed: true };
@@ -260,7 +223,6 @@ function checkLoginRateLimit(ip) {
   }
   return { allowed: true };
 }
-
 function recordFailedLogin(ip) {
   const now = Date.now();
   let entry = loginAttempts[ip];
@@ -274,11 +236,9 @@ function recordFailedLogin(ip) {
     console.log(`[SECURITY] IP bloqueada por intentos de login fallidos: ${ip}`);
   }
 }
-
 function recordSuccessfulLogin(ip) {
   delete loginAttempts[ip];
 }
-
 // Periodically clean up old rate-limit entries to avoid unbounded memory growth
 setInterval(() => {
   const now = Date.now();
@@ -288,9 +248,7 @@ setInterval(() => {
     else if (!entry.blockedUntil && (now - entry.firstAttempt) > LOGIN_WINDOW_MS) delete loginAttempts[ip];
   }
 }, 10 * 60 * 1000);
-
 // ==================== PREP PERMISSION HELPERS ====================
-
 function canPrepManage(sess) {
   if (!sess) return false;
   if (sess.role === 'admin') return true;
@@ -305,9 +263,7 @@ function canPrepOperate(sess) {
   const user = db.users.find(u => u.id === sess.userId);
   return user?.can_prep_operate === true || user?.can_prep_manage === true;
 }
-
 // ==================== SECURITY HEADERS ====================
-
 function setSecurityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -326,9 +282,7 @@ function setSecurityHeaders(res) {
     "frame-ancestors 'none'"
   );
 }
-
 // ==================== HTTP HELPERS ====================
-
 async function mlGet(url, token, params = {}, extraHeaders = {}) {
   const qs = new URLSearchParams(params).toString();
   const fullUrl = qs ? `${url}?${qs}` : url;
@@ -339,7 +293,6 @@ async function mlGet(url, token, params = {}, extraHeaders = {}) {
   if (!res.ok) throw { response: { data, status: res.status } };
   return data;
 }
-
 async function mlPut(url, body, token) {
   const res = await fetch(url, {
     method: 'PUT',
@@ -350,7 +303,6 @@ async function mlPut(url, body, token) {
   if (!res.ok) throw { response: { data, status: res.status } };
   return data;
 }
-
 async function mlPost(url, body, token) {
   const res = await fetch(url, {
     method: 'POST',
@@ -364,14 +316,11 @@ async function mlPost(url, body, token) {
   if (!res.ok) throw { response: { data, status: res.status } };
   return data;
 }
-
 function sendJSON(res, statusCode, data) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
-
 const MAX_BODY_BYTES = 25 * 1024 * 1024; // 25MB: permite Excel grandes de actualización masiva
-
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -397,14 +346,11 @@ function parseBody(req) {
     });
   });
 }
-
 function requireAuth(req) {
   const sess = getSession(req);
   return sess && sess.userId ? sess : null;
 }
-
 // ==================== TOKEN REFRESH ====================
-
 async function refreshToken(account) {
   try {
     const data = await mlPost('https://api.mercadolibre.com/oauth/token', {
@@ -429,22 +375,17 @@ async function refreshToken(account) {
     return null;
   }
 }
-
 async function getValidToken(account) {
   if (new Date(account.token_expires_at) <= new Date()) {
     return await refreshToken(account);
   }
   return account.access_token;
 }
-
 // ==================== ROUTE HANDLERS ====================
-
 const routes = {};
-
 function route(method, path, handler) {
   routes[`${method}:${path}`] = handler;
 }
-
 // AUTH
 route('POST', '/api/login', async (req, res) => {
   const ip = getClientIp(req);
@@ -453,7 +394,6 @@ route('POST', '/api/login', async (req, res) => {
     res.setHeader('Retry-After', String(rl.retryAfter));
     return sendJSON(res, 429, { error: `Demasiados intentos fallidos. Intenta de nuevo en ${Math.ceil(rl.retryAfter / 60)} minuto(s).` });
   }
-
   const { username, password } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.username === username);
@@ -468,12 +408,10 @@ route('POST', '/api/login', async (req, res) => {
   sess.role = user.role;
   sendJSON(res, 200, { username: user.username, role: user.role });
 });
-
 route('POST', '/api/logout', async (req, res) => {
   destroySession(req, res);
   sendJSON(res, 200, { ok: true });
 });
-
 route('GET', '/api/me', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -497,7 +435,6 @@ route('GET', '/api/me', async (req, res) => {
     can_view_orders: isAdmin || user?.can_view_orders === true
   });
 });
-
 // USERS
 route('GET', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
@@ -521,7 +458,6 @@ route('GET', '/api/users', async (req, res) => {
     created_at: u.created_at
   })));
 });
-
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -545,7 +481,6 @@ route('POST', '/api/users/alerts', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 route('POST', '/api/users/password', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -560,7 +495,6 @@ route('POST', '/api/users/password', async (req, res) => {
   console.log(`[PASS] Contraseña cambiada: usuario "${targetUser.username}" por admin "${sess.username}"`);
   sendJSON(res, 200, { ok: true });
 });
-
 // Helper: build ML item update payload from row data (excluye flex — se maneja por separado)
 function buildItemPayload(item) {
   const payload = {};
@@ -573,24 +507,26 @@ function buildItemPayload(item) {
     const p = parseFloat(item.price);
     if (!isNaN(p)) payload.price = p;
   }
-  if (item.item_sku !== '' && item.item_sku != null) payload.seller_custom_field = String(item.item_sku);
-  if (item.marca !== '' && item.marca != null) payload.attributes = [{ id: 'BRAND', value_name: item.marca }];
+  const attrs = [];
+  if (item.item_sku !== '' && item.item_sku != null) {
+    payload.seller_custom_field = String(item.item_sku);
+    attrs.push({ id: 'SELLER_SKU', value_name: String(item.item_sku) }); // que ML lo muestre en la pagina
+  }
+  if (item.marca !== '' && item.marca != null) attrs.push({ id: 'BRAND', value_name: item.marca });
+  if (attrs.length) payload.attributes = attrs;
   return payload;
 }
-
 // Helper: activar/desactivar flex via PUT /items/{id} con logistic_type
 // self_service = flex activado | not_specified = flex desactivado
 async function updateFlexForItem(itemId, flexStr, token) {
   const enable = ['si', 'sí', 'yes', 'true', '1'].includes(flexStr);
   const disable = ['no', 'false', '0'].includes(flexStr);
   if (!enable && !disable) return null;
-
   const payload = {
     shipping: {
       logistic_type: enable ? 'self_service' : 'not_specified'
     }
   };
-
   const url = `https://api.mercadolibre.com/items/${itemId}`;
   const res = await fetch(url, {
     method: 'PUT',
@@ -601,11 +537,9 @@ async function updateFlexForItem(itemId, flexStr, token) {
     body: JSON.stringify(payload)
   });
   if (res.status === 200) return null; // ok
-
   let rawText = '';
   try { rawText = await res.text(); } catch(e) {}
   console.log(`[FLEX ERROR] ${itemId} HTTP ${res.status}: ${rawText}`);
-
   let errMsg = `flex HTTP ${res.status}`;
   try {
     const d = JSON.parse(rawText);
@@ -615,13 +549,10 @@ async function updateFlexForItem(itemId, flexStr, token) {
   }
   return errMsg;
 }
-
-
 // ==================== PROMO SAFETY BEFORE ITEM UPDATE ====================
 // ML no permite modificar algunos campos cuando la publicación participa en promociones.
 // Antes de actualizar una publicación, buscamos promociones activas y las removemos.
 // Si no hay promociones activas o ML no devuelve datos, continúa normalmente.
-
 function normalizePromoListForItem(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -631,15 +562,12 @@ function normalizePromoListForItem(raw) {
   if (Array.isArray(raw.items)) return raw.items;
   return [];
 }
-
 function promoValueId(p) {
   return String(p?.id || p?.promotion_id || p?.offer_id || p?.campaign_id || '');
 }
-
 function promoValueType(p) {
   return String(p?.type || p?.promotion_type || p?.offer_type || '');
 }
-
 function isPromoCurrentlyBlocking(p) {
   const st = String(p?.status || p?.promotion_status || p?.state || '').toUpperCase();
   // ACTIVE/STARTED son los más comunes. CANDIDATE puede bloquear según campaña.
@@ -647,7 +575,6 @@ function isPromoCurrentlyBlocking(p) {
   if (['FINISHED', 'INACTIVE', 'DELETED', 'CANCELLED', 'EXPIRED'].includes(st)) return false;
   return true;
 }
-
 async function getActivePromotionsForItemBeforeUpdate(itemId, account, token) {
   const appTok = await getAppToken().catch(() => null);
   const candidates = [
@@ -676,7 +603,6 @@ async function getActivePromotionsForItemBeforeUpdate(itemId, account, token) {
       headers: promoH()
     }
   ];
-
   const errors = [];
   for (const c of candidates) {
     if (!c.token) continue;
@@ -694,16 +620,13 @@ async function getActivePromotionsForItemBeforeUpdate(itemId, account, token) {
   }
   return { promos: [], source: null, errors };
 }
-
 async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo) {
   const promotionId = promoValueId(promo);
   const promotionType = promoValueType(promo);
   if (!promotionId || !promotionType) return { ok: false, error: 'Promoción sin id/type' };
-
   const appTok = await getAppToken().catch(() => null);
   const body = { promotion_id: promotionId, promotion_type: promotionType };
   const userQ = `user_id=${account.seller_id}`;
-
   const candidates = [
     {
       label: 'marketplace_user_v2',
@@ -734,7 +657,6 @@ async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo
       body
     }
   ];
-
   const errors = [];
   for (const c of candidates) {
     if (!c.token) continue;
@@ -755,15 +677,12 @@ async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo
       errors.push({ tried: c.label, error: e.message || String(e) });
     }
   }
-
   return { ok: false, removed: promotionId, type: promotionType, error: errors.map(e => `${e.tried}: ${e.status || ''} ${e.error}`).join(' | ') };
 }
-
 async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
   const found = await getActivePromotionsForItemBeforeUpdate(itemId, account, token);
   const promos = found.promos || [];
   if (!promos.length) return { ok: true, removed: [], source: found.source, errors: found.errors };
-
   const removed = [];
   const errors = [];
   for (const promo of promos) {
@@ -771,7 +690,6 @@ async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
     if (r.ok) removed.push(r);
     else errors.push(r);
   }
-
   return {
     ok: errors.length === 0,
     source: found.source,
@@ -779,25 +697,20 @@ async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
     errors
   };
 }
-
 // ==================== BACKGROUND JOB STORE (bulk update — opción 4) ====================
 const bulkJobs = {};
 const BULK_JOB_TTL = 8 * 60 * 60 * 1000; // 8 horas
-
 function cleanBulkJobs() {
   const cutoff = Date.now() - BULK_JOB_TTL;
   for (const id of Object.keys(bulkJobs)) {
     if (bulkJobs[id].created < cutoff) delete bulkJobs[id];
   }
 }
-
 async function runBulkJob(jobId, items, account, initialToken) {
   const job = bulkJobs[jobId];
   if (!job) return;
-
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   let token = initialToken;
-
   // Motor v2: cola + workers + rate limit adaptativo.
   // Objetivo: ir más rápido que el modo secuencial sin volver al método viejo de 10 paralelas que genera too_many_requests.
   const MIN_WORKERS = 2;
@@ -808,7 +721,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
   let successSince429 = 0;
   const SPEEDUP_EVERY = 300;
   const ERROR_ITEMS_MAX = 800;
-
   job.mode = 'smart_workers_v2';
   job.min_workers = MIN_WORKERS;
   job.max_workers = MAX_WORKERS;
@@ -820,7 +732,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
   job.promo_retry_ok = 0;
   job.started_at = Date.now();
   job.velocity = 0;
-
   function mark429(waitMs) {
     job.rate_limits = (job.rate_limits || 0) + 1;
     desiredWorkers = Math.max(MIN_WORKERS, desiredWorkers - 1);
@@ -830,7 +741,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
     successSince429 = 0;
     console.log(`[BG-BULK-v2] 429 detectado — workers => ${desiredWorkers}, cooldown ${waitMs}ms`);
   }
-
   function markSuccess() {
     successSince429++;
     if (successSince429 >= SPEEDUP_EVERY && desiredWorkers < MAX_WORKERS) {
@@ -840,7 +750,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
       console.log(`[BG-BULK-v2] ${SPEEDUP_EVERY} éxitos sin 429 — workers => ${desiredWorkers}`);
     }
   }
-
   function parseMLError(e) {
     const data = e?.response?.data || {};
     const cause = data.cause;
@@ -849,7 +758,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
       : null;
     return causeDetail || data.message || data.error || e?.message || 'Error al actualizar';
   }
-
   function isPromoBlockingError(errMsg, status) {
     const s = String(errMsg || '').toLowerCase();
     return status === 400 && (
@@ -866,49 +774,41 @@ async function runBulkJob(jobId, items, account, initialToken) {
       s.includes('price is locked')
     );
   }
-
   async function putWithRetry(url, payload, workerId) {
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
       if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
-
       const waitGlobal = globalCooldownUntil - Date.now();
       if (waitGlobal > 0) await sleep(waitGlobal);
-
       try {
         if (attempt > 0) job.retries = (job.retries || 0) + 1;
         return await mlPut(url, payload, token);
       } catch(e) {
         lastErr = e;
         const status = e?.response?.status;
-
         if (status === 401) {
           const refreshed = await refreshToken(account);
           if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML desde Configuración → Cuentas'), { response: { status: 401, data: {} } });
           token = refreshed;
           continue;
         }
-
         if (status === 429) {
           const wait = [15000, 35000, 70000, 120000][attempt] || 120000;
           mark429(wait);
           await sleep(wait);
           continue;
         }
-
         throw e;
       }
     }
     throw lastErr;
   }
-
   async function flexWithRetry(itemId, flexStr, workerId) {
     let lastErr = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
       const waitGlobal = globalCooldownUntil - Date.now();
       if (waitGlobal > 0) await sleep(waitGlobal);
-
       const err = await updateFlexForItem(itemId, flexStr, token);
       if (!err) return null;
       lastErr = err;
@@ -922,12 +822,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
     }
     return lastErr || 'Error flex';
   }
-
   async function updateOne(item, workerId) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
-
     const payload = buildItemPayload(item);
-
     // Para ítems con variaciones, ML no acepta price ni available_quantity a nivel raíz.
     // Hay que mandarlos dentro de cada variante: variations: [{id, price, available_quantity}]
     const cur = currentState[item.item_id];
@@ -947,20 +844,15 @@ async function runBulkJob(jobId, items, account, initialToken) {
         });
       }
     }
-
     const flexStr = String(item.flex ?? '').toLowerCase().trim();
     const hasFlex = item.flex !== '' && item.flex != null &&
       ['si','sí','yes','true','1','no','false','0'].includes(flexStr);
-
     if (!Object.keys(payload).length && !hasFlex) {
       return { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
     }
-
     const warnings = [];
-
     async function attemptUpdateOnce() {
       const errors = [];
-
       if (Object.keys(payload).length) {
         try {
           await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
@@ -970,19 +862,15 @@ async function runBulkJob(jobId, items, account, initialToken) {
           errors.push({ kind: 'payload', status: e?.response?.status || null, message: msg });
         }
       }
-
       if (!errors.length && hasFlex) {
         const flexErr = await flexWithRetry(item.item_id, flexStr, workerId);
         if (flexErr) errors.push({ kind: 'flex', status: String(flexErr).includes('429') ? 429 : null, message: flexErr });
       }
-
       return errors;
     }
-
     // 1) Intento directo. La mayoría entra por acá y ahorra todas las llamadas de promociones.
     let errors = await attemptUpdateOnce();
     if (!errors.length) return { item_id: item.item_id, ok: true };
-
     // 2) Solo si ML bloquea por promoción, recién ahí se limpian promociones y se reintenta.
     const promoBlocked = errors.some(e => isPromoBlockingError(e.message, e.status));
     if (promoBlocked) {
@@ -1011,7 +899,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
         return { item_id: item.item_id, ok: false, error: parseMLError(e) };
       }
     }
-
     // 3) Si ML bloqueó por campos no modificables (precio/atributos), intentar precio y stock
     //    por separado. Si alguno de los dos falla → pausar el ítem directamente.
     const fieldsBlocked = errors.some(e =>
@@ -1019,21 +906,17 @@ async function runBulkJob(jobId, items, account, initialToken) {
       e.message.includes('item.attributes.not_modifiable') ||
       e.message.includes('field_not_updatable')
     );
-
     if (fieldsBlocked) {
       const origPrice = (item.price !== '' && item.price != null) ? parseFloat(item.price) : null;
       const origQty   = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
       const hasPrice  = origPrice !== null && !isNaN(origPrice);
       const hasStock  = origQty   !== null && !isNaN(origQty);
-
       // Si no había precio ni stock en el Excel para este ítem, no hay nada que reintentar
       if (!hasPrice && !hasStock) {
         return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' · ') };
       }
-
       let priceOk = true;
       let stockOk = true;
-
       // Intento precio solo
       if (hasPrice) {
         const pricePayload = cur?.variation_ids?.length
@@ -1046,7 +929,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
           priceOk = false;
         }
       }
-
       // Intento stock solo
       if (hasStock) {
         const stockPayload = cur?.variation_ids?.length
@@ -1059,7 +941,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
           stockOk = false;
         }
       }
-
       // Si falló precio o stock → pausar el ítem
       if ((hasPrice && !priceOk) || (hasStock && !stockOk)) {
         const failedFields = [];
@@ -1073,17 +954,13 @@ async function runBulkJob(jobId, items, account, initialToken) {
           return { item_id: item.item_id, ok: false, error: `${failedFields.join(' y ')} no modificable y falló al pausar: ${parseMLError(e2)}` };
         }
       }
-
       // Precio y stock actualizados OK — solo atributos/marca fallaron (no bloqueante)
       return { item_id: item.item_id, ok: true, warning: 'Atributos no modificables ignorados — precio y stock actualizados' };
     }
-
     return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' | ') };
   }
-
   // currentState declarado aquí (fuera del try) para que updateOne() pueda accederlo
   const currentState = {};
-
   try {
     // ---- FASE 0: pre-fetch del estado actual en ML ----
     job.phase = 'prefetch';
@@ -1092,12 +969,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
     const itemIds = items.map(i => i.item_id).filter(Boolean);
     job.prefetch_total = itemIds.length;
     job.prefetch_done = 0;
-
     let prefetchOk = true;
-
     const prefetchBatches = [];
     for (let i = 0; i < itemIds.length; i += PREFETCH_BATCH) prefetchBatches.push(itemIds.slice(i, i + PREFETCH_BATCH));
-
     for (let i = 0; i < prefetchBatches.length; i += PREFETCH_CONCURRENCY) {
       if (job.cancelled) { job.status = 'cancelled'; job.phase = 'cancelled'; return; }
       const wave = prefetchBatches.slice(i, i + PREFETCH_CONCURRENCY);
@@ -1132,7 +1006,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
       if (i + PREFETCH_CONCURRENCY < prefetchBatches.length) await sleep(120);
     }
     job.prefetch_done = itemIds.length;
-
     function needsUpdate(item) {
       if (!item.item_id) return false;
       const cur = currentState[item.item_id];
@@ -1153,14 +1026,12 @@ async function runBulkJob(jobId, items, account, initialToken) {
       if (['no','false','0'].includes(flexStr) && cur.logistic_type === 'self_service') return true;
       return false;
     }
-
     const queue = [];
     const skippedItems = [];
     for (const item of items) {
       if (prefetchOk && item.item_id && !needsUpdate(item)) skippedItems.push(item.item_id);
       else queue.push(item);
     }
-
     job.to_update = queue.length;
     job.skipped = skippedItems.length;
     job.prefetch_ok = prefetchOk;
@@ -1168,19 +1039,15 @@ async function runBulkJob(jobId, items, account, initialToken) {
     job.status = 'running';
     job.queue_total = queue.length;
     job.started_updates_at = Date.now();
-
     console.log(`[BG-BULK-v2] Job ${jobId}: ${queue.length} con cambios, ${skippedItems.length} saltados, workers=${desiredWorkers}-${MAX_WORKERS}`);
-
     let nextIndex = 0;
     let done = skippedItems.length;
     let okCount = 0;
     let errCount = 0;
     const okItems = [];
-
     job.done = done;
     job.ok = okCount;
     job.errors = errCount;
-
     function updateStats() {
       const elapsed = Math.max(1, (Date.now() - job.started_updates_at) / 1000);
       const processedUpdates = okCount + errCount;
@@ -1192,21 +1059,17 @@ async function runBulkJob(jobId, items, account, initialToken) {
       job.errors = errCount;
       job.desired_workers = desiredWorkers;
     }
-
     async function worker(workerId) {
       while (!job.cancelled) {
         if (workerId > desiredWorkers) {
           if (nextIndex >= queue.length) break; // no quedan ítems — salir aunque esté throttled
           await sleep(500); continue;
         }
-
         const idx = nextIndex++;
         if (idx >= queue.length) break;
         const item = queue[idx];
-
         job.active_workers = (job.active_workers || 0) + 1;
         updateStats();
-
         let r;
         try {
           r = await updateOne(item, workerId);
@@ -1216,7 +1079,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
         } finally {
           job.active_workers = Math.max(0, (job.active_workers || 1) - 1);
         }
-
         done++;
         if (r.ok) {
           okCount++;
@@ -1229,18 +1091,15 @@ async function runBulkJob(jobId, items, account, initialToken) {
         updateStats();
       }
     }
-
     const workers = [];
     for (let w = 1; w <= MAX_WORKERS; w++) workers.push(worker(w));
     await Promise.all(workers);
-
     if (job.cancelled || job.status === 'cancelled') {
       job.status = 'cancelled';
       job.phase = 'cancelled';
       updateStats();
       return;
     }
-
     job.status = 'done';
     job.phase = 'done';
     job.done = items.length;
@@ -1251,7 +1110,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
     job.report = { ok_items: okItems, skipped_items: skippedItems, error_items: job.error_items };
     updateStats();
     console.log(`[BG-BULK-v2] Completado job=${jobId}: ${okCount} OK, ${errCount} errores, ${skippedItems.length} saltados, 429=${job.rate_limits}, promos=${job.promotions_removed}`);
-
     // Persistir reporte en data.json para sobrevivir reinicios del servidor
     try {
       const dbSave = loadDB();
@@ -1284,7 +1142,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
     }
   }
 }
-
 // BULK UPDATE — con pre-fetch para saltar ítems sin cambios reales
 route('POST', '/api/bulk-update', async (req, res) => {
   const sess = requireAuth(req);
@@ -1300,9 +1157,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   let token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
-
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-
   // Rate limiter ADAPTATIVO: empieza rápido (300ms/ítem) y se auto-regula.
   let itemPause = 300;
   const PAUSE_MIN = 300;
@@ -1310,7 +1165,6 @@ route('POST', '/api/bulk-update', async (req, res) => {
   let successStreak = 0;
   const STREAK_TO_SPEEDUP = 40;
   let rateLimitHit = false;
-
   async function mlPutWithRetry(url, payload) {
     let lastErr;
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -1338,22 +1192,17 @@ route('POST', '/api/bulk-update', async (req, res) => {
     }
     throw lastErr;
   }
-
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
-
   // ===== FASE 0: PRE-FETCH del estado actual (GET batch de 20, 4 paralelos) =====
   // Objetivo: saber qué ítems realmente cambiaron y saltar los que ya están al día.
   // GET /items?ids=... es mucho más permisivo en rate limit que PUT /items/{id}.
   const PREFETCH_BATCH = 20;
   const PREFETCH_CONCURRENCY = 4;
   const itemIds = items.map(i => i.item_id).filter(Boolean);
-
   res.write(JSON.stringify({ type: 'prefetch_start', total: items.length, fetching: itemIds.length }) + '\n');
   console.log(`[BULK] Pre-fetch de ${itemIds.length} ítems para ${account.name}...`);
-
   const currentState = {}; // item_id → {price, available_quantity, status, seller_custom_field, logistic_type}
   let prefetchOk = true;
-
   try {
     const prefetchBatches = [];
     for (let i = 0; i < itemIds.length; i += PREFETCH_BATCH) {
@@ -1389,13 +1238,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
   } catch(e) {
     prefetchOk = false;
   }
-
   // Determina si un ítem del archivo realmente difiere del estado actual en ML
   function needsUpdate(item) {
     if (!item.item_id) return false;
     const cur = currentState[item.item_id];
     if (!cur) return true; // sin datos de prefetch → actualizar (safe default)
-
     const payload = buildItemPayload(item);
     if (!Object.keys(payload).length) {
       // Sin payload, revisar solo flex
@@ -1406,44 +1253,35 @@ route('POST', '/api/bulk-update', async (req, res) => {
       if (payload.seller_custom_field !== undefined && String(payload.seller_custom_field).trim() !== String(cur.seller_custom_field).trim()) return true;
       if (payload.attributes !== undefined) return true; // marca: siempre actualizar si viene en el archivo
     }
-
     const flexStr = String(item.flex ?? '').toLowerCase().trim();
     if (['si','sí','yes','true','1'].includes(flexStr) && cur.logistic_type !== 'self_service') return true;
     if (['no','false','0'].includes(flexStr) && cur.logistic_type === 'self_service') return true;
-
     return false; // nada cambió
   }
-
   const totalToUpdate = prefetchOk
     ? items.filter(item => !item.item_id || needsUpdate(item)).length
     : items.length;
   const totalSkipped = items.length - totalToUpdate;
-
   console.log(`[BULK] Pre-fetch: ${totalToUpdate} necesitan actualización, ${totalSkipped} ya están al día`);
   res.write(JSON.stringify({ type: 'prefetch_done', total: items.length, to_update: totalToUpdate, skipped: totalSkipped, prefetch_ok: prefetchOk }) + '\n');
   res.write(JSON.stringify({ type: 'start', total: items.length }) + '\n');
-
   // ===== FASE 1: ACTUALIZAR solo los ítems que cambiaron =====
   let done = 0;
   let doneUpdates = 0;
   let startTimeUpdates = null;
-
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-
     // Si el pre-fetch fue exitoso y el ítem no cambió: enviar resultado instantáneo, sin pausa
     if (prefetchOk && item.item_id && !needsUpdate(item)) {
       done++;
       res.write(JSON.stringify({ type: 'result', done, total: items.length, item_id: item.item_id, ok: true, warning: 'Sin cambios — ya actualizado' }) + '\n');
       continue;
     }
-
     // Ítem con cambios: procesar con rate limiter adaptativo
     rateLimitHit = false;
     if (!startTimeUpdates) startTimeUpdates = Date.now();
     let r;
     let madeApiCall = false;
-
     if (!item.item_id) {
       r = { item_id: '?', ok: false, error: 'Sin item_id' };
     } else {
@@ -1451,13 +1289,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
         const payload = buildItemPayload(item);
         const hasFlex = item.flex !== '' && item.flex != null &&
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
-
         if (!Object.keys(payload).length && !hasFlex) {
           r = { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
         } else {
           madeApiCall = true;
           const errors = [], warnings = [];
-
           if (!skip_promo_clean && (Object.keys(payload).length || hasFlex)) {
             const promoClean = await removeActivePromotionsBeforeItemUpdate(item.item_id, account, token);
             if (promoClean.removed?.length) {
@@ -1467,7 +1303,6 @@ route('POST', '/api/bulk-update', async (req, res) => {
               errors.push('No se pudieron remover promociones activas: ' + (promoClean.errors || []).map(e => e.error || JSON.stringify(e)).join(' | '));
             }
           }
-
           if (!errors.length && Object.keys(payload).length) {
             try {
               await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload);
@@ -1481,12 +1316,10 @@ route('POST', '/api/bulk-update', async (req, res) => {
               errors.push(errMsg);
             }
           }
-
           if (!errors.length && hasFlex) {
             const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
             if (flexErr) errors.push(flexErr);
           }
-
           if (errors.length) r = { item_id: item.item_id, ok: false, error: errors.join(' | ') };
           else r = { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
         }
@@ -1494,19 +1327,15 @@ route('POST', '/api/bulk-update', async (req, res) => {
         r = { item_id: item.item_id, ok: false, error: e?.response?.data?.message || e?.message || 'Error' };
       }
     }
-
     done++;
     doneUpdates++;
-
     // ETA basada solo en los ítems que realmente se actualizan (excluye los skipped)
     let etaSec = null;
     if (startTimeUpdates && doneUpdates > 2 && totalToUpdate > doneUpdates) {
       const avgMs = (Date.now() - startTimeUpdates) / doneUpdates;
       etaSec = Math.round(avgMs * (totalToUpdate - doneUpdates) / 1000);
     }
-
     res.write(JSON.stringify({ type: 'result', done, total: items.length, eta_sec: etaSec, ...r }) + '\n');
-
     if (i < items.length - 1 && madeApiCall) {
       if (rateLimitHit) {
         itemPause = Math.min(PAUSE_MAX, itemPause * 2);
@@ -1523,12 +1352,10 @@ route('POST', '/api/bulk-update', async (req, res) => {
       await sleep(itemPause);
     }
   }
-
   res.write(JSON.stringify({ type: 'done', total: items.length }) + '\n');
   res.end();
   console.log(`[BULK] Completado: ${items.length} ítems (${totalToUpdate} actualizados, ${totalSkipped} sin cambios) por ${sess.username}`);
 });
-
 // BULK UPDATE BG — versión background job para importación Excel (opción 4)
 route('POST', '/api/bulk-update-bg', async (req, res) => {
   const sess = requireAuth(req);
@@ -1544,7 +1371,6 @@ route('POST', '/api/bulk-update-bg', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
-
   cleanBulkJobs();
   const jobId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   bulkJobs[jobId] = {
@@ -1572,7 +1398,6 @@ route('POST', '/api/bulk-update-bg', async (req, res) => {
     created: Date.now(),
     username: sess.username
   };
-
   // Fire-and-forget: corre en segundo plano, independiente de la conexión HTTP
   runBulkJob(jobId, items, account, token).catch(e => {
     if (bulkJobs[jobId] && !['done','cancelled'].includes(bulkJobs[jobId].status)) {
@@ -1581,11 +1406,9 @@ route('POST', '/api/bulk-update-bg', async (req, res) => {
       bulkJobs[jobId].error_msg = e?.message || 'Error inesperado';
     }
   });
-
   console.log(`[BG-BULK] Job ${jobId} creado: ${items.length} ítems para ${account.name} (${sess.username})`);
   return sendJSON(res, 200, { job_id: jobId, total: items.length });
 });
-
 // GET /api/bulk-status?job_id=xxx — polling del estado del job
 route('GET', '/api/bulk-status', async (req, res) => {
   const sess = requireAuth(req);
@@ -1603,7 +1426,6 @@ route('GET', '/api/bulk-status', async (req, res) => {
   }
   return sendJSON(res, 200, job);
 });
-
 // POST /api/bulk-cancel — cancelar un job en progreso
 route('POST', '/api/bulk-cancel', async (req, res) => {
   const sess = requireAuth(req);
@@ -1616,30 +1438,24 @@ route('POST', '/api/bulk-cancel', async (req, res) => {
   console.log(`[BG-BULK] Job ${job_id} cancelado por ${sess.username}`);
   return sendJSON(res, 200, { ok: true });
 });
-
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
 route('POST', '/api/search-listings-stream', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
-
   const dbPerm2 = loadDB();
   const userPerm2 = dbPerm2.users.find(u => u.id === sess.userId);
   const canSearch = sess.role === 'admin' || userPerm2?.can_search_update === true;
   if (!canSearch) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const { item_id, sku, title, account_id, cursor, page_size } = await parseBody(req);
   if (!item_id && !sku && !title) return sendJSON(res, 400, { error: 'Ingresá Item ID, SKU o título para buscar' });
-
   const db = loadDB();
   const allAccounts = db.ml_accounts || [];
   const selectedAccountId = account_id ? parseInt(account_id) : null;
   const targets = selectedAccountId ? allAccounts.filter(a => a.id === selectedAccountId) : allAccounts;
-
   const PAGE_SIZE = Math.max(10, Math.min(200, parseInt(page_size || '80') || 80));
   const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
   const skuLower = sku ? String(sku).trim().toLowerCase() : '';
   const titleRaw = title ? String(title).trim() : '';
-
   function enc(o){ return Buffer.from(JSON.stringify(o)).toString('base64url'); }
   function dec(s){ if(!s) return null; try { return JSON.parse(Buffer.from(String(s), 'base64url').toString('utf8')); } catch(e){ return null; } }
   function norm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim(); }
@@ -1654,11 +1470,9 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
   };
   const getSku = b => b.seller_custom_field || (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
   const row = (b,a) => ({ item_id:b.id, title:b.title||'', available_quantity:b.available_quantity??'', price:b.price??'', seller_sku:getSku(b), status:b.status||'', account_id:a.id, account_name:a.name, permalink:b.permalink || `https://articulo.mercadolibre.com.ar/${b.id}` });
-
   res.writeHead(200, {'Content-Type':'application/x-ndjson','Transfer-Encoding':'chunked','Cache-Control':'no-cache','X-Accel-Buffering':'no'});
   let sent = 0, seen = new Set();
   const emit = r => { const k = `${r.account_id}:${r.item_id}`; if(seen.has(k)) return; seen.add(k); sent++; res.write(JSON.stringify({type:'item', row:r})+'\n'); };
-
   async function details(account, token, ids){
     const rows = [];
     for (let i=0;i<ids.length;i+=20){
@@ -1677,10 +1491,8 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
     }
     return rows;
   }
-
   try {
     res.write(JSON.stringify({type:'start', page_size: PAGE_SIZE})+'\n');
-
     if (itemIdSearch) {
       let itemData = null;
       try { itemData = await mlGet(`https://api.mercadolibre.com/items/${itemIdSearch}?attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`); } catch(e){}
@@ -1695,7 +1507,6 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
       }
       res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); return res.end();
     }
-
     if (skuLower) {
       const state = dec(cursor);
       const start = state?.mode === 'sku' ? state.acc_index || 0 : 0;
@@ -1709,13 +1520,11 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
       }
       res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); return res.end();
     }
-
     if (hasTitle) {
       // Búsqueda rápida por índice ML: por cada palabra usa ?q=word, luego intersecta los ID sets (AND).
       // Evita escanear TODO el catálogo con search_type:scan — reduce llamadas de ~120 a ~6-10.
       const statuses = ['active','paused'];
       let totalScanned = 0;
-
       async function fastWordSearch(sellerId, token, word, status) {
         const ids = new Set();
         let offset = 0;
@@ -1732,11 +1541,9 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
         }
         return ids;
       }
-
       for (const account of targets) {
         const token = await getValidToken(account); if(!token) continue;
         res.write(JSON.stringify({type:'progress', scanned:totalScanned, found:sent, account:account.name, status:'buscando...'})+'\n');
-
         const allIds = new Set();
         for (const status of statuses) {
           // Para cada palabra obtener IDs y luego intersectar (AND entre palabras)
@@ -1748,21 +1555,17 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
           }
           intersection.forEach(id => allIds.add(id));
         }
-
         totalScanned += allIds.size;
         for (const r of await details(account, token, [...allIds])) emit(r);
         res.write(JSON.stringify({type:'progress', scanned:totalScanned, found:sent, account:account.name, status:'listo'})+'\n');
       }
       res.write(JSON.stringify({type:'done', count:sent, has_more:false, scanned:totalScanned})+'\n'); return res.end();
     }
-
     res.write(JSON.stringify({type:'done', count:sent, has_more:false})+'\n'); res.end();
   } catch(e) {
     res.write(JSON.stringify({type:'error', error:e?.response?.data?.message || e?.response?.data?.error || e.message || String(e), raw:e?.response?.data || null})+'\n'); res.end();
   }
 });
-
-
 // SEARCH LISTINGS — busca por Item ID, SKU y/o título en una o todas las cuentas
 // Motor mejorado:
 // - Item ID: detecta dueño real y devuelve una sola fila.
@@ -1772,23 +1575,18 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
 route('POST', '/api/search-listings', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
-
   const dbPerm2 = loadDB();
   const userPerm2 = dbPerm2.users.find(u => u.id === sess.userId);
   const canSearch = sess.role === 'admin' || userPerm2?.can_search_update === true;
   if (!canSearch) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const { item_id, sku, title, account_id } = await parseBody(req);
   if (!item_id && !sku && !title) return sendJSON(res, 400, { error: 'Ingresá Item ID, SKU o título para buscar' });
-
   const db = loadDB();
   const allAccounts = db.ml_accounts || [];
   const selectedAccountId = account_id ? parseInt(account_id) : null;
-
   const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
   const skuLower = sku ? sku.trim().toLowerCase() : '';
   const titleRaw = title ? String(title).trim() : '';
-
   function normText(s) {
     return String(s || '')
       .toLowerCase()
@@ -1798,29 +1596,24 @@ route('POST', '/api/search-listings', async (req, res) => {
       .replace(/\s+/g, ' ')
       .trim();
   }
-
   const titleWords = normText(titleRaw).split(' ').filter(w => w.length >= 2);
   const hasTitleFilter = titleWords.length > 0;
-
   function titleMatches(t) {
     if (!hasTitleFilter) return true;
     // Palabra completa: rodea con espacios para que "gol" no matchee "golpe" ni "paragolpe"
     const nt = ' ' + normText(t) + ' ';
     return titleWords.every(w => nt.includes(' ' + w + ' '));
   }
-
   function skuMatches(rawSku) {
     if (!skuLower) return true;
     const itemSku = String(rawSku || '').toLowerCase();
     if (skuLower.includes('_')) return itemSku.includes(skuLower);
     return itemSku.split('_')[0].includes(skuLower);
   }
-
   function getSkuFromItem(b) {
     return b.seller_custom_field ||
       (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
   }
-
   function rowFromItem(b, account) {
     const rawSku = getSkuFromItem(b);
     return {
@@ -1835,18 +1628,14 @@ route('POST', '/api/search-listings', async (req, res) => {
       permalink: b.permalink || `https://articulo.mercadolibre.com.ar/${b.id}`
     };
   }
-
   const results = [];
-
   // Caso especial: búsqueda directa por item_id.
   if (itemIdSearch) {
     try {
       let itemData = null;
-
       try {
         itemData = await mlGet(`https://api.mercadolibre.com/items/${itemIdSearch}?attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`);
       } catch(e) {}
-
       if (!itemData) {
         for (const acc of allAccounts) {
           try {
@@ -1857,30 +1646,24 @@ route('POST', '/api/search-listings', async (req, res) => {
           } catch(e) {}
         }
       }
-
       if (!itemData || !itemData.id) return sendJSON(res, 200, []);
       if (itemData.status === 'closed' || itemData.status === 'under_review') return sendJSON(res, 200, []);
-
       const realSellerId = String(itemData.seller_id || '');
       const ownerAccount = allAccounts.find(a => String(a.seller_id) === realSellerId);
       if (!ownerAccount) return sendJSON(res, 200, []);
       if (selectedAccountId && ownerAccount.id !== selectedAccountId) return sendJSON(res, 200, []);
-
       const rawSku = getSkuFromItem(itemData);
       if (!skuMatches(rawSku)) return sendJSON(res, 200, []);
       if (!titleMatches(itemData.title || '')) return sendJSON(res, 200, []);
-
       return sendJSON(res, 200, [rowFromItem(itemData, ownerAccount)]);
     } catch(e) {
       console.error('[SEARCH item_id]', e?.response?.data || e.message || e);
       return sendJSON(res, 500, { error: e?.response?.data?.message || e.message || 'Error buscando item_id' });
     }
   }
-
   const targets = selectedAccountId
     ? allAccounts.filter(a => a.id === selectedAccountId)
     : allAccounts;
-
   // Helper: traer detalles de ids en lotes.
   async function fetchDetailsAndPush(account, token, ids) {
     for (let i = 0; i < ids.length; i += 20) {
@@ -1890,28 +1673,23 @@ route('POST', '/api/search-listings', async (req, res) => {
           `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,price,seller_custom_field,status,attributes,permalink,seller_id`,
           token
         );
-
         for (const it of (Array.isArray(items) ? items : [])) {
           const b = it.body || it;
           if (!b || !b.id) continue;
           if (b.status === 'closed' || b.status === 'under_review') continue;
           if (b.seller_id && String(b.seller_id) !== String(account.seller_id)) continue;
-
           const rawSku = getSkuFromItem(b);
           if (!skuMatches(rawSku)) continue;
           if (!titleMatches(b.title || '')) continue;
-
           results.push(rowFromItem(b, account));
         }
       } catch(e) {}
     }
   }
-
   // Búsqueda rápida por índice ML (reemplaza el escaneo total con search_type:scan).
   // Por cada palabra llama a ?q=word&status=..., luego intersecta los IDs (AND).
   async function scanAccountByTitle(account, token) {
     const statuses = ['active', 'paused'];
-
     async function fastWordIds(sellerId, word, status) {
       const ids = new Set();
       let offset = 0;
@@ -1933,7 +1711,6 @@ route('POST', '/api/search-listings', async (req, res) => {
       }
       return ids;
     }
-
     const allIds = new Set();
     for (const status of statuses) {
       // Buscar cada palabra en paralelo y luego intersectar (AND entre todas)
@@ -1945,22 +1722,18 @@ route('POST', '/api/search-listings', async (req, res) => {
       }
       intersection.forEach(id => allIds.add(id));
     }
-
     if (allIds.size > 0) {
       await fetchDetailsAndPush(account, token, [...allIds]);
     }
   }
-
   for (const account of targets) {
     try {
       const token = await getValidToken(account);
       if (!token) continue;
       const sellerId = account.seller_id;
-
       // Si hay SKU, usamos el método rápido por seller_sku y después filtramos título localmente si corresponde.
       if (skuLower) {
         const itemIds = new Set();
-
         const skuBase = sku.trim();
         const skuTerms = [skuBase];
         if (!skuLower.includes('_')) {
@@ -1969,24 +1742,20 @@ route('POST', '/api/search-listings', async (req, res) => {
                            '_1','_2','_3','_A','_B','_C','_E','_F'];
           for (const s of sufijos) skuTerms.push(skuBase + s);
         }
-
         await Promise.all(skuTerms.map(term =>
           mlGet(`https://api.mercadolibre.com/users/${sellerId}/items/search?seller_sku=${encodeURIComponent(term)}&limit=200`, token)
             .then(r => (r.results || []).forEach(id => itemIds.add(id)))
             .catch(() => {})
         ));
-
         if (itemIds.size) await fetchDetailsAndPush(account, token, [...itemIds]);
         continue;
       }
-
       // Si NO hay SKU y hay título, hacemos búsqueda precisa por todas las palabras.
       if (hasTitleFilter) {
         await scanAccountByTitle(account, token);
       }
     } catch(e) {}
   }
-
   // Orden simple: primero los títulos donde las palabras aparecen más juntas/no muy largo.
   if (hasTitleFilter) {
     results.sort((a, b) => {
@@ -1997,10 +1766,8 @@ route('POST', '/api/search-listings', async (req, res) => {
       return (ia - ib) || (ta.length - tb.length);
     });
   }
-
   sendJSON(res, 200, results);
 });
-
 // EXPORT LISTINGS — streaming ndjson con progreso en tiempo real, 5 lotes paralelos
 route('GET', '/api/export-listings', async (req, res) => {
   const sess = requireAuth(req);
@@ -2016,15 +1783,12 @@ route('GET', '/api/export-listings', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
-
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
-
   try {
     const LIMIT = 100;
     const BATCH_SIZE = 20;
     const DETAIL_CONCURRENCY = 5;
     let exported = 0;
-
     // Obtener totales de activas y pausadas por separado
     // (items/search sin status solo devuelve activas por defecto)
     const [activeFirst, pausedFirst] = await Promise.all([
@@ -2035,7 +1799,6 @@ route('GET', '/api/export-listings', async (req, res) => {
     const pausedTotal = pausedFirst.paging?.total || 0;
     const total = activeTotal + pausedTotal;
     res.write(JSON.stringify({ type: 'start', total }) + '\n');
-
     // Helper: exportar todos los ítems de un status usando scroll_id
     const exportByStatus = async (status, statusTotal) => {
       let scrollId = null;
@@ -2048,10 +1811,8 @@ route('GET', '/api/export-listings', async (req, res) => {
         const ids = pageData.results || [];
         if (!ids.length) break;
         fetched += ids.length;
-
         const batches = [];
         for (let j = 0; j < ids.length; j += BATCH_SIZE) batches.push(ids.slice(j, j + BATCH_SIZE));
-
         for (let j = 0; j < batches.length; j += DETAIL_CONCURRENCY) {
           const concurrent = batches.slice(j, j + DETAIL_CONCURRENCY);
           const responses = await Promise.all(concurrent.map(b =>
@@ -2086,7 +1847,6 @@ route('GET', '/api/export-listings', async (req, res) => {
         }
       }
     };
-
     await exportByStatus('active', activeTotal);
     await exportByStatus('paused', pausedTotal);
     res.write(JSON.stringify({ type: 'done', exported }) + '\n');
@@ -2096,7 +1856,6 @@ route('GET', '/api/export-listings', async (req, res) => {
   }
   res.end();
 });
-
 route('POST', '/api/users', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -2108,7 +1867,6 @@ route('POST', '/api/users', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 // ACCOUNTS
 route('GET', '/api/accounts', async (req, res) => {
   const sess = requireAuth(req);
@@ -2116,7 +1874,6 @@ route('GET', '/api/accounts', async (req, res) => {
   const db = loadDB();
   sendJSON(res, 200, db.ml_accounts.map(a => ({ id: a.id, name: a.name, seller_id: a.seller_id, token_expires_at: a.token_expires_at })));
 });
-
 route('GET', '/auth/mercadolibre', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2127,14 +1884,11 @@ route('GET', '/auth/mercadolibre', async (req, res) => {
   res.writeHead(302, { Location: authUrl });
   res.end();
 });
-
 route('GET', '/callback', async (req, res) => {
   const url = new URL(req.url, `http://localhost`);
   const code = url.searchParams.get('code');
   if (!code) { res.writeHead(302, { Location: '/?error=no_code' }); return res.end(); }
-
   const sess = getSession(req);
-
   try {
     const tokenData = await mlPost('https://api.mercadolibre.com/oauth/token', {
       grant_type: 'authorization_code',
@@ -2143,14 +1897,11 @@ route('GET', '/callback', async (req, res) => {
       code,
       redirect_uri: BASE_URL + '/callback'
     });
-
     const { access_token, refresh_token, expires_in } = tokenData;
     const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
-
     const userData = await mlGet('https://api.mercadolibre.com/users/me', access_token);
     const sellerId = userData.id.toString();
     const nickname = userData.nickname || (sess && sess.pendingAccountName) || 'Cuenta ML';
-
     const db = loadDB();
     const existing = db.ml_accounts.find(a => a.seller_id === sellerId);
     if (existing) {
@@ -2166,7 +1917,6 @@ route('GET', '/callback', async (req, res) => {
       });
     }
     saveDB(db);
-
     res.writeHead(302, { Location: '/?success=account_added' });
     res.end();
   } catch (err) {
@@ -2175,21 +1925,17 @@ route('GET', '/callback', async (req, res) => {
     res.end();
   }
 });
-
 // QUESTIONS
 route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-
   const url = new URL(req.url, 'http://localhost');
   const status = url.searchParams.get('status') || 'UNANSWERED';
   const accountFilter = url.searchParams.get('account_id');
   const buyerFilter = url.searchParams.get('buyer_id');
   const db = loadDB();
   let allQuestions = [];
-
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
-
   for (const account of targets) {
     const token = await getValidToken(account);
     if (!token) continue;
@@ -2207,10 +1953,8 @@ route('GET', '/api/questions', async (req, res) => {
       if (buyerFilter) {
         questions = questions.filter(q => q.from?.id?.toString() === buyerFilter);
       }
-
       const itemIds = [...new Set(questions.map(q => q.item_id))];
       const itemDetails = {};
-
       // Fetch items using OAuth token (own items)
       for (const itemId of itemIds) {
         try {
@@ -2229,7 +1973,6 @@ route('GET', '/api/questions', async (req, res) => {
           } catch (e1) {
             console.log(`Item ${itemId} method1 error: ${e1.message}`);
           }
-
           // Method 2: public API with caller.id
           if (!itemData) {
             try {
@@ -2245,9 +1988,7 @@ route('GET', '/api/questions', async (req, res) => {
               console.log(`Item ${itemId} method2 error: ${e2.message}`);
             }
           }
-
           if (!itemData) throw new Error('All methods failed');
-
           let sku = itemData.seller_custom_field || '';
           let mpn = '';
           if (itemData.attributes) {
@@ -2258,7 +1999,6 @@ route('GET', '/api/questions', async (req, res) => {
             const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
             if (mpnAttr) mpn = mpnAttr.value_name || '';
           }
-
           let listingType = '';
           const lt = itemData.listing_type_id || '';
           console.log(`Item ${itemId} listing_type_id: ${lt}`);
@@ -2267,7 +2007,6 @@ route('GET', '/api/questions', async (req, res) => {
           else if (lt === 'gold' || lt === 'silver' || lt === 'bronze') listingType = 'Clasica';
           else if (lt === 'free') listingType = 'Gratis';
           else if (lt) listingType = lt;
-
           itemDetails[itemId] = {
             title: itemData.title,
             thumbnail: itemData.thumbnail,
@@ -2285,7 +2024,6 @@ route('GET', '/api/questions', async (req, res) => {
           itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
         }
       }
-
       for (const q of questions) {
         allQuestions.push({
           ...q, account_name: account.name, account_id: account.id,
@@ -2305,11 +2043,9 @@ route('GET', '/api/questions', async (req, res) => {
       console.error(`Error questions ${account.name}:`, err.response?.data || err.message || err);
     }
   }
-
   allQuestions.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
   sendJSON(res, 200, allQuestions);
 });
-
 route('POST', '/api/questions/answer', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2317,10 +2053,8 @@ route('POST', '/api/questions/answer', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
-
   try {
     await mlPost('https://api.mercadolibre.com/answers', { question_id: parseInt(question_id), text }, token);
     sendJSON(res, 200, { ok: true });
@@ -2329,12 +2063,10 @@ route('POST', '/api/questions/answer', async (req, res) => {
     sendJSON(res, 500, { error: err.response?.data?.message || 'Error al responder' });
   }
 });
-
 // MESSAGES
 route('GET', '/api/messages', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
   const statusFilter = url.searchParams.get('status') || 'unread';
@@ -2343,9 +2075,7 @@ route('GET', '/api/messages', async (req, res) => {
   const db = loadDB();
   const dismissedPacks = db.dismissed_msg_packs || {};
   let allMessages = [];
-
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
-
   // Fetch accounts in parallel
   await Promise.all(targets.map(async (account) => {
     const token = await getValidToken(account);
@@ -2368,7 +2098,6 @@ route('GET', '/api/messages', async (req, res) => {
         });
         ordersResults = ordersData.results || [];
       }
-
       // Fetch open claims for this seller (one call per account, not per order)
       let claimedOrderIds = new Set();
       try {
@@ -2384,7 +2113,6 @@ route('GET', '/api/messages', async (req, res) => {
         // Claims API might fail or require special permissions, continue without filter
         console.log(`[MESSAGES] No se pudo obtener reclamos para ${account.name}:`, e.response?.data?.message || e.message || '');
       }
-
       const seenPacks = new Set();
       const uniqueOrders = [];
       for (const order of ordersResults) {
@@ -2394,13 +2122,11 @@ route('GET', '/api/messages', async (req, res) => {
         // Also check order tags for mediations/claims
         const tags = order.tags || [];
         if (tags.includes('mediations') || tags.includes('claim')) continue;
-
         const packId = order.pack_id || order.id;
         if (seenPacks.has(packId)) continue;
         seenPacks.add(packId);
         uniqueOrders.push(order);
       }
-
       // Fetch message packs in parallel (batches of 5 to avoid rate limits)
       for (let i = 0; i < uniqueOrders.length; i += 5) {
         const batch = uniqueOrders.slice(i, i + 5);
@@ -2421,7 +2147,6 @@ route('GET', '/api/messages', async (req, res) => {
           }
           const messages = msgData.messages || [];
           if (messages.length === 0) return null;
-
           const sellerId = account.seller_id?.toString();
           const mappedMessages = messages.map(m => {
             const fromSeller = m.from?.user_id?.toString() === sellerId;
@@ -2437,13 +2162,11 @@ route('GET', '/api/messages', async (req, res) => {
               mlUnread
             };
           });
-
           // ML returns messages newest first, so [0] is the most recent message
           const lastMsg = mappedMessages[0];
           // "Sin leer" = last msg from buyer (we haven't replied) OR ML marks any buyer msg as unread
           const hasMLUnread = mappedMessages.some(m => m.from === 'buyer' && m.mlUnread);
           let isUnread = lastMsg.from === 'buyer' || hasMLUnread;
-
           // Check dismissed: if pack was manually dismissed but buyer sent a NEW message after that → auto-un-dismiss
           const packKey = String(packId);
           const dismissedAt = dismissedPacks[packKey];
@@ -2461,12 +2184,10 @@ route('GET', '/api/messages', async (req, res) => {
               isUnread = false; // treat as answered
             }
           }
-
           if (!buyerFilter && !orderFilter) {
             if (statusFilter === 'unread' && (!isUnread || isDismissed)) return null;
             if (statusFilter === 'answered' && isUnread && !isDismissed) return null;
           }
-
           return {
             order_id: order.id, pack_id: packId, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
@@ -2485,11 +2206,9 @@ route('GET', '/api/messages', async (req, res) => {
       console.error(`Error messages ${account.name}:`, err.response?.data || err.message || err);
     }
   }));
-
   allMessages.sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
   sendJSON(res, 200, allMessages);
 });
-
 route('POST', '/api/messages/reply', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2497,29 +2216,23 @@ route('POST', '/api/messages/reply', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
-
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
     const buyerId = orderData.buyer.id;
     const packId = orderData.pack_id || order_id;
     const sellerId = parseInt(account.seller_id);
-
     console.log('[MSG REPLY] order:', order_id, 'pack_id from order:', orderData.pack_id, 'using pack:', packId, 'seller:', sellerId, 'buyer:', buyerId);
-
     // ML messages POST requires: tag=post_sale, application_id, Bearer token
     const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&application_id=${ML_CLIENT_ID}`;
     console.log('[MSG REPLY] POST to:', msgUrl);
-
     const msgBody = {
       from: { user_id: String(sellerId) },
       to: { user_id: String(buyerId) },
       text: text
     };
     console.log('[MSG REPLY] Body:', JSON.stringify(msgBody));
-
     const msgRes = await fetch(msgUrl, {
       method: 'POST',
       headers: {
@@ -2530,7 +2243,6 @@ route('POST', '/api/messages/reply', async (req, res) => {
     });
     const msgData = await msgRes.text();
     console.log('[MSG REPLY] Response status:', msgRes.status, 'body:', msgData.substring(0, 500));
-
     if (!msgRes.ok) {
       const parsed = JSON.parse(msgData);
       return sendJSON(res, 500, { error: parsed.message || parsed.error || 'Error de ML: ' + msgRes.status });
@@ -2541,7 +2253,6 @@ route('POST', '/api/messages/reply', async (req, res) => {
     sendJSON(res, 500, { error: err.response?.data?.message || err.message || 'Error al enviar mensaje' });
   }
 });
-
 route('POST', '/api/messages/dismiss', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2553,14 +2264,12 @@ route('POST', '/api/messages/dismiss', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 // GET /api/prep/claims — returns {order_id: 'open'|'closed'} for orders with claims (last 90 days)
 route('GET', '/api/prep/claims', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
   const claimsMap = {};
-
   await Promise.all(db.ml_accounts.map(async (account) => {
     const token = await getValidToken(account);
     if (!token) return;
@@ -2574,7 +2283,6 @@ route('GET', '/api/prep/claims', async (req, res) => {
           seller_id: account.seller_id, status: 'closed', limit: 50
         })
       ]);
-
       const processList = (result, status) => {
         if (result.status !== 'fulfilled') return;
         const list = result.value?.data || result.value?.results || result.value?.claims || [];
@@ -2589,19 +2297,15 @@ route('GET', '/api/prep/claims', async (req, res) => {
       console.log('[CLAIMS] Error:', e.message || e);
     }
   }));
-
   sendJSON(res, 200, claimsMap);
 });
-
 // SALES
 // In-memory caches to speed up repeated requests
 const itemCache = {}; // cache item thumbnail/sku by item id (rarely changes)
 const shipmentCacheGlobal = {}; // cache shipment info by shipping_id
-
 route('GET', '/api/sales', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
   const orderIdFilter = url.searchParams.get('order_id');
@@ -2611,9 +2315,7 @@ route('GET', '/api/sales', async (req, res) => {
   const dateTo = url.searchParams.get('date_to');
   const db = loadDB();
   let rawOrders = [];
-
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
-
   // Fetch all accounts in parallel
   await Promise.all(targets.map(async (account) => {
     const token = await getValidToken(account);
@@ -2635,7 +2337,6 @@ route('GET', '/api/sales', async (req, res) => {
         ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
       }
       const orders = ordersData.results || [];
-
       // Step 1: Fetch all unique shipments in parallel
       const uniqueShipIds = [...new Set(orders.map(o => o.shipping?.id).filter(Boolean))];
       const newShipIds = uniqueShipIds.filter(id => !shipmentCacheGlobal[id]);
@@ -2654,7 +2355,6 @@ route('GET', '/api/sales', async (req, res) => {
           if (r.status === 'fulfilled') shipmentCacheGlobal[r.value.id] = r.value;
         }
       }
-
       // Step 2: Fetch all unique items in parallel
       const allItemIds = [...new Set(orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id)).filter(Boolean))];
       const newItemIds = allItemIds.filter(id => !itemCache[id]);
@@ -2672,19 +2372,16 @@ route('GET', '/api/sales', async (req, res) => {
           if (r.status === 'fulfilled') itemCache[r.value.id] = r.value;
         }
       }
-
       // Step 3: Build orders using cached data (no more API calls)
       for (const order of orders) {
         let shippingType = 'agreement', shippingStatus = '', shippingSubstatus = '';
         const shippingId = order.shipping?.id || null;
-
         if (shippingId && shipmentCacheGlobal[shippingId]) {
           const cached = shipmentCacheGlobal[shippingId];
           shippingType = cached.type;
           shippingStatus = cached.status;
           shippingSubstatus = cached.substatus;
         }
-
         let displayStatus = '';
         if (order.status === 'cancelled') displayStatus = 'cancelled';
         else if (shippingSubstatus === 'delayed') displayStatus = 'delayed';
@@ -2695,10 +2392,8 @@ route('GET', '/api/sales', async (req, res) => {
         else if (shippingStatus === 'delivered') displayStatus = 'delivered';
         else if (shippingStatus === 'not_delivered') displayStatus = 'not_completed';
         else displayStatus = shippingStatus || order.status || 'pending';
-
         if (statusFilters.length > 0 && !statusFilters.includes(displayStatus)) continue;
         if (shippingFilters.length > 0 && !shippingFilters.includes(shippingType)) continue;
-
         const items = [];
         for (const oi of (order.order_items || [])) {
           const cached = itemCache[oi.item?.id] || {};
@@ -2708,7 +2403,6 @@ route('GET', '/api/sales', async (req, res) => {
             quantity: oi.quantity || 1, unit_price: oi.unit_price || 0, sku
           });
         }
-
         rawOrders.push({
           order_id: order.id, pack_id: order.pack_id || null,
           date_created: order.date_created, status: displayStatus,
@@ -2723,7 +2417,6 @@ route('GET', '/api/sales', async (req, res) => {
       console.error(`Error sales ${account.name}:`, err.response?.data || err.message || err);
     }
   }));
-
   // Group orders by pack_id (packs = multiple orders with same pack_id = ONE shipment)
   const packMap = {};
   const singles = [];
@@ -2741,32 +2434,25 @@ route('GET', '/api/sales', async (req, res) => {
       singles.push({ ...o, order_ids: [o.order_id] });
     }
   }
-
   const allSales = [...Object.values(packMap), ...singles];
   allSales.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
-
   // Notes are fetched client-side to avoid token/timeout issues
   sendJSON(res, 200, allSales);
 });
-
 // FETCH NOTES for multiple orders (called by frontend after sales load)
 route('POST', '/api/sales/notes/batch', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const { orders } = await parseBody(req); // [{order_ids: [...], account_id: N}, ...]
   if (!orders || !Array.isArray(orders)) return sendJSON(res, 400, { error: 'Missing orders' });
-
   const results = {};
   const db = loadDB();
-
   for (const item of orders) {
     const orderIds = item.order_ids || [];
     const account = db.ml_accounts.find(a => a.id === parseInt(item.account_id));
     if (!account) continue;
-
     const token = await getValidToken(account);
     if (!token) continue;
-
     let foundNote = false;
     for (const orderId of orderIds) {
       if (foundNote) break;
@@ -2777,17 +2463,14 @@ route('POST', '/api/sales/notes/batch', async (req, res) => {
         if (!noteRes.ok) continue;
         const noteBody = await noteRes.text();
         if (!noteBody) continue;
-
         let notesData;
         try { notesData = JSON.parse(noteBody); } catch(e) { continue; }
-
         let notesArray = [];
         if (Array.isArray(notesData)) notesArray = notesData;
         else if (notesData && typeof notesData === 'object') {
           if (Array.isArray(notesData.results)) notesArray = notesData.results;
           else if (notesData.note || notesData.text) notesArray = [notesData];
         }
-
         if (notesArray.length > 0) {
           const first = notesArray[0];
           results[orderIds[0]] = {
@@ -2802,10 +2485,8 @@ route('POST', '/api/sales/notes/batch', async (req, res) => {
       }
     }
   }
-
   sendJSON(res, 200, results);
 });
-
 // SALE NOTES - sync with ML API
 route('POST', '/api/sales/notes', async (req, res) => {
   const sess = requireAuth(req);
@@ -2814,10 +2495,8 @@ route('POST', '/api/sales/notes', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
-
   try {
     if (note_id) {
       // Update existing note in ML
@@ -2846,7 +2525,6 @@ route('POST', '/api/sales/notes', async (req, res) => {
     sendJSON(res, 500, { error: err.response?.data?.message || 'Error al guardar nota' });
   }
 });
-
 // DEBUG NOTES - endpoint to see raw ML response
 route('GET', '/api/sales/debug-notes', async (req, res) => {
   const sess = requireAuth(req);
@@ -2857,10 +2535,8 @@ route('GET', '/api/sales/debug-notes', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
-
   try {
     const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
       headers: { Authorization: `Bearer ${token}` }
@@ -2876,7 +2552,6 @@ route('GET', '/api/sales/debug-notes', async (req, res) => {
     sendJSON(res, 500, { error: e.message });
   }
 });
-
 // GET NOTE for a single order (clean endpoint for frontend)
 route('GET', '/api/sales/note', async (req, res) => {
   const sess = requireAuth(req);
@@ -2888,7 +2563,6 @@ route('GET', '/api/sales/note', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   // Re-read account from DB to get the freshest token
   const freshDb = loadDB();
   const freshAccount = freshDb.ml_accounts.find(a => a.id === parseInt(accountId));
@@ -2897,7 +2571,6 @@ route('GET', '/api/sales/note', async (req, res) => {
     console.error('[NOTE] No valid token for account', accountId);
     return sendJSON(res, 500, { error: 'Token invalido' });
   }
-
   try {
     console.log('[NOTE] Fetching ML notes for order', orderId, 'token starts:', token.substring(0, 15));
     const noteRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}/notes`, {
@@ -2905,7 +2578,6 @@ route('GET', '/api/sales/note', async (req, res) => {
     });
     const noteBody = await noteRes.text();
     console.log('[NOTE] Order', orderId, 'ML status:', noteRes.status, 'body:', noteBody.substring(0, 300));
-
     // Always include ml_status so frontend can debug
     if (noteRes.status !== 200) {
       return sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, ml_status: noteRes.status, ml_body: noteBody.substring(0, 500) });
@@ -2923,7 +2595,6 @@ route('GET', '/api/sales/note', async (req, res) => {
     sendJSON(res, 200, { order_id: orderId, note: null, note_id: null, error: e.message });
   }
 });
-
 // SHIPPING LABEL URL
 route('GET', '/api/sales/label', async (req, res) => {
   const sess = requireAuth(req);
@@ -2934,10 +2605,8 @@ route('GET', '/api/sales/label', async (req, res) => {
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
-
   try {
     // Get label URL - ML returns a redirect to the PDF
     const labelRes = await fetch(`https://api.mercadolibre.com/shipment_labels?shipment_ids=${shipmentId}&response_type=pdf`, {
@@ -2951,7 +2620,6 @@ route('GET', '/api/sales/label', async (req, res) => {
     sendJSON(res, 500, { error: 'Error al obtener etiqueta' });
   }
 });
-
 // QUICK REPLIES
 route('GET', '/api/quick-replies', async (req, res) => {
   const sess = requireAuth(req);
@@ -2959,7 +2627,6 @@ route('GET', '/api/quick-replies', async (req, res) => {
   const db = loadDB();
   sendJSON(res, 200, db.quick_replies || []);
 });
-
 route('POST', '/api/quick-replies', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2970,7 +2637,6 @@ route('POST', '/api/quick-replies', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 // STATS
 route('GET', '/api/stats', async (req, res) => {
   const sess = requireAuth(req);
@@ -2981,12 +2647,10 @@ route('GET', '/api/stats', async (req, res) => {
   let salesToday = 0, revenueToday = 0, unitsSoldToday = 0;
   let totalUnreadMessages = 0;
   const salesByAccount = [];
-
   // Today's date range in Argentina time (UTC-3)
   const now = new Date();
   const argNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
   const todayStart = new Date(Date.UTC(argNow.getUTCFullYear(), argNow.getUTCMonth(), argNow.getUTCDate(), 3, 0, 0)).toISOString();
-
   for (const account of db.ml_accounts) {
     const token = await getValidToken(account);
     if (!token) continue;
@@ -2998,7 +2662,6 @@ route('GET', '/api/stats', async (req, res) => {
       const todayAnswered = (a.questions || []).filter(q => q.date_created && q.date_created >= todayStart).length;
       totalAnsweredToday += todayAnswered;
     } catch (e) {}
-
     // Count unread messages
     try {
       const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
@@ -3006,7 +2669,6 @@ route('GET', '/api/stats', async (req, res) => {
       });
       totalUnreadMessages += msgData.paging?.total || 0;
     } catch (e) {}
-
     // Fetch today's sales if user has dashboard permission
     if (user?.view_dashboard !== false) {
       let accountSales = 0, accountRevenue = 0, accountUnits = 0;
@@ -3032,7 +2694,6 @@ route('GET', '/api/stats', async (req, res) => {
       salesByAccount.push({ name: account.name, sales: accountSales, revenue: accountRevenue, units: accountUnits });
     }
   }
-
   sendJSON(res, 200, {
     accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered_today: totalAnsweredToday,
     unread_messages: totalUnreadMessages,
@@ -3041,7 +2702,6 @@ route('GET', '/api/stats', async (req, res) => {
     can_view_dashboard: user?.view_dashboard !== false
   });
 });
-
 // DASHBOARD CHART — datos diarios de ventas/dinero/unidades/preguntas para el período
 route('GET', '/api/dashboard-chart', async (req, res) => {
   const sess = requireAuth(req);
@@ -3049,11 +2709,9 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
   const db = loadDB();
   const user = db.users.find(u => u.id === sess.userId);
   if (user?.view_dashboard === false) return sendJSON(res, 403, { error: 'Sin permiso' });
-
   const urlObj = new URL(req.url, 'http://localhost');
   const period = Math.max(1, Math.min(30, parseInt(urlObj.searchParams.get('period') || '7')));
   const accountId = urlObj.searchParams.get('account_id') || '';
-
   // Argentina = UTC-3
   const now = new Date();
   const argNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
@@ -3062,7 +2720,6 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
   // Inicio del período
   const periodStart = new Date(todayArgStart.getTime() - (period - 1) * 24 * 60 * 60 * 1000);
   const dateFrom = periodStart.toISOString();
-
   // Mapa de días: clave = 'YYYY-MM-DD' en hora argentina
   const dayData = {};
   for (let i = 0; i < period; i++) {
@@ -3071,15 +2728,12 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
     const key = argD.toISOString().slice(0, 10);
     dayData[key] = { sales: 0, revenue: 0, units: 0, questions: 0 };
   }
-
   const targets = accountId
     ? db.ml_accounts.filter(a => String(a.id) === accountId)
     : db.ml_accounts;
-
   for (const account of targets) {
     const token = await getValidToken(account);
     if (!token) continue;
-
     // Ventas del período
     try {
       let offset = 0;
@@ -3105,7 +2759,6 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
         if (!results.length || offset >= (ordersData.paging?.total || 0) || offset >= 500) break;
       }
     } catch(e) {}
-
     // Preguntas respondidas en el período
     try {
       const qData = await mlGet('https://api.mercadolibre.com/questions/search', token, {
@@ -3119,7 +2772,6 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
       }
     } catch(e) {}
   }
-
   const days = Object.keys(dayData).sort();
   sendJSON(res, 200, {
     days,
@@ -3129,7 +2781,6 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
     questions: days.map(d => dayData[d].questions),
   });
 });
-
 // DELETE ACCOUNT
 route('DELETE', '/api/accounts/delete', async (req, res) => {
   const sess = requireAuth(req);
@@ -3142,7 +2793,6 @@ route('DELETE', '/api/accounts/delete', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 // DELETE USER
 route('DELETE', '/api/users/delete', async (req, res) => {
   const sess = requireAuth(req);
@@ -3156,9 +2806,7 @@ route('DELETE', '/api/users/delete', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 // ==================== BACKUP / RESTORE ====================
-
 // GET backup - returns current data.json as downloadable JSON (admin only)
 route('GET', '/api/backup', async (req, res) => {
   const sess = requireAuth(req);
@@ -3171,7 +2819,6 @@ route('GET', '/api/backup', async (req, res) => {
   });
   res.end(JSON.stringify(db, null, 2));
 });
-
 // GET backup as base64 - returns the string you need to paste in Render DB_BACKUP env var
 route('GET', '/api/backup/env', async (req, res) => {
   const sess = requireAuth(req);
@@ -3189,7 +2836,6 @@ route('GET', '/api/backup/env', async (req, res) => {
     sessions: Object.keys(sessions).length
   });
 });
-
 // POST restore - restores data.json from uploaded JSON (admin only)
 route('POST', '/api/restore', async (req, res) => {
   const sess = requireAuth(req);
@@ -3202,9 +2848,7 @@ route('POST', '/api/restore', async (req, res) => {
   console.log('[RESTORE] Base de datos restaurada:', body.users.length, 'usuarios,', (body.ml_accounts || []).length, 'cuentas ML');
   sendJSON(res, 200, { ok: true, users: body.users.length, accounts: (body.ml_accounts || []).length });
 });
-
 // ==================== PREP ROUTES ====================
-
 route('GET', '/api/prep/list', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3215,7 +2859,6 @@ route('GET', '/api/prep/list', async (req, res) => {
   if (statusFilter) orders = orders.filter(o => o.status === statusFilter);
   sendJSON(res, 200, orders);
 });
-
 route('POST', '/api/prep/add', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3265,7 +2908,6 @@ route('POST', '/api/prep/add', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 route('POST', '/api/prep/shipping', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess) && !canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3278,7 +2920,6 @@ route('POST', '/api/prep/shipping', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 route('POST', '/api/prep/priority', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3291,7 +2932,6 @@ route('POST', '/api/prep/priority', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 route('POST', '/api/prep/finish', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3306,7 +2946,6 @@ route('POST', '/api/prep/finish', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 route('GET', '/api/prep/export', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3340,7 +2979,6 @@ route('GET', '/api/prep/export', async (req, res) => {
   });
   res.end(csv);
 });
-
 route('POST', '/api/prep/note', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3353,7 +2991,6 @@ route('POST', '/api/prep/note', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 route('POST', '/api/prep/reset', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -3367,15 +3004,12 @@ route('POST', '/api/prep/reset', async (req, res) => {
   console.log(`[PREP RESET] Orden ${order_id} devuelta a Sin Preparar por ${sess.username} (estaba en ${removed.status})`);
   sendJSON(res, 200, { ok: true });
 });
-
 // ==================== STATIC FILES ====================
-
 const MIME_TYPES = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
   '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon'
 };
-
 function serveStatic(req, res) {
   const publicDir = path.join(__dirname, 'public');
   // Decode and normalize the requested path before joining, then verify the
@@ -3389,14 +3023,11 @@ function serveStatic(req, res) {
   }
   const filePath = path.join(publicDir, requestedPath);
   const resolved = path.resolve(filePath);
-
   if (!resolved.startsWith(publicDir + path.sep) && resolved !== publicDir) {
     res.writeHead(403);
     return res.end('Forbidden');
   }
-
   const ext = path.extname(resolved);
-
   fs.readFile(resolved, (err, data) => {
     if (err) {
       fs.readFile(path.join(publicDir, 'index.html'), (err2, data2) => {
@@ -3410,19 +3041,15 @@ function serveStatic(req, res) {
     res.end(data);
   });
 }
-
 // ==================== PROMOTIONS ====================
-
 const PROMO_BASE = 'https://api.mercadolibre.com/marketplace/seller-promotions';
 const PROMO_OLD_BASE = 'https://api.mercadolibre.com/seller-promotions';
 // Header obligatorio para la API marketplace de seller-promotions
 const promoH = () => ({ 'version': 'v2' });
-
 function arrFromPromoResponse(r) {
   if (Array.isArray(r)) return r;
   return r?.results || r?.items || r?.data || r?.promotions || [];
 }
-
 function buildPromoItemsUrl(baseUrl, promoId, sellerId, limit, searchAfter, itemId) {
   let url = baseUrl;
   const sep = url.includes('?') ? '&' : '?';
@@ -3431,7 +3058,6 @@ function buildPromoItemsUrl(baseUrl, promoId, sellerId, limit, searchAfter, item
   if (searchAfter) url += `&search_after=${encodeURIComponent(searchAfter)}`;
   return url;
 }
-
 function promoItemCandidates(account, promoId, userToken, appTok, limit = 50, searchAfter = null, itemId = null) {
   const sid = account.seller_id;
   const appId = String(ML_CLIENT_ID || '');
@@ -3440,7 +3066,6 @@ function promoItemCandidates(account, promoId, userToken, appTok, limit = 50, se
   const oldWithApp200 = `${commonOld}?app_id=${encodeURIComponent(appId)}&app_version=2.0.0`;
   const oldWithAppV2 = `${commonOld}?app_id=${encodeURIComponent(appId)}&app_version=v2`;
   const oldPlain = `${commonOld}`;
-
   return [
     { label: 'marketplace_app_v2', token: appTok, headers: promoH(), url: buildPromoItemsUrl(commonNew, promoId, sid, limit, searchAfter, itemId) },
     { label: 'marketplace_user_v2', token: userToken, headers: promoH(), url: buildPromoItemsUrl(commonNew, promoId, sid, limit, searchAfter, itemId) },
@@ -3450,7 +3075,6 @@ function promoItemCandidates(account, promoId, userToken, appTok, limit = 50, se
     { label: 'old_app_app_2_0_0', token: appTok, headers: {}, url: buildPromoItemsUrl(oldWithApp200, promoId, sid, limit, searchAfter, itemId) }
   ].filter(c => c.token);
 }
-
 async function findWorkingPromoItemsCandidate(account, promoId, userToken, appTok, itemId = null) {
   const debug = [];
   for (const c of promoItemCandidates(account, promoId, userToken, appTok, 50, null, itemId)) {
@@ -3470,7 +3094,6 @@ async function findWorkingPromoItemsCandidate(account, promoId, userToken, appTo
   }
   return { candidate: null, firstResponse: null, firstItems: [], debug };
 }
-
 async function getPromoItemStatus(account, promoId, itemId, userToken, appTok) {
   const found = await findWorkingPromoItemsCandidate(account, promoId, userToken, appTok, itemId);
   const arr = arrFromPromoResponse(found.firstResponse);
@@ -3486,7 +3109,6 @@ async function getPromoItemStatus(account, promoId, itemId, userToken, appTok) {
     debug: found.debug
   };
 }
-
 // Token de app (client_credentials) — algunos endpoints ML exigen que el caller sea la APP, no el usuario
 let _appToken = null, _appTokenExp = 0;
 async function getAppToken() {
@@ -3505,33 +3127,27 @@ async function getAppToken() {
     return _appToken;
   } catch(e) { console.log('[AppToken] Excepción:', e.message); return null; }
 }
-
 // GET /api/promotions?account_id=X — lista campañas
 route('GET', '/api/promotions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const dbP = loadDB(); const uP = dbP.users.find(u => u.id === sess.userId);
   if (sess.role !== 'admin' && !uP?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = urlObj.searchParams.get('account_id');
   const db = loadDB();
   const targets = accountId
     ? db.ml_accounts.filter(a => a.id === parseInt(accountId))
     : db.ml_accounts;
-
   const appTok = await getAppToken();
   const results = [];
   const debug = [];
-
   for (const account of targets) {
     try {
       const token = await getValidToken(account);
       if (!token) { debug.push({ account: account.name, error: 'sin token de usuario' }); continue; }
-
       const sid = account.seller_id;
       const appId = String(ML_CLIENT_ID || '');
-
       const candidates = [
         { label: 'old_user_app_2_0_0', url: `${PROMO_OLD_BASE}/users/${sid}?app_id=${encodeURIComponent(appId)}&app_version=2.0.0`, headers: {}, tok: token },
         { label: 'old_user_app_v2',    url: `${PROMO_OLD_BASE}/users/${sid}?app_id=${encodeURIComponent(appId)}&app_version=v2`, headers: {}, tok: token },
@@ -3539,7 +3155,6 @@ route('GET', '/api/promotions', async (req, res) => {
         { label: 'marketplace_app_v2', url: `${PROMO_BASE}/users/${sid}`, headers: promoH(), tok: appTok },
         { label: 'marketplace_user_v2', url: `${PROMO_BASE}/users/${sid}`, headers: promoH(), tok: token },
       ];
-
       let found = false;
       for (const c of candidates) {
         if (!c.tok) { debug.push({ account: account.name, tried: c.label, skipped: 'sin token' }); continue; }
@@ -3572,10 +3187,8 @@ route('GET', '/api/promotions', async (req, res) => {
       debug.push({ account: account.name, error: e.message || String(e) });
     }
   }
-
   sendJSON(res, 200, { results, debug });
 });
-
 // GET /api/promotion-items-stream?account_id=X&promo_id=Y&promo_type=Z
 // v5 inteligente:
 // 1) intenta endpoints directos/acotados por campaña
@@ -3585,35 +3198,27 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
   if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const dbP2 = loadDB(); const uP2 = dbP2.users.find(u => u.id === sess.userId);
   if (sess.role !== 'admin' && !uP2?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const urlObj = new URL(req.url, 'http://localhost');
   const accountId = parseInt(urlObj.searchParams.get('account_id'));
   const promoId = urlObj.searchParams.get('promo_id');
   const promoType = urlObj.searchParams.get('promo_type') || '';
   const requestedConcurrency = parseInt(urlObj.searchParams.get('concurrency') || '25');
   const safeConcurrency = Math.max(5, Math.min(50, isNaN(requestedConcurrency) ? 25 : requestedConcurrency));
-
   if (!promoId) return sendJSON(res, 400, { error: 'Falta promo_id' });
-
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === accountId);
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
-
   const appTok = await getAppToken().catch(() => null);
-
   res.writeHead(200, {
     'Content-Type': 'application/x-ndjson',
     'Transfer-Encoding': 'chunked',
     'Cache-Control': 'no-cache',
     'X-Accel-Buffering': 'no'
   });
-
   const debug = [];
   let exported = 0;
-
   function normalizeArray(raw) {
     if (!raw) return [];
     if (Array.isArray(raw)) return raw;
@@ -3623,15 +3228,12 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     if (Array.isArray(raw.promotions)) return raw.promotions;
     return [];
   }
-
   function getPromoId(p) {
     return String(p?.id || p?.promotion_id || p?.offer_id || p?.campaign_id || '');
   }
-
   function getPromoType(p) {
     return String(p?.type || p?.promotion_type || p?.offer_type || '');
   }
-
   function isSamePromo(p) {
     const id = getPromoId(p);
     const type = getPromoType(p);
@@ -3639,7 +3241,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     if (promoType && type && type !== promoType) return false;
     return true;
   }
-
   function normalizeItemRow(it, fallbackPromo = null) {
     const promo = fallbackPromo || it || {};
     const itemId = it.item_id || it.id || it.item?.id || promo.item_id || promo.item?.id || '';
@@ -3657,7 +3258,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       raw_status: it.status || ''
     };
   }
-
   async function getItemDetails(ids) {
     const map = {};
     const BATCH_SIZE = 20;
@@ -3694,7 +3294,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     }
     return map;
   }
-
   async function emitRows(rows, mode) {
     for (const row of rows) {
       if (!row || !row.item_id) continue;
@@ -3705,7 +3304,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       }
     }
   }
-
   async function tryDirectCampaignDownload() {
     const OLD = 'https://api.mercadolibre.com/seller-promotions';
     const directCandidates = [
@@ -3752,7 +3350,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         pagination: 'offset'
       }
     ];
-
     for (const c of directCandidates) {
       if (!c.token) {
         debug.push({ mode: 'direct', tried: c.label, skipped: 'sin token' });
@@ -3762,13 +3359,11 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         debug.push({ mode: 'direct', tried: c.label, skipped: 'sin promo_type' });
         continue;
       }
-
       let rows = [];
       let searchAfter = null;
       let offset = 0;
       let page = 0;
       let firstKeys = null;
-
       try {
         while (true) {
           let url = c.url;
@@ -3778,10 +3373,8 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
           if (c.pagination === 'offset') {
             url += `&offset=${offset}`;
           }
-
           const raw = await mlGet(url, c.token, {}, c.headers);
           if (!firstKeys && raw && typeof raw === 'object') firstKeys = Object.keys(raw).slice(0, 20);
-
           const arr = normalizeArray(raw);
           const filtered = arr
             .filter(x => {
@@ -3790,9 +3383,7 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
               return isSamePromo(x);
             })
             .map(x => normalizeItemRow(x, x));
-
           rows.push(...filtered);
-
           const total = raw?.paging?.total ?? raw?.total ?? null;
           res.write(JSON.stringify({
             type: 'debug',
@@ -3803,10 +3394,8 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
             kept: filtered.length,
             total: total ?? undefined
           }) + '\n');
-
           searchAfter = raw?.paging?.search_after || null;
           page++;
-
           if (c.pagination === 'search_after') {
             if (!searchAfter || !arr.length) break;
           } else {
@@ -3816,7 +3405,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
             if (page > 1000) break;
           }
         }
-
         debug.push({ mode: 'direct', winner: c.label, rows: rows.length, keys: firstKeys });
         if (rows.length > 0) {
           res.write(JSON.stringify({ type: 'total', total: rows.length, mode: 'direct', winner: c.label }) + '\n');
@@ -3833,10 +3421,8 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         });
       }
     }
-
     return false;
   }
-
   async function getItemPromotions(itemId) {
     const candidates = [
       {
@@ -3864,7 +3450,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         token
       }
     ];
-
     for (const c of candidates) {
       if (c.label.includes('_type') && !promoType) continue;
       try {
@@ -3885,28 +3470,22 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
     }
     return [];
   }
-
   async function scanAllListingsFallback() {
     const LIMIT = 100;
     const BATCH_SIZE = 20;
     const DETAIL_CONCURRENCY = 8;
     const PROMO_CONCURRENCY = safeConcurrency;
-
     let scanned = 0;
     let totalListings = 0;
-
     async function processIds(ids) {
       const details = await getItemDetails(ids);
-
       for (let i = 0; i < ids.length; i += PROMO_CONCURRENCY) {
         const chunk = ids.slice(i, i + PROMO_CONCURRENCY);
         const results = await Promise.all(chunk.map(async (itemId) => {
           const promos = await getItemPromotions(itemId);
           const match = promos.find(isSamePromo);
           if (!match) return null;
-
           const d = details[itemId] || { item_id: itemId, title: '', seller_sku: '', original_price: '' };
-
           return {
             item_id: itemId,
             title: match.title || match.item_title || d.title || '',
@@ -3921,7 +3500,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
             raw_status: match.status || ''
           };
         }));
-
         for (const row of results) {
           scanned++;
           if (row) {
@@ -3929,7 +3507,6 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
             res.write(JSON.stringify({ type: 'item', mode: 'scan', data: row }) + '\n');
           }
         }
-
         res.write(JSON.stringify({
           type: 'progress',
           mode: 'scan',
@@ -3939,26 +3516,20 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
         }) + '\n');
       }
     }
-
     const [activeFirst, pausedFirst] = await Promise.all([
       mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'active', search_type: 'scan' }).catch(e => ({ paging: { total: 0 }, _error: e })),
       mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { limit: 1, status: 'paused', search_type: 'scan' }).catch(e => ({ paging: { total: 0 }, _error: e }))
     ]);
-
     const activeTotal = activeFirst.paging?.total || 0;
     const pausedTotal = pausedFirst.paging?.total || 0;
     totalListings = activeTotal + pausedTotal;
-
     res.write(JSON.stringify({ type: 'total', total: totalListings, mode: 'scan_items' }) + '\n');
-
     async function scanStatus(status, statusTotal) {
       let scrollId = null;
       let fetched = 0;
-
       while (fetched < statusTotal) {
         const params = { limit: LIMIT, status, search_type: 'scan' };
         if (scrollId) params.scroll_id = scrollId;
-
         let pageData;
         try {
           pageData = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params);
@@ -3972,25 +3543,19 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
           });
           break;
         }
-
         scrollId = pageData.scroll_id || null;
         const ids = pageData.results || [];
         if (!ids.length) break;
-
         fetched += ids.length;
-
         for (let i = 0; i < ids.length; i += (BATCH_SIZE * DETAIL_CONCURRENCY)) {
           const block = ids.slice(i, i + (BATCH_SIZE * DETAIL_CONCURRENCY));
           await processIds(block);
         }
-
         if (!scrollId) break;
       }
     }
-
     await scanStatus('active', activeTotal);
     await scanStatus('paused', pausedTotal);
-
     res.write(JSON.stringify({
       type: 'done',
       total: exported,
@@ -4003,19 +3568,15 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       debug
     }) + '\n');
   }
-
   try {
     res.write(JSON.stringify({ type: 'debug', mode: 'start', promo_id: promoId, promo_type: promoType, concurrency: safeConcurrency }) + '\n');
-
     const directOk = await tryDirectCampaignDownload();
     if (directOk) return res.end();
-
     res.write(JSON.stringify({
       type: 'debug',
       mode: 'fallback',
       message: 'No funcionó descarga directa/acotada. Iniciando escaneo completo de publicaciones.'
     }) + '\n');
-
     await scanAllListingsFallback();
   } catch(e) {
     res.write(JSON.stringify({
@@ -4026,38 +3587,31 @@ route('GET', '/api/promotion-items-stream', async (req, res) => {
       debug
     }) + '\n');
   }
-
   res.end();
 });
-
 // POST /api/promotion-search-items {account_id, promo_id, sku, title}
 route('POST', '/api/promotion-search-items', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const dbP3 = loadDB(); const uP3 = dbP3.users.find(u => u.id === sess.userId);
   if (sess.role !== 'admin' && !uP3?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, promo_id, sku, title } = body;
   if (!sku && !title) return sendJSON(res, 400, { error: 'Ingresá SKU o título' });
   if (!promo_id) return sendJSON(res, 400, { error: 'Seleccioná una campaña primero' });
-
   const db = loadDB();
   const targets = account_id
     ? db.ml_accounts.filter(a => a.id === parseInt(account_id))
     : db.ml_accounts;
-
   const itemIdSearch = item_id ? String(item_id).trim().toUpperCase() : '';
   const skuLower = sku ? sku.trim().toLowerCase() : '';
   const titleLower = title ? title.trim().toLowerCase() : '';
   const foundItems = [];
-
   for (const account of targets) {
     try {
       const token = await getValidToken(account);
       if (!token) continue;
       let itemIds = new Set();
-
       if (skuLower) {
         const skuBase = sku.trim();
         const skuTerms = [skuBase];
@@ -4071,7 +3625,6 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
             .catch(() => {})
         ));
       }
-
       if (titleLower) {
         try {
           const r = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search?q=${encodeURIComponent(title.trim())}&limit=200`, token);
@@ -4080,7 +3633,6 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
           else itemIds = titleIds;
         } catch(e) { if (!skuLower) itemIds = new Set(); }
       }
-
       if (!itemIds.size) continue;
       const idArr = [...itemIds];
       for (let i = 0; i < idArr.length; i += 20) {
@@ -4093,17 +3645,14 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
           for (const it of (Array.isArray(details) ? details : [])) {
             const b = it.body || it;
             if (!b?.id || b.status === 'closed' || b.status === 'under_review') continue;
-
             const rawSku = b.seller_custom_field ||
               (Array.isArray(b.attributes) ? (b.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '') || '';
             const itemSku = String(rawSku || '').toLowerCase();
-
             if (skuLower) {
               if (skuLower.includes('_')) { if (!itemSku.includes(skuLower)) continue; }
               else { if (!itemSku.split('_')[0].includes(skuLower)) continue; }
             }
             if (titleLower && !String(b.title || '').toLowerCase().includes(titleLower)) continue;
-
             foundItems.push({
               item_id: b.id,
               title: b.title || '',
@@ -4118,9 +3667,7 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
       }
     } catch(e) {}
   }
-
   if (!foundItems.length) return sendJSON(res, 200, []);
-
   const appTokForSearch = await getAppToken();
   const results = await Promise.all(foundItems.map(async (item) => {
     const account = targets.find(a => String(a.seller_id) === String(item.seller_id)) || targets[0];
@@ -4132,33 +3679,27 @@ route('POST', '/api/promotion-search-items', async (req, res) => {
       return { ...item, in_promo: false, new_price: null, discount: null, promo_status: null };
     }
   }));
-
   sendJSON(res, 200, results);
 });
-
 // POST /api/promotion-toggle {account_id, promo_id, promo_type, item_id, participate, price, discount}
 route('POST', '/api/promotion-toggle', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const dbP4 = loadDB(); const uP4 = dbP4.users.find(u => u.id === sess.userId);
   if (sess.role !== 'admin' && !uP4?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, promo_id, promo_type, item_id, participate, price, discount } = body;
-
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
-
   const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
   const userQ = `user_id=${account.seller_id}`;
   const endpoints = [
     { label: 'marketplace_user_v2', url: `${PROMO_BASE}/items/${item_id}?${userQ}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() } },
     { label: 'old_user', url: `${PROMO_OLD_BASE}/items/${item_id}?${userQ}&app_id=${encodeURIComponent(ML_CLIENT_ID || '')}&app_version=2.0.0`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
   ];
-
   try {
     let lastErr = null;
     for (const ep of endpoints) {
@@ -4168,7 +3709,6 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
           const p = parseFloat(price) || 0, disc = parseFloat(discount) || 0;
           if (p > 0) addBody.price = p; else if (disc > 0) addBody.discount = disc;
         }
-
         const r = await fetch(ep.url, { method: 'POST', headers: ep.headers, body: JSON.stringify(addBody) });
         const d = await r.json().catch(() => ({}));
         if (r.ok) return sendJSON(res, 200, { ok: true, endpoint: ep.label });
@@ -4189,43 +3729,35 @@ route('POST', '/api/promotion-toggle', async (req, res) => {
     sendJSON(res, 500, { error: e.message || String(e) });
   }
 });
-
 // POST /api/promotion-bulk-stream {account_id, promo_id, promo_type, items:[...]} streaming ndjson
 route('POST', '/api/promotion-bulk-stream', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const dbP5 = loadDB(); const uP5 = dbP5.users.find(u => u.id === sess.userId);
   if (sess.role !== 'admin' && !uP5?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, promo_id, promo_type, items } = body;
   if (!items?.length) return sendJSON(res, 400, { error: 'Sin ítems' });
-
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
-
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
-
   const total = items.length;
   let done = 0, errCount = 0;
   const errorRows = [];
   res.write(JSON.stringify({ type: 'start', total }) + '\n');
-
   const isDeal = promo_type === 'DEAL' || promo_type === 'LIGHTNING_DEAL';
   const uq = `user_id=${account.seller_id}`;
   const endpointsForItem = (itemId) => [
     { label: 'marketplace_user_v2', url: `${PROMO_BASE}/items/${itemId}?${uq}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() } },
     { label: 'old_user', url: `${PROMO_OLD_BASE}/items/${itemId}?${uq}&app_id=${encodeURIComponent(ML_CLIENT_ID || '')}&app_version=2.0.0`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
   ];
-
   for (const item of items) {
     const { item_id, participar, precio_promo, descuento_pct } = item;
     const participate = ['si','sí','yes','true','1'].includes(String(participar || '').toLowerCase().trim());
     let ok = false, errMsg = null;
-
     for (const ep of endpointsForItem(item_id)) {
       try {
         if (participate) {
@@ -4252,35 +3784,29 @@ route('POST', '/api/promotion-bulk-stream', async (req, res) => {
         errMsg = e.message || String(e);
       }
     }
-
     done++;
     if (!ok) { errCount++; errorRows.push({ item_id, participar, precio_promo, descuento_pct, error: errMsg || 'Error' }); }
     if (done % 100 === 0 || done === total) {
       res.write(JSON.stringify({ type: 'progress', done, total, errors: errCount }) + '\n');
     }
   }
-
   res.write(JSON.stringify({ type: 'done', done, total, errors: errCount, errorRows }) + '\n');
   res.end();
 });
-
 // POST /api/promotion-create {account_id, name, start_date, end_date}
 route('POST', '/api/promotion-create', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const dbP6 = loadDB(); const uP6 = dbP6.users.find(u => u.id === sess.userId);
   if (sess.role !== 'admin' && !uP6?.can_view_promos) return sendJSON(res, 403, { error: 'Acceso denegado' });
-
   const body = await parseBody(req);
   const { account_id, name, start_date, end_date } = body;
   if (!account_id || !name || !start_date || !end_date) return sendJSON(res, 400, { error: 'Faltan datos' });
-
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
-
   const payload = {
     type: 'PRICE_DISCOUNT',
     name,
@@ -4288,12 +3814,10 @@ route('POST', '/api/promotion-create', async (req, res) => {
     end_date: new Date(end_date).toISOString(),
     status: 'active'
   };
-
   const endpoints = [
     { label: 'marketplace_user_v2', url: `${PROMO_BASE}/promotions?user_id=${account.seller_id}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...promoH() } },
     { label: 'old_user', url: `${PROMO_OLD_BASE}/promotions?user_id=${account.seller_id}&app_id=${encodeURIComponent(ML_CLIENT_ID || '')}&app_version=2.0.0`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
   ];
-
   let lastErr = null;
   for (const ep of endpoints) {
     try {
@@ -4305,16 +3829,11 @@ route('POST', '/api/promotion-create', async (req, res) => {
       lastErr = e.message || String(e);
     }
   }
-
   sendJSON(res, 400, { error: lastErr || 'No se pudo crear la campaña' });
 });
-
-
 // ==================== SERVER ====================
-
 // ==================== API TOKEN (automatización) ====================
 const API_TOKEN = config.API_TOKEN || process.env.API_TOKEN || '';
-
 // Verifica el token de API con comparación de tiempo constante (evita timing attacks).
 // Preferido por header:  x-api-token: <API_TOKEN>
 // Alternativa (solo para pruebas rápidas):  ?token=<API_TOKEN>
@@ -4330,7 +3849,6 @@ function checkApiToken(req) {
   if (a.length !== b.length) return false;
   try { return crypto.timingSafeEqual(a, b); } catch (e) { return false; }
 }
-
 // Resuelve la cuenta por ?account_id=ID o por ?account=NOMBRE (exacto o parcial, case-insensitive)
 function resolveApiAccount(db, url) {
   const idRaw = url.searchParams.get('account_id');
@@ -4347,9 +3865,7 @@ function resolveApiAccount(db, url) {
   }
   return null;
 }
-
 // ==================== API AUTOMATIZACIÓN (token) ====================
-
 // GET /api/estado?account=MARA   (o ?account_id=1)
 // Header:  x-api-token: <API_TOKEN>
 // Exporta el estado actual (activas + pausadas) como NDJSON: una línea JSON por publicación.
@@ -4361,7 +3877,6 @@ route('GET', '/api/estado', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada (usá ?account=NOMBRE o ?account_id=ID)' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token ML inválido, reconectá la cuenta desde Configuración' });
-
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
   try {
     const LIMIT = 100, BATCH_SIZE = 20, DETAIL_CONCURRENCY = 5;
@@ -4374,7 +3889,6 @@ route('GET', '/api/estado', async (req, res) => {
     const pausedTotal = pausedFirst.paging?.total || 0;
     const total = activeTotal + pausedTotal;
     res.write(JSON.stringify({ type: 'start', account: account.name, total }) + '\n');
-
     const exportByStatus = async (status, statusTotal) => {
       let scrollId = null, fetched = 0;
       while (fetched < statusTotal) {
@@ -4428,7 +3942,6 @@ route('GET', '/api/estado', async (req, res) => {
   }
   res.end();
 });
-
 // POST /api/actualizar   — aplica cambios en segundo plano (mismo motor que la carga manual)
 // Header:  x-api-token: <API_TOKEN>
 // Body JSON: { "account": "MARA" (o "account_id": 1), "items": [ {item_id, available_quantity, status, price, marca, flex, item_sku}, ... ] }
@@ -4448,7 +3961,6 @@ route('POST', '/api/actualizar', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada (usá account o account_id)' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token ML inválido, reconectá la cuenta' });
-
   cleanBulkJobs();
   const jobId = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   bulkJobs[jobId] = {
@@ -4466,9 +3978,7 @@ route('POST', '/api/actualizar', async (req, res) => {
   console.log(`[API-ACTUALIZAR] Job ${jobId}: ${items.length} ítems para ${account.name}`);
   return sendJSON(res, 200, { job_id: jobId, total: items.length, account: account.name });
 });
-
 // ==================== SALE ORDERS (PEDIDOS) ====================
-
 // POST /api/sale-orders/close  — must be registered BEFORE /api/sale-orders (exact match used, but keeping order clear)
 route('POST', '/api/sale-orders/close', async (req, res) => {
   const sess = requireAuth(req);
@@ -4484,7 +3994,6 @@ route('POST', '/api/sale-orders/close', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
-
 // POST /api/sale-orders  — Create or update (upsert) order for a sale
 route('POST', '/api/sale-orders', async (req, res) => {
   const sess = requireAuth(req);
@@ -4519,7 +4028,6 @@ route('POST', '/api/sale-orders', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, order });
 });
-
 // GET /api/sale-orders  — List orders with optional filters
 route('GET', '/api/sale-orders', async (req, res) => {
   const sess = requireAuth(req);
@@ -4548,7 +4056,6 @@ route('GET', '/api/sale-orders', async (req, res) => {
   orders = orders.sort((a, b) => b.created_at - a.created_at);
   sendJSON(res, 200, orders);
 });
-
 // GET /api/actualizar-estado?job_id=xxx   — progreso/resultado del job (token)
 route('GET', '/api/actualizar-estado', async (req, res) => {
   if (!checkApiToken(req)) return sendJSON(res, 401, { error: 'Token de API inválido o ausente' });
@@ -4564,10 +4071,8 @@ route('GET', '/api/actualizar-estado', async (req, res) => {
   }
   return sendJSON(res, 200, job);
 });
-
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
-
   // Force HTTPS in production (Render terminates TLS at its edge proxy and
   // tells us the original protocol via x-forwarded-proto).
   if (req.headers['x-forwarded-proto'] === 'http') {
@@ -4575,11 +4080,9 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(301, { Location: `https://${host}${req.url}` });
     return res.end();
   }
-
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
   const method = req.method;
-
   const routeKey = `${method}:${pathname}`;
   if (routes[routeKey]) {
     try {
@@ -4593,20 +4096,16 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
-
   if (method === 'GET') {
     serveStatic(req, res);
     return;
   }
-
   sendJSON(res, 404, { error: 'Ruta no encontrada' });
 });
-
 server.listen(PORT, () => {
   console.log(`AUTOCHAP VENTAS corriendo en ${BASE_URL}`);
   console.log(`Puerto: ${PORT}`);
 });
-
 // Graceful shutdown: save sessions before Render kills the process
 process.on('SIGTERM', () => {
   console.log('[SHUTDOWN] Guardando datos y sesiones...');
