@@ -1,6 +1,3 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 // ==================== CONFIG ====================
@@ -505,6 +502,46 @@ route('POST', '/api/users/password', async (req, res) => {
   console.log(`[PASS] Contraseña cambiada: usuario "${targetUser.username}" por admin "${sess.username}"`);
   sendJSON(res, 200, { ok: true });
 });
+// Stock por deposito (multiorigen / user_products): el stock de estos items NO va por /items
+// (devuelve item.available_quantity.not_updatable). Se actualiza con
+//   PUT /user-products/{upid}/stock/type/{type}
+//   body: {"locations":[{"store_id":..,"quantity":N}]}
+//   header X-Version: <numero que devuelve el GET /user-products/{upid}/stock>
+// Devuelve null si OK, o un string con el error.
+async function putUserProductStock(upid, qty, account) {
+  const stockUrl = `https://api.mercadolibre.com/user-products/${upid}/stock`;
+  let token = await getValidToken(account);
+  async function leerStock() {
+    const g = await fetch(stockUrl, { headers: { Authorization: `Bearer ${token}` } });
+    const xv = g.headers.get('x-version');
+    const t = await g.text();
+    let d = {}; try { d = t ? JSON.parse(t) : {}; } catch (e) {}
+    return { xver: xv, loc: (d.locations || [])[0] || {} };
+  }
+  let xver = null, loc = {};
+  try { const s = await leerStock(); xver = s.xver; loc = s.loc; } catch (e) {}
+  const type = loc.type || 'seller_warehouse';
+  const url = `${stockUrl}/type/${type}`;
+  const location = { quantity: qty };
+  if (loc.store_id != null) location.store_id = loc.store_id;
+  const body = { locations: [location] };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+    if (xver != null) headers['X-Version'] = String(xver);
+    let r;
+    try { r = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) }); }
+    catch (e) { if (attempt === 3) return String(e.message || e); await new Promise(rr => setTimeout(rr, 1500)); continue; }
+    if (r.ok) return null;
+    const text = await r.text();
+    let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
+    if (r.status === 401) { const rf = await refreshToken(account); if (rf) { token = rf; continue; } return 'token expirado'; }
+    if (r.status === 429) { await new Promise(rr => setTimeout(rr, [15000, 35000, 70000, 120000][attempt] || 120000)); continue; }
+    const msg = String((data && (data.message || data.error)) || '').toLowerCase();
+    if (r.status === 409 || msg.includes('version')) { try { const s2 = await leerStock(); xver = s2.xver; } catch (e) {} continue; }
+    return (data && (data.message || data.error)) || `stock HTTP ${r.status}`;
+  }
+  return 'stock: agotados los reintentos';
+}
 // Helper: build ML item update payload from row data (excluye flex — se maneja por separado)
 function buildItemPayload(item) {
   const payload = {};
@@ -512,7 +549,8 @@ function buildItemPayload(item) {
     const qty = parseInt(item.available_quantity);
     if (!isNaN(qty)) payload.available_quantity = qty;
   }
-  if (item.status === 'active' || item.status === 'paused') payload.status = item.status;
+  const _st = String(item.status == null ? '' : item.status).trim().toLowerCase();
+  if (_st === 'active' || _st === 'paused') payload.status = _st;
   if (item.price !== '' && item.price != null) {
     const p = parseFloat(item.price);
     if (!isNaN(p)) payload.price = p;
@@ -835,54 +873,8 @@ async function runBulkJob(jobId, items, account, initialToken) {
   // Stock por deposito (multiorigen / user_products): el stock NO se actualiza por /items,
   // sino por PUT /user-products/{upid}/stock/type/seller_warehouse con body {quantity}.
   async function updateDepositStock(upid, qty, workerId) {
-    const stockUrl = `https://api.mercadolibre.com/user-products/${upid}/stock`;
-    // Leemos la location + el header x-version (obligatorio para escribir).
-    async function leerStock() {
-      const g = await fetch(stockUrl, { headers: { Authorization: `Bearer ${token}` } });
-      const xv = g.headers.get('x-version');
-      const t = await g.text();
-      let d = {}; try { d = t ? JSON.parse(t) : {}; } catch (e) {}
-      return { xver: xv, loc: (d.locations || [])[0] || {} };
-    }
-    let xver = null, loc = {};
-    try { const s = await leerStock(); xver = s.xver; loc = s.loc; } catch (e) {}
-    const t = loc.type || 'seller_warehouse';
-    const url = `${stockUrl}/type/${t}`;
-    const location = { quantity: qty };
-    if (loc.store_id != null) location.store_id = loc.store_id;
-    const body = { locations: [location] };
-    for (let attempt = 0; attempt < 4; attempt++) {
-      if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
-      const waitGlobal = globalCooldownUntil - Date.now();
-      if (waitGlobal > 0) await sleep(waitGlobal);
-      try {
-        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
-        if (xver != null) headers['X-Version'] = String(xver);
-        const r = await fetch(url, { method: 'PUT', headers, body: JSON.stringify(body) });
-        if (r.ok) return null;
-        const text = await r.text();
-        let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
-        if (r.status === 401) {
-          const refreshed = await refreshToken(account);
-          if (refreshed) { token = refreshed; continue; }
-          return 'token expirado';
-        }
-        if (r.status === 429) {
-          const wait = [15000, 35000, 70000, 120000][attempt] || 120000;
-          mark429(wait); await sleep(wait); continue;
-        }
-        // Version desactualizada: re-leemos x-version y reintentamos
-        const msg = String((data && (data.message || data.error)) || '').toLowerCase();
-        if (r.status === 409 || msg.includes('version')) {
-          try { const s2 = await leerStock(); xver = s2.xver; } catch (e) {}
-          continue;
-        }
-        return (data && (data.message || data.error)) ? (data.message || data.error) : `stock HTTP ${r.status}`;
-      } catch (e) {
-        if (attempt === 3) return String(e.message || e);
-      }
-    }
-    return 'stock: agotados los reintentos';
+    if (job.cancelled) throw Object.assign(new Error('Cancelado'), { _cancelled: true });
+    return await putUserProductStock(upid, qty, account);
   }
   async function updateOne(item, workerId) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
@@ -1297,7 +1289,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
       await Promise.all(wave.map(async batch => {
         try {
           const data = await mlGet(
-            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping`,
+            `https://api.mercadolibre.com/items?ids=${batch.join(',')}&attributes=id,price,available_quantity,status,seller_custom_field,shipping,user_product_id`,
             token
           );
           for (const entry of (Array.isArray(data) ? data : [])) {
@@ -1308,7 +1300,8 @@ route('POST', '/api/bulk-update', async (req, res) => {
                 available_quantity: it.available_quantity ?? null,
                 status: it.status ?? '',
                 seller_custom_field: it.seller_custom_field ?? '',
-                logistic_type: it.shipping?.logistic_type ?? ''
+                logistic_type: it.shipping?.logistic_type ?? '',
+                user_product_id: it.user_product_id ?? null
               };
             }
           }
@@ -1371,10 +1364,21 @@ route('POST', '/api/bulk-update', async (req, res) => {
     } else {
       try {
         const payload = buildItemPayload(item);
+        // --- STOCK POR DEPOSITO (multiorigen) ---
+        // Si el item tiene user_product_id, el stock no va por /items; se manda al deposito.
+        const curBU = currentState[item.item_id];
+        let depErr = null;
+        if (curBU?.user_product_id && payload.available_quantity !== undefined) {
+          depErr = await putUserProductStock(curBU.user_product_id, payload.available_quantity, account);
+          delete payload.available_quantity;
+          madeApiCall = true;
+        }
         const hasFlex = item.flex !== '' && item.flex != null &&
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
         if (!Object.keys(payload).length && !hasFlex) {
-          r = { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
+          r = depErr
+            ? { item_id: item.item_id, ok: false, error: 'stock depósito: ' + depErr }
+            : { item_id: item.item_id, ok: true, warning: curBU?.user_product_id ? 'Stock de depósito actualizado' : 'Sin cambios — se omitió' };
         } else {
           madeApiCall = true;
           const errors = [], warnings = [];
@@ -1404,6 +1408,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
             const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
             if (flexErr) errors.push(flexErr);
           }
+          if (depErr) errors.push('stock depósito: ' + depErr);
           if (errors.length) r = { item_id: item.item_id, ok: false, error: errors.join(' | ') };
           else r = { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
         }
