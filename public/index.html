@@ -592,6 +592,11 @@
           document.getElementById('nav-prep').style.display = '';
           document.getElementById('mob-prep').style.display = '';
         }
+        if (currentUser.role === 'admin' || currentUser.can_view_orders) {
+          document.getElementById('nav-orders').style.display = '';
+          const mobO2 = document.getElementById('mob-orders');
+          if (mobO2) mobO2.style.display = '';
+        }
         if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
           const mobDash = document.getElementById('mob-dashboard');
