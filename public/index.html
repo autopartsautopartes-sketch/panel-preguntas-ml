@@ -1798,7 +1798,7 @@
           const orderIdsJson = JSON.stringify(sale.order_ids || [sale.order_id]).replace(/"/g, '&quot;');
           // Collect SKU data for SKU OK button
           const saleSkuItems = sale.items.filter(i => i.sku).map(i => ({ sku: i.sku, qty: i.quantity }));
-          if (saleSkuItems.length) saleSKUs[String(firstOrderId)] = saleSkuItems;
+          if (saleSkuItems.length) saleSKUs[String(orderId)] = saleSkuItems;
 
           fullHtml += `
             <div class="sale-card">
@@ -1853,8 +1853,8 @@
                   <button onclick="cancelNote('${firstOrderId}')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>
                 </div>
               </div>
-              <div id="pedido-section-${firstOrderId}" style="margin-top:6px">
-                <div id="pedido-display-${firstOrderId}"><!-- loaded async --></div>
+              <div id="pedido-section-${orderId}" style="margin-top:6px">
+                <div id="pedido-display-${orderId}"><!-- loaded async --></div>
               </div>
             </div>
           `;
