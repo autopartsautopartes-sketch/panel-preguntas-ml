@@ -4106,6 +4106,61 @@ route('GET', '/api/debug-userstock', async (req, res) => {
     sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
   }
 });
+// DEBUG temporal: PRUEBA SEGURA de escritura de stock por deposito (user_products).
+// Manda un PUT con la cantidad indicada (o la actual si no se pasa qty) y reporta
+// que formato acepto ML + como quedo el stock. Con qty = cantidad actual, no cambia nada.
+route('GET', '/api/debug-userstock-write', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const accountId = parseInt(u.searchParams.get('account_id'));
+  const qtyParam = u.searchParams.get('qty');
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+  try {
+    const item = await mlGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,user_product_id`, token);
+    const upid = item.user_product_id;
+    if (!upid) return sendJSON(res, 400, { error: 'El item no tiene user_product_id (no usa deposito)' });
+    const stockUrl = `https://api.mercadolibre.com/user-products/${upid}/stock`;
+    const cur = await mlGet(stockUrl, token);
+    const loc = (cur.locations || [])[0] || {};
+    const qty = (qtyParam === null || qtyParam === '') ? loc.quantity : parseInt(qtyParam);
+    async function tryStock(method, bodyObj) {
+      const r = await fetch(stockUrl, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(bodyObj)
+      });
+      const text = await r.text();
+      let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
+      if (!r.ok) throw { response: { status: r.status, data } };
+      return { status: r.status, data };
+    }
+    const candidates = [
+      { label: 'PUT_store_type_qty', method: 'PUT', body: { locations: [{ store_id: loc.store_id, type: loc.type, quantity: qty }] } },
+      { label: 'PUT_store_qty', method: 'PUT', body: { locations: [{ store_id: loc.store_id, quantity: qty }] } },
+      { label: 'POST_store_type_qty', method: 'POST', body: { locations: [{ store_id: loc.store_id, type: loc.type, quantity: qty }] } },
+      { label: 'PUT_full_loc', method: 'PUT', body: { locations: [{ ...loc, quantity: qty }] } }
+    ];
+    const attempts = [];
+    for (const c of candidates) {
+      try {
+        const r = await tryStock(c.method, c.body);
+        const after = await mlGet(stockUrl, token).catch(() => null);
+        return sendJSON(res, 200, { upid, qty_actual: loc.quantity, qty_enviado: qty, ganador: c.label, sent: c.body, put_result: r, stock_despues: after, attempts });
+      } catch (e) {
+        attempts.push({ tried: c.label, status: (e && e.response && e.response.status) || null, error: (e && e.response && e.response.data) || String(e.message || e) });
+      }
+    }
+    return sendJSON(res, 200, { upid, qty_actual: loc.quantity, qty_enviado: qty, ganador: null, attempts });
+  } catch (e) {
+    sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
+  }
+});
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
   // Force HTTPS in production (Render terminates TLS at its edge proxy and
