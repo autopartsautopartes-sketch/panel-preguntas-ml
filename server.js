@@ -881,21 +881,8 @@ async function runBulkJob(jobId, items, account, initialToken) {
   }
   async function updateOne(item, workerId) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
-    const cur = currentState[item.item_id];
-    // --- STOCK POR DEPOSITO (multiorigen) ---
-    // Si el item tiene user_product_id, sacamos el stock del payload de /items
-    // (daria not_updatable) y lo mandamos al deposito por su endpoint propio.
-    let depositErr = null;
-    if (cur?.user_product_id && item.available_quantity !== '' && item.available_quantity != null) {
-      const dqty = parseInt(item.available_quantity);
-      if (!isNaN(dqty)) {
-        try { depositErr = await updateDepositStock(cur.user_product_id, dqty, workerId); }
-        catch (e) { if (e._cancelled) throw e; depositErr = parseMLError(e); }
-        item = { ...item, available_quantity: '' }; // ya no va por /items
-      }
-    }
-    const _result = await (async () => {
     const payload = buildItemPayload(item);
+    const cur = currentState[item.item_id];
     // Para ítems con variaciones, ML no acepta price ni available_quantity a nivel raíz.
     // Hay que mandarlos dentro de cada variante: variations: [{id, price, available_quantity}]
     if (cur?.variation_ids?.length) {
@@ -938,9 +925,41 @@ async function runBulkJob(jobId, items, account, initialToken) {
       }
       return errors;
     }
+    // Fallback de stock por deposito: SOLO cuando ML rechaza el stock por /items con not_updatable.
+    // Las cuentas con stock tradicional nunca entran acá; solo los items multiorigen (ej. ANTO).
+    async function tryDepositFallback(errs) {
+      const stockBlocked = errs.some(e => /available_quantity\.not_updatable/i.test(String(e.message)));
+      if (!stockBlocked) return null;
+      const wantedQty = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
+      // sacamos el stock del payload y reintentamos el resto (precio/status/sku) por /items
+      delete payload.available_quantity;
+      if (Array.isArray(payload.variations)) {
+        payload.variations = payload.variations.map(v => { const c = { ...v }; delete c.available_quantity; return c; });
+        if (payload.variations.every(v => Object.keys(v).length <= 1)) delete payload.variations;
+      }
+      let itemErr = null;
+      if (Object.keys(payload).length) {
+        try { await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId); }
+        catch (e) { if (e._cancelled) throw e; itemErr = parseMLError(e); }
+      }
+      let depErr = null;
+      if (cur?.user_product_id && wantedQty != null && !isNaN(wantedQty)) {
+        depErr = await updateDepositStock(cur.user_product_id, wantedQty, workerId);
+      } else if (wantedQty != null && !isNaN(wantedQty)) {
+        depErr = 'ítem sin user_product_id; no se pudo actualizar el stock';
+      }
+      if (!itemErr && !depErr) return { item_id: item.item_id, ok: true, warning: 'stock por depósito' };
+      const parts = [];
+      if (itemErr) parts.push(itemErr);
+      if (depErr) parts.push('stock depósito: ' + depErr);
+      return { item_id: item.item_id, ok: false, error: parts.join(' | ') };
+    }
     // 1) Intento directo. La mayoría entra por acá y ahorra todas las llamadas de promociones.
     let errors = await attemptUpdateOnce();
     if (!errors.length) return { item_id: item.item_id, ok: true };
+    // 1b) Fallback de stock por depósito (solo multiorigen; ej. ANTO)
+    const depFb = await tryDepositFallback(errors);
+    if (depFb) return depFb;
     // 2) Solo si ML bloquea por promoción, recién ahí se limpian promociones y se reintenta.
     const promoBlocked = errors.some(e => isPromoBlockingError(e.message, e.status));
     if (promoBlocked) {
@@ -1028,14 +1047,6 @@ async function runBulkJob(jobId, items, account, initialToken) {
       return { item_id: item.item_id, ok: true, warning: 'Atributos no modificables ignorados — precio y stock actualizados' };
     }
     return { item_id: item.item_id, ok: false, error: errors.map(e => e.message).join(' | ') };
-    })();
-    // Combinar el resultado del stock por deposito con el del item
-    if (depositErr) {
-      const dmsg = 'stock depósito: ' + (typeof depositErr === 'string' ? depositErr : JSON.stringify(depositErr));
-      if (_result.ok) return { item_id: item.item_id, ok: false, error: dmsg };
-      return { item_id: item.item_id, ok: false, error: [_result.error, dmsg].filter(Boolean).join(' | ') };
-    }
-    return _result;
   }
   // currentState declarado aquí (fuera del try) para que updateOne() pueda accederlo
   const currentState = {};
@@ -1367,21 +1378,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
     } else {
       try {
         const payload = buildItemPayload(item);
-        // --- STOCK POR DEPOSITO (multiorigen) ---
-        // Si el item tiene user_product_id, el stock no va por /items; se manda al deposito.
         const curBU = currentState[item.item_id];
-        let depErr = null;
-        if (curBU?.user_product_id && payload.available_quantity !== undefined) {
-          depErr = await putUserProductStock(curBU.user_product_id, payload.available_quantity, account);
-          delete payload.available_quantity;
-          madeApiCall = true;
-        }
         const hasFlex = item.flex !== '' && item.flex != null &&
           ['si','sí','yes','true','1','no','false','0'].includes(String(item.flex).toLowerCase().trim());
         if (!Object.keys(payload).length && !hasFlex) {
-          r = depErr
-            ? { item_id: item.item_id, ok: false, error: 'stock depósito: ' + depErr }
-            : { item_id: item.item_id, ok: true, warning: curBU?.user_product_id ? 'Stock de depósito actualizado' : 'Sin cambios — se omitió' };
+          r = { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
         } else {
           madeApiCall = true;
           const errors = [], warnings = [];
@@ -1403,15 +1404,28 @@ route('POST', '/api/bulk-update', async (req, res) => {
                 ? cause.map(c => c.description || c.code || JSON.stringify(c)).join('; ')
                 : null;
               const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
-              console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
-              errors.push(errMsg);
+              // Fallback multiorigen: si ML rechaza el stock por /items, va al deposito
+              if (/available_quantity\.not_updatable/i.test(String(errMsg)) && curBU?.user_product_id) {
+                const wq = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
+                const restPayload = { ...payload }; delete restPayload.available_quantity;
+                let itemErr2 = null;
+                if (Object.keys(restPayload).length) {
+                  try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, restPayload); }
+                  catch(e2) { itemErr2 = e2?.response?.data?.message || e2?.message || 'Error'; }
+                }
+                const dErr = (wq != null && !isNaN(wq)) ? await putUserProductStock(curBU.user_product_id, wq, account) : null;
+                if (itemErr2) errors.push(itemErr2);
+                if (dErr) errors.push('stock depósito: ' + dErr);
+              } else {
+                console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
+                errors.push(errMsg);
+              }
             }
           }
           if (!errors.length && hasFlex) {
             const flexErr = await updateFlexForItem(item.item_id, String(item.flex).toLowerCase().trim(), token);
             if (flexErr) errors.push(flexErr);
           }
-          if (depErr) errors.push('stock depósito: ' + depErr);
           if (errors.length) r = { item_id: item.item_id, ok: false, error: errors.join(' | ') };
           else r = { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
         }
