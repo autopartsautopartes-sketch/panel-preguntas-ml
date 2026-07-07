@@ -4316,6 +4316,10 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
     sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
   }
 });
+// Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
+route('GET', '/api/version', async (req, res) => {
+  sendJSON(res, 200, { version: '2026-07-07-sku-diferenciador-v6', features: ['sku_diferenciado_en_conflicto', 'deposito_fallback', 'status_case_insensitive'] });
+});
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
   // Force HTTPS in production (Render terminates TLS at its edge proxy and
