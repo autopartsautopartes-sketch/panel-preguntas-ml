@@ -925,6 +925,36 @@ async function runBulkJob(jobId, items, account, initialToken) {
       }
       return errors;
     }
+    // Fallback SKU repetido: ML agrupa por SELLER_SKU en "user products" y rechaza
+    // (user_product.repeated.conflict) cuando dos publicaciones comparten el mismo codigo.
+    // Reintentamos sin el atributo SELLER_SKU (y si aun choca, sin seller_custom_field).
+    async function trySkuConflictFallback(errs) {
+      if (!errs.some(e => /repeated.*conflict|user_product\.repeated/i.test(String(e.message)))) return null;
+      let changed = false;
+      if (Array.isArray(payload.attributes)) {
+        const n = payload.attributes.length;
+        payload.attributes = payload.attributes.filter(a => a.id !== 'SELLER_SKU');
+        if (!payload.attributes.length) delete payload.attributes;
+        if (!payload.attributes || payload.attributes.length < n) changed = true;
+      }
+      if (changed && Object.keys(payload).length) {
+        try {
+          await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
+          return { item_id: item.item_id, ok: true, warning: 'SKU no sincronizado en ML (código repetido)' };
+        } catch (e) { if (e._cancelled) throw e; }
+      }
+      if (payload.seller_custom_field !== undefined) {
+        delete payload.seller_custom_field;
+        if (Object.keys(payload).length) {
+          try {
+            await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
+            return { item_id: item.item_id, ok: true, warning: 'SKU no actualizado (código repetido en ML)' };
+          } catch (e) { if (e._cancelled) throw e; return null; }
+        }
+        return { item_id: item.item_id, ok: true, warning: 'solo SKU pendiente (código repetido en ML)' };
+      }
+      return null;
+    }
     // Fallback de stock por deposito: SOLO cuando ML rechaza el stock por /items con not_updatable.
     // Las cuentas con stock tradicional nunca entran acá; solo los items multiorigen (ej. ANTO).
     async function tryDepositFallback(errs) {
@@ -960,6 +990,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
     // 1b) Fallback de stock por depósito (solo multiorigen; ej. ANTO)
     const depFb = await tryDepositFallback(errors);
     if (depFb) return depFb;
+    // 1c) Fallback SKU repetido (user_product.repeated.conflict)
+    const skuFb = await trySkuConflictFallback(errors);
+    if (skuFb) return skuFb;
     // 2) Solo si ML bloquea por promoción, recién ahí se limpian promociones y se reintenta.
     const promoBlocked = errors.some(e => isPromoBlockingError(e.message, e.status));
     if (promoBlocked) {
@@ -1416,6 +1449,14 @@ route('POST', '/api/bulk-update', async (req, res) => {
                 const dErr = (wq != null && !isNaN(wq)) ? await putUserProductStock(curBU.user_product_id, wq, account) : null;
                 if (itemErr2) errors.push(itemErr2);
                 if (dErr) errors.push('stock depósito: ' + dErr);
+              } else if (/repeated.*conflict|user_product\.repeated/i.test(String(errMsg))) {
+                // SKU repetido: reintentar sin SELLER_SKU (y si aun choca, sin seller_custom_field)
+                const p2 = { ...payload };
+                if (Array.isArray(p2.attributes)) { p2.attributes = p2.attributes.filter(a => a.id !== 'SELLER_SKU'); if (!p2.attributes.length) delete p2.attributes; }
+                let ok2 = false;
+                if (Object.keys(p2).length) { try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, p2); ok2 = true; } catch(e3) {} }
+                if (!ok2) { delete p2.seller_custom_field; if (Object.keys(p2).length) { try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, p2); ok2 = true; } catch(e3) {} } else ok2 = true; }
+                if (ok2) warnings.push('SKU no sincronizado (código repetido)'); else errors.push(errMsg);
               } else {
                 console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
                 errors.push(errMsg);
