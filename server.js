@@ -931,37 +931,32 @@ async function runBulkJob(jobId, items, account, initialToken) {
     // Reintentamos sin el atributo SELLER_SKU (y si aun choca, sin seller_custom_field).
     async function trySkuConflictFallback(errs) {
       if (!errs.some(e => /repeated.*conflict|user_product\.repeated/i.test(String(e.message)))) return null;
-      const baseSku = (payload.seller_custom_field != null)
-        ? String(payload.seller_custom_field)
-        : (Array.isArray(payload.attributes) ? (payload.attributes.find(a => a.id === 'SELLER_SKU')?.value_name) : null);
-      if (!baseSku) return null;
-      // SKU diferenciado UNICO para ESTE item: codigo + su item_id (determinista, sin churn)
-      const diffSku = `${baseSku}-${String(item.item_id).replace(/\D/g, '')}`;
-      payload.seller_custom_field = diffSku;
-      if (Array.isArray(payload.attributes)) {
-        const a = payload.attributes.find(x => x.id === 'SELLER_SKU');
-        if (a) a.value_name = diffSku;
+      // Causa real: al mandar ATRIBUTOS (SELLER_SKU), ML intenta enlazar el item a un
+      // user_product por GTIN/catálogo. Si otra publicación ya tiene ese GTIN -> repeated.conflict.
+      // No se arregla cambiando el SKU (el GTIN no cambia). Reintentamos SIN atributos:
+      // precio/stock/estado/seller_custom_field igual se actualizan.
+      const hadAttrs = payload.attributes !== undefined;
+      const hadScf = payload.seller_custom_field !== undefined;
+      if (!hadAttrs && !hadScf) return null;
+      delete payload.attributes;
+      let err1 = null;
+      if (Object.keys(payload).length) {
+        try {
+          await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
+          return { item_id: item.item_id, ok: true, warning: 'SKU no sincronizado en ML (catálogo/GTIN repetido)' };
+        } catch (e) { if (e._cancelled) throw e; err1 = parseMLError(e); }
       }
-      try {
-        await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
-        return { item_id: item.item_id, ok: true, warning: `SKU diferenciado por repetido: ${diffSku}` };
-      } catch (e) {
-        if (e._cancelled) throw e;
-        // último recurso: si aún choca, dejamos el panel con el base y sin SELLER_SKU
-        payload.seller_custom_field = baseSku;
-        if (Array.isArray(payload.attributes)) {
-          payload.attributes = payload.attributes.filter(x => x.id !== 'SELLER_SKU');
-          if (!payload.attributes.length) delete payload.attributes;
-        }
-        const err1 = parseMLError(e);
+      // si aún choca, sacamos también el seller_custom_field (solo precio/stock/estado)
+      if (hadScf) {
+        delete payload.seller_custom_field;
         if (Object.keys(payload).length) {
           try {
             await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
-            return { item_id: item.item_id, ok: true, warning: 'SKU no sincronizado en ML (repetido)' };
-          } catch (e2) { if (e2._cancelled) throw e2; return { item_id: item.item_id, ok: false, error: `dif:[${err1}] sinSku:[${parseMLError(e2)}]` }; }
+            return { item_id: item.item_id, ok: true, warning: 'SKU no actualizado (catálogo/GTIN repetido)' };
+          } catch (e2) { if (e2._cancelled) throw e2; return { item_id: item.item_id, ok: false, error: `sinAttr:[${err1 || ''}] sinScf:[${parseMLError(e2)}]` }; }
         }
-        return { item_id: item.item_id, ok: false, error: `dif:[${err1}]` };
       }
+      return { item_id: item.item_id, ok: false, error: `sinAttr:[${err1 || 'payload vacío'}]` };
     }
     // Fallback de stock por deposito: SOLO cuando ML rechaza el stock por /items con not_updatable.
     // Las cuentas con stock tradicional nunca entran acá; solo los items multiorigen (ej. ANTO).
@@ -1472,21 +1467,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
                 if (itemErr2) errors.push(itemErr2);
                 if (dErr) errors.push('stock depósito: ' + dErr);
               } else if (/repeated.*conflict|user_product\.repeated/i.test(String(errMsg))) {
-                // SKU repetido: reintentar con SKU diferenciado unico (codigo + item_id)
-                const baseSku = (payload.seller_custom_field != null) ? String(payload.seller_custom_field)
-                  : (Array.isArray(payload.attributes) ? (payload.attributes.find(a => a.id === 'SELLER_SKU')?.value_name) : null);
+                // Conflicto por GTIN/catálogo al mandar atributos: reintentar SIN atributos
                 let ok2 = false;
-                if (baseSku) {
-                  const diffSku = `${baseSku}-${String(item.item_id).replace(/\D/g, '')}`;
-                  const p2 = { ...payload, seller_custom_field: diffSku };
-                  if (Array.isArray(p2.attributes)) p2.attributes = p2.attributes.map(a => a.id === 'SELLER_SKU' ? { ...a, value_name: diffSku } : a);
-                  try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, p2); ok2 = true; warnings.push(`SKU diferenciado por repetido: ${diffSku}`); } catch(e3) {}
-                }
-                if (!ok2) {
-                  const p3 = { ...payload }; delete p3.seller_custom_field;
-                  if (Array.isArray(p3.attributes)) { p3.attributes = p3.attributes.filter(a => a.id !== 'SELLER_SKU'); if (!p3.attributes.length) delete p3.attributes; }
-                  if (Object.keys(p3).length) { try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, p3); ok2 = true; warnings.push('SKU no sincronizado (repetido)'); } catch(e3) {} }
-                }
+                const p2 = { ...payload }; delete p2.attributes;
+                if (Object.keys(p2).length) { try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, p2); ok2 = true; warnings.push('SKU no sincronizado (catálogo/GTIN repetido)'); } catch(e3) {} }
+                if (!ok2) { const p3 = { ...p2 }; delete p3.seller_custom_field; if (Object.keys(p3).length) { try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, p3); ok2 = true; warnings.push('SKU no actualizado (catálogo/GTIN)'); } catch(e3) {} } }
                 if (!ok2) errors.push(errMsg);
               } else {
                 console.log(`[BULK] ❌ ${item.item_id} HTTP ${e?.response?.status || '?'} payload=${JSON.stringify(payload)} err=${errMsg}`);
@@ -4319,7 +4304,7 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-07-diagnostico-v7', features: ['debug_item', 'sku_diferenciado_error_visible'] });
+  sendJSON(res, 200, { version: '2026-07-07-catalogo-gtin-v8', features: ['conflicto_reintenta_sin_atributos', 'debug_item'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
