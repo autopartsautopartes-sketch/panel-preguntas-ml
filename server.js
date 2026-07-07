@@ -953,13 +953,14 @@ async function runBulkJob(jobId, items, account, initialToken) {
           payload.attributes = payload.attributes.filter(x => x.id !== 'SELLER_SKU');
           if (!payload.attributes.length) delete payload.attributes;
         }
+        const err1 = parseMLError(e);
         if (Object.keys(payload).length) {
           try {
             await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId);
             return { item_id: item.item_id, ok: true, warning: 'SKU no sincronizado en ML (repetido)' };
-          } catch (e2) { if (e2._cancelled) throw e2; return null; }
+          } catch (e2) { if (e2._cancelled) throw e2; return { item_id: item.item_id, ok: false, error: `dif:[${err1}] sinSku:[${parseMLError(e2)}]` }; }
         }
-        return null;
+        return { item_id: item.item_id, ok: false, error: `dif:[${err1}]` };
       }
     }
     // Fallback de stock por deposito: SOLO cuando ML rechaza el stock por /items con not_updatable.
@@ -4318,7 +4319,41 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-07-sku-diferenciador-v6', features: ['sku_diferenciado_en_conflicto', 'deposito_fallback', 'status_case_insensitive'] });
+  sendJSON(res, 200, { version: '2026-07-07-diagnostico-v7', features: ['debug_item', 'sku_diferenciado_error_visible'] });
+});
+// DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
+route('GET', '/api/debug-item', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const accountId = parseInt(u.searchParams.get('account_id'));
+  const testSku = u.searchParams.get('sku');
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido' });
+  const out = {};
+  try {
+    const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,catalog_product_id,catalog_listing,domain_id,user_product_id,inventory_id,seller_custom_field,status,attributes,variations`, token);
+    out.item = {
+      catalog_product_id: it.catalog_product_id, catalog_listing: it.catalog_listing, domain_id: it.domain_id,
+      user_product_id: it.user_product_id, inventory_id: it.inventory_id, seller_custom_field: it.seller_custom_field, status: it.status,
+      has_variations: Array.isArray(it.variations) && it.variations.length > 0,
+      sku_attrs: (it.attributes || []).filter(a => ['SELLER_SKU', 'GTIN', 'MPN'].includes(a.id)).map(a => ({ id: a.id, value_name: a.value_name })),
+      variations: (it.variations || []).map(v => ({ id: v.id, user_product_id: v.user_product_id, seller_custom_field: v.seller_custom_field }))
+    };
+  } catch (e) { out.item_error = (e && e.response && e.response.data) || String(e.message || e); }
+  if (testSku) {
+    const body = { seller_custom_field: testSku, attributes: [{ id: 'SELLER_SKU', value_name: testSku }] };
+    try {
+      const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+      const text = await r.text(); let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { raw: text }; }
+      out.put = { sent: body, status: r.status, ok: r.ok, response: data };
+    } catch (e) { out.put_error = String(e.message || e); }
+  }
+  sendJSON(res, 200, out);
 });
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
