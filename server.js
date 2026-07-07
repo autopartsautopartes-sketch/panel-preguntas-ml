@@ -527,6 +527,7 @@ async function putUserProductStock(upid, qty, account) {
   const url = `${stockUrl}/type/${type}`;
   const location = { quantity: qty };
   if (loc.store_id != null) location.store_id = loc.store_id;
+  if (loc.network_node_id != null) location.network_node_id = loc.network_node_id;
   const body = { locations: [location] };
   for (let attempt = 0; attempt < 4; attempt++) {
     const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -972,11 +973,19 @@ async function runBulkJob(jobId, items, account, initialToken) {
         try { await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId); }
         catch (e) { if (e._cancelled) throw e; itemErr = parseMLError(e); }
       }
+      // el pre-fetch múltiple no siempre trae user_product_id -> lo buscamos individual
+      let upid = cur?.user_product_id || null;
+      if (!upid) {
+        try {
+          const it = await mlGet(`https://api.mercadolibre.com/items/${item.item_id}?attributes=id,user_product_id`, token);
+          upid = it?.user_product_id || null;
+        } catch (e) {}
+      }
       let depErr = null;
-      if (cur?.user_product_id && wantedQty != null && !isNaN(wantedQty)) {
-        depErr = await updateDepositStock(cur.user_product_id, wantedQty, workerId);
+      if (upid && wantedQty != null && !isNaN(wantedQty)) {
+        depErr = await updateDepositStock(upid, wantedQty, workerId);
       } else if (wantedQty != null && !isNaN(wantedQty)) {
-        depErr = 'ítem sin user_product_id; no se pudo actualizar el stock';
+        depErr = 'no se pudo obtener user_product_id para el stock';
       }
       if (!itemErr && !depErr) return { item_id: item.item_id, ok: true, warning: 'stock por depósito' };
       const parts = [];
@@ -1438,7 +1447,11 @@ route('POST', '/api/bulk-update', async (req, res) => {
                 : null;
               const errMsg = causeDetail || e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error al actualizar';
               // Fallback multiorigen: si ML rechaza el stock por /items, va al deposito
-              if (/available_quantity\.not_updatable/i.test(String(errMsg)) && curBU?.user_product_id) {
+              if (/available_quantity\.not_updatable/i.test(String(errMsg))) {
+                let upid2 = curBU?.user_product_id || null;
+                if (!upid2) {
+                  try { const it2 = await mlGet(`https://api.mercadolibre.com/items/${item.item_id}?attributes=id,user_product_id`, token); upid2 = it2?.user_product_id || null; } catch(e2) {}
+                }
                 const wq = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
                 const restPayload = { ...payload }; delete restPayload.available_quantity;
                 let itemErr2 = null;
@@ -1446,7 +1459,9 @@ route('POST', '/api/bulk-update', async (req, res) => {
                   try { await mlPutWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, restPayload); }
                   catch(e2) { itemErr2 = e2?.response?.data?.message || e2?.message || 'Error'; }
                 }
-                const dErr = (wq != null && !isNaN(wq)) ? await putUserProductStock(curBU.user_product_id, wq, account) : null;
+                let dErr = null;
+                if (upid2 && wq != null && !isNaN(wq)) dErr = await putUserProductStock(upid2, wq, account);
+                else if (wq != null && !isNaN(wq)) dErr = 'no se pudo obtener user_product_id para el stock';
                 if (itemErr2) errors.push(itemErr2);
                 if (dErr) errors.push('stock depósito: ' + dErr);
               } else if (/repeated.*conflict|user_product\.repeated/i.test(String(errMsg))) {
