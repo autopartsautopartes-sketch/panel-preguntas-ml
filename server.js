@@ -3120,6 +3120,61 @@ route('POST', '/api/prep/finish', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
+// ESTADISTICAS DE PREPARACION (solo admin) — pedidos finalizados por rango de fechas
+// GET /api/prep/stats?from=YYYY-MM-DD&to=YYYY-MM-DD  (fechas en hora Argentina, UTC-3)
+route('GET', '/api/prep/stats', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado (solo admin)' });
+  const url = new URL(req.url, 'http://localhost');
+  const from = url.searchParams.get('from');
+  const to = url.searchParams.get('to');
+  const ARG = 3 * 3600 * 1000; // UTC-3
+  const localDate = iso => new Date(new Date(iso).getTime() - ARG).toISOString().slice(0, 10);
+  const localHM = ms => new Date(ms - ARG).toISOString().slice(11, 16);
+  const localDT = ms => new Date(ms - ARG).toISOString().replace('T', ' ').slice(0, 16);
+  const db = loadDB();
+  const done = (db.prep_orders || []).filter(o => o.status === 'done' && o.done_at);
+  const inRange = done.filter(o => {
+    const d = localDate(o.done_at);
+    if (from && d < from) return false;
+    if (to && d > to) return false;
+    return true;
+  });
+  const shipKey = t => (t === 'flex') ? 'flex' : (t === 'drop_off') ? 'drop_off' : 'agreement';
+  const by_shipping = { flex: 0, drop_off: 0, agreement: 0 };
+  const by_user = {};
+  const byDay = {};
+  for (const o of inRange) {
+    by_shipping[shipKey(o.shipping_type)]++;
+    const u = o.done_by || '(sin usuario)';
+    by_user[u] = (by_user[u] || 0) + 1;
+    const day = localDate(o.done_at);
+    const ms = new Date(o.done_at).getTime();
+    (byDay[day] = byDay[day] || []).push(ms);
+  }
+  let sumWindowMs = 0;
+  const por_dia = [];
+  for (const day of Object.keys(byDay).sort()) {
+    const t = byDay[day];
+    const mn = Math.min.apply(null, t), mx = Math.max.apply(null, t);
+    const w = mx - mn;
+    sumWindowMs += w;
+    por_dia.push({
+      dia: day, count: t.length, primer: localHM(mn), ultimo: localHM(mx),
+      min_por_pedido: t.length ? Math.round((w / 60000) / t.length * 10) / 10 : 0
+    });
+  }
+  const total = inRange.length;
+  const avg_pack_min = total ? Math.round((sumWindowMs / 60000) / total * 10) / 10 : 0;
+  const allMs = inRange.map(o => new Date(o.done_at).getTime());
+  const by_user_arr = Object.keys(by_user).map(u => ({ user: u, count: by_user[u] })).sort((a, b) => b.count - a.count);
+  sendJSON(res, 200, {
+    from, to, total, by_shipping, by_user: by_user_arr, avg_pack_min,
+    primer: allMs.length ? localDT(Math.min.apply(null, allMs)) : null,
+    ultimo: allMs.length ? localDT(Math.max.apply(null, allMs)) : null,
+    por_dia
+  });
+});
 route('GET', '/api/prep/export', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -4315,7 +4370,7 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-07-anto-deposito-v9', features: ['user_product_id_item_completo', 'deposito_retry_sin_atributos'] });
+  sendJSON(res, 200, { version: '2026-07-07-stats-v10', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
