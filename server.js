@@ -4416,6 +4416,474 @@ route('GET', '/api/debug-item', async (req, res) => {
   }
   sendJSON(res, 200, out);
 });
+
+// ==================== MÓDULO PUBLICIDAD · MERCADO ADS (inline) ====================
+// Se agrega solo. Reutiliza tus helpers (route, mlGet, mlPut, getValidToken, etc.).
+// Panel detrás de tu login en /publicidad. Análisis diario 13hs (fuera de tu madrugada).
+// Arranca en DRY-RUN: no pausa nada hasta ADS_AUTO_PAUSE=true.
+(function(){
+// ============================================================================
+//  ads.js — Automatización de Mercado Ads (Product Ads) con COSTO REAL por producto
+//  Autochap Autopartes Rufino
+//
+//  Se ACOPLA a tu server.js de "AUTOMATIZACION": reutiliza tus cuentas ML ya
+//  conectadas, tu refresh de token y tus helpers (mlGet, mlPut, getValidToken,
+//  loadDB, saveDB, sendJSON, requireAuth, parseBody). NO toca tu lógica actual.
+//
+//  NOVEDAD v2 — Costo real por producto:
+//   Importás tu Excel procesado (formato ANTO_COMPLETO.xlsx). El módulo arma una
+//   tabla de costos por item_id (MLA) y calcula el MARGEN REAL de cada producto,
+//   recalculado al PRECIO EFECTIVAMENTE COBRADO (promo incluida, porque las
+//   ventas que reporta la API de ads ya vienen con el descuento aplicado).
+//   Con eso decide por GANANCIA NETA después de publicidad, no por un margen
+//   global aproximado.
+//
+//  Integración (2 líneas en server.js, antes de "const server = http.createServer"):
+//     const { registerAds } = require('./ads');
+//     registerAds({ route, mlGet, mlPut, getValidToken, refreshToken,
+//                   loadDB, saveDB, sendJSON, requireAuth, parseBody, ML_CLIENT_ID });
+//
+//  Seguridad: arranca en DRY-RUN (no pausa nada) hasta ADS_AUTO_PAUSE=true.
+//  Solo automatiza lo defensivo (pausar lo que pierde). Nunca sube presupuesto/puja.
+// ============================================================================
+
+'use strict';
+
+const ADS_BASE = 'https://api.mercadolibre.com/advertising';
+const ADS_HEADERS = { 'Api-Version': '1' };
+
+// Endpoints de Product Ads. Corré /api/ads/selftest una vez para confirmar
+// que responden en tu cuenta; si tu versión difiere, se ajusta solo acá.
+const EP = {
+  advertisers: () => `${ADS_BASE}/advertisers?product_id=PADS`,
+  campaigns: (advId) => `${ADS_BASE}/product_ads/campaigns?advertiser_id=${advId}`,
+  campaign: (campId) => `${ADS_BASE}/product_ads/campaigns/${campId}`,
+  items: (campId) => `${ADS_BASE}/product_ads/campaigns/${campId}/items`,
+};
+
+// ---------------------------------------------------------------------------
+// Fechas (sin librerías). La API limita métricas a 90 días.
+// ---------------------------------------------------------------------------
+const ymd = (d) => d.toISOString().slice(0, 10);
+const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d; };
+
+function asList(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  for (const k of ['results', 'campaigns', 'ads', 'items', 'advertisers', 'data']) {
+    if (Array.isArray(raw[k])) return raw[k];
+  }
+  return [];
+}
+
+// Extrae métricas de campaña/aviso sin importar cómo las anide la API.
+function readMetrics(obj) {
+  const m = obj.metrics || obj.metric || obj || {};
+  const num = (...keys) => {
+    for (const k of keys) {
+      const v = (m[k] ?? obj[k]);
+      if (v !== undefined && v !== null && v !== '') return Number(v) || 0;
+    }
+    return 0;
+  };
+  const clicks = num('clicks', 'clics');
+  const prints = num('prints', 'impressions', 'impresiones');
+  const cost = num('cost', 'investment', 'inversion', 'amount_spent');
+  let revenue = num('total_amount', 'amount', 'revenue', 'sales');
+  if (!revenue) revenue = num('direct_amount') + num('indirect_amount');
+  let units = num('units_quantity', 'units', 'total_units', 'sold_quantity');
+  if (!units) units = num('direct_units') + num('indirect_units');
+  let acos = m.acos ?? obj.acos;
+  acos = (acos !== undefined && acos !== null && acos !== '') ? Number(acos) : (revenue > 0 ? (cost / revenue) * 100 : null);
+  const roas = cost > 0 ? revenue / cost : null;
+  return { clicks, prints, cost, revenue, units, acos, roas };
+}
+
+// ---------------------------------------------------------------------------
+// Config global (fallback cuando no hay costo real de un producto).
+// ---------------------------------------------------------------------------
+function getAdsConfig(loadDB) {
+  const db = loadDB();
+  const c = db.ads_config || {};
+  return {
+    margin: c.margin ?? 12,          // margen global de respaldo (%)
+    acosTarget: c.acosTarget ?? 7,    // objetivo global de respaldo (%)
+    minClicks: c.minClicks ?? 30,
+    windowDays: c.windowDays ?? 14,
+    freeShipThreshold: c.freeShipThreshold ?? 33000, // envío gratis desde este monto
+    autoPause: process.env.ADS_AUTO_PAUSE === 'true' || c.autoPause === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// TABLA DE COSTOS por item_id (MLA). Se llena importando tu Excel procesado.
+// Estructura por item:
+//   cost      = precio costo (col P)               → costo cuando NO absorbés envío
+//   costShip  = costo/gastos (col T = P + envío)   → costo cuando SÍ absorbés envío
+//   ship      = 'ME' (Mercado Envío) | 'NO'        → col D (shipping)
+//   commission= costo por vender (fracción, ej 0.24 según listing_type: 0.18/0.24/0.32)
+//   listPrice = precio final (col U) | marginList = margen de ganancia (col Y)
+//
+// Regla de costo (la tuya): si es MERCADO ENVIO y el precio efectivo cobrado supera
+// el umbral de envío gratis (33.000 por defecto), el envío lo absorbés vos → costo = costShip (T).
+// Si es NO ENVIO, o es MERCADO ENVIO pero el precio quedó por debajo del umbral → costo = cost (P).
+// ---------------------------------------------------------------------------
+function loadCosts(loadDB) { return (loadDB().ads_costs) || {}; }
+
+// Margen de contribución REAL de un ítem al precio efectivamente cobrado.
+// Devuelve { marginPct, profitPerUnit, floorUsed, freeShip } o null si no hay costo.
+function realMarginAtPrice(costRow, price, freeShipThreshold = 33000) {
+  if (!costRow || !price || price <= 0) return null;
+  const cost = Number(costRow.cost) || 0;
+  const costShip = Number(costRow.costShip) || cost;
+  const absorbsShip = (costRow.ship === 'ME') && (price > freeShipThreshold);
+  const floor = absorbsShip ? costShip : cost;
+  const commission = price * (Number(costRow.commission) || 0);
+  const profit = price - commission - floor;
+  return { marginPct: (profit / price) * 100, profitPerUnit: profit, floorUsed: floor, freeShip: absorbsShip };
+}
+
+// ---------------------------------------------------------------------------
+// Motor: helpers que hablan con la API usando TUS funciones.
+// ---------------------------------------------------------------------------
+function makeEngine(deps) {
+  const { mlGet, mlPut, getValidToken, loadDB, saveDB } = deps;
+
+  async function getAdvertiserId(account) {
+    if (account.advertiser_id) return account.advertiser_id;
+    const token = await getValidToken(account);
+    if (!token) throw new Error('token inválido');
+    const raw = await mlGet(EP.advertisers(), token, {}, ADS_HEADERS);
+    const adv = asList(raw)[0];
+    const id = adv && (adv.advertiser_id || adv.id);
+    if (!id) throw new Error('no se encontró advertiser_id (¿Product Ads activado en la cuenta?)');
+    const db = loadDB();
+    const acc = db.ml_accounts.find(a => a.id === account.id);
+    if (acc) { acc.advertiser_id = id; saveDB(db); }
+    account.advertiser_id = id;
+    return id;
+  }
+
+  async function listCampaigns(account, from, to) {
+    const token = await getValidToken(account);
+    const advId = await getAdvertiserId(account);
+    const raw = await mlGet(EP.campaigns(advId), token,
+      { date_from: from, date_to: to, metrics: 'clicks,prints,cost,acos,total_amount,units_quantity', limit: 200 },
+      ADS_HEADERS);
+    return asList(raw);
+  }
+
+  // Avisos (ítems) de una campaña con métricas — para cruzar con costos por MLA.
+  async function listCampaignItems(account, campaignId, from, to) {
+    const token = await getValidToken(account);
+    try {
+      const raw = await mlGet(EP.items(campaignId), token,
+        { date_from: from, date_to: to, metrics: 'clicks,prints,cost,acos,total_amount,units_quantity', limit: 200 },
+        ADS_HEADERS);
+      return asList(raw);
+    } catch (e) { return []; } // si la API no expone ítems, seguimos a nivel campaña
+  }
+
+  async function setCampaignStatus(account, campaignId, status) {
+    const token = await getValidToken(account);
+    return await mlPut(EP.campaign(campaignId), { status }, token);
+  }
+
+  return { getAdvertiserId, listCampaigns, listCampaignItems, setCampaignStatus };
+}
+
+// ---------------------------------------------------------------------------
+// Semáforo. Usa el ACOS de equilibrio REAL de la campaña (de tus costos) si
+// está disponible; si no, cae al margen global de la config.
+// ---------------------------------------------------------------------------
+function decide(row, cfg) {
+  const { clicks, acos, revenue, breakevenAcos, netProfit } = row;
+  const breakeven = (breakevenAcos != null) ? breakevenAcos : cfg.margin;
+  const target = (breakevenAcos != null) ? breakevenAcos * 0.6 : cfg.acosTarget;
+  if (clicks < cfg.minClicks) return { action: 'JUNTAR_DATOS', reason: `pocos clics (${clicks}/${cfg.minClicks})` };
+  if (!revenue) return { action: 'PAUSAR', reason: 'sin ventas con clics suficientes' };
+  // Señal más fuerte: si conocemos costo real y la ganancia neta después de ads es negativa.
+  if (netProfit != null && netProfit < 0) return { action: 'PAUSAR', reason: `pierde ${Math.round(Math.abs(netProfit)).toLocaleString('es-AR')} después de ads (ACOS ${acos?.toFixed(1)}% > equilibrio ${breakeven.toFixed(1)}%)` };
+  if (acos == null) return { action: 'PAUSAR', reason: 'sin ventas atribuibles' };
+  if (acos <= target) return { action: 'ESCALAR', reason: `ACOS ${acos.toFixed(1)}% ≤ objetivo ${target.toFixed(1)}%` };
+  if (acos <= breakeven) return { action: 'MANTENER', reason: `ACOS ${acos.toFixed(1)}% ≤ equilibrio ${breakeven.toFixed(1)}%` };
+  return { action: 'PAUSAR', reason: `ACOS ${acos.toFixed(1)}% > equilibrio real ${breakeven.toFixed(1)}%` };
+}
+
+// ---------------------------------------------------------------------------
+// Analiza una campaña cruzando sus ítems con la tabla de costos.
+// Devuelve la campaña normalizada + margen/ganancia real cuando hay costos.
+// ---------------------------------------------------------------------------
+async function analyzeCampaign(engine, account, campaign, costs, from, to, freeShipThreshold) {
+  const base = readMetrics(campaign);
+  const out = {
+    campaign_id: campaign.id || campaign.campaign_id,
+    name: campaign.name || campaign.campaign_name || '(sin nombre)',
+    status: campaign.status,
+    metrics: base,
+    breakevenAcos: null,   // % — equilibrio real de la campaña
+    grossProfit: null,     // $ ganancia bruta (antes de ads) de ventas atribuidas
+    netProfit: null,       // $ ganancia después de restar la inversión en ads
+    costCoverage: 0,       // % de la venta con costo real conocido
+  };
+
+  // Si no hay costos cargados, dejamos la campaña a nivel global (margen de config).
+  if (!costs || !Object.keys(costs).length) return out;
+
+  const items = await engine.listCampaignItems(account, out.campaign_id, from, to);
+  if (!items.length) return out;
+
+  let sumRev = 0, sumProfit = 0, sumKnownRev = 0;
+  for (const it of items) {
+    const id = it.item_id || it.id || it.mcId || it.mla;
+    const m = readMetrics(it);
+    sumRev += m.revenue;
+    const costRow = costs[String(id)];
+    if (costRow && m.units > 0 && m.revenue > 0) {
+      const price = m.revenue / m.units;                 // precio efectivo cobrado (promo incluida)
+      const rm = realMarginAtPrice(costRow, price, freeShipThreshold);
+      if (rm) {
+        sumProfit += rm.profitPerUnit * m.units;         // ganancia bruta real del ítem
+        sumKnownRev += m.revenue;
+      }
+    }
+  }
+
+  if (sumKnownRev > 0) {
+    out.grossProfit = sumProfit;
+    out.netProfit = sumProfit - base.cost;               // menos la inversión total en ads
+    out.breakevenAcos = (sumProfit / sumKnownRev) * 100; // margen de contribución real % = ACOS de equilibrio
+    out.costCoverage = sumRev > 0 ? (sumKnownRev / sumRev) * 100 : 100;
+  }
+  return out;
+}
+
+async function analyzeAccount(engine, account, cfg, costs) {
+  const to = ymd(new Date());
+  const from = ymd(daysAgo(cfg.windowDays));
+  const campaigns = await engine.listCampaigns(account, from, to);
+  const rows = [];
+  for (const c of campaigns) {
+    const a = await analyzeCampaign(engine, account, c, costs, from, to, cfg.freeShipThreshold);
+    const d = decide({ ...a.metrics, breakevenAcos: a.breakevenAcos, netProfit: a.netProfit }, cfg);
+    rows.push({ ...a, action: d.action, reason: d.reason });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Job nocturno (DRY-RUN por defecto).
+// ---------------------------------------------------------------------------
+async function runNightlyJob(deps) {
+  const { loadDB, saveDB } = deps;
+  const engine = makeEngine(deps);
+  const cfg = getAdsConfig(loadDB);
+  const costs = loadCosts(loadDB);
+  const accounts = loadDB().ml_accounts || [];
+  const runLog = { at: new Date().toISOString(), dry_run: !cfg.autoPause, results: [] };
+
+  for (const account of accounts) {
+    try {
+      const rows = await analyzeAccount(engine, account, cfg, costs);
+      for (const r of rows) {
+        const shouldPause = r.action === 'PAUSAR' && String(r.status).toLowerCase() === 'active';
+        const entry = {
+          account: account.name, campaign_id: r.campaign_id, name: r.name,
+          acos: r.metrics.acos, clicks: r.metrics.clicks, cost: r.metrics.cost,
+          net_profit: r.netProfit, breakeven: r.breakevenAcos,
+          action: r.action, reason: r.reason, paused: false,
+        };
+        if (shouldPause) {
+          if (cfg.autoPause) {
+            try { await engine.setCampaignStatus(account, r.campaign_id, 'paused'); entry.paused = true; }
+            catch (e) { entry.error = (e && e.response && e.response.data) || String(e.message || e); }
+          } else { entry.would_pause = true; }
+        }
+        runLog.results.push(entry);
+      }
+    } catch (e) {
+      runLog.results.push({ account: account.name, error: (e && e.response && e.response.data) || String(e.message || e) });
+    }
+  }
+
+  const db2 = loadDB();
+  db2.ads_log = (db2.ads_log || []).slice(-19);
+  db2.ads_log.push(runLog);
+  db2.ads_last_run = runLog.at;
+  saveDB(db2);
+  console.log(`[ADS] Corrida ${runLog.dry_run ? 'DRY-RUN' : 'LIVE'} — pausadas: ${runLog.results.filter(r => r.paused).length}, a pausar (dry): ${runLog.results.filter(r => r.would_pause).length}`);
+  return runLog;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler diario (resiste reinicios de Render vía ads_last_run).
+// ---------------------------------------------------------------------------
+function startScheduler(deps) {
+  const { loadDB } = deps;
+  const HOUR = Number(process.env.ADS_RUN_HOUR || 13);
+  async function tick() {
+    try {
+      const db = loadDB();
+      const now = new Date();
+      const last = db.ads_last_run ? new Date(db.ads_last_run) : null;
+      const ranToday = last && last.toDateString() === now.toDateString();
+      if (now.getHours() >= HOUR && !ranToday) await runNightlyJob(deps);
+    } catch (e) { console.error('[ADS] scheduler error:', e.message || e); }
+  }
+  setInterval(tick, 60 * 60 * 1000);
+  setTimeout(tick, 30 * 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Rutas HTTP.
+// ---------------------------------------------------------------------------
+function registerAds(deps) {
+  const { route, sendJSON, requireAuth, loadDB, saveDB } = deps;
+  const engine = makeEngine(deps);
+  const isAdmin = (req) => { const s = requireAuth(req); return s && s.role === 'admin' ? s : null; };
+  const getAccount = (req) => {
+    const id = parseInt(new URL(req.url, 'http://localhost').searchParams.get('account_id'));
+    return (loadDB().ml_accounts || []).find(a => a.id === id) || null;
+  };
+
+  route('GET', '/api/ads/accounts', async (req, res) => {
+    if (!requireAuth(req)) return sendJSON(res, 401, { error: 'No autorizado' });
+    sendJSON(res, 200, { accounts: (loadDB().ml_accounts || []).map(a => ({ id: a.id, name: a.name, seller_id: a.seller_id })) });
+  });
+
+  route('GET', '/api/ads/selftest', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const account = getAccount(req);
+    if (!account) return sendJSON(res, 404, { error: 'Pasá ?account_id=<id>' });
+    const out = { account: account.name };
+    try {
+      out.advertiser_id = await engine.getAdvertiserId(account);
+      const to = ymd(new Date()), from = ymd(daysAgo(14));
+      const camps = await engine.listCampaigns(account, from, to);
+      out.campaigns_found = camps.length;
+      out.sample = camps.slice(0, 2);
+      out.ok = true;
+    } catch (e) {
+      out.ok = false;
+      out.error = (e && e.response && e.response.data) || String(e.message || e);
+      out.hint = 'Activá Product Ads en la cuenta, reconectá para token con permiso de publicidad, o confirmá los paths en EP{}.';
+    }
+    sendJSON(res, 200, out);
+  });
+
+  route('GET', '/api/ads/campaigns', async (req, res) => {
+    if (!requireAuth(req)) return sendJSON(res, 401, { error: 'No autorizado' });
+    const account = getAccount(req);
+    if (!account) return sendJSON(res, 404, { error: 'account_id inválido' });
+    const cfg = getAdsConfig(loadDB);
+    const costs = loadCosts(loadDB);
+    try {
+      const rows = await analyzeAccount(engine, account, cfg, costs);
+      sendJSON(res, 200, { config: cfg, costs_loaded: Object.keys(costs).length, campaigns: rows });
+    } catch (e) {
+      sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
+    }
+  });
+
+  route('POST', '/api/ads/campaign-status', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const { account_id, campaign_id, status } = await deps.parseBody(req);
+    if (!['active', 'paused'].includes(status)) return sendJSON(res, 400, { error: 'status debe ser active|paused' });
+    const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(account_id));
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    try { sendJSON(res, 200, { ok: true, result: await engine.setCampaignStatus(account, campaign_id, status) }); }
+    catch (e) { sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) }); }
+  });
+
+  // Comisión de respaldo por tipo de publicación cuando la fila no trae el rate.
+  const COMMISSION_BY_TYPE = { gold_pro: 0.32, silver_pro: 0.24, gold_special: 0.18, gold: 0.18, silver: 0.18, bronze: 0.18, free: 0.18 };
+  function commissionFor(rate, listingType) {
+    const r = Number(rate);
+    if (r > 0) return r;
+    const t = String(listingType || '').trim().toLowerCase();
+    return COMMISSION_BY_TYPE[t] ?? 0.18; // sin cuotas por defecto
+  }
+  const normShip = (d) => /mercado\s*env/i.test(String(d || '')) ? 'ME' : 'NO';
+
+  // Importar tabla de costos por item_id (el panel manda el Excel ya parseado a JSON).
+  // body: { costs: [ { item_id, cost(P), costShip(T), ship(D), commission(V), listingType(AB), listPrice(U), marginList(Y) } ], replace: bool }
+  route('POST', '/api/ads/costs', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const body = await deps.parseBody(req);
+    const arr = Array.isArray(body.costs) ? body.costs : [];
+    const db = loadDB();
+    const table = body.replace ? {} : (db.ads_costs || {});
+    let n = 0;
+    for (const r of arr) {
+      const id = String(r.item_id || r.id || '').trim();
+      if (!id) continue;
+      table[id] = {
+        cost: Number(r.cost) || 0,                       // col P
+        costShip: Number(r.costShip) || Number(r.cost) || 0, // col T
+        ship: normShip(r.ship),                          // col D → 'ME' | 'NO'
+        commission: commissionFor(r.commission, r.listingType), // col V (con respaldo por tipo)
+        listingType: String(r.listingType || '').toLowerCase(),
+        listPrice: Number(r.listPrice) || 0,             // col U
+        marginList: Number(r.marginList) || 0,           // col Y
+      };
+      n++;
+    }
+    db.ads_costs = table;
+    db.ads_costs_updated = new Date().toISOString();
+    saveDB(db);
+    sendJSON(res, 200, { ok: true, imported: n, total: Object.keys(table).length });
+  });
+  route('GET', '/api/ads/costs', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const db = loadDB();
+    sendJSON(res, 200, { total: Object.keys(db.ads_costs || {}).length, updated: db.ads_costs_updated || null });
+  });
+
+  route('GET', '/api/ads/config', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    sendJSON(res, 200, getAdsConfig(loadDB));
+  });
+  route('POST', '/api/ads/config', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const body = await deps.parseBody(req);
+    const db = loadDB();
+    db.ads_config = { ...(db.ads_config || {}) };
+    for (const k of ['margin', 'acosTarget', 'minClicks', 'windowDays', 'freeShipThreshold']) {
+      if (body[k] !== undefined && body[k] !== '' && !isNaN(Number(body[k]))) db.ads_config[k] = Number(body[k]);
+    }
+    if (body.autoPause !== undefined) db.ads_config.autoPause = !!body.autoPause;
+    saveDB(db);
+    sendJSON(res, 200, { ok: true, config: getAdsConfig(loadDB) });
+  });
+
+  route('GET', '/api/ads/log', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const db = loadDB();
+    sendJSON(res, 200, { last_run: db.ads_last_run || null, runs: (db.ads_log || []).slice(-5).reverse() });
+  });
+
+  route('POST', '/api/ads/run-now', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    try { const log = await runNightlyJob(deps); sendJSON(res, 200, { ok: true, dry_run: log.dry_run, results: log.results }); }
+    catch (e) { sendJSON(res, 500, { error: String(e.message || e) }); }
+  });
+
+  startScheduler(deps);
+  console.log('[ADS] Módulo Product Ads v2 (costo real) registrado. Auto-pausa: ' + (getAdsConfig(loadDB).autoPause ? 'ACTIVA' : 'DRY-RUN'));
+}
+
+
+const ADS_PANEL_HTML = Buffer.from("PCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9ImVzIj4KPGhlYWQ+CjxtZXRhIGNoYXJzZXQ9IlVURi04Ij4KPG1ldGEgbmFtZT0idmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPWRldmljZS13aWR0aCwgaW5pdGlhbC1zY2FsZT0xLjAiPgo8dGl0bGU+UHVibGljaWRhZCDCtyBNZXJjYWRvIEFkcyDigJQgQXV0b2NoYXA8L3RpdGxlPgo8c2NyaXB0IHNyYz0iaHR0cHM6Ly9jZG5qcy5jbG91ZGZsYXJlLmNvbS9hamF4L2xpYnMveGxzeC8wLjE4LjUveGxzeC5mdWxsLm1pbi5qcyI+PC9zY3JpcHQ+CjxzdHlsZT4KICA6cm9vdHsKICAgIC0tbmF2eTojMWYzODY0OyAtLWJsdWU6IzJlNTQ5NjsgLS1iZzojZjRmNmZiOyAtLWNhcmQ6I2ZmZmZmZjsgLS1saW5lOiNlMmU4ZjA7CiAgICAtLWluazojMWUyOTNiOyAtLW11dDojNjQ3NDhiOyAtLWdyZWVuOiMxNmEzNGE7IC0tZ3JlZW5iZzojZGNmY2U3OwogICAgLS1hbWJlcjojZDk3NzA2OyAtLWFtYmVyYmc6I2ZlZjNjNzsgLS1yZWQ6I2RjMjYyNjsgLS1yZWRiZzojZmVlMmUyOyAtLWJsdWViZzojZGJlYWZlOwogIH0KICAqe2JveC1zaXppbmc6Ym9yZGVyLWJveH0KICBib2R5e21hcmdpbjowO2ZvbnQtZmFtaWx5Oi1hcHBsZS1zeXN0ZW0sQmxpbmtNYWNTeXN0ZW1Gb250LCJTZWdvZSBVSSIsUm9ib3RvLEFyaWFsLHNhbnMtc2VyaWY7YmFja2dyb3VuZDp2YXIoLS1iZyk7Y29sb3I6dmFyKC0taW5rKTtmb250LXNpemU6MTRweH0KICBhe2NvbG9yOnZhcigtLWJsdWUpfQogIC53cmFwe21heC13aWR0aDoxMzYwcHg7bWFyZ2luOjAgYXV0bztwYWRkaW5nOjE4cHh9CiAgaGVhZGVyLnRvcHtkaXNwbGF5OmZsZXg7ZmxleC13cmFwOndyYXA7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDoxMnB4O21hcmdpbi1ib3R0b206MTRweH0KICBoZWFkZXIudG9wIGgxe2ZvbnQtc2l6ZToyMHB4O21hcmdpbjowO2NvbG9yOnZhcigtLW5hdnkpO2ZvbnQtd2VpZ2h0OjgwMDtsZXR0ZXItc3BhY2luZzouMnB4fQogIGhlYWRlci50b3AgLnN1Yntjb2xvcjp2YXIoLS1tdXQpO2ZvbnQtc2l6ZToxMnB4fQogIC5zcGFjZXJ7ZmxleDoxfQogIHNlbGVjdCxpbnB1dCxidXR0b257Zm9udDppbmhlcml0O2NvbG9yOnZhcigtLWluayl9CiAgc2VsZWN0LGlucHV0W3R5cGU9dGV4dF0saW5wdXRbdHlwZT1udW1iZXJde2JvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7Ym9yZGVyLXJhZGl1czo5cHg7cGFkZGluZzo4cHggMTBweDtiYWNrZ3JvdW5kOiNmZmZ9CiAgYnV0dG9ue2N1cnNvcjpwb2ludGVyO2JvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7Ym9yZGVyLXJhZGl1czo5cHg7cGFkZGluZzo4cHggMTNweDtiYWNrZ3JvdW5kOiNmZmY7Zm9udC13ZWlnaHQ6NjAwO3RyYW5zaXRpb246LjEyc30KICBidXR0b246aG92ZXJ7YmFja2dyb3VuZDojZjFmNWY5fQogIGJ1dHRvbi5wcmltYXJ5e2JhY2tncm91bmQ6dmFyKC0tbmF2eSk7Y29sb3I6I2ZmZjtib3JkZXItY29sb3I6dmFyKC0tbmF2eSl9CiAgYnV0dG9uLnByaW1hcnk6aG92ZXJ7YmFja2dyb3VuZDojMTYyYTRkfQogIGJ1dHRvbi5naG9zdHtiYWNrZ3JvdW5kOnRyYW5zcGFyZW50fQogIC5waWxse2Rpc3BsYXk6aW5saW5lLWZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo2cHg7Ym9yZGVyLXJhZGl1czo5OTlweDtwYWRkaW5nOjRweCAxMXB4O2ZvbnQtc2l6ZToxMnB4O2ZvbnQtd2VpZ2h0OjcwMDtib3JkZXI6MXB4IHNvbGlkIHRyYW5zcGFyZW50fQogIC5wLWdyZWVue2JhY2tncm91bmQ6dmFyKC0tZ3JlZW5iZyk7Y29sb3I6IzE2NjUzNH0gLnAtYW1iZXJ7YmFja2dyb3VuZDp2YXIoLS1hbWJlcmJnKTtjb2xvcjojOTI0MDBlfQogIC5wLXJlZHtiYWNrZ3JvdW5kOnZhcigtLXJlZGJnKTtjb2xvcjojOTkxYjFifSAucC1ibHVle2JhY2tncm91bmQ6dmFyKC0tYmx1ZWJnKTtjb2xvcjojMWU0MGFmfQogIC5wLWdyZXl7YmFja2dyb3VuZDojZjFmNWY5O2NvbG9yOiM0NzU1Njl9CgogIC8qIFNldHVwIGJhbm5lciAqLwogIC5iYW5uZXJ7YmFja2dyb3VuZDojZmZmN2VkO2JvcmRlcjoxcHggc29saWQgI2ZlZDdhYTtjb2xvcjojOWEzNDEyO2JvcmRlci1yYWRpdXM6MTJweDtwYWRkaW5nOjE0cHggMTZweDttYXJnaW4tYm90dG9tOjE0cHg7ZGlzcGxheTpub25lfQogIC5iYW5uZXIuc2hvd3tkaXNwbGF5OmJsb2NrfQogIC5iYW5uZXIgYntjb2xvcjojN2MyZDEyfQogIC5iYW5uZXIgb2x7bWFyZ2luOjhweCAwIDA7cGFkZGluZy1sZWZ0OjIwcHh9CiAgLmJhbm5lciBsaXttYXJnaW46M3B4IDB9CgogIC8qIENvbmZpZyBiYXIgKi8KICAuY29uZmlne2JhY2tncm91bmQ6dmFyKC0tY2FyZCk7Ym9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTtib3JkZXItcmFkaXVzOjEycHg7cGFkZGluZzoxNHB4IDE2cHg7bWFyZ2luLWJvdHRvbToxNHB4fQogIC5jb25maWcgaDN7bWFyZ2luOjAgMCAxMHB4O2ZvbnQtc2l6ZToxM3B4O2NvbG9yOnZhcigtLW11dCk7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlO2xldHRlci1zcGFjaW5nOi42cHh9CiAgLmNmZ3JpZHtkaXNwbGF5OmZsZXg7ZmxleC13cmFwOndyYXA7Z2FwOjE0cHg7YWxpZ24taXRlbXM6ZmxleC1lbmR9CiAgLmZpZWxke2Rpc3BsYXk6ZmxleDtmbGV4LWRpcmVjdGlvbjpjb2x1bW47Z2FwOjRweH0KICAuZmllbGQgbGFiZWx7Zm9udC1zaXplOjExcHg7Y29sb3I6dmFyKC0tbXV0KTtmb250LXdlaWdodDo2MDB9CiAgLmZpZWxkIGlucHV0e3dpZHRoOjExMHB4fQogIC5maWVsZCAuaGludHtmb250LXNpemU6MTBweDtjb2xvcjp2YXIoLS1tdXQpfQogIC5hdXRvdGFne21hcmdpbi1sZWZ0OmF1dG87Zm9udC1zaXplOjEycHh9CgogIC8qIEtQSSB0aWxlcyAqLwogIC5rcGlze2Rpc3BsYXk6Z3JpZDtncmlkLXRlbXBsYXRlLWNvbHVtbnM6cmVwZWF0KDYsMWZyKTtnYXA6MTJweDttYXJnaW4tYm90dG9tOjE0cHh9CiAgLmtwaXtiYWNrZ3JvdW5kOnZhcigtLWNhcmQpO2JvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7Ym9yZGVyLXJhZGl1czoxMnB4O3BhZGRpbmc6MTNweCAxNHB4fQogIC5rcGkgLmt7Zm9udC1zaXplOjExcHg7Y29sb3I6dmFyKC0tbXV0KTtmb250LXdlaWdodDo2MDA7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlO2xldHRlci1zcGFjaW5nOi40cHh9CiAgLmtwaSAudntmb250LXNpemU6MjJweDtmb250LXdlaWdodDo4MDA7bWFyZ2luLXRvcDo1cHg7Y29sb3I6dmFyKC0tbmF2eSl9CiAgLmtwaSAudi5zbWFsbHtmb250LXNpemU6MTdweH0KICAua3BpLmdvb2QgLnZ7Y29sb3I6dmFyKC0tZ3JlZW4pfSAua3BpLndhcm4gLnZ7Y29sb3I6dmFyKC0tYW1iZXIpfSAua3BpLmJhZCAudntjb2xvcjp2YXIoLS1yZWQpfQogIEBtZWRpYShtYXgtd2lkdGg6OTgwcHgpey5rcGlze2dyaWQtdGVtcGxhdGUtY29sdW1uczpyZXBlYXQoMywxZnIpfX0KICBAbWVkaWEobWF4LXdpZHRoOjU2MHB4KXsua3Bpc3tncmlkLXRlbXBsYXRlLWNvbHVtbnM6cmVwZWF0KDIsMWZyKX0uZmllbGQgaW5wdXR7d2lkdGg6OTBweH19CgogIC8qIEZpbHRlcnMgKi8KICAuZmlsdGVyc3tiYWNrZ3JvdW5kOnZhcigtLWNhcmQpO2JvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7Ym9yZGVyLXJhZGl1czoxMnB4O3BhZGRpbmc6MTJweCAxNHB4O21hcmdpbi1ib3R0b206MTJweDtkaXNwbGF5OmZsZXg7ZmxleC13cmFwOndyYXA7Z2FwOjEwcHg7YWxpZ24taXRlbXM6Y2VudGVyfQogIC5maWx0ZXJzIC5jaGlwe2N1cnNvcjpwb2ludGVyO3VzZXItc2VsZWN0Om5vbmU7Ym9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTtib3JkZXItcmFkaXVzOjk5OXB4O3BhZGRpbmc6NXB4IDEycHg7Zm9udC1zaXplOjEycHg7Zm9udC13ZWlnaHQ6NjAwO2JhY2tncm91bmQ6I2ZmZjtjb2xvcjp2YXIoLS1tdXQpfQogIC5maWx0ZXJzIC5jaGlwLm9ue2JhY2tncm91bmQ6dmFyKC0tbmF2eSk7Y29sb3I6I2ZmZjtib3JkZXItY29sb3I6dmFyKC0tbmF2eSl9CiAgLmZpbHRlcnMgaW5wdXRbdHlwZT10ZXh0XXtmbGV4OjE7bWluLXdpZHRoOjE4MHB4fQogIC5sZWdlbmR7Zm9udC1zaXplOjExcHg7Y29sb3I6dmFyKC0tbXV0KTtkaXNwbGF5OmZsZXg7Z2FwOjEycHg7ZmxleC13cmFwOndyYXA7bWFyZ2luOjJweCAycHggMTJweH0KICAubGVnZW5kIHNwYW57ZGlzcGxheTppbmxpbmUtZmxleDthbGlnbi1pdGVtczpjZW50ZXI7Z2FwOjVweH0KICAuZG90e3dpZHRoOjlweDtoZWlnaHQ6OXB4O2JvcmRlci1yYWRpdXM6NTAlfQoKICAvKiBUYWJsZSAqLwogIC50YWJsZWNhcmR7YmFja2dyb3VuZDp2YXIoLS1jYXJkKTtib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpO2JvcmRlci1yYWRpdXM6MTJweDtvdmVyZmxvdzpoaWRkZW59CiAgLnRhYmxlc2Nyb2xse292ZXJmbG93LXg6YXV0b30KICB0YWJsZXtib3JkZXItY29sbGFwc2U6Y29sbGFwc2U7d2lkdGg6MTAwJTttaW4td2lkdGg6MTA4MHB4fQogIHRoLHRke3BhZGRpbmc6MTBweCAxMnB4O3RleHQtYWxpZ246bGVmdDtib3JkZXItYm90dG9tOjFweCBzb2xpZCB2YXIoLS1saW5lKTt3aGl0ZS1zcGFjZTpub3dyYXB9CiAgdGh7YmFja2dyb3VuZDojZjhmYWZjO2ZvbnQtc2l6ZToxMXB4O2NvbG9yOnZhcigtLW11dCk7dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlO2xldHRlci1zcGFjaW5nOi40cHg7Y3Vyc29yOnBvaW50ZXI7cG9zaXRpb246c3RpY2t5O3RvcDowfQogIHRoLm51bSx0ZC5udW17dGV4dC1hbGlnbjpyaWdodH0KICB0Ym9keSB0cjpob3ZlcntiYWNrZ3JvdW5kOiNmOGZhZmN9CiAgdGQubmFtZXt3aGl0ZS1zcGFjZTpub3JtYWw7bWluLXdpZHRoOjIzMHB4O2ZvbnQtd2VpZ2h0OjYwMH0KICB0ZC5uYW1lIC5pZHtkaXNwbGF5OmJsb2NrO2ZvbnQtd2VpZ2h0OjQwMDtjb2xvcjp2YXIoLS1tdXQpO2ZvbnQtc2l6ZToxMXB4fQogIC5hY29zY2VsbHtkaXNwbGF5OmZsZXg7YWxpZ24taXRlbXM6Y2VudGVyO2dhcDo4cHg7anVzdGlmeS1jb250ZW50OmZsZXgtZW5kfQogIC5hY29zYmFye3dpZHRoOjU0cHg7aGVpZ2h0OjdweDtib3JkZXItcmFkaXVzOjRweDtiYWNrZ3JvdW5kOiNlZWYyZjc7b3ZlcmZsb3c6aGlkZGVuO2ZsZXg6bm9uZX0KICAuYWNvc2JhciA+IGl7ZGlzcGxheTpibG9jaztoZWlnaHQ6MTAwJX0KICAucm93YnRue3BhZGRpbmc6NXB4IDEwcHg7Zm9udC1zaXplOjEycHg7Ym9yZGVyLXJhZGl1czo3cHh9CiAgLnJvd2J0bi5wYXVzZXtjb2xvcjojOTkxYjFiO2JvcmRlci1jb2xvcjojZmNhNWE1fSAucm93YnRuLnBhdXNlOmhvdmVye2JhY2tncm91bmQ6dmFyKC0tcmVkYmcpfQogIC5yb3didG4ucGxheXtjb2xvcjojMTY2NTM0O2JvcmRlci1jb2xvcjojODZlZmFjfSAucm93YnRuLnBsYXk6aG92ZXJ7YmFja2dyb3VuZDp2YXIoLS1ncmVlbmJnKX0KICAuZW1wdHl7cGFkZGluZzozOHB4O3RleHQtYWxpZ246Y2VudGVyO2NvbG9yOnZhcigtLW11dCl9CgogIC8qIEZvb3RlciBhY3Rpb25zICsgbG9nICovCiAgLmFjdGlvbnN7ZGlzcGxheTpmbGV4O2ZsZXgtd3JhcDp3cmFwO2dhcDoxMHB4O2FsaWduLWl0ZW1zOmNlbnRlcjttYXJnaW46MTZweCAwfQogIC5sb2djYXJke2JhY2tncm91bmQ6dmFyKC0tY2FyZCk7Ym9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTtib3JkZXItcmFkaXVzOjEycHg7cGFkZGluZzoxNHB4IDE2cHg7bWFyZ2luLXRvcDo2cHg7ZGlzcGxheTpub25lfQogIC5sb2djYXJkLnNob3d7ZGlzcGxheTpibG9ja30KICAubG9ncm93e2ZvbnQtc2l6ZToxMnB4O2JvcmRlci1ib3R0b206MXB4IGRhc2hlZCB2YXIoLS1saW5lKTtwYWRkaW5nOjdweCAwO2Rpc3BsYXk6ZmxleDtnYXA6MTBweDtmbGV4LXdyYXA6d3JhcH0KICAudG9hc3R7cG9zaXRpb246Zml4ZWQ7Ym90dG9tOjIwcHg7bGVmdDo1MCU7dHJhbnNmb3JtOnRyYW5zbGF0ZVgoLTUwJSk7YmFja2dyb3VuZDp2YXIoLS1uYXZ5KTtjb2xvcjojZmZmO3BhZGRpbmc6MTFweCAxOHB4O2JvcmRlci1yYWRpdXM6MTBweDtmb250LXNpemU6MTNweDtvcGFjaXR5OjA7cG9pbnRlci1ldmVudHM6bm9uZTt0cmFuc2l0aW9uOi4yNXM7ei1pbmRleDo1MH0KICAudG9hc3Quc2hvd3tvcGFjaXR5OjF9CiAgLm11dGVke2NvbG9yOnZhcigtLW11dCl9IC5ie2ZvbnQtd2VpZ2h0OjcwMH0KICAubG9hZGluZ3twYWRkaW5nOjQwcHg7dGV4dC1hbGlnbjpjZW50ZXI7Y29sb3I6dmFyKC0tbXV0KX0KPC9zdHlsZT4KPC9oZWFkPgo8Ym9keT4KPGRpdiBjbGFzcz0id3JhcCI+CgogIDxoZWFkZXIgY2xhc3M9InRvcCI+CiAgICA8ZGl2PgogICAgICA8aDE+8J+ToiBQdWJsaWNpZGFkIMK3IE1lcmNhZG8gQWRzPC9oMT4KICAgICAgPGRpdiBjbGFzcz0ic3ViIj5QYW5lbCBkZSBjb250cm9sIGRlIFByb2R1Y3QgQWRzIOKAlCBkZWNpc2lvbmVzIHBhcmEgbm8gcGVyZGVyIGRpbmVybzwvZGl2PgogICAgPC9kaXY+CiAgICA8ZGl2IGNsYXNzPSJzcGFjZXIiPjwvZGl2PgogICAgPGRpdiBjbGFzcz0iZmllbGQiIHN0eWxlPSJtaW4td2lkdGg6MjAwcHgiPgogICAgICA8bGFiZWw+Q3VlbnRhPC9sYWJlbD4KICAgICAgPHNlbGVjdCBpZD0iYWNjb3VudCIgb25jaGFuZ2U9ImxvYWRDYW1wYWlnbnMoKSI+PC9zZWxlY3Q+CiAgICA8L2Rpdj4KICAgIDxidXR0b24gY2xhc3M9InByaW1hcnkiIG9uY2xpY2s9ImxvYWRDYW1wYWlnbnMoKSI+4oa7IEFjdHVhbGl6YXI8L2J1dHRvbj4KICA8L2hlYWRlcj4KCiAgPGRpdiBjbGFzcz0iYmFubmVyIiBpZD0iYmFubmVyIj4KICAgIDxiPuKame+4jyBGYWx0YSBhY3RpdmFyIGVsIGFjY2VzbyBhIFB1YmxpY2lkYWQgcG9yIEFQSS48L2I+CiAgICA8ZGl2IGlkPSJiYW5uZXJNc2ciIHN0eWxlPSJtYXJnaW4tdG9wOjRweCI+PC9kaXY+CiAgICA8b2w+CiAgICAgIDxsaT5BY3RpdsOhIDxiPlByb2R1Y3QgQWRzPC9iPiBlbiBsYSBjdWVudGEgKEdlc3Rpw7NuIGRlIHB1YmxpY2FjaW9uZXMg4oC6IFB1YmxpY2lkYWQpLjwvbGk+CiAgICAgIDxsaT5FbiB0dSBhcHAgZGUgTWVyY2FkbyBMaWJyZSBEZXZlbG9wZXJzLCBoYWJpbGl0w6EgZWwgcGVybWlzbyBkZSA8Yj5wdWJsaWNpZGFkIChhZHZlcnRpc2luZyk8L2I+LjwvbGk+CiAgICAgIDxsaT48Yj5SZWNvbmVjdMOhIGxhIGN1ZW50YTwvYj4gZGVzZGUgQ29uZmlndXJhY2nDs24g4oaSIEN1ZW50YXMgcGFyYSBxdWUgZWwgdG9rZW4gbnVldm8gaW5jbHV5YSBlc2UgcGVybWlzby48L2xpPgogICAgICA8bGk+UHJvYsOhIGRlIG51ZXZvLiBFbCBkaWFnbsOzc3RpY28gZXhhY3RvIGxvIGRhIDxzcGFuIGNsYXNzPSJtdXRlZCI+L2FwaS9hZHMvc2VsZnRlc3Q/YWNjb3VudF9pZD3igKY8L3NwYW4+PC9saT4KICAgIDwvb2w+CiAgPC9kaXY+CgogIDwhLS0gQ09ORklHIC0tPgogIDxkaXYgY2xhc3M9ImNvbmZpZyI+CiAgICA8aDM+Q29uZmlndXJhY2nDs24gZGUgZGVjaXNpw7NuICh0dSBtYXJnZW4gbWFuZGEpPC9oMz4KICAgIDxkaXYgY2xhc3M9ImNmZ3JpZCI+CiAgICAgIDxkaXYgY2xhc3M9ImZpZWxkIj48bGFiZWw+TWFyZ2VuIG5ldG8gJTwvbGFiZWw+PGlucHV0IHR5cGU9Im51bWJlciIgaWQ9ImNmZ19tYXJnaW4iIHN0ZXA9IjAuNSIgbWluPSIwIj48c3BhbiBjbGFzcz0iaGludCI+dHUgZXF1aWxpYnJpbyBkZSBBQ09TPC9zcGFuPjwvZGl2PgogICAgICA8ZGl2IGNsYXNzPSJmaWVsZCI+PGxhYmVsPkFDT1Mgb2JqZXRpdm8gJTwvbGFiZWw+PGlucHV0IHR5cGU9Im51bWJlciIgaWQ9ImNmZ190YXJnZXQiIHN0ZXA9IjAuNSIgbWluPSIwIj48c3BhbiBjbGFzcz0iaGludCI+bWV0YSByZW50YWJsZTwvc3Bhbj48L2Rpdj4KICAgICAgPGRpdiBjbGFzcz0iZmllbGQiPjxsYWJlbD5Nw61uLiBjbGljczwvbGFiZWw+PGlucHV0IHR5cGU9Im51bWJlciIgaWQ9ImNmZ19jbGlja3MiIHN0ZXA9IjEiIG1pbj0iMCI+PHNwYW4gY2xhc3M9ImhpbnQiPnBhcmEgZGVjaWRpcjwvc3Bhbj48L2Rpdj4KICAgICAgPGRpdiBjbGFzcz0iZmllbGQiPjxsYWJlbD5WZW50YW5hIChkw61hcyk8L2xhYmVsPjxpbnB1dCB0eXBlPSJudW1iZXIiIGlkPSJjZmdfd2luZG93IiBzdGVwPSIxIiBtaW49IjEiIG1heD0iOTAiPjxzcGFuIGNsYXNzPSJoaW50Ij5tw6F4IDkwPC9zcGFuPjwvZGl2PgogICAgICA8ZGl2IGNsYXNzPSJmaWVsZCI+PGxhYmVsPkVudsOtbyBncmF0aXMgZGVzZGUgJDwvbGFiZWw+PGlucHV0IHR5cGU9Im51bWJlciIgaWQ9ImNmZ19zaGlwIiBzdGVwPSIxMDAwIiBtaW49IjAiPjxzcGFuIGNsYXNzPSJoaW50Ij51bWJyYWwgKDMzLjAwMCk8L3NwYW4+PC9kaXY+CiAgICAgIDxidXR0b24gb25jbGljaz0ic2F2ZUNvbmZpZygpIj5HdWFyZGFyPC9idXR0b24+CiAgICAgIDxkaXYgY2xhc3M9ImF1dG90YWcgcGlsbCBwLWdyZXkiIGlkPSJhdXRvdGFnIiB0aXRsZT0iU2UgY29udHJvbGEgY29uIGxhIHZhcmlhYmxlIEFEU19BVVRPX1BBVVNFIGVuIGVsIHNlcnZlciI+QXV0by1wYXVzYTog4oCUPC9kaXY+CiAgICA8L2Rpdj4KICAgIDxkaXYgc3R5bGU9ImJvcmRlci10b3A6MXB4IHNvbGlkIHZhcigtLWxpbmUpO21hcmdpbi10b3A6MTJweDtwYWRkaW5nLXRvcDoxMnB4O2Rpc3BsYXk6ZmxleDtmbGV4LXdyYXA6d3JhcDtnYXA6MTJweDthbGlnbi1pdGVtczpjZW50ZXIiPgogICAgICA8ZGl2PgogICAgICAgIDxkaXYgY2xhc3M9ImIiIHN0eWxlPSJmb250LXNpemU6MTNweCI+8J+SsCBDb3N0byByZWFsIHBvciBwcm9kdWN0bzwvZGl2PgogICAgICAgIDxkaXYgY2xhc3M9Im11dGVkIiBzdHlsZT0iZm9udC1zaXplOjEycHgiPkltcG9ydMOhIHR1IEV4Y2VsIHByb2Nlc2FkbyAoQU5UT19DT01QTEVUTy54bHN4KS4gQ3J1emEgcG9yIDxiPml0ZW1faWQ8L2I+IHkgY2FsY3VsYSBlbCBtYXJnZW4gcmVhbCwgcHJvbW8gaW5jbHVpZGEuPC9kaXY+CiAgICAgIDwvZGl2PgogICAgICA8bGFiZWwgY2xhc3M9InBpbGwgcC1ibHVlIiBzdHlsZT0iY3Vyc29yOnBvaW50ZXIiPvCfk6UgSW1wb3J0YXIgY29zdG9zIChFeGNlbCkKICAgICAgICA8aW5wdXQgdHlwZT0iZmlsZSIgaWQ9ImNvc3RmaWxlIiBhY2NlcHQ9Ii54bHN4LC54bHMiIHN0eWxlPSJkaXNwbGF5Om5vbmUiIG9uY2hhbmdlPSJpbXBvcnRDb3N0cyh0aGlzKSI+CiAgICAgIDwvbGFiZWw+CiAgICAgIDxzcGFuIGlkPSJjb3N0c3RhdHVzIiBjbGFzcz0ibXV0ZWQiIHN0eWxlPSJmb250LXNpemU6MTJweCI+PC9zcGFuPgogICAgPC9kaXY+CiAgPC9kaXY+CgogIDwhLS0gS1BJcyAtLT4KICA8ZGl2IGNsYXNzPSJrcGlzIiBpZD0ia3BpcyI+PC9kaXY+CgogIDwhLS0gTGVnZW5kIC0tPgogIDxkaXYgY2xhc3M9ImxlZ2VuZCI+CiAgICA8c3Bhbj48aSBjbGFzcz0iZG90IiBzdHlsZT0iYmFja2dyb3VuZDp2YXIoLS1ncmVlbikiPjwvaT4gPGI+RXNjYWxhcjwvYj46IEFDT1Mg4omkIG9iamV0aXZvPC9zcGFuPgogICAgPHNwYW4+PGkgY2xhc3M9ImRvdCIgc3R5bGU9ImJhY2tncm91bmQ6dmFyKC0tYW1iZXIpIj48L2k+IDxiPk1hbnRlbmVyPC9iPjogZW50cmUgb2JqZXRpdm8geSBtYXJnZW48L3NwYW4+CiAgICA8c3Bhbj48aSBjbGFzcz0iZG90IiBzdHlsZT0iYmFja2dyb3VuZDojM2I4MmY2Ij48L2k+IDxiPkp1bnRhciBkYXRvczwvYj46IHBvY29zIGNsaWNzPC9zcGFuPgogICAgPHNwYW4+PGkgY2xhc3M9ImRvdCIgc3R5bGU9ImJhY2tncm91bmQ6dmFyKC0tcmVkKSI+PC9pPiA8Yj5QYXVzYXI8L2I+OiBBQ09TICZndDsgbWFyZ2VuIG8gc2luIHZlbnRhczwvc3Bhbj4KICA8L2Rpdj4KCiAgPCEtLSBGSUxURVJTIC0tPgogIDxkaXYgY2xhc3M9ImZpbHRlcnMiPgogICAgPHNwYW4gY2xhc3M9ImIiIHN0eWxlPSJmb250LXNpemU6MTJweDtjb2xvcjp2YXIoLS1tdXQpIj5GaWx0cmFyOjwvc3Bhbj4KICAgIDxzcGFuIGNsYXNzPSJjaGlwIG9uIiBkYXRhLWFjdD0iRVNDQUxBUiIgb25jbGljaz0idG9nZ2xlQ2hpcCh0aGlzKSI+8J+foiBFc2NhbGFyPC9zcGFuPgogICAgPHNwYW4gY2xhc3M9ImNoaXAgb24iIGRhdGEtYWN0PSJNQU5URU5FUiIgb25jbGljaz0idG9nZ2xlQ2hpcCh0aGlzKSI+8J+foSBNYW50ZW5lcjwvc3Bhbj4KICAgIDxzcGFuIGNsYXNzPSJjaGlwIG9uIiBkYXRhLWFjdD0iSlVOVEFSX0RBVE9TIiBvbmNsaWNrPSJ0b2dnbGVDaGlwKHRoaXMpIj7wn5S1IEp1bnRhciBkYXRvczwvc3Bhbj4KICAgIDxzcGFuIGNsYXNzPSJjaGlwIG9uIiBkYXRhLWFjdD0iUEFVU0FSIiBvbmNsaWNrPSJ0b2dnbGVDaGlwKHRoaXMpIj7wn5S0IFBhdXNhcjwvc3Bhbj4KICAgIDxzZWxlY3QgaWQ9InN0YXR1c0ZpbHRlciIgb25jaGFuZ2U9InJlbmRlcigpIj4KICAgICAgPG9wdGlvbiB2YWx1ZT0iYWxsIj5Ub2RvcyBsb3MgZXN0YWRvczwvb3B0aW9uPgogICAgICA8b3B0aW9uIHZhbHVlPSJhY3RpdmUiPlNvbG8gYWN0aXZhczwvb3B0aW9uPgogICAgICA8b3B0aW9uIHZhbHVlPSJwYXVzZWQiPlNvbG8gcGF1c2FkYXM8L29wdGlvbj4KICAgIDwvc2VsZWN0PgogICAgPGlucHV0IHR5cGU9InRleHQiIGlkPSJzZWFyY2giIHBsYWNlaG9sZGVyPSJCdXNjYXIgcG9yIG5vbWJyZSBvIElEIGRlIGNhbXBhw7Fh4oCmIiBvbmlucHV0PSJyZW5kZXIoKSI+CiAgPC9kaXY+CgogIDwhLS0gVEFCTEUgLS0+CiAgPGRpdiBjbGFzcz0idGFibGVjYXJkIj4KICAgIDxkaXYgY2xhc3M9InRhYmxlc2Nyb2xsIj4KICAgICAgPHRhYmxlPgogICAgICAgIDx0aGVhZD4KICAgICAgICAgIDx0cj4KICAgICAgICAgICAgPHRoIG9uY2xpY2s9InNvcnRCeSgnbmFtZScpIj5DYW1wYcOxYTwvdGg+CiAgICAgICAgICAgIDx0aCBvbmNsaWNrPSJzb3J0QnkoJ3N0YXR1cycpIj5Fc3RhZG88L3RoPgogICAgICAgICAgICA8dGggY2xhc3M9Im51bSIgb25jbGljaz0ic29ydEJ5KCdjb3N0JykiIHRpdGxlPSJJbnZlcnNpw7NuIGVuIHB1YmxpY2lkYWQiPkludmVyc2nDs248L3RoPgogICAgICAgICAgICA8dGggY2xhc3M9Im51bSIgb25jbGljaz0ic29ydEJ5KCdyZXZlbnVlJykiIHRpdGxlPSJWZW50YXMgYXRyaWJ1aWRhcyBhIHB1YmxpY2lkYWQiPlZlbnRhcyBwdWIuPC90aD4KICAgICAgICAgICAgPHRoIGNsYXNzPSJudW0iIG9uY2xpY2s9InNvcnRCeSgnYWNvcycpIiB0aXRsZT0iQ29zdG8gcHVibGljaWRhZCAvIHZlbnRhcy4gTWVub3IgZXMgbWVqb3IuIj5BQ09TPC90aD4KICAgICAgICAgICAgPHRoIGNsYXNzPSJudW0iIG9uY2xpY2s9InNvcnRCeSgnYnJlYWtldmVuQWNvcycpIiB0aXRsZT0iQUNPUyBkZSBlcXVpbGlicmlvIFJFQUwgZGUgbGEgY2FtcGHDsWEsIGNhbGN1bGFkbyBjb24gdHUgY29zdG8gcG9yIHByb2R1Y3RvLiBQb3IgZW5jaW1hIGRlIGVzdG8sIHBpZXJkZSBwbGF0YS4iPkVxdWlsaWJyaW8gcmVhbDwvdGg+CiAgICAgICAgICAgIDx0aCBjbGFzcz0ibnVtIiBvbmNsaWNrPSJzb3J0QnkoJ25ldFByb2ZpdCcpIiB0aXRsZT0iR2FuYW5jaWEgZGVzcHXDqXMgZGUgcmVzdGFyIGxhIGludmVyc2nDs24gZW4gYWRzIChjb24gdHUgY29zdG8gcmVhbCB5IHByZWNpbyBlZmVjdGl2bykiPkdhbmFuY2lhIG5ldGE8L3RoPgogICAgICAgICAgICA8dGggY2xhc3M9Im51bSIgb25jbGljaz0ic29ydEJ5KCdyb2FzJykiIHRpdGxlPSJSZXRvcm5vOiB2ZW50YXMgLyBpbnZlcnNpw7NuIj5ST0FTPC90aD4KICAgICAgICAgICAgPHRoIGNsYXNzPSJudW0iIG9uY2xpY2s9InNvcnRCeSgnY3RyJykiIHRpdGxlPSJDbGljcyAvIGltcHJlc2lvbmVzIj5DVFI8L3RoPgogICAgICAgICAgICA8dGggY2xhc3M9Im51bSIgb25jbGljaz0ic29ydEJ5KCdjbGlja3MnKSI+Q2xpY3M8L3RoPgogICAgICAgICAgICA8dGggb25jbGljaz0ic29ydEJ5KCdhY3Rpb24nKSI+QWNjacOzbiBzdWdlcmlkYTwvdGg+CiAgICAgICAgICAgIDx0aD5Nb3Rpdm88L3RoPgogICAgICAgICAgICA8dGg+PC90aD4KICAgICAgICAgIDwvdHI+CiAgICAgICAgPC90aGVhZD4KICAgICAgICA8dGJvZHkgaWQ9InRib2R5Ij48dHI+PHRkIGNvbHNwYW49IjEzIiBjbGFzcz0ibG9hZGluZyI+RWxlZ8OtIHVuYSBjdWVudGEgcGFyYSBlbXBlemFy4oCmPC90ZD48L3RyPjwvdGJvZHk+CiAgICAgIDwvdGFibGU+CiAgICA8L2Rpdj4KICA8L2Rpdj4KCiAgPCEtLSBBQ1RJT05TIC0tPgogIDxkaXYgY2xhc3M9ImFjdGlvbnMiPgogICAgPGJ1dHRvbiBjbGFzcz0icHJpbWFyeSIgb25jbGljaz0icnVuTm93KCkiPuKWtiBDb3JyZXIgYW7DoWxpc2lzIGFob3JhPC9idXR0b24+CiAgICA8YnV0dG9uIG9uY2xpY2s9InRvZ2dsZUxvZygpIj7wn5OcIFZlciDDumx0aW1hcyBjb3JyaWRhczwvYnV0dG9uPgogICAgPHNwYW4gY2xhc3M9Im11dGVkIiBpZD0ibGFzdFJ1biI+PC9zcGFuPgogIDwvZGl2PgogIDxkaXYgY2xhc3M9ImxvZ2NhcmQiIGlkPSJsb2djYXJkIj48L2Rpdj4KCjwvZGl2PgoKPGRpdiBjbGFzcz0idG9hc3QiIGlkPSJ0b2FzdCI+PC9kaXY+Cgo8c2NyaXB0PgondXNlIHN0cmljdCc7CmxldCBTVEFURSA9IHsgcm93czogW10sIGNmZzoge30sIHNvcnRLZXk6ICdjb3N0Jywgc29ydERpcjogLTEsIGFjdHM6IHtFU0NBTEFSOjEsTUFOVEVORVI6MSxKVU5UQVJfREFUT1M6MSxQQVVTQVI6MX0gfTsKY29uc3QgJCA9IGlkID0+IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKGlkKTsKY29uc3QgZm10TW9uZXkgPSBuID0+IChuPT1udWxsfHxpc05hTihuKSk/J+KAlCc6JyQnK01hdGgucm91bmQobikudG9Mb2NhbGVTdHJpbmcoJ2VzLUFSJyk7CmNvbnN0IGZtdFBjdCA9IG4gPT4gKG49PW51bGx8fGlzTmFOKG4pKT8n4oCUJzpuLnRvRml4ZWQoMSkrJyUnOwpjb25zdCBmbXRYID0gbiA9PiAobj09bnVsbHx8aXNOYU4obikpPyfigJQnOm4udG9GaXhlZCgxKSsneCc7CmZ1bmN0aW9uIHRvYXN0KG0pe2NvbnN0IHQ9JCgndG9hc3QnKTt0LnRleHRDb250ZW50PW07dC5jbGFzc0xpc3QuYWRkKCdzaG93Jyk7c2V0VGltZW91dCgoKT0+dC5jbGFzc0xpc3QucmVtb3ZlKCdzaG93JyksMjYwMCk7fQoKYXN5bmMgZnVuY3Rpb24gYXBpKHBhdGgsIG9wdHMpewogIGNvbnN0IHIgPSBhd2FpdCBmZXRjaChwYXRoLCBPYmplY3QuYXNzaWduKHtoZWFkZXJzOnsnQ29udGVudC1UeXBlJzonYXBwbGljYXRpb24vanNvbid9fSwgb3B0cykpOwogIGlmKHIuc3RhdHVzPT09NDAxKXsgbG9jYXRpb24uaHJlZj0nLyc7IHJldHVybiBuZXcgUHJvbWlzZSgoKT0+e30pOyB9CiAgY29uc3QgZCA9IGF3YWl0IHIuanNvbigpLmNhdGNoKCgpPT4oe30pKTsKICBpZighci5vaykgdGhyb3cgKGQuZXJyb3IgPyBkIDoge2Vycm9yOidIVFRQICcrci5zdGF0dXN9KTsKICByZXR1cm4gZDsKfQoKYXN5bmMgZnVuY3Rpb24gaW5pdCgpewogIHRyeXsKICAgIGNvbnN0IGFjY3MgPSBhd2FpdCBhcGkoJy9hcGkvYWRzL2FjY291bnRzJyk7CiAgICBjb25zdCBzZWwgPSAkKCdhY2NvdW50Jyk7IHNlbC5pbm5lckhUTUw9Jyc7CiAgICAoYWNjcy5hY2NvdW50c3x8YWNjc3x8W10pLmZvckVhY2goYT0+ewogICAgICBjb25zdCBvPWRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ29wdGlvbicpOyBvLnZhbHVlPWEuaWQ7IG8udGV4dENvbnRlbnQ9YS5uYW1lKycgKCcrYS5zZWxsZXJfaWQrJyknOyBzZWwuYXBwZW5kQ2hpbGQobyk7CiAgICB9KTsKICB9Y2F0Y2goZSl7IC8qIHNpIC9hcGkvYWNjb3VudHMgcmVxdWllcmUgYWRtaW4gdSBvdHJhIGZvcm1hLCBzZSByZXN1ZWx2ZSBhbCBjYXJnYXIgKi8gfQogIGF3YWl0IGxvYWRDb25maWcoKTsKICBsb2FkQ29zdFN0YXR1cygpOwogIGlmKCQoJ2FjY291bnQnKS52YWx1ZSkgbG9hZENhbXBhaWducygpOwp9Cgphc3luYyBmdW5jdGlvbiBsb2FkQ29uZmlnKCl7CiAgdHJ5ewogICAgY29uc3QgYyA9IGF3YWl0IGFwaSgnL2FwaS9hZHMvY29uZmlnJyk7CiAgICBTVEFURS5jZmc9YzsKICAgICQoJ2NmZ19tYXJnaW4nKS52YWx1ZT1jLm1hcmdpbjsgJCgnY2ZnX3RhcmdldCcpLnZhbHVlPWMuYWNvc1RhcmdldDsKICAgICQoJ2NmZ19jbGlja3MnKS52YWx1ZT1jLm1pbkNsaWNrczsgJCgnY2ZnX3dpbmRvdycpLnZhbHVlPWMud2luZG93RGF5czsKICAgICQoJ2NmZ19zaGlwJykudmFsdWU9Yy5mcmVlU2hpcFRocmVzaG9sZCE9bnVsbD9jLmZyZWVTaGlwVGhyZXNob2xkOjMzMDAwOwogICAgY29uc3QgdGFnPSQoJ2F1dG90YWcnKTsKICAgIHRhZy50ZXh0Q29udGVudD0nQXV0by1wYXVzYTogJysoYy5hdXRvUGF1c2U/J0FDVElWQSc6J0RSWS1SVU4gKG5vIHBhdXNhKScpOwogICAgdGFnLmNsYXNzTmFtZT0nYXV0b3RhZyBwaWxsICcrKGMuYXV0b1BhdXNlPydwLXJlZCc6J3AtZ3JleScpOwogIH1jYXRjaChlKXt9Cn0KYXN5bmMgZnVuY3Rpb24gc2F2ZUNvbmZpZygpewogIHRyeXsKICAgIGNvbnN0IGJvZHk9e21hcmdpbjorJCgnY2ZnX21hcmdpbicpLnZhbHVlLCBhY29zVGFyZ2V0OiskKCdjZmdfdGFyZ2V0JykudmFsdWUsIG1pbkNsaWNrczorJCgnY2ZnX2NsaWNrcycpLnZhbHVlLCB3aW5kb3dEYXlzOiskKCdjZmdfd2luZG93JykudmFsdWUsIGZyZWVTaGlwVGhyZXNob2xkOiskKCdjZmdfc2hpcCcpLnZhbHVlfTsKICAgIGNvbnN0IHI9YXdhaXQgYXBpKCcvYXBpL2Fkcy9jb25maWcnLHttZXRob2Q6J1BPU1QnLGJvZHk6SlNPTi5zdHJpbmdpZnkoYm9keSl9KTsKICAgIFNUQVRFLmNmZz1yLmNvbmZpZzsgdG9hc3QoJ0NvbmZpZ3VyYWNpw7NuIGd1YXJkYWRhJyk7IGlmKCQoJ2FjY291bnQnKS52YWx1ZSkgbG9hZENhbXBhaWducygpOwogIH1jYXRjaChlKXsgdG9hc3QoJ0Vycm9yOiAnKyhlLmVycm9yfHxlKSk7IH0KfQoKLy8gLS0tLSBJbXBvcnRhciBjb3N0b3MgZGVzZGUgdHUgRXhjZWwgcHJvY2VzYWRvIChBTlRPL01BUkFfQ09NUExFVE8ueGxzeCkgLS0tLQpmdW5jdGlvbiBwaWNrKHJvdywgbmFtZXMpeyBmb3IoY29uc3QgbiBvZiBuYW1lcyl7IGZvcihjb25zdCBrIGluIHJvdyl7IGlmKFN0cmluZyhrKS50cmltKCkudG9Mb3dlckNhc2UoKT09PW4pIHJldHVybiByb3dba107IH0gfSByZXR1cm4gdW5kZWZpbmVkOyB9CmZ1bmN0aW9uIGltcG9ydENvc3RzKGlucHV0KXsKICBjb25zdCBmaWxlPWlucHV0LmZpbGVzJiZpbnB1dC5maWxlc1swXTsgaWYoIWZpbGUpIHJldHVybjsKICBpZih0eXBlb2YgWExTWD09PSd1bmRlZmluZWQnKXsgdG9hc3QoJ05vIGNhcmfDsyBsYSBsaWJyZXLDrWEgZGUgRXhjZWwgKHJldmlzw6EgY29uZXhpw7NuKScpOyByZXR1cm47IH0KICBjb25zdCByZWFkZXI9bmV3IEZpbGVSZWFkZXIoKTsKICByZWFkZXIub25sb2FkPWFzeW5jIGU9PnsKICAgIHRyeXsKICAgICAgY29uc3Qgd2I9WExTWC5yZWFkKGUudGFyZ2V0LnJlc3VsdCx7dHlwZTonYXJyYXknfSk7CiAgICAgIGNvbnN0IHdzPXdiLlNoZWV0c1snU2hlZXQxJ118fHdiLlNoZWV0c1t3Yi5TaGVldE5hbWVzWzBdXTsKICAgICAgY29uc3Qgcm93cz1YTFNYLnV0aWxzLnNoZWV0X3RvX2pzb24od3Mse2RlZnZhbDonJ30pOwogICAgICBjb25zdCBjb3N0cz1bXTsKICAgICAgZm9yKGNvbnN0IHIgb2Ygcm93cyl7CiAgICAgICAgY29uc3QgaXRlbV9pZD1TdHJpbmcocGljayhyLFsnaXRlbV9pZCddKXx8JycpLnRyaW0oKTsKICAgICAgICBpZighL15NTEFcZCsvaS50ZXN0KGl0ZW1faWQpKSBjb250aW51ZTsKICAgICAgICBjb3N0cy5wdXNoKHsKICAgICAgICAgIGl0ZW1faWQsCiAgICAgICAgICBjb3N0OiBwaWNrKHIsWydwcmVjaW8gY29zdG8nXSksCiAgICAgICAgICBjb3N0U2hpcDogcGljayhyLFsnY29zdG8vZ2FzdG9zJ10pLAogICAgICAgICAgc2hpcDogcGljayhyLFsnc2hpcHBpbmcnXSksCiAgICAgICAgICBjb21taXNzaW9uOiBwaWNrKHIsWydjb3N0byBwb3IgdmVuZGVyJ10pLAogICAgICAgICAgbGlzdGluZ1R5cGU6IHBpY2socixbJ2xpc3RpbmdfdHlwZV9pZCddKSwKICAgICAgICAgIGxpc3RQcmljZTogcGljayhyLFsncHJlY2lvIGZpbmFsJ10pLAogICAgICAgICAgbWFyZ2luTGlzdDogcGljayhyLFsnbWFyZ2VuIGRlIGdhbmFuY2lhJ10pCiAgICAgICAgfSk7CiAgICAgIH0KICAgICAgaWYoIWNvc3RzLmxlbmd0aCl7IHRvYXN0KCdObyBlbmNvbnRyw6kgZmlsYXMgY29uIGl0ZW1faWQgdsOhbGlkbycpOyByZXR1cm47IH0KICAgICAgY29uc3QgcmVzPWF3YWl0IGFwaSgnL2FwaS9hZHMvY29zdHMnLHttZXRob2Q6J1BPU1QnLGJvZHk6SlNPTi5zdHJpbmdpZnkoe2Nvc3RzLHJlcGxhY2U6dHJ1ZX0pfSk7CiAgICAgIHRvYXN0KCdDb3N0b3MgaW1wb3J0YWRvczogJytyZXMuaW1wb3J0ZWQrJyBwcm9kdWN0b3MnKTsKICAgICAgbG9hZENvc3RTdGF0dXMoKTsKICAgICAgaWYoJCgnYWNjb3VudCcpLnZhbHVlKSBsb2FkQ2FtcGFpZ25zKCk7CiAgICB9Y2F0Y2goZXJyKXsgdG9hc3QoJ0Vycm9yIGltcG9ydGFuZG86ICcrKGVyci5lcnJvcnx8ZXJyLm1lc3NhZ2V8fGVycikpOyB9CiAgICBpbnB1dC52YWx1ZT0nJzsKICB9OwogIHJlYWRlci5yZWFkQXNBcnJheUJ1ZmZlcihmaWxlKTsKfQphc3luYyBmdW5jdGlvbiBsb2FkQ29zdFN0YXR1cygpewogIHRyeXsKICAgIGNvbnN0IGQ9YXdhaXQgYXBpKCcvYXBpL2Fkcy9jb3N0cycpOwogICAgJCgnY29zdHN0YXR1cycpLmlubmVySFRNTCA9IGQudG90YWw/ICgn4pyFIDxiPicrZC50b3RhbC50b0xvY2FsZVN0cmluZygnZXMtQVInKSsnPC9iPiBwcm9kdWN0b3MgY29uIGNvc3RvIGNhcmdhZG8nKyhkLnVwZGF0ZWQ/KCcgwrcgJytuZXcgRGF0ZShkLnVwZGF0ZWQpLnRvTG9jYWxlRGF0ZVN0cmluZygnZXMtQVInKSk6JycpKSA6ICfimqDvuI8gU2luIGNvc3RvcyBjYXJnYWRvczogc2UgdXNhIGVsIG1hcmdlbiBnbG9iYWwuJzsKICB9Y2F0Y2goZSl7ICQoJ2Nvc3RzdGF0dXMnKS50ZXh0Q29udGVudD0nJzsgfQp9Cgphc3luYyBmdW5jdGlvbiBsb2FkQ2FtcGFpZ25zKCl7CiAgY29uc3QgaWQ9JCgnYWNjb3VudCcpLnZhbHVlOwogIGlmKCFpZCl7IHJldHVybjsgfQogICQoJ2Jhbm5lcicpLmNsYXNzTGlzdC5yZW1vdmUoJ3Nob3cnKTsKICAkKCd0Ym9keScpLmlubmVySFRNTD0nPHRyPjx0ZCBjb2xzcGFuPSIxMyIgY2xhc3M9ImxvYWRpbmciPkNhcmdhbmRvIGNhbXBhw7Fhc+KApjwvdGQ+PC90cj4nOwogIHRyeXsKICAgIGNvbnN0IGQ9YXdhaXQgYXBpKCcvYXBpL2Fkcy9jYW1wYWlnbnM/YWNjb3VudF9pZD0nK2lkKTsKICAgIFNUQVRFLmNmZz1kLmNvbmZpZ3x8U1RBVEUuY2ZnOwogICAgU1RBVEUucm93cz0oZC5jYW1wYWlnbnN8fFtdKS5tYXAoZW5yaWNoKTsKICAgIHJlbmRlcigpOwogIH1jYXRjaChlKXsKICAgIFNUQVRFLnJvd3M9W107IHJlbmRlcigpOwogICAgJCgnYmFubmVyTXNnJykudGV4dENvbnRlbnQgPSB0eXBlb2YgZS5lcnJvcj09PSdzdHJpbmcnPyBlLmVycm9yIDogSlNPTi5zdHJpbmdpZnkoZS5lcnJvcik7CiAgICAkKCdiYW5uZXInKS5jbGFzc0xpc3QuYWRkKCdzaG93Jyk7CiAgfQp9CgpmdW5jdGlvbiBlbnJpY2gocil7CiAgY29uc3QgbT1yLm1ldHJpY3N8fHt9OwogIGNvbnN0IGN0ciA9IG0ucHJpbnRzPjAgPyAobS5jbGlja3MvbS5wcmludHMqMTAwKSA6IG51bGw7CiAgY29uc3QgY3BjID0gbS5jbGlja3M+MCA/IChtLmNvc3QvbS5jbGlja3MpIDogbnVsbDsKICBjb25zdCBjb252ID0gbS5jbGlja3M+MCA/IChtLnVuaXRzL20uY2xpY2tzKjEwMCkgOiBudWxsOwogIHJldHVybiB7Li4uciwgY29zdDptLmNvc3R8fDAsIHJldmVudWU6bS5yZXZlbnVlfHwwLCBhY29zOm0uYWNvcywgcm9hczptLnJvYXMsIGNsaWNrczptLmNsaWNrc3x8MCwgcHJpbnRzOm0ucHJpbnRzfHwwLCB1bml0czptLnVuaXRzfHwwLCBjdHIsIGNwYywgY29udn07Cn0KCmZ1bmN0aW9uIHRvZ2dsZUNoaXAoZWwpeyBlbC5jbGFzc0xpc3QudG9nZ2xlKCdvbicpOyBTVEFURS5hY3RzW2VsLmRhdGFzZXQuYWN0XT1lbC5jbGFzc0xpc3QuY29udGFpbnMoJ29uJyk/MTowOyByZW5kZXIoKTsgfQpmdW5jdGlvbiBzb3J0Qnkoayl7IGlmKFNUQVRFLnNvcnRLZXk9PT1rKSBTVEFURS5zb3J0RGlyKj0tMTsgZWxzZSB7U1RBVEUuc29ydEtleT1rOyBTVEFURS5zb3J0RGlyPS0xO30gcmVuZGVyKCk7IH0KCmZ1bmN0aW9uIGFjdGlvblBpbGwoYSl7CiAgY29uc3QgbWFwPXtFU0NBTEFSOlsncC1ncmVlbicsJ/Cfn6IgRXNjYWxhciddLE1BTlRFTkVSOlsncC1hbWJlcicsJ/Cfn6EgTWFudGVuZXInXSxKVU5UQVJfREFUT1M6WydwLWJsdWUnLCfwn5S1IEp1bnRhciBkYXRvcyddLFBBVVNBUjpbJ3AtcmVkJywn8J+UtCBQYXVzYXInXX07CiAgY29uc3QgW2Nscyx0eHRdPW1hcFthXXx8WydwLWdyZXknLGFdOyByZXR1cm4gJzxzcGFuIGNsYXNzPSJwaWxsICcrY2xzKyciPicrdHh0Kyc8L3NwYW4+JzsKfQpmdW5jdGlvbiBhY29zQmFyKGFjb3MsIGJyZWFrZXZlbil7CiAgY29uc3QgYmUgPSAoYnJlYWtldmVuIT1udWxsKT8gYnJlYWtldmVuIDogKCtTVEFURS5jZmcubWFyZ2lufHwxMik7CiAgY29uc3QgdGFyZ2V0ID0gKGJyZWFrZXZlbiE9bnVsbCk/IGJyZWFrZXZlbiowLjYgOiAoK1NUQVRFLmNmZy5hY29zVGFyZ2V0fHw3KTsKICBpZihhY29zPT1udWxsKSByZXR1cm4gJzxzcGFuIGNsYXNzPSJtdXRlZCI+cy92ZW50YTwvc3Bhbj4nOwogIGNvbnN0IHBjdD1NYXRoLm1pbigxMDAsIGFjb3MvKGJlKjEuNikqMTAwKTsKICBsZXQgY29sPWFjb3M8PXRhcmdldD8ndmFyKC0tZ3JlZW4pJzooYWNvczw9YmU/J3ZhcigtLWFtYmVyKSc6J3ZhcigtLXJlZCknKTsKICByZXR1cm4gJzxkaXYgY2xhc3M9ImFjb3NjZWxsIj48c3Bhbj4nK2ZtdFBjdChhY29zKSsnPC9zcGFuPjxkaXYgY2xhc3M9ImFjb3NiYXIiPjxpIHN0eWxlPSJ3aWR0aDonK3BjdCsnJTtiYWNrZ3JvdW5kOicrY29sKyciPjwvaT48L2Rpdj48L2Rpdj4nOwp9CgpmdW5jdGlvbiBmaWx0ZXJlZFJvd3MoKXsKICBjb25zdCBxPSgkKCdzZWFyY2gnKS52YWx1ZXx8JycpLnRvTG93ZXJDYXNlKCkudHJpbSgpOwogIGNvbnN0IHN0PSQoJ3N0YXR1c0ZpbHRlcicpLnZhbHVlOwogIGxldCByb3dzPVNUQVRFLnJvd3MuZmlsdGVyKHI9PlNUQVRFLmFjdHNbci5hY3Rpb25dKTsKICBpZihzdCE9PSdhbGwnKSByb3dzPXJvd3MuZmlsdGVyKHI9PlN0cmluZyhyLnN0YXR1cykudG9Mb3dlckNhc2UoKT09PXN0KTsKICBpZihxKSByb3dzPXJvd3MuZmlsdGVyKHI9PihyLm5hbWV8fCcnKS50b0xvd2VyQ2FzZSgpLmluY2x1ZGVzKHEpfHxTdHJpbmcoci5jYW1wYWlnbl9pZCkuaW5jbHVkZXMocSkpOwogIGNvbnN0IGs9U1RBVEUuc29ydEtleSwgZGlyPVNUQVRFLnNvcnREaXI7CiAgcm93cy5zb3J0KChhLGIpPT57CiAgICBsZXQgeD1hW2tdLCB5PWJba107CiAgICBpZihrPT09J25hbWUnfHxrPT09J3N0YXR1cyd8fGs9PT0nYWN0aW9uJyl7IHg9U3RyaW5nKHh8fCcnKTsgeT1TdHJpbmcoeXx8JycpOyByZXR1cm4gZGlyKngubG9jYWxlQ29tcGFyZSh5KTsgfQogICAgeD0oeD09bnVsbD8tMTp4KTsgeT0oeT09bnVsbD8tMTp5KTsgcmV0dXJuIGRpciooeC15KTsKICB9KTsKICByZXR1cm4gcm93czsKfQoKZnVuY3Rpb24gcmVuZGVyKCl7CiAgY29uc3Qgcm93cz1maWx0ZXJlZFJvd3MoKTsKICByZW5kZXJLcGlzKCk7CiAgY29uc3QgdGI9JCgndGJvZHknKTsKICBpZighcm93cy5sZW5ndGgpeyB0Yi5pbm5lckhUTUw9Jzx0cj48dGQgY29sc3Bhbj0iMTMiIGNsYXNzPSJlbXB0eSI+Tm8gaGF5IGNhbXBhw7FhcyBxdWUgY29pbmNpZGFuIGNvbiBsb3MgZmlsdHJvcy48L3RkPjwvdHI+JzsgcmV0dXJuOyB9CiAgdGIuaW5uZXJIVE1MPXJvd3MubWFwKHI9PnsKICAgIGNvbnN0IHN0UGlsbCA9IFN0cmluZyhyLnN0YXR1cykudG9Mb3dlckNhc2UoKT09PSdhY3RpdmUnPyc8c3BhbiBjbGFzcz0icGlsbCBwLWdyZWVuIj5BY3RpdmE8L3NwYW4+JzonPHNwYW4gY2xhc3M9InBpbGwgcC1ncmV5Ij4nKyhyLnN0YXR1c3x8J+KAlCcpKyc8L3NwYW4+JzsKICAgIGNvbnN0IGlzQWN0aXZlPVN0cmluZyhyLnN0YXR1cykudG9Mb3dlckNhc2UoKT09PSdhY3RpdmUnOwogICAgY29uc3QgYnRuID0gaXNBY3RpdmUKICAgICAgPyAnPGJ1dHRvbiBjbGFzcz0icm93YnRuIHBhdXNlIiBvbmNsaWNrPSJzZXRTdGF0dXMoXCcnK3IuY2FtcGFpZ25faWQrJ1wnLFwncGF1c2VkXCcpIj5QYXVzYXI8L2J1dHRvbj4nCiAgICAgIDogJzxidXR0b24gY2xhc3M9InJvd2J0biBwbGF5IiBvbmNsaWNrPSJzZXRTdGF0dXMoXCcnK3IuY2FtcGFpZ25faWQrJ1wnLFwnYWN0aXZlXCcpIj5BY3RpdmFyPC9idXR0b24+JzsKICAgIHJldHVybiAnPHRyPicrCiAgICAgICc8dGQgY2xhc3M9Im5hbWUiPicrZXNjKHIubmFtZSkrJzxzcGFuIGNsYXNzPSJpZCI+JytyLmNhbXBhaWduX2lkKyc8L3NwYW4+PC90ZD4nKwogICAgICAnPHRkPicrc3RQaWxsKyc8L3RkPicrCiAgICAgICc8dGQgY2xhc3M9Im51bSI+JytmbXRNb25leShyLmNvc3QpKyc8L3RkPicrCiAgICAgICc8dGQgY2xhc3M9Im51bSI+JytmbXRNb25leShyLnJldmVudWUpKyc8L3RkPicrCiAgICAgICc8dGQgY2xhc3M9Im51bSI+JythY29zQmFyKHIuYWNvcywgci5icmVha2V2ZW5BY29zKSsnPC90ZD4nKwogICAgICAnPHRkIGNsYXNzPSJudW0iPicrKHIuYnJlYWtldmVuQWNvcyE9bnVsbD9mbXRQY3Qoci5icmVha2V2ZW5BY29zKTonPHNwYW4gY2xhc3M9Im11dGVkIiB0aXRsZT0iSW1wb3J0w6EgdHUgRXhjZWwgZGUgY29zdG9zIHBhcmEgdmVyIGVsIGVxdWlsaWJyaW8gcmVhbCI+cy9jb3N0bzwvc3Bhbj4nKSsnPC90ZD4nKwogICAgICAnPHRkIGNsYXNzPSJudW0iIHN0eWxlPSJmb250LXdlaWdodDo3MDA7Y29sb3I6Jysoci5uZXRQcm9maXQ9PW51bGw/J3ZhcigtLW11dCknOihyLm5ldFByb2ZpdD49MD8ndmFyKC0tZ3JlZW4pJzondmFyKC0tcmVkKScpKSsnIj4nKyhyLm5ldFByb2ZpdD09bnVsbD8n4oCUJzpmbXRNb25leShyLm5ldFByb2ZpdCkpKyc8L3RkPicrCiAgICAgICc8dGQgY2xhc3M9Im51bSI+JytmbXRYKHIucm9hcykrJzwvdGQ+JysKICAgICAgJzx0ZCBjbGFzcz0ibnVtIj4nK2ZtdFBjdChyLmN0cikrJzwvdGQ+JysKICAgICAgJzx0ZCBjbGFzcz0ibnVtIj4nK3IuY2xpY2tzLnRvTG9jYWxlU3RyaW5nKCdlcy1BUicpKyc8L3RkPicrCiAgICAgICc8dGQ+JythY3Rpb25QaWxsKHIuYWN0aW9uKSsnPC90ZD4nKwogICAgICAnPHRkIGNsYXNzPSJtdXRlZCIgc3R5bGU9IndoaXRlLXNwYWNlOm5vcm1hbDttYXgtd2lkdGg6MjIwcHgiPicrZXNjKHIucmVhc29ufHwnJykrJzwvdGQ+JysKICAgICAgJzx0ZD4nK2J0bisnPC90ZD4nKwogICAgJzwvdHI+JzsKICB9KS5qb2luKCcnKTsKfQpmdW5jdGlvbiBlc2Mocyl7cmV0dXJuIFN0cmluZyhzPT1udWxsPycnOnMpLnJlcGxhY2UoL1smPD4iXS9nLGM9Pih7JyYnOicmYW1wOycsJzwnOicmbHQ7JywnPic6JyZndDsnLCciJzonJnF1b3Q7J31bY10pKTt9CgpmdW5jdGlvbiByZW5kZXJLcGlzKCl7CiAgY29uc3Qgcm93cz1TVEFURS5yb3dzOyAvLyBLUElzIHNvYnJlIHRvZG8sIG5vIHNvYnJlIGVsIGZpbHRybwogIGNvbnN0IGNvc3Q9cm93cy5yZWR1Y2UoKHMscik9PnMrKHIuY29zdHx8MCksMCk7CiAgY29uc3QgcmV2PXJvd3MucmVkdWNlKChzLHIpPT5zKyhyLnJldmVudWV8fDApLDApOwogIGNvbnN0IGFjb3M9cmV2PjA/Y29zdC9yZXYqMTAwOm51bGw7CiAgY29uc3Qgcm9hcz1jb3N0PjA/cmV2L2Nvc3Q6bnVsbDsKICBjb25zdCBtYXJnaW49K1NUQVRFLmNmZy5tYXJnaW58fDEyOwogIGNvbnN0IHByb2ZpdD1yZXYqKG1hcmdpbi8xMDApLWNvc3Q7CiAgY29uc3QgY250PWE9PnJvd3MuZmlsdGVyKHI9PnIuYWN0aW9uPT09YSkubGVuZ3RoOwogIGNvbnN0IGFjb3NDbHM9YWNvcz09bnVsbD8nJzooYWNvczw9KCtTVEFURS5jZmcuYWNvc1RhcmdldHx8Nyk/J2dvb2QnOihhY29zPD1tYXJnaW4/J3dhcm4nOidiYWQnKSk7CiAgY29uc3QgcHJvZkNscz1wcm9maXQ+PTA/J2dvb2QnOidiYWQnOwogIC8vIEdhbmFuY2lhIG5ldGEgUkVBTCAoY29uIHR1IGNvc3RvIHBvciBwcm9kdWN0bykgY3VhbmRvIGhheSBjb3N0b3MgY2FyZ2Fkb3MuCiAgY29uc3QgcmVhbFJvd3M9cm93cy5maWx0ZXIocj0+ci5uZXRQcm9maXQhPW51bGwpOwogIGNvbnN0IHJlYWxOZXQ9cmVhbFJvd3MucmVkdWNlKChzLHIpPT5zK3IubmV0UHJvZml0LDApOwogIGNvbnN0IGhhc1JlYWw9cmVhbFJvd3MubGVuZ3RoPjA7CiAgY29uc3QgcHJvZml0TGFiZWw9aGFzUmVhbD8oJ0dhbmFuY2lhIG5ldGEgcmVhbCAoJytyZWFsUm93cy5sZW5ndGgrJyknKTonR2FuYW5jaWEgZXN0aW0uJzsKICBjb25zdCBwcm9maXRWYWw9aGFzUmVhbD9yZWFsTmV0OnByb2ZpdDsKICBjb25zdCB0aWxlcz1bCiAgICBbJ0ludmVyc2nDs24nLGZtdE1vbmV5KGNvc3QpLCcnXSwKICAgIFsnVmVudGFzIHBvciBwdWIuJyxmbXRNb25leShyZXYpLCcnXSwKICAgIFsnQUNPUyBnbG9iYWwnLGZtdFBjdChhY29zKSxhY29zQ2xzXSwKICAgIFsnUk9BUyBnbG9iYWwnLGZtdFgocm9hcykscm9hcyYmcm9hcz49MS8obWFyZ2luLzEwMCk/J2dvb2QnOid3YXJuJ10sCiAgICBbcHJvZml0TGFiZWwsZm10TW9uZXkocHJvZml0VmFsKSxwcm9maXRWYWw+PTA/J2dvb2QnOidiYWQnXSwKICAgIFsn8J+foicrY250KCdFU0NBTEFSJykrJyDwn5+hJytjbnQoJ01BTlRFTkVSJykrJyDwn5S0JytjbnQoJ1BBVVNBUicpLCcnLCcnXSwKICBdOwogICQoJ2twaXMnKS5pbm5lckhUTUw9dGlsZXMubWFwKCh0LGkpPT57CiAgICBpZihpPT09NSkgcmV0dXJuICc8ZGl2IGNsYXNzPSJrcGkiPjxkaXYgY2xhc3M9ImsiPlNlbcOhZm9ybzwvZGl2PjxkaXYgY2xhc3M9InYgc21hbGwiPicrdFswXSsnPC9kaXY+PC9kaXY+JzsKICAgIHJldHVybiAnPGRpdiBjbGFzcz0ia3BpICcrdFsyXSsnIj48ZGl2IGNsYXNzPSJrIj4nK3RbMF0rJzwvZGl2PjxkaXYgY2xhc3M9InYiPicrdFsxXSsnPC9kaXY+PC9kaXY+JzsKICB9KS5qb2luKCcnKTsKfQoKYXN5bmMgZnVuY3Rpb24gc2V0U3RhdHVzKGNhbXBhaWduX2lkLCBzdGF0dXMpewogIGNvbnN0IGFjY291bnRfaWQ9JCgnYWNjb3VudCcpLnZhbHVlOwogIGNvbnN0IHZlcmI9c3RhdHVzPT09J3BhdXNlZCc/J3BhdXNhcic6J2FjdGl2YXInOwogIHRyeXsKICAgIGF3YWl0IGFwaSgnL2FwaS9hZHMvY2FtcGFpZ24tc3RhdHVzJyx7bWV0aG9kOidQT1NUJyxib2R5OkpTT04uc3RyaW5naWZ5KHthY2NvdW50X2lkLGNhbXBhaWduX2lkLHN0YXR1c30pfSk7CiAgICBjb25zdCByb3c9U1RBVEUucm93cy5maW5kKHI9PlN0cmluZyhyLmNhbXBhaWduX2lkKT09PVN0cmluZyhjYW1wYWlnbl9pZCkpOyBpZihyb3cpIHJvdy5zdGF0dXM9c3RhdHVzOwogICAgdG9hc3QoJ0NhbXBhw7FhICcrKHN0YXR1cz09PSdwYXVzZWQnPydwYXVzYWRhJzonYWN0aXZhZGEnKSk7CiAgICByZW5kZXIoKTsKICB9Y2F0Y2goZSl7IHRvYXN0KCdObyBzZSBwdWRvICcrdmVyYisnOiAnKyh0eXBlb2YgZS5lcnJvcj09PSdzdHJpbmcnP2UuZXJyb3I6SlNPTi5zdHJpbmdpZnkoZS5lcnJvcikpKTsgfQp9Cgphc3luYyBmdW5jdGlvbiBydW5Ob3coKXsKICB0cnl7CiAgICB0b2FzdCgnQ29ycmllbmRvIGFuw6FsaXNpc+KApicpOwogICAgY29uc3QgZD1hd2FpdCBhcGkoJy9hcGkvYWRzL3J1bi1ub3cnLHttZXRob2Q6J1BPU1QnfSk7CiAgICBjb25zdCBwYXVzZWQ9ZC5yZXN1bHRzLmZpbHRlcihyPT5yLnBhdXNlZCkubGVuZ3RoLCB3b3VsZD1kLnJlc3VsdHMuZmlsdGVyKHI9PnIud291bGRfcGF1c2UpLmxlbmd0aDsKICAgIHRvYXN0KGQuZHJ5X3J1bj8gKCdEUlktUlVOOiBwYXVzYXLDrWEgJyt3b3VsZCsnIGNhbXBhw7FhcycpIDogKCdMaXN0bzogJytwYXVzZWQrJyBwYXVzYWRhcycpKTsKICAgIGlmKCQoJ2FjY291bnQnKS52YWx1ZSkgbG9hZENhbXBhaWducygpOwogICAgbG9hZExvZygpOwogIH1jYXRjaChlKXsgdG9hc3QoJ0Vycm9yOiAnKyhlLmVycm9yfHxlKSk7IH0KfQoKYXN5bmMgZnVuY3Rpb24gbG9hZExvZygpewogIHRyeXsKICAgIGNvbnN0IGQ9YXdhaXQgYXBpKCcvYXBpL2Fkcy9sb2cnKTsKICAgICQoJ2xhc3RSdW4nKS50ZXh0Q29udGVudCA9IGQubGFzdF9ydW4/ICgnw5psdGltYSBjb3JyaWRhOiAnK25ldyBEYXRlKGQubGFzdF9ydW4pLnRvTG9jYWxlU3RyaW5nKCdlcy1BUicpKSA6ICdTaW4gY29ycmlkYXMgYcO6bic7CiAgICBjb25zdCBydW5zPWQucnVuc3x8W107CiAgICAkKCdsb2djYXJkJykuaW5uZXJIVE1MID0gcnVucy5sZW5ndGg/IHJ1bnMubWFwKHJ1bj0+ewogICAgICBjb25zdCBoZWFkPSc8ZGl2IGNsYXNzPSJiIj4nK25ldyBEYXRlKHJ1bi5hdCkudG9Mb2NhbGVTdHJpbmcoJ2VzLUFSJykrJyDCtyAnKyhydW4uZHJ5X3J1bj8nRFJZLVJVTic6J0xJVkUnKSsnPC9kaXY+JzsKICAgICAgY29uc3QgaXRlbXM9KHJ1bi5yZXN1bHRzfHxbXSkuZmlsdGVyKHI9PnIud291bGRfcGF1c2V8fHIucGF1c2VkfHxyLmVycm9yKS5tYXAocj0+CiAgICAgICAgJzxkaXYgY2xhc3M9ImxvZ3JvdyI+PHNwYW4gY2xhc3M9InBpbGwgJysoci5wYXVzZWQ/J3AtcmVkJzooci5lcnJvcj8ncC1ncmV5JzoncC1hbWJlcicpKSsnIj4nKyhyLnBhdXNlZD8ncGF1c2FkYSc6KHIuZXJyb3I/J2Vycm9yJzonYSBwYXVzYXInKSkrJzwvc3Bhbj4gPHNwYW4gY2xhc3M9ImIiPicrZXNjKHIubmFtZXx8ci5hY2NvdW50fHwnJykrJzwvc3Bhbj4gPHNwYW4gY2xhc3M9Im11dGVkIj4nK2VzYyhyLnJlYXNvbnx8ci5lcnJvcnx8JycpKyc8L3NwYW4+PC9kaXY+JwogICAgICApLmpvaW4oJycpfHwnPGRpdiBjbGFzcz0ibXV0ZWQiIHN0eWxlPSJwYWRkaW5nOjZweCAwIj5TaW4gY2FtYmlvcyBlbiBlc3RhIGNvcnJpZGEuPC9kaXY+JzsKICAgICAgcmV0dXJuIGhlYWQraXRlbXM7CiAgICB9KS5qb2luKCc8aHIgc3R5bGU9ImJvcmRlcjpub25lO2JvcmRlci10b3A6MXB4IHNvbGlkIHZhcigtLWxpbmUpO21hcmdpbjoxMHB4IDAiPicpIDogJzxkaXYgY2xhc3M9Im11dGVkIj5TaW4gY29ycmlkYXMgcmVnaXN0cmFkYXMuPC9kaXY+JzsKICB9Y2F0Y2goZSl7ICQoJ2xvZ2NhcmQnKS5pbm5lckhUTUw9JzxkaXYgY2xhc3M9Im11dGVkIj5ObyBzZSBwdWRvIGNhcmdhciBlbCByZWdpc3Ryby48L2Rpdj4nOyB9Cn0KZnVuY3Rpb24gdG9nZ2xlTG9nKCl7IGNvbnN0IGM9JCgnbG9nY2FyZCcpOyBjLmNsYXNzTGlzdC50b2dnbGUoJ3Nob3cnKTsgaWYoYy5jbGFzc0xpc3QuY29udGFpbnMoJ3Nob3cnKSkgbG9hZExvZygpOyB9Cgppbml0KCk7Cjwvc2NyaXB0Pgo8L2JvZHk+CjwvaHRtbD4K", "base64").toString("utf8");
+route('GET', '/publicidad', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) { res.writeHead(302, { Location: '/' }); return res.end(); }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(ADS_PANEL_HTML);
+});
+registerAds({ route, mlGet, mlPut, getValidToken, refreshToken, loadDB, saveDB, sendJSON, requireAuth, parseBody, ML_CLIENT_ID });
+console.log('[ADS] Panel de publicidad disponible en /publicidad');
+})();
+
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
   // Force HTTPS in production (Render terminates TLS at its edge proxy and
