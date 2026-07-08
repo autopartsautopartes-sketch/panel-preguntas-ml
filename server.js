@@ -4547,7 +4547,20 @@ function getAdsConfig(loadDB) {
 // el umbral de envío gratis (33.000 por defecto), el envío lo absorbés vos → costo = costShip (T).
 // Si es NO ENVIO, o es MERCADO ENVIO pero el precio quedó por debajo del umbral → costo = cost (P).
 // ---------------------------------------------------------------------------
-function loadCosts(loadDB) { return (loadDB().ads_costs) || {}; }
+// Los costos viven en su PROPIO archivo (ads_costs.json), NO dentro de data.json.
+// Así tu automatización de precios no reescribe esta tabla enorme en cada saveDB.
+const _fsCosts = require('fs');
+const _pathCosts = require('path');
+function costsFilePath() { return _pathCosts.join(__dirname, 'ads_costs.json'); }
+function loadCostsFile() { try { return JSON.parse(_fsCosts.readFileSync(costsFilePath(), 'utf8')) || {}; } catch (e) { return {}; } }
+function saveCostsFile(obj) { _fsCosts.writeFileSync(costsFilePath(), JSON.stringify(obj)); }
+function loadCosts(loadDB) {
+  const f = loadCostsFile();
+  if (f && f.costs && Object.keys(f.costs).length) return f.costs;
+  // compat: si quedó algo viejo dentro de data.json, lo usamos igual
+  try { const c = loadDB && loadDB().ads_costs; if (c && Object.keys(c).length) return c; } catch (e) {}
+  return {};
+}
 
 // Margen de contribución REAL de un ítem al precio efectivamente cobrado.
 // Devuelve { marginPct, profitPerUnit, floorUsed, freeShip } o null si no hay costo.
@@ -4910,8 +4923,7 @@ function registerAds(deps) {
     if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
     const body = await deps.parseBody(req);
     const arr = Array.isArray(body.costs) ? body.costs : [];
-    const db = loadDB();
-    const table = body.replace ? {} : (db.ads_costs || {});
+    const table = body.replace ? {} : (loadCostsFile().costs || {});
     let n = 0;
     for (const r of arr) {
       const id = String(r.item_id || r.id || '').trim();
@@ -4927,15 +4939,13 @@ function registerAds(deps) {
       };
       n++;
     }
-    db.ads_costs = table;
-    db.ads_costs_updated = new Date().toISOString();
-    saveDB(db);
+    saveCostsFile({ costs: table, updated: new Date().toISOString() });
     sendJSON(res, 200, { ok: true, imported: n, total: Object.keys(table).length });
   });
   route('GET', '/api/ads/costs', async (req, res) => {
     if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
-    const db = loadDB();
-    sendJSON(res, 200, { total: Object.keys(db.ads_costs || {}).length, updated: db.ads_costs_updated || null });
+    const f = loadCostsFile();
+    sendJSON(res, 200, { total: Object.keys(f.costs || {}).length, updated: f.updated || null });
   });
 
   route('GET', '/api/ads/config', async (req, res) => {
