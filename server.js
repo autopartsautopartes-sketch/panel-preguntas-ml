@@ -4418,9 +4418,6 @@ route('GET', '/api/debug-item', async (req, res) => {
 });
 
 // ==================== MÓDULO PUBLICIDAD · MERCADO ADS (inline) ====================
-// Se agrega solo. Reutiliza tus helpers (route, mlGet, mlPut, getValidToken, etc.).
-// Panel detrás de tu login en /publicidad. Análisis diario 13hs (fuera de tu madrugada).
-// Arranca en DRY-RUN: no pausa nada hasta ADS_AUTO_PAUSE=true.
 (function(){
 // ============================================================================
 //  ads.js — Automatización de Mercado Ads (Product Ads) con COSTO REAL por producto
@@ -4452,14 +4449,36 @@ route('GET', '/api/debug-item', async (req, res) => {
 const ADS_BASE = 'https://api.mercadolibre.com/advertising';
 const ADS_HEADERS = { 'Api-Version': '1' };
 
-// Endpoints de Product Ads. Corré /api/ads/selftest una vez para confirmar
-// que responden en tu cuenta; si tu versión difiere, se ajusta solo acá.
+// Endpoints de Product Ads. La API de Mercado Ads tuvo varias versiones y el
+// advertiser_id va DENTRO de la ruta. En vez de casarnos con un formato,
+// probamos varios candidatos y cacheamos el que responde OK en tu cuenta.
 const EP = {
   advertisers: () => `${ADS_BASE}/advertisers?product_id=PADS`,
-  campaigns: (advId) => `${ADS_BASE}/product_ads/campaigns?advertiser_id=${advId}`,
-  campaign: (campId) => `${ADS_BASE}/product_ads/campaigns/${campId}`,
-  items: (campId) => `${ADS_BASE}/product_ads/campaigns/${campId}/items`,
 };
+// Candidatos para LISTAR campañas (con métricas). Se prueban en orden.
+function campaignCandidates(adv, site) {
+  return [
+    { url: `${ADS_BASE}/advertisers/${adv}/product_ads/campaigns`, headers: { 'Api-Version': '1' } },
+    { url: `${ADS_BASE}/advertisers/${adv}/product_ads/campaigns`, headers: { 'Api-Version': '2' } },
+    { url: `https://api.mercadolibre.com/marketplace/advertising/${site}/advertisers/${adv}/product_ads/campaigns/search`, headers: { 'Api-Version': '2' } },
+    { url: `${ADS_BASE}/product_ads/campaigns`, headers: { 'Api-Version': '1' }, extra: { advertiser_id: adv } },
+  ];
+}
+// Candidatos para listar AVISOS (ítems) de una campaña.
+function itemCandidates(adv, site, campId) {
+  return [
+    { url: `${ADS_BASE}/advertisers/${adv}/product_ads/campaigns/${campId}/items`, headers: { 'Api-Version': '1' } },
+    { url: `${ADS_BASE}/advertisers/${adv}/product_ads/campaigns/${campId}/items`, headers: { 'Api-Version': '2' } },
+    { url: `https://api.mercadolibre.com/marketplace/advertising/${site}/advertisers/${adv}/product_ads/ads/search`, headers: { 'Api-Version': '2' }, extra: { campaign_id: campId } },
+  ];
+}
+// Candidatos para cambiar estado de una campaña (PUT).
+function statusCandidates(adv, campId) {
+  return [
+    `${ADS_BASE}/advertisers/${adv}/product_ads/campaigns/${campId}`,
+    `${ADS_BASE}/product_ads/campaigns/${campId}`,
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Fechas (sin librerías). La API limita métricas a 90 días.
@@ -4548,48 +4567,75 @@ function realMarginAtPrice(costRow, price, freeShipThreshold = 33000) {
 // ---------------------------------------------------------------------------
 function makeEngine(deps) {
   const { mlGet, mlPut, getValidToken, loadDB, saveDB } = deps;
+  const METRICS = 'clicks,prints,cost,acos,total_amount,units_quantity';
 
-  async function getAdvertiserId(account) {
-    if (account.advertiser_id) return account.advertiser_id;
+  function cacheOnAccount(account, patch) {
+    const db = loadDB(); const acc = db.ml_accounts.find(a => a.id === account.id);
+    if (acc) { Object.assign(acc, patch); saveDB(db); }
+    Object.assign(account, patch);
+  }
+
+  // Resuelve advertiser_id + site (MLA, etc.) y los cachea en la cuenta.
+  async function getAdvertiser(account) {
+    if (account.advertiser_id) return { id: account.advertiser_id, site: account.ads_site || 'MLA' };
     const token = await getValidToken(account);
     if (!token) throw new Error('token inválido');
     const raw = await mlGet(EP.advertisers(), token, {}, ADS_HEADERS);
     const adv = asList(raw)[0];
     const id = adv && (adv.advertiser_id || adv.id);
+    const site = (adv && (adv.site_id || adv.site)) || 'MLA';
     if (!id) throw new Error('no se encontró advertiser_id (¿Product Ads activado en la cuenta?)');
-    const db = loadDB();
-    const acc = db.ml_accounts.find(a => a.id === account.id);
-    if (acc) { acc.advertiser_id = id; saveDB(db); }
-    account.advertiser_id = id;
-    return id;
+    cacheOnAccount(account, { advertiser_id: id, ads_site: site });
+    return { id, site };
+  }
+  async function getAdvertiserId(account) { return (await getAdvertiser(account)).id; }
+
+  // Prueba una lista de candidatos {url, headers, extra} y devuelve el primero que responde OK.
+  async function tryCandidates(cands, token, params) {
+    let lastErr;
+    for (const c of cands) {
+      try {
+        const data = await mlGet(c.url, token, { ...(params || {}), ...(c.extra || {}) }, c.headers || ADS_HEADERS);
+        return { data, used: c.url, headers: c.headers || ADS_HEADERS };
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   async function listCampaigns(account, from, to) {
     const token = await getValidToken(account);
-    const advId = await getAdvertiserId(account);
-    const raw = await mlGet(EP.campaigns(advId), token,
-      { date_from: from, date_to: to, metrics: 'clicks,prints,cost,acos,total_amount,units_quantity', limit: 200 },
-      ADS_HEADERS);
-    return asList(raw);
+    const { id, site } = await getAdvertiser(account);
+    const params = { date_from: from, date_to: to, metrics: METRICS, limit: 200 };
+    const cands = campaignCandidates(id, site);
+    // si ya sabemos cuál funcionó antes, lo probamos primero
+    if (account.ads_campaigns_ep) cands.unshift({ url: account.ads_campaigns_ep, headers: account.ads_campaigns_hdr || ADS_HEADERS });
+    const r = await tryCandidates(cands, token, params);
+    if (r.used !== account.ads_campaigns_ep) cacheOnAccount(account, { ads_campaigns_ep: r.used, ads_campaigns_hdr: r.headers });
+    return asList(r.data);
   }
 
-  // Avisos (ítems) de una campaña con métricas — para cruzar con costos por MLA.
+  // Avisos (ítems) de una campaña — best-effort. Si la API no los expone, seguimos a nivel campaña.
   async function listCampaignItems(account, campaignId, from, to) {
     const token = await getValidToken(account);
+    const { id, site } = await getAdvertiser(account);
     try {
-      const raw = await mlGet(EP.items(campaignId), token,
-        { date_from: from, date_to: to, metrics: 'clicks,prints,cost,acos,total_amount,units_quantity', limit: 200 },
-        ADS_HEADERS);
-      return asList(raw);
-    } catch (e) { return []; } // si la API no expone ítems, seguimos a nivel campaña
+      const r = await tryCandidates(itemCandidates(id, site, campaignId), token,
+        { date_from: from, date_to: to, metrics: METRICS, limit: 200 });
+      return asList(r.data);
+    } catch (e) { return []; }
   }
 
   async function setCampaignStatus(account, campaignId, status) {
     const token = await getValidToken(account);
-    return await mlPut(EP.campaign(campaignId), { status }, token);
+    const { id } = await getAdvertiser(account);
+    let lastErr;
+    for (const url of statusCandidates(id, campaignId)) {
+      try { return await mlPut(url, { status }, token); } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
-  return { getAdvertiserId, listCampaigns, listCampaignItems, setCampaignStatus };
+  return { getAdvertiser, getAdvertiserId, listCampaigns, listCampaignItems, setCampaignStatus };
 }
 
 // ---------------------------------------------------------------------------
@@ -4757,10 +4803,12 @@ function registerAds(deps) {
     if (!account) return sendJSON(res, 404, { error: 'Pasá ?account_id=<id>' });
     const out = { account: account.name };
     try {
-      out.advertiser_id = await engine.getAdvertiserId(account);
+      const adv = await engine.getAdvertiser(account);
+      out.advertiser_id = adv.id; out.site = adv.site;
       const to = ymd(new Date()), from = ymd(daysAgo(14));
       const camps = await engine.listCampaigns(account, from, to);
       out.campaigns_found = camps.length;
+      out.campaigns_endpoint = account.ads_campaigns_ep;
       out.sample = camps.slice(0, 2);
       out.ok = true;
     } catch (e) {
