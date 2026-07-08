@@ -970,16 +970,27 @@ async function runBulkJob(jobId, items, account, initialToken) {
         payload.variations = payload.variations.map(v => { const c = { ...v }; delete c.available_quantity; return c; });
         if (payload.variations.every(v => Object.keys(v).length <= 1)) delete payload.variations;
       }
+      // Resto por /items (precio/status/sku/attrs). Si ML rechaza los atributos, reintento sin ellos.
       let itemErr = null;
       if (Object.keys(payload).length) {
         try { await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId); }
-        catch (e) { if (e._cancelled) throw e; itemErr = parseMLError(e); }
+        catch (e) {
+          if (e._cancelled) throw e;
+          const m = parseMLError(e);
+          if (/attributes\.(invalid|duplicated)|repeated.*conflict|user_product\.repeated/i.test(String(m)) && payload.attributes !== undefined) {
+            delete payload.attributes;
+            if (Object.keys(payload).length) {
+              try { await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, payload, workerId); }
+              catch (e2) { if (e2._cancelled) throw e2; itemErr = parseMLError(e2); }
+            }
+          } else { itemErr = m; }
+        }
       }
-      // el pre-fetch múltiple no siempre trae user_product_id -> lo buscamos individual
+      // el pre-fetch (y la consulta acotada) no traen user_product_id -> pedimos el item COMPLETO
       let upid = cur?.user_product_id || null;
       if (!upid) {
         try {
-          const it = await mlGet(`https://api.mercadolibre.com/items/${item.item_id}?attributes=id,user_product_id`, token);
+          const it = await mlGet(`https://api.mercadolibre.com/items/${item.item_id}`, token);
           upid = it?.user_product_id || null;
         } catch (e) {}
       }
@@ -4304,7 +4315,7 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-07-catalogo-gtin-v8', features: ['conflicto_reintenta_sin_atributos', 'debug_item'] });
+  sendJSON(res, 200, { version: '2026-07-07-anto-deposito-v9', features: ['user_product_id_item_completo', 'deposito_retry_sin_atributos'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
