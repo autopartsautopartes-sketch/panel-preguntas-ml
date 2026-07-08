@@ -3753,6 +3753,7 @@
         ${can_manage ? `<button class="prep-tab ${currentPrepTab==='sin-preparar'?'active':''}" onclick="switchPrepTab('sin-preparar')">📋 Sin Preparar</button>` : ''}
         ${can_operate ? `<button class="prep-tab ${currentPrepTab==='en-preparacion'?'active':''}" onclick="switchPrepTab('en-preparacion')">🔄 En Preparación</button>` : ''}
         <button class="prep-tab ${currentPrepTab==='finalizadas'?'active':''}" onclick="switchPrepTab('finalizadas')">✅ Finalizadas</button>
+        ${currentUser?.role === 'admin' ? `<button class="prep-tab ${currentPrepTab==='estadisticas'?'active':''}" onclick="switchPrepTab('estadisticas')">📊 Estadísticas</button>` : ''}
       </div>
       <div id="prep-tab-content"></div>
     `;
@@ -3767,6 +3768,7 @@
   function loadCurrentPrepTab() {
     if (currentPrepTab === 'sin-preparar') loadSinPreparar();
     else if (currentPrepTab === 'en-preparacion') loadEnPreparacion();
+    else if (currentPrepTab === 'estadisticas') loadEstadisticas();
     else loadFinalizadas();
   }
   let prepSalesStatusFilters = [];
@@ -4387,6 +4389,172 @@
     } catch(e) {
       container.innerHTML = '<div class="empty"><p>Error al cargar finalizadas</p></div>';
     }
+  }
+  // ==================== ESTADÍSTICAS (solo admin) ====================
+  let statsFrom = '';
+  let statsTo = '';
+  function _ymd(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+  }
+  function statsShortcut(which) {
+    const hoy = new Date();
+    if (which === 'hoy') {
+      statsFrom = _ymd(hoy); statsTo = _ymd(hoy);
+    } else if (which === 'ayer') {
+      const a = new Date(hoy); a.setDate(a.getDate() - 1);
+      statsFrom = _ymd(a); statsTo = _ymd(a);
+    } else if (which === '7') {
+      const a = new Date(hoy); a.setDate(a.getDate() - 6);
+      statsFrom = _ymd(a); statsTo = _ymd(hoy);
+    } else if (which === '30') {
+      const a = new Date(hoy); a.setDate(a.getDate() - 29);
+      statsFrom = _ymd(a); statsTo = _ymd(hoy);
+    }
+    const fEl = document.getElementById('statsFrom');
+    const tEl = document.getElementById('statsTo');
+    if (fEl) fEl.value = statsFrom;
+    if (tEl) tEl.value = statsTo;
+    fetchEstadisticas();
+  }
+  function aplicarStatsFecha() {
+    const fEl = document.getElementById('statsFrom');
+    const tEl = document.getElementById('statsTo');
+    statsFrom = fEl ? fEl.value : '';
+    statsTo = tEl ? tEl.value : '';
+    fetchEstadisticas();
+  }
+  async function loadEstadisticas() {
+    const container = document.getElementById('prep-tab-content');
+    if (!container) return;
+    if (currentUser?.role !== 'admin') {
+      container.innerHTML = '<div class="empty"><p>Solo el administrador puede ver las estadísticas</p></div>';
+      return;
+    }
+    // Default range: hoy (si aún no se eligió nada)
+    if (!statsFrom && !statsTo) {
+      const hoy = new Date();
+      statsFrom = _ymd(hoy); statsTo = _ymd(hoy);
+    }
+    container.innerHTML = `
+      <div class="sales-filters" style="margin-bottom:16px">
+        <div class="filter-row" style="align-items:center;gap:10px">
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="statsFrom" value="${statsFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="statsTo" value="${statsTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          <button onclick="aplicarStatsFecha()" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">Aplicar</button>
+        </div>
+        <div class="filter-row" style="gap:8px;margin-top:8px">
+          <button onclick="statsShortcut('hoy')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Hoy</button>
+          <button onclick="statsShortcut('ayer')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Ayer</button>
+          <button onclick="statsShortcut('7')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Últimos 7 días</button>
+          <button onclick="statsShortcut('30')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Últimos 30 días</button>
+        </div>
+      </div>
+      <div id="stats-body"><div class="loading"><div class="spinner"></div><p>Cargando estadísticas...</p></div></div>
+    `;
+    fetchEstadisticas();
+  }
+  async function fetchEstadisticas() {
+    const body = document.getElementById('stats-body');
+    if (!body) return;
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando estadísticas...</p></div>';
+    try {
+      const qs = [];
+      if (statsFrom) qs.push('from=' + encodeURIComponent(statsFrom));
+      if (statsTo) qs.push('to=' + encodeURIComponent(statsTo));
+      const res = await fetch('/api/prep/stats' + (qs.length ? '?' + qs.join('&') : ''));
+      if (res.status === 403) { body.innerHTML = '<div class="empty"><p>Acceso denegado</p></div>'; return; }
+      const d = await res.json();
+      renderEstadisticas(d);
+    } catch(e) {
+      body.innerHTML = '<div class="empty"><p>Error al cargar estadísticas</p></div>';
+    }
+  }
+  function _rangoLabel(d) {
+    if (d.from && d.to && d.from === d.to) return d.from;
+    if (d.from && d.to) return `${d.from} → ${d.to}`;
+    if (d.from) return `desde ${d.from}`;
+    if (d.to) return `hasta ${d.to}`;
+    return 'Todo';
+  }
+  function renderEstadisticas(d) {
+    const body = document.getElementById('stats-body');
+    if (!body) return;
+    const bs = d.by_shipping || { flex: 0, drop_off: 0, agreement: 0 };
+    const ventana = (d.primer && d.ultimo)
+      ? `${d.primer.slice(11)} → ${d.ultimo.slice(11)}`
+      : '—';
+    let html = `
+      <p style="color:#999;font-size:13px;margin-bottom:14px">Período: <strong style="color:#555">${escapeHtml(_rangoLabel(d))}</strong></p>
+      <div class="stats">
+        <div class="stat-card"><div class="label">Pedidos preparados</div><div class="value">${d.total || 0}</div></div>
+        <div class="stat-card"><div class="label">📦 Flex</div><div class="value">${bs.flex || 0}</div></div>
+        <div class="stat-card"><div class="label">🏤 Punto de despacho</div><div class="value">${bs.drop_off || 0}</div></div>
+        <div class="stat-card"><div class="label">🤝 Acordar</div><div class="value">${bs.agreement || 0}</div></div>
+        <div class="stat-card"><div class="label">Promedio de embalaje</div><div class="value">${d.avg_pack_min || 0}<span style="font-size:14px;color:#94a3b8;font-weight:600"> min</span></div></div>
+        <div class="stat-card"><div class="label">Ventana (primer → último)</div><div class="value" style="font-size:18px">${ventana}</div></div>
+      </div>
+    `;
+    if (d.primer && d.ultimo) {
+      html += `<p style="color:#94a3b8;font-size:12px;margin:-8px 0 20px">Desde el primer pedido (${escapeHtml(d.primer)}) hasta el último (${escapeHtml(d.ultimo)}). El promedio de embalaje se calcula como la ventana total del día ÷ cantidad de pedidos.</p>`;
+    }
+    // Usuarios que finalizaron
+    html += `<h3 style="margin:8px 0 10px;color:#2d3277;font-size:16px">👤 Usuarios que finalizaron</h3>`;
+    if (d.by_user && d.by_user.length) {
+      html += `<table style="width:100%;border-collapse:collapse;margin-bottom:24px;font-size:14px">
+        <thead><tr style="text-align:left;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px">
+          <th style="padding:8px 10px;border-bottom:2px solid #eee">Usuario</th>
+          <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">Pedidos finalizados</th>
+        </tr></thead><tbody>`;
+      for (const u of d.by_user) {
+        html += `<tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1">${escapeHtml(u.user)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;font-weight:700">${u.count}</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    } else {
+      html += `<p style="color:#999;font-size:13px;margin-bottom:24px">Sin datos en el período seleccionado.</p>`;
+    }
+    // Tipos de envío (detalle)
+    html += `<h3 style="margin:8px 0 10px;color:#2d3277;font-size:16px">🚚 Tipos de envío</h3>`;
+    const tot = d.total || 0;
+    const pct = n => tot ? Math.round(n / tot * 1000) / 10 : 0;
+    html += `<table style="width:100%;border-collapse:collapse;margin-bottom:24px;font-size:14px">
+      <thead><tr style="text-align:left;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px">
+        <th style="padding:8px 10px;border-bottom:2px solid #eee">Tipo</th>
+        <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">Cantidad</th>
+        <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">%</th>
+      </tr></thead><tbody>
+        <tr><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1">📦 Flex</td><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;font-weight:700">${bs.flex||0}</td><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;color:#888">${pct(bs.flex||0)}%</td></tr>
+        <tr><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1">🏤 Punto de despacho</td><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;font-weight:700">${bs.drop_off||0}</td><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;color:#888">${pct(bs.drop_off||0)}%</td></tr>
+        <tr><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1">🤝 Acordar</td><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;font-weight:700">${bs.agreement||0}</td><td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;color:#888">${pct(bs.agreement||0)}%</td></tr>
+      </tbody></table>`;
+    // Detalle por día (cuando el rango abarca más de un día)
+    if (d.por_dia && d.por_dia.length > 1) {
+      html += `<h3 style="margin:8px 0 10px;color:#2d3277;font-size:16px">📅 Detalle por día</h3>`;
+      html += `<table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:14px">
+        <thead><tr style="text-align:left;color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:0.5px">
+          <th style="padding:8px 10px;border-bottom:2px solid #eee">Día</th>
+          <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">Pedidos</th>
+          <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">Primero</th>
+          <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">Último</th>
+          <th style="padding:8px 10px;border-bottom:2px solid #eee;text-align:right">Prom. embalaje</th>
+        </tr></thead><tbody>`;
+      for (const p of d.por_dia) {
+        html += `<tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1">${escapeHtml(p.dia)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;font-weight:700">${p.count}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;color:#888">${escapeHtml(p.primer)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right;color:#888">${escapeHtml(p.ultimo)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #f1f1f1;text-align:right">${p.min_por_pedido} min</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+    body.innerHTML = html;
   }
   function verVentaPrep(orderId, accountId) {
     showSection('sales', true);
