@@ -505,6 +505,22 @@ route('POST', '/api/users/password', async (req, res) => {
   console.log(`[PASS] Contraseña cambiada: usuario "${targetUser.username}" por admin "${sess.username}"`);
   sendJSON(res, 200, { ok: true });
 });
+// Resuelve el user_product_id de una publicacion multiorigen (stock en deposito).
+// OJO: el GET "pelado" de /items y la lista corta ?attributes=id,user_product_id
+// NO devuelven user_product_id de forma confiable. Hay que pedirlo con la MISMA
+// lista de atributos que usa /api/debug-item (verificada en vivo: devuelve el
+// campo). Si la publicacion tiene variaciones, el id vive dentro de cada una.
+async function resolveUpid(itemId, token) {
+  try {
+    const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,catalog_product_id,catalog_listing,domain_id,user_product_id,inventory_id,seller_custom_field,status,attributes,variations`, token);
+    if (it && it.user_product_id) return it.user_product_id;
+    if (it && Array.isArray(it.variations)) {
+      const v = it.variations.find(v => v && v.user_product_id);
+      if (v) return v.user_product_id;
+    }
+  } catch (e) {}
+  return null;
+}
 // Stock por deposito (multiorigen / user_products): el stock de estos items NO va por /items
 // (devuelve item.available_quantity.not_updatable). Se actualiza con
 //   PUT /user-products/{upid}/stock/type/{type}
@@ -986,14 +1002,10 @@ async function runBulkJob(jobId, items, account, initialToken) {
           } else { itemErr = m; }
         }
       }
-      // el pre-fetch (y la consulta acotada) no traen user_product_id -> pedimos el item COMPLETO
+      // el pre-fetch (y la consulta acotada) no traen user_product_id -> lo resolvemos
+      // con la lista de atributos explicita que si lo devuelve (ver resolveUpid)
       let upid = cur?.user_product_id || null;
-      if (!upid) {
-        try {
-          const it = await mlGet(`https://api.mercadolibre.com/items/${item.item_id}`, token);
-          upid = it?.user_product_id || null;
-        } catch (e) {}
-      }
+      if (!upid) upid = await resolveUpid(item.item_id, token);
       let depErr = null;
       if (upid && wantedQty != null && !isNaN(wantedQty)) {
         depErr = await updateDepositStock(upid, wantedQty, workerId);
@@ -1462,9 +1474,7 @@ route('POST', '/api/bulk-update', async (req, res) => {
               // Fallback multiorigen: si ML rechaza el stock por /items, va al deposito
               if (/available_quantity\.not_updatable/i.test(String(errMsg))) {
                 let upid2 = curBU?.user_product_id || null;
-                if (!upid2) {
-                  try { const it2 = await mlGet(`https://api.mercadolibre.com/items/${item.item_id}?attributes=id,user_product_id`, token); upid2 = it2?.user_product_id || null; } catch(e2) {}
-                }
+                if (!upid2) upid2 = await resolveUpid(item.item_id, token);
                 const wq = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
                 const restPayload = { ...payload }; delete restPayload.available_quantity;
                 let itemErr2 = null;
@@ -4370,7 +4380,7 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-07-stats-v10', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
+  sendJSON(res, 200, { version: '2026-07-08-anto-upid-v11', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
