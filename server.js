@@ -5070,6 +5070,9 @@ function decideAction(it, cfg) {
   // 7) RESTO (durmiente): sin demanda → stock 0 o subir precio.
   return { code: 'revisar', label: '💤 Sin demanda — stock 0 (conserva ranking) o subí precio para margen alto.', pri: 7 };
 }
+// Versión del enriquecimiento. Subir este número fuerza un refresco de TODO lo enriquecido antes
+// (para propagar arreglos como el de visitas de a una). v2 = fix visitas por ítem.
+const ENRICH_VER = 2;
 const ACTION_META = {
   escalar: { pri: 1, label: '⭐ Escalar ADS', hint: 'Estrellas consolidadas: dale presupuesto, protegé margen' },
   promover: { pri: 2, label: '🎯 Promover ya', hint: 'Convierten y les falta empuje: ADS + promo, ROAS bajo (invertís en ranking)' },
@@ -5851,10 +5854,11 @@ function registerAds(deps) {
       return !st || st === 'active';   // sin estado conocido (aún sin enriquecer) o activa
     });
     const pausadas = allMLA.filter(id => { const st = String(table[id].status || '').toLowerCase(); return st && st !== 'active'; }).length;
-    // "Necesita refresco" = nunca enriquecida (sin enrichAt) O enriquecida con el código VIEJO
-    // (sin el campo visits90, que trae las visitas reales). Esas van PRIMERO, ordenadas por mayor
-    // margen de lista → así al re-enriquecer se arreglan primero las estrellas con visitas viejas en 0.
-    const needsRefresh = (id) => (!table[id].enrichAt || table[id].visits90 == null) ? 0 : 1;
+    // "Necesita refresco" = nunca enriquecida (sin enrichAt) O enriquecida con una versión ANTERIOR
+    // del código (enrichVer < ENRICH_VER). ENRICH_VER=2 = arreglo de visitas (pedido de a una).
+    // Así, al re-enriquecer, se refrescan las que quedaron con visitas viejas en 0 (aunque tengan visits90=0
+    // guardado), primero las de mayor margen (tus estrellas).
+    const needsRefresh = (id) => (!table[id].enrichAt || (Number(table[id].enrichVer) || 0) < ENRICH_VER) ? 0 : 1;
     const ids = mine
       .sort((a, b) => needsRefresh(a) - needsRefresh(b) || (Number(table[b].marginList) || 0) - (Number(table[a].marginList) || 0))
       .slice(0, cap);
@@ -5935,13 +5939,14 @@ function registerAds(deps) {
         c.status = it.status || c.status; c.permalink = it.permalink || c.permalink;
         c.created = it.date_created || it.start_time || c.created;   // antigüedad (para pausar muertas viejas)
         c.enrichAt = nowIso;
+        c.enrichVer = ENRICH_VER;   // marca la versión del enriquecimiento (para forzar refrescos futuros)
         refined++;
       }
       saveAccountCosts(account.seller_id, { costs: table, updated: new Date().toISOString() });
       bustStrat();   // datos nuevos → invalidar la foto cacheada
-      // "Al día" = enriquecidas con el código NUEVO (tienen visits90 = visitas reales). Así el progreso
+      // "Al día" = enriquecidas con la versión ACTUAL del código (enrichVer >= ENRICH_VER). Así el progreso
       // refleja el refresco real y el loop sigue hasta refrescar TODAS (no se corta con datos viejos).
-      const enrichedTotal = mine.filter(id => table[id].enrichAt && table[id].visits90 != null).length;
+      const enrichedTotal = mine.filter(id => table[id].enrichAt && (Number(table[id].enrichVer) || 0) >= ENRICH_VER).length;
       sendJSON(res, 200, { refined, failed, scanned: ids.length, cap, account: account.name, enriched_total: enrichedTotal, account_total: mine.length,
         file_total: allMLA.length, activas: mine.length, pausadas,
         note: enrichedTotal < mine.length ? `Enriquecí ${enrichedTotal} de ${mine.length} ACTIVAS. Volvé a tocar 🎯 para seguir con el resto.` : `Enriquecí TODAS las ACTIVAS (${mine.length}). En el archivo hay ${allMLA.length} en total${pausadas ? ` (${pausadas} pausadas quedan fuera a propósito)` : ''}.` });
