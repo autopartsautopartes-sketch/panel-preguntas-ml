@@ -365,7 +365,7 @@
       <a onclick="showSection('promos')" id="nav-promos" style="display:none">
         <span>📣 Promociones</span>
       </a>
-      <a href="/gestion" target="_blank" id="nav-gestion">
+      <a href="/gestion" target="_blank" id="nav-gestion" style="display:none">
         <span>🗂️ Gestión</span>
       </a>
       <a href="/publicidad" target="_blank" id="nav-publicidad">
@@ -457,6 +457,7 @@
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+          document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
@@ -558,6 +559,7 @@
           document.getElementById('nav-users').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
+          document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
@@ -4111,6 +4113,25 @@
       btn.textContent = finishType === 'dropshipping' ? '🚚 Dropshipping' : '🏠 Puerta';
     }
   }
+  // Tarjetas de ritmo de embalaje (HOY: promedio + ventana; últimos 7 días: promedio) — para todos los usuarios de preparación.
+  async function loadPrepPaceHtml() {
+    try {
+      const r = await fetch('/api/prep/pace');
+      if (!r.ok) return '';
+      const p = await r.json();
+      const h = p.hoy || {}, l = p.last7 || {};
+      const ventana = (h.primer && h.ultimo) ? (h.primer + ' → ' + h.ultimo) : '—';
+      const tile = (label, val, sub) => `<div style="flex:1;min-width:160px;background:#f4f6fb;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px">
+        <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.03em">${label}</div>
+        <div style="font-size:20px;font-weight:800;color:#1f3864;line-height:1.25">${val}</div>
+        <div style="font-size:12px;color:#64748b">${sub}</div></div>`;
+      return `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">`
+        + tile('📦 Hoy · Promedio embalaje', (h.avg_pack_min || 0) + ' <span style="font-size:12px;font-weight:600;color:#64748b">min/pedido</span>', (h.count || 0) + ' embalados hoy')
+        + tile('🕐 Hoy · Ventana (primer → último)', ventana, (h.ventana_min || 0) + ' min de trabajo')
+        + tile('📅 Últimos 7 días · Promedio', (l.avg_pack_min || 0) + ' <span style="font-size:12px;font-weight:600;color:#64748b">min/pedido</span>', (l.count || 0) + ' embalados · ' + (l.days || 0) + ' día(s)')
+        + `</div>`;
+    } catch (e) { return ''; }
+  }
   async function loadEnPreparacion() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
@@ -4120,16 +4141,19 @@
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     const can_operate = currentUser?.role === 'admin' || currentUser?.can_prep_manage || currentUser?.can_prep_operate;
     try {
-      const res = await fetch('/api/prep/list?status=in_prep');
+      const [res, paceHtml] = await Promise.all([
+        fetch('/api/prep/list?status=in_prep'),
+        loadPrepPaceHtml()
+      ]);
       const orders = await res.json();
       orders.sort((a, b) => (a.priority || 5) - (b.priority || 5));
       if (orders.length === 0) {
-        container.innerHTML = `<div class="empty"><p>No hay órdenes en preparación</p></div>
+        container.innerHTML = paceHtml + `<div class="empty"><p>No hay órdenes en preparación</p></div>
           <div style="text-align:center;margin-top:8px"><span id="prep-refresh-status" style="font-size:12px;color:#bbb">🔄 Verificando actualizaciones cada 30 seg...</span></div>`;
         startPrepAutoRefresh(can_manage, can_operate);
         return;
       }
-      let html = `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+      let html = paceHtml + `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
         <p style="color:#999;font-size:13px">${orders.length} orden${orders.length!==1?'es':''} en preparación — ordenadas por prioridad</p>
         <span id="prep-refresh-status" style="font-size:12px;color:#bbb">🔄 Actualización cada 30 seg</span>
       </div>`;
