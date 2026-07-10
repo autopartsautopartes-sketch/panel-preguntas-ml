@@ -1,4 +1,14 @@
-
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { URL } = require('url');
+// ==================== CONFIG ====================
+const CONFIG_PATH = path.join(__dirname, '.env');
+const config = {};
+try {
+  const envContent = fs.readFileSync(CONFIG_PATH, 'utf8');
+  envContent.split('\n').forEach(line => {
     const [key, ...vals] = line.split('=');
     if (key && vals.length) config[key.trim()] = vals.join('=').trim();
   });
