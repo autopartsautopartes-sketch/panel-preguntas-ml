@@ -5859,8 +5859,15 @@ function registerAds(deps) {
     // Así, al re-enriquecer, se refrescan las que quedaron con visitas viejas en 0 (aunque tengan visits90=0
     // guardado), primero las de mayor margen (tus estrellas).
     const needsRefresh = (id) => (!table[id].enrichAt || (Number(table[id].enrichVer) || 0) < ENRICH_VER) ? 0 : 1;
+    // Unidades vendidas en 90d (del archivo ya calculado por el paso sold90). Las que VENDIERON van
+    // primero — son las que importan (tus estrellas/vacas) y así se refrescan antes que el resto.
+    const soldUnits = (() => { try { const c = (loadSold90File().accounts || {})[account.id]; return (c && c.map) || {}; } catch (e) { return {}; } })();
     const ids = mine
-      .sort((a, b) => needsRefresh(a) - needsRefresh(b) || (Number(table[b].marginList) || 0) - (Number(table[a].marginList) || 0))
+      .sort((a, b) =>
+        needsRefresh(a) - needsRefresh(b) ||
+        ((soldUnits[b] || 0) > 0 ? 1 : 0) - ((soldUnits[a] || 0) > 0 ? 1 : 0) ||   // vendió → primero
+        (Number(soldUnits[b] || 0)) - (Number(soldUnits[a] || 0)) ||               // más ventas → primero
+        (Number(table[b].marginList) || 0) - (Number(table[a].marginList) || 0))   // luego por margen de lista
       .slice(0, cap);
     if (!ids.length) return sendJSON(res, 200, { refined: 0, account_total: mine.length, file_total: allMLA.length, pausadas, note: `No hay publicaciones activas para enriquecer. En el archivo hay ${allMLA.length} (${pausadas} pausadas). Si esperabas más, puede que la importación del _COMPLETO de esta cuenta haya quedado incompleta.` });
     try {
