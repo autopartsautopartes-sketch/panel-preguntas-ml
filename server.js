@@ -5869,11 +5869,17 @@ function registerAds(deps) {
         out.total_amount = order.total_amount;
         out.items = (order.order_items || []).map(it => ({ id: it.item && it.item.id, title: it.item && it.item.title, qty: it.quantity, unit_price: it.unit_price, sale_fee: it.sale_fee }));
         out.payments = (order.payments || []).map(p => ({ transaction_amount: p.transaction_amount, shipping_cost: p.shipping_cost, taxes_amount: p.taxes_amount, coupon_amount: p.coupon_amount, marketplace_fee: p.marketplace_fee, total_paid_amount: p.total_paid_amount, installments: p.installments, status: p.status }));
-        out.payments_raw = order.payments || [];       // pagos COMPLETOS (todos los campos) — para encontrar el impuesto real
         out.order_taxes = order.taxes || null;
-        out.order_keys = Object.keys(order || {});
-        // El "Impuestos" del detalle suele venir de facturación. Intentamos el detalle de facturación de la orden.
-        try { out.billing_info = await deps.mlGet('https://api.mercadolibre.com/orders/' + order.id + '/billing_info', token, {}, { 'x-format-new': 'true' }); } catch (e) { out.billing_error = String(e && (e.message || e)); }
+        // El "Impuestos" (retención) NO viene en la orden; vive en el detalle del PAGO de Mercado Pago.
+        const payId = order.payments && order.payments[0] && order.payments[0].id;
+        out.payment_id = payId || null;
+        if (payId) {
+          try {
+            const mp = await deps.mlGet('https://api.mercadolibre.com/v1/payments/' + payId, token, {});
+            // Devolvemos solo los campos donde suele estar la retención (para no traer todo el pago enorme).
+            out.mp_payment = { id: mp.id, taxes_amount: mp.taxes_amount, transaction_amount: mp.transaction_amount, net_received_amount: mp.transaction_details && mp.transaction_details.net_received_amount, charges_details: mp.charges_details, taxes: mp.taxes, fee_details: mp.fee_details };
+          } catch (e) { out.mp_payment_error = String(e && (e.message || e)); }
+        }
         const shipId = order.shipping && order.shipping.id;
         out.shipping_id = shipId || null;
         if (shipId) {
