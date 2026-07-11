@@ -138,21 +138,22 @@
     .card-answer { font-size: 14px; color: #475569; padding: 12px 16px; background: #f0fdf4; border-radius: 10px; margin-bottom: 12px; border-left: 3px solid #22c55e; }
     .card-answer strong { color: #16a34a; }
     /* REPLY BOX */
-    .reply-box { display: flex; flex-direction: column; gap: 8px; }
-    .sig-line { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: #334155; cursor: pointer; padding: 2px 0; line-height: 1.35; }
-    .sig-line input[type=checkbox] { margin-top: 3px; flex: none; accent-color: #2563eb; width: 16px; height: 16px; cursor: pointer; }
+    .reply-box { display: flex; flex-direction: column; gap: 10px; }
+    .reply-row { display: flex; gap: 10px; align-items: stretch; }
+    .sig-line { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; color: #334155; cursor: pointer; padding: 2px 0; line-height: 1.4; }
+    .sig-line input[type=checkbox] { margin-top: 3px; flex: none; accent-color: #2563eb; width: 17px; height: 17px; cursor: pointer; }
     .sig-hint { font-size: 12px; color: #94a3b8; padding: 2px 0; }
     .reply-box textarea {
-      flex: 1; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px;
-      font-size: 14px; resize: vertical; min-height: 44px; font-family: inherit; outline: none; color: #1e293b; transition: border-color 0.2s;
+      flex: 1; padding: 14px 16px; border: 1.5px solid #e2e8f0; border-radius: 10px;
+      font-size: 15px; resize: vertical; min-height: 110px; font-family: inherit; outline: none; color: #1e293b; transition: border-color 0.2s; box-sizing: border-box; width: 100%;
     }
     .reply-box textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
     .reply-box button {
-      padding: 10px 20px; background: #2563eb; color: white; border: none;
-      border-radius: 10px; cursor: pointer; font-weight: 600; white-space: nowrap; font-family: inherit; transition: background 0.2s;
+      min-width: 66px; padding: 0 22px; background: #3dd6a3; color: white; border: none;
+      border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 22px; white-space: nowrap; font-family: inherit; transition: background 0.2s; flex: none;
     }
-    .reply-box button:hover { background: #1d4ed8; }
-    .reply-box button:disabled { background: #cbd5e1; cursor: not-allowed; color: #94a3b8; }
+    .reply-box button:hover { background: #2fc593; }
+    .reply-box button:disabled { background: #cbd5e1; cursor: not-allowed; color: #94a3b8; font-size: 14px; }
     /* MESSAGES */
     .msg-conversation { margin-bottom: 16px; }
     .msg-bubble {
@@ -278,7 +279,8 @@
       .card { padding: 14px; }
       .card-header { flex-direction: column; gap: 4px; }
       .reply-box { flex-direction: column; }
-      .reply-box button { width: 100%; }
+      .reply-row { flex-direction: column; }
+      .reply-box button { width: 100%; padding: 12px; font-size: 18px; }
       .msg-bubble { max-width: 85%; }
       .sale-card { padding: 12px; }
       .sale-header { font-size: 12px; gap: 6px; }
@@ -973,11 +975,13 @@
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   ${currentUser?.saludo ? `<label class="sig-line"><input type="checkbox" id="saludo-${q.id}" checked> <span>${escapeHtml(currentUser.saludo)}</span></label>` : ''}
-                  <textarea id="reply-${q.id}" placeholder="Escribí tu respuesta..."></textarea>
+                  <div class="reply-row">
+                    <textarea id="reply-${q.id}" placeholder="Ingresá tu respuesta"></textarea>
+                    <button onclick="answerQuestion('${q.id}', ${q.account_id})" title="Enviar respuesta">✓</button>
+                  </div>
                   ${currentUser?.firma
                     ? `<label class="sig-line"><input type="checkbox" id="firma-${q.id}" checked> <span>${escapeHtml(currentUser.firma)}</span></label>`
                     : `<div class="sig-hint">✍️ Cargá tu firma en <b>✏️ Administrar</b> (panel lateral) para firmar con tu nombre.</div>`}
-                  <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
                 </div>
               `}
               <div style="margin-top:8px;border-top:1px solid #f0f0f0;padding-top:8px"
@@ -1541,11 +1545,13 @@
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   ${currentUser?.saludo ? `<label class="sig-line"><input type="checkbox" id="saludo-${q.id}" checked> <span>${escapeHtml(currentUser.saludo)}</span></label>` : ''}
-                  <textarea id="reply-${q.id}" placeholder="Escribí tu respuesta..."></textarea>
+                  <div class="reply-row">
+                    <textarea id="reply-${q.id}" placeholder="Ingresá tu respuesta"></textarea>
+                    <button onclick="answerQuestion('${q.id}', ${q.account_id})" title="Enviar respuesta">✓</button>
+                  </div>
                   ${currentUser?.firma
                     ? `<label class="sig-line"><input type="checkbox" id="firma-${q.id}" checked> <span>${escapeHtml(currentUser.firma)}</span></label>`
                     : `<div class="sig-hint">✍️ Cargá tu firma en <b>✏️ Administrar</b> (panel lateral) para firmar con tu nombre.</div>`}
-                  <button onclick="answerQuestion('${q.id}', ${q.account_id})">Responder</button>
                 </div>
               `}
             </div>
