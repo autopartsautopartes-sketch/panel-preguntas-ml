@@ -53,11 +53,11 @@
       border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; font-family: inherit; transition: background 0.2s;
     }
     .header-right button:hover { background: #1d4ed8; }
-    .main { display: flex; min-height: calc(100vh - 57px); }
+    .main { display: flex; height: calc(100vh - 57px); overflow: hidden; }
     /* SIDEBAR */
     .sidebar {
       width: 220px; background: #0f172a; color: white; padding: 16px 0;
-      display: flex; flex-direction: column;
+      display: flex; flex-direction: column; overflow-y: auto; flex: none;
     }
     .sidebar a {
       display: flex; align-items: center; gap: 10px; padding: 10px 16px; color: #94a3b8;
@@ -81,11 +81,11 @@
       color: #475569; letter-spacing: 1.2px; font-weight: 600; margin: 0 8px;
     }
     /* CONTENT */
-    .content { flex: 1; padding: 24px; overflow-y: auto; }
+    .content { flex: 1; padding: 24px; overflow-y: auto; min-height: 0; min-width: 0; }
     /* QUICK REPLIES PANEL */
     .quick-replies-panel {
       width: 200px; min-width: 200px; background: #f8f5ff; border-left: 1px solid #e8e0f8;
-      padding: 12px; overflow-y: auto; display: none; flex-direction: column; gap: 6px;
+      padding: 12px; overflow-y: auto; display: none; flex-direction: column; gap: 6px; min-height: 0; flex: none;
     }
     .quick-replies-panel.visible { display: flex; }
     .quick-replies-panel h4 { text-align: center; color: #5a3e8e; font-size: 13px; margin: 0 0 8px; font-weight: 600; }
@@ -265,7 +265,7 @@
       .mobile-nav { display: flex; }
       .header h1 { font-size: 16px; }
       .header { padding: 10px 16px; }
-      .main { min-height: calc(100vh - 46px - 58px); }
+      .main { min-height: calc(100vh - 46px - 58px); height: auto; overflow: visible; }
       .content { padding: 14px 10px 70px 10px; }
       .stats { grid-template-columns: 1fr 1fr; gap: 8px; }
       .stat-card { padding: 14px; }
@@ -4121,14 +4121,13 @@
       const p = await r.json();
       const h = p.hoy || {}, l = p.last7 || {};
       const ventana = (h.primer && h.ultimo) ? (h.primer + ' → ' + h.ultimo) : '—';
-      const tile = (label, val, sub) => `<div style="flex:1;min-width:160px;background:#f4f6fb;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px">
+      const tile = (label, val) => `<div style="flex:1;min-width:160px;background:#f4f6fb;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px">
         <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.03em">${label}</div>
-        <div style="font-size:20px;font-weight:800;color:#1f3864;line-height:1.25">${val}</div>
-        <div style="font-size:12px;color:#64748b">${sub}</div></div>`;
+        <div style="font-size:22px;font-weight:800;color:#1f3864;line-height:1.25;margin-top:2px">${val}</div></div>`;
       return `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">`
-        + tile('📦 Hoy · Promedio embalaje', (h.avg_pack_min || 0) + ' <span style="font-size:12px;font-weight:600;color:#64748b">min/pedido</span>', (h.count || 0) + ' embalados hoy')
-        + tile('🕐 Hoy · Ventana (primer → último)', ventana, (h.ventana_min || 0) + ' min de trabajo')
-        + tile('📅 Últimos 7 días · Promedio', (l.avg_pack_min || 0) + ' <span style="font-size:12px;font-weight:600;color:#64748b">min/pedido</span>', (l.count || 0) + ' embalados · ' + (l.days || 0) + ' día(s)')
+        + tile('📦 Hoy · Promedio embalaje', (h.avg_pack_min || 0) + ' <span style="font-size:12px;font-weight:600;color:#64748b">min/pedido</span>')
+        + tile('🕐 Hoy · Ventana (primer → último)', ventana)
+        + tile('📅 Últimos 7 días · Promedio', (l.avg_pack_min || 0) + ' <span style="font-size:12px;font-weight:600;color:#64748b">min/pedido</span>')
         + `</div>`;
     } catch (e) { return ''; }
   }
