@@ -368,7 +368,7 @@
       <a href="/gestion" target="_blank" id="nav-gestion" style="display:none">
         <span>🗂️ Gestión</span>
       </a>
-      <a href="/publicidad" target="_blank" id="nav-publicidad">
+      <a href="/publicidad" target="_blank" id="nav-publicidad" style="display:none">
         <span>🧠 Estrategia</span>
       </a>
       <div class="section-title">Configuración</div>
@@ -420,7 +420,7 @@
       <span class="nav-icon">🔄</span>
       Actualizar
     </a>
-    <a href="/publicidad" target="_blank" id="mob-publicidad">
+    <a href="/publicidad" target="_blank" id="mob-publicidad" style="display:none">
       <span class="nav-icon">📊</span>
       Estrategia
     </a>
@@ -458,6 +458,8 @@
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
+          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const mp = document.getElementById('mob-publicidad'); if (mp) mp.style.display = ''; }
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
@@ -560,6 +562,8 @@
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
+          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const mp = document.getElementById('mob-publicidad'); if (mp) mp.style.display = ''; }
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
