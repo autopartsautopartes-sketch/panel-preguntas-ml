@@ -403,6 +403,35 @@ const routes = {};
 function route(method, path, handler) {
   routes[`${method}:${path}`] = handler;
 }
+// Proxy de imágenes: sirve las miniaturas de MercadoLibre desde NUESTRO dominio.
+// Esto evita dos problemas del navegador del usuario: (1) bloqueo de contenido
+// mixto (http dentro de página https) y (2) bloqueo del CDN de ML por parte de
+// extensiones / ad-blockers. Al servirlas desde 'self' entran siempre.
+function imgProxy(u) {
+  if (!u) return '';
+  const https = String(u).replace(/^http:\/\//i, 'https://');
+  return '/img?u=' + encodeURIComponent(https);
+}
+route('GET', '/img', async (req, res) => {
+  let target = '';
+  try { target = new URL(req.url, 'http://localhost').searchParams.get('u') || ''; } catch (e) { target = ''; }
+  target = target.replace(/^http:\/\//i, 'https://');
+  // Seguridad (anti-SSRF): solo permitimos imágenes de dominios de MercadoLibre.
+  let host = '';
+  try { host = new URL(target).hostname.toLowerCase(); } catch (e) { host = ''; }
+  const ok = host && (host.endsWith('mlstatic.com') || host.endsWith('mercadolibre.com') || host.endsWith('mercadolibre.com.ar'));
+  if (!ok) { res.writeHead(400); return res.end('bad url'); }
+  try {
+    const r = await fetch(target);
+    if (!r.ok) { res.writeHead(502); return res.end('upstream error'); }
+    const ct = r.headers.get('content-type') || 'image/jpeg';
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'public, max-age=86400' });
+    res.end(buf);
+  } catch (e) {
+    res.writeHead(502); res.end('fetch failed');
+  }
+});
 // AUTH
 route('POST', '/api/login', async (req, res) => {
   const ip = getClientIp(req);
@@ -437,6 +466,8 @@ route('GET', '/api/me', async (req, res) => {
   const isAdmin = sess.role === 'admin';
   sendJSON(res, 200, {
     username: sess.username, role: sess.role,
+    firma: user?.firma || '',
+    saludo: db.saludo_inicial ?? 'Hola, Gracias por tu consulta,',
     alerts_questions: user?.alerts_questions ?? true,
     alerts_messages: user?.alerts_messages ?? true,
     view_dashboard: user?.view_dashboard !== false,
@@ -2200,7 +2231,7 @@ route('GET', '/api/questions', async (req, res) => {
           else if (lt) listingType = lt;
           itemDetails[itemId] = {
             title: itemData.title,
-            thumbnail: (itemData.thumbnail || '').replace(/^http:\/\//i, 'https://'),  // forzar https (evita bloqueo de contenido mixto)
+            thumbnail: imgProxy(itemData.thumbnail),  // sirve la miniatura desde nuestro dominio (evita bloqueos del navegador)
             permalink: itemData.permalink,
             price: itemData.price,
             currency: itemData.currency_id || 'ARS',
@@ -2557,7 +2588,7 @@ route('GET', '/api/sales', async (req, res) => {
             const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
             if (skuAttr) sku = skuAttr.value_name || '';
           }
-          return { id: itemId, thumbnail: (itemData.thumbnail || '').replace(/^http:\/\//i, 'https://'), sku };
+          return { id: itemId, thumbnail: imgProxy(itemData.thumbnail), sku };
         }));
         for (const r of itemResults) {
           if (r.status === 'fulfilled') itemCache[r.value.id] = r.value;
@@ -2827,6 +2858,28 @@ route('POST', '/api/quick-replies', async (req, res) => {
   db.quick_replies = replies;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
+});
+// FIRMA (cierre) — cada usuario guarda la suya, para firmar con su nombre.
+route('POST', '/api/me/firma', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { firma } = await parseBody(req);
+  const db = loadDB();
+  const user = db.users.find(u => u.id === sess.userId);
+  if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
+  user.firma = String(firma || '').slice(0, 500);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, firma: user.firma });
+});
+// SALUDO inicial (global) — solo el admin lo configura.
+route('POST', '/api/saludo', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { saludo } = await parseBody(req);
+  const db = loadDB();
+  db.saludo_inicial = String(saludo ?? '').slice(0, 500);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, saludo: db.saludo_inicial });
 });
 // STATS
 route('GET', '/api/stats', async (req, res) => {
