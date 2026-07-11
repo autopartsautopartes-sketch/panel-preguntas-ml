@@ -985,8 +985,8 @@
                 </div>
               `}
               <div style="margin-top:8px;border-top:1px solid #f0f0f0;padding-top:8px"
-                   class="prev-q-wrapper" data-buyer="${escapeHtml(String(q.from?.id||''))}" data-account="${escapeHtml(String(q.account_id||''))}" data-item="${escapeHtml(String(q.item_id||''))}">
-                <button onclick="togglePrevQuestions(this, '${escapeHtml(String(q.from?.id || ''))}', '${escapeHtml(String(q.account_id || ''))}', '${escapeHtml(String(q.item_id || ''))}')"
+                   class="prev-q-wrapper" data-buyer="${escapeHtml(String(q.from?.id||''))}" data-account="${escapeHtml(String(q.account_id||''))}" data-item="${escapeHtml(String(q.item_id||''))}" data-qid="${escapeHtml(String(q.id||''))}">
+                <button onclick="togglePrevQuestions(this, '${escapeHtml(String(q.from?.id || ''))}', '${escapeHtml(String(q.account_id || ''))}', '${escapeHtml(String(q.item_id || ''))}', '${escapeHtml(String(q.id || ''))}')"
                   class="prev-q-btn"
                   style="display:none;background:none;border:none;color:#3483fa;font-size:12px;cursor:pointer;padding:4px 0;align-items:center;gap:4px">
                   <span class="pq-arrow" style="display:inline-block;transition:transform 0.2s">&#9658;</span>
@@ -1030,6 +1030,7 @@
         const buyerId   = wrapper.dataset.buyer;
         const accountId = wrapper.dataset.account;
         const itemId    = wrapper.dataset.item;
+        const curQid    = wrapper.dataset.qid;
         if (!buyerId) return;
         // Si ya fue restaurado (btn visible), no volver a chequear
         const btn = wrapper.querySelector('.prev-q-btn');
@@ -1040,7 +1041,9 @@
           const r = await fetch('/api/questions?' + params);
           if (!r.ok) return;
           const qs = await r.json();
-          if (qs.length > 0) {
+          // Excluir la pregunta actual: solo mostrar el botón si hay OTRAS preguntas reales del comprador.
+          const prev = qs.filter(pq => String(pq.id) !== String(curQid));
+          if (prev.length > 0) {
             if (btn) { btn.style.display = 'flex'; }
           }
         } catch(e) {}
@@ -1092,7 +1095,7 @@
       btn.textContent = 'Responder';
     }
   }
-  async function togglePrevQuestions(btn, buyerId, accountId, itemId) {
+  async function togglePrevQuestions(btn, buyerId, accountId, itemId, curQid) {
     const box = btn.nextElementSibling;
     const arrow = btn.querySelector('.pq-arrow');
     if (box.style.display !== 'none') {
@@ -1109,7 +1112,9 @@
       const params = new URLSearchParams({ buyer_id: buyerId, account_id: accountId, status: 'ANSWERED' });
       if (itemId) params.set('item_id', itemId);
       const res = await fetch(`/api/questions?${params}`);
-      const qs = await res.json();
+      let qs = await res.json();
+      // Excluir la pregunta actual de la lista de "anteriores".
+      qs = qs.filter(pq => String(pq.id) !== String(curQid));
       if (!qs.length) { box.innerHTML = '<span style="color:#999;font-size:12px">Sin preguntas anteriores.</span>'; return; }
       box.innerHTML = qs.map(pq => `
         <div style="padding:8px 12px;background:#f8f9fa;border-radius:6px;margin-bottom:6px;font-size:13px">
