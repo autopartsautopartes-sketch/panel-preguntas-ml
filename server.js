@@ -5871,14 +5871,17 @@ function registerAds(deps) {
         out.payments = (order.payments || []).map(p => ({ transaction_amount: p.transaction_amount, shipping_cost: p.shipping_cost, taxes_amount: p.taxes_amount, coupon_amount: p.coupon_amount, marketplace_fee: p.marketplace_fee, total_paid_amount: p.total_paid_amount, installments: p.installments, status: p.status }));
         out.order_taxes = order.taxes || null;
         // El "Impuestos" (retención) NO viene en la orden; vive en el detalle del PAGO de Mercado Pago.
+        const errInfo = (e) => { try { return { status: e && e.response && e.response.status, data: e && e.response && e.response.data, message: e && e.message }; } catch (_) { return String(e); } };
         const payId = order.payments && order.payments[0] && order.payments[0].id;
         out.payment_id = payId || null;
         if (payId) {
-          try {
-            const mp = await deps.mlGet('https://api.mercadolibre.com/v1/payments/' + payId, token, {});
-            // Devolvemos solo los campos donde suele estar la retención (para no traer todo el pago enorme).
-            out.mp_payment = { id: mp.id, taxes_amount: mp.taxes_amount, transaction_amount: mp.transaction_amount, net_received_amount: mp.transaction_details && mp.transaction_details.net_received_amount, charges_details: mp.charges_details, taxes: mp.taxes, fee_details: mp.fee_details };
-          } catch (e) { out.mp_payment_error = String(e && (e.message || e)); }
+          for (const host of ['https://api.mercadopago.com', 'https://api.mercadolibre.com']) {
+            try {
+              const mp = await deps.mlGet(host + '/v1/payments/' + payId, token, {});
+              out.mp_payment = { host, taxes_amount: mp.taxes_amount, transaction_amount: mp.transaction_amount, net_received_amount: mp.transaction_details && mp.transaction_details.net_received_amount, charges_details: mp.charges_details, taxes: mp.taxes, fee_details: mp.fee_details };
+              break;
+            } catch (e) { (out.mp_errors = out.mp_errors || []).push({ host, err: errInfo(e) }); }
+          }
         }
         const shipId = order.shipping && order.shipping.id;
         out.shipping_id = shipId || null;
