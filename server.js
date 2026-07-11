@@ -4918,13 +4918,19 @@ function makeEngine(deps) {
       const c = await mlGet(`https://api.mercadolibre.com/shipments/${shipmentId}/costs`, token, {}, { 'x-format-new': 'true' });
       if (c) {
         const snd = Array.isArray(c.senders) ? c.senders[0] : null;
+        const rcv = c.receiver;
         if (snd && snd.cost != null) cost = Number(snd.cost) || 0;   // costo REAL neto que absorbe el vendedor
         else if (c.gross_amount != null) cost = Math.max(0, Number(c.gross_amount) - (Number(c.receiver_shipping_cost) || 0));
         if (snd) {
-          // BONIFICACIÓN de ML por envío Flex = "save" del sender (o suma de sus discounts). NO afecta la ganancia.
-          let b = Number(snd.save);
-          if (isNaN(b) || b === 0) { let db = 0; for (const d of (snd.discounts || [])) { const n = Number(d.promoted_amount || d.amount || 0); if (!isNaN(n)) db += n; } b = db; }
-          if (!isNaN(b) && b > 0) bonus = b;
+          // BONIFICACIÓN de ML por envío Flex. NO afecta la ganancia.
+          //  - Ventas CARAS (el vendedor absorbe parte del envío): el bono es el "save" del sender (ej. 869).
+          //  - Ventas BARATAS (envío gratis, el vendedor no paga): ML le acredita el envío completo; ese monto está
+          //    en el "save" del receiver (comprador) — ej. 8690. Lo tomamos cuando el costo del sender es 0.
+          const sndSave = Number(snd.save) || 0;
+          const sndCost = Number(snd.cost) || 0;
+          const rcvSave = (rcv && Number(rcv.save)) || 0;
+          if (sndSave > 0) bonus = sndSave;
+          else if (sndCost === 0 && rcvSave > 0) bonus = rcvSave;
         }
       }
     } catch (e) {}
@@ -5154,8 +5160,9 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
       const cuotas = (frozen && frozen.cuotas != null) ? frozen.cuotas : (o.installments || 0);
       const flex = (frozen && frozen.flex != null) ? frozen.flex : (logistic === 'self_service');  // Mercado Envíos Flex
       const pack = (frozen && frozen.pack != null) ? frozen.pack : ((packCount[pk] || 0) > 1);   // venta en carrito
-      // BONIFICACIÓN de ML: SOLO en Flex, se muestra en el ítem dueño del paquete. NO afecta la ganancia (va a la solapa FLEX).
-      const bono = (frozen && frozen.bono != null) ? frozen.bono : ((flex && packOwner[pk] === itemKey) ? (packBono[pk] || 0) : 0);
+      // BONIFICACIÓN de ML: SOLO en Flex, en el ítem dueño del paquete. NO afecta la ganancia (va a la solapa FLEX).
+      // Se calcula SIEMPRE en vivo (no del congelado) para corregir las ventas guardadas con bono viejo/0.
+      const bono = (flex && packOwner[pk] === itemKey) ? (packBono[pk] || 0) : 0;
       let r;
       if (frozen) {
         // Venta ya registrada: usamos el costo/margen CONGELADO al momento de la venta.
@@ -5176,6 +5183,8 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
           if (r.known) { r.net = r.revenue - r.fee - (r.envio || 0) - (r.tax || 0) - (r.cost || 0) - (r.factura || 0); r.marginPct = r.revenue > 0 ? (r.net / r.revenue) * 100 : null; }
           if (sales && sales[key]) { sales[key].envio = r.envio; sales[key].tax = r.tax; sales[key].taxReal = r.taxReal; sales[key].queda = r.queda; sales[key].net = r.net; sales[key].marginPct = r.marginPct; taxFixedCount++; }
         }
+        // Corrección del BONO Flex (informativo, no toca la ganancia): actualizamos el congelado si cambió.
+        if (sales && sales[key] && (Number(sales[key].bono) || 0) !== (bono || 0)) { sales[key].bono = bono; taxFixedCount++; }
       } else {
         r = saleNet(it, cr, cfg, shipPart, taxPart, flex);
         if (sales) {
