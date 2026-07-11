@@ -4885,6 +4885,7 @@ function makeEngine(deps) {
         order_id: o.id, pack_id: o.pack_id || o.id,   // pack_id = "Venta #" que ML muestra en el detalle (el que copia el usuario)
         date: argDate(o.date_created),   // fecha en hora argentina (consistente con el Dashboard)
         shipment_id: o.shipping && o.shipping.id,
+        payment_ids: (o.payments || []).map(p => p.id).filter(Boolean),   // pagos de MP (para traer la retención/impuesto real)
         status: o.status, tags: o.tags || [], tax_real: taxReal, installments,
         items: (o.order_items || []).map(it => ({
           item_id: it.item && it.item.id, title: (it.item && it.item.title) || '',
@@ -4931,6 +4932,23 @@ function makeEngine(deps) {
     return { cost, status, logistic, bonus };
   }
 
+  // IMPUESTO REAL (retenciones IIBB/SIRTAC/etc.) de una venta. NO viene en la orden: vive en el pago
+  // de Mercado Pago, en charges_details con type="tax". Sumamos esos cargos de todos los pagos de la orden.
+  async function fetchPaymentTax(account, paymentIds) {
+    if (!paymentIds || !paymentIds.length) return null;
+    const token = await getValidToken(account);
+    let tax = 0, got = false;
+    for (const pid of paymentIds) {
+      try {
+        const mp = await mlGet('https://api.mercadopago.com/v1/payments/' + pid, token, {});
+        for (const ch of (mp && mp.charges_details) || []) {
+          if (String(ch.type) === 'tax') { const a = Number(ch.amounts && ch.amounts.original); if (!isNaN(a)) { tax += a; got = true; } }
+        }
+      } catch (e) {}
+    }
+    return got ? tax : null;
+  }
+
   // SIMULAR COSTOS de ML (el "simular costos" de la web): comisión + cargo fijo EXACTOS
   // para un precio/categoría/tipo, sin necesidad de una venta. Endpoint público listing_prices.
   // Devuelve { sale_fee, fixed_fee, percentage_fee, listing_type_id } o null.
@@ -4972,7 +4990,7 @@ function makeEngine(deps) {
     return await mlPut('https://api.mercadolibre.com/items/' + itemId, { price: Math.round(Number(price)) }, token);
   }
 
-  return { getAdvertiser, getAdvertiserId, listCampaigns, listCampaignItems, setCampaignStatus, fetchItems, fetchSales, fetchShipping, simulateFee, fetchVisits, fetchItemPrices, setItemPrice };
+  return { getAdvertiser, getAdvertiserId, listCampaigns, listCampaignItems, setCampaignStatus, fetchItems, fetchSales, fetchShipping, fetchPaymentTax, simulateFee, fetchVisits, fetchItemPrices, setItemPrice };
 }
 
 // ===========================================================================
@@ -5047,7 +5065,7 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
   const orders = await engine.fetchSales(account, from, to);
   const SHIP_CAP = cfg.shipCap || 200;                 // tope de envíos reales a consultar (por velocidad)
   let facturacion = 0, factConocida = 0, ganancia = 0, conocidas = 0, perdida = 0, sinCosto = 0, shipFetched = 0;
-  let hidden = 0, savedCount = 0, freshCount = 0, taxRealCount = 0, keptOrders = 0;  // ocultas, congeladas, nuevas, con impuesto real, órdenes válidas
+  let hidden = 0, savedCount = 0, freshCount = 0, taxRealCount = 0, keptOrders = 0, taxFixedCount = 0;  // ocultas, congeladas, nuevas, con impuesto real, órdenes válidas, impuestos corregidos
   // Acumuladores EXTRA (para el resumen ampliado y el XLSX estilo RESUMEN DIARIO):
   let unidades = 0, feeTotal = 0, envioTotal = 0, taxTotal = 0, facturaTotal = 0, quedaTotal = 0;
   let costTotal = 0, costStockTotal = 0, gananciaSinFlex = 0, perdidaMonto = 0, cuotasCount = 0, bonoTotal = 0;
@@ -5064,6 +5082,21 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
     if (!sid || shipInfo[sid] !== undefined) continue;
     if (sIdx < SHIP_CAP) { const sh = await engine.fetchShipping(account, sid); shipInfo[sid] = { cost: sh.cost, status: sh.status, logistic: sh.logistic, bonus: sh.bonus }; if (sh.cost != null) shipFetched++; sIdx++; }
     else { shipInfo[sid] = { cost: null, status: null, logistic: null, bonus: null }; }
+  }
+  // ===== IMPUESTO REAL (retención IIBB/SIRTAC/etc.) por orden, del PAGO de Mercado Pago (no viene en la orden).
+  // Solo lo traemos para las órdenes que lo necesitan: nuevas, o congeladas con impuesto 0 (para corregirlas).
+  const taxByOrder = {};
+  {
+    const need = [];
+    for (const o of orders) {
+      let some = false;
+      for (const it of o.items) { const fr = sales && sales[account.id + ':' + o.order_id + ':' + it.item_id]; if (!fr || !(fr.tax > 0)) { some = true; break; } }
+      if (some && o.payment_ids && o.payment_ids.length) need.push(o);
+    }
+    await mapLimit(need.slice(0, SHIP_CAP), 6, async (o) => {
+      const t = await engine.fetchPaymentTax(account, o.payment_ids);
+      if (t != null) taxByOrder[o.order_id] = t;
+    });
   }
   // ===== Agrupamos por PAQUETE (pack_id = "Venta #" de ML): en un carrito el envío se cobra UNA vez
   // para todo el paquete. Lo asignamos al ítem de MAYOR valor del paquete; el resto → envío 0.
@@ -5099,8 +5132,10 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
     keptOrders++;
     const pk = o.pack_id || o.order_id;
     const n = o.items.length || 1;
-    const taxPart = (o.tax_real != null && !isNaN(o.tax_real)) ? o.tax_real / n : null;  // impuesto REAL de ML repartido entre ítems
-    if (taxPart != null) taxRealCount++;
+    // Impuesto REAL de la orden: primero el de Mercado Pago (retenciones); si no, el de la orden.
+    const realTaxOrder = (taxByOrder[o.order_id] != null) ? taxByOrder[o.order_id] : (o.tax_real != null ? o.tax_real : null);
+    const taxPart = (realTaxOrder != null && !isNaN(realTaxOrder)) ? realTaxOrder / n : null;
+    if (taxByOrder[o.order_id] != null && taxByOrder[o.order_id] > 0) taxRealCount++;
     for (const it of o.items) {
       const cr = costs[String(it.item_id)];
       const itemKey = o.order_id + ':' + it.item_id;
@@ -5126,6 +5161,15 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
         // Venta ya registrada: usamos el costo/margen CONGELADO al momento de la venta.
         r = { revenue: frozen.revenue, fee: frozen.fee, envio: frozen.envio, envioReal: frozen.envioReal, tax: frozen.tax, taxReal: frozen.taxReal, factura: frozen.factura, queda: frozen.queda, cost: frozen.cost, net: frozen.net, marginPct: frozen.marginPct, known: frozen.known };
         savedCount++;
+        // CORRECCIÓN de impuesto: si el congelado quedó sin impuesto real (0) y ahora lo tenemos de MP, lo aplicamos
+        // (mantiene congelado el COSTO; solo corrige el impuesto/quedó/ganancia que estaban mal por no venir en la orden).
+        const rt = (taxByOrder[o.order_id] != null) ? (taxByOrder[o.order_id] / n) : null;
+        if (rt != null && rt > 0 && !(frozen.tax > 0)) {
+          r.tax = rt; r.taxReal = true;
+          r.queda = r.revenue - r.fee - (flex ? 0 : (r.envio || 0)) - rt;
+          if (r.known) { r.net = r.revenue - r.fee - (r.envio || 0) - rt - (r.cost || 0) - (r.factura || 0); r.marginPct = r.revenue > 0 ? (r.net / r.revenue) * 100 : null; }
+          if (sales && sales[key]) { sales[key].tax = r.tax; sales[key].taxReal = true; sales[key].queda = r.queda; sales[key].net = r.net; sales[key].marginPct = r.marginPct; taxFixedCount++; }
+        }
       } else {
         r = saleNet(it, cr, cfg, shipPart, taxPart, flex);
         if (sales) {
@@ -5146,7 +5190,7 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
   return {
     from, to, days: daysBetween(from, to), count: rows.length, orders: keptOrders,
     facturacion, ganancia, margin: factConocida > 0 ? (ganancia / factConocida) * 100 : null,
-    conocidas, sinCosto, perdida, shipFetched, hidden, savedCount, freshCount, taxRealCount,
+    conocidas, sinCosto, perdida, shipFetched, hidden, savedCount, freshCount, taxRealCount, taxFixedCount,
     unidades, feeTotal, envioTotal, taxTotal, facturaTotal, quedaTotal,
     costTotal, costStockTotal, gananciaSinFlex, perdidaMonto, cuotasCount, bonoTotal, factConocida, rows,
   };
@@ -5677,7 +5721,7 @@ function registerAds(deps) {
     const hist = loadHistFile();
     try {
       const v = await analyzeVentas(engine, account, cfg, costs, from, to, hist);
-      if (v.freshCount > 0) { hist.updated = new Date().toISOString(); saveHistFile(hist); }  // persistimos las ventas nuevas congeladas
+      if (v.freshCount > 0 || v.taxFixedCount > 0) { hist.updated = new Date().toISOString(); saveHistFile(hist); }  // persistimos nuevas + correcciones de impuesto
       const proyMensual = v.days > 0 ? v.facturacion / v.days * 30 : 0;
       sendJSON(res, 200, {
         account: account.name, objetivo: cfg.objetivo, taxPct: cfg.taxPct, from, to,
@@ -5703,7 +5747,7 @@ function registerAds(deps) {
     try {
       const allRows = [];
       let facturacion = 0, ganancia = 0, factConocida = 0, conocidas = 0, perdida = 0, sinCosto = 0;
-      let shipFetched = 0, hidden = 0, saved = 0, fresh = 0, taxReal = 0, orders = 0, objetivoTotal = 0;
+      let shipFetched = 0, hidden = 0, saved = 0, fresh = 0, taxReal = 0, taxFixed = 0, orders = 0, objetivoTotal = 0;
       let unidades = 0, feeTotal = 0, envioTotal = 0, taxTotal = 0, facturaTotal = 0, quedaTotal = 0;
       let costTotal = 0, costStockTotal = 0, gananciaSinFlex = 0, perdidaMonto = 0, cuotasCount = 0, bonoTotal = 0;
       const porCuenta = [];
@@ -5714,14 +5758,14 @@ function registerAds(deps) {
         for (const r of v.rows) { r.account_name = account.name; allRows.push(r); if (r.known) factConocida += r.revenue; }
         facturacion += v.facturacion; ganancia += v.ganancia; orders += v.orders;
         conocidas += v.conocidas; perdida += v.perdida; sinCosto += v.sinCosto;
-        shipFetched += v.shipFetched; hidden += v.hidden; saved += v.savedCount; fresh += v.freshCount; taxReal += v.taxRealCount;
+        shipFetched += v.shipFetched; hidden += v.hidden; saved += v.savedCount; fresh += v.freshCount; taxReal += v.taxRealCount; taxFixed += v.taxFixedCount;
         unidades += v.unidades; feeTotal += v.feeTotal; envioTotal += v.envioTotal; taxTotal += v.taxTotal;
         facturaTotal += v.facturaTotal; quedaTotal += v.quedaTotal; costTotal += v.costTotal; costStockTotal += v.costStockTotal;
         gananciaSinFlex += v.gananciaSinFlex; perdidaMonto += v.perdidaMonto; cuotasCount += v.cuotasCount; bonoTotal += v.bonoTotal;
         const proy = v.days > 0 ? v.facturacion / v.days * 30 : 0;
         porCuenta.push({ account_name: account.name, objetivo: cfg.objetivo, facturacion: v.facturacion, ganancia: v.ganancia, margin: v.margin, orders: v.orders, perdida: v.perdida, proy_mensual: proy });
       }
-      if (fresh > 0) { hist.updated = new Date().toISOString(); saveHistFile(hist); }
+      if (fresh > 0 || taxFixed > 0) { hist.updated = new Date().toISOString(); saveHistFile(hist); }
       const days = daysBetween(from, to);
       const proyMensual = days > 0 ? facturacion / days * 30 : 0;
       sendJSON(res, 200, {
