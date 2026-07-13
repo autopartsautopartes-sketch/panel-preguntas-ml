@@ -366,6 +366,12 @@
       <a onclick="showSection('sales')" id="nav-sales">
         <span>🛒 Ventas</span>
       </a>
+      <a onclick="showSection('reputation')" id="nav-reputation" style="display:none">
+        <span>⭐ Reputación</span>
+      </a>
+      <a onclick="showSection('claims')" id="nav-claims" style="display:none">
+        <span>⚠️ Reclamos</span>
+      </a>
       <a onclick="showSection('orders')" id="nav-orders" style="display:none">
         <span>📋 Pedidos</span>
       </a>
@@ -421,6 +427,14 @@
       <span class="nav-icon">🛒</span>
       Ventas
     </a>
+    <a onclick="showSection('reputation')" id="mob-reputation" style="display:none">
+      <span class="nav-icon">⭐</span>
+      Reputación
+    </a>
+    <a onclick="showSection('claims')" id="mob-claims" style="display:none">
+      <span class="nav-icon">⚠️</span>
+      Reclamos
+    </a>
     <a onclick="showSection('orders')" id="mob-orders" style="display:none">
       <span class="nav-icon">📋</span>
       Pedidos
@@ -472,6 +486,10 @@
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
           document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
+          { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
+          { const ncl = document.getElementById('nav-claims'); if (ncl) ncl.style.display = ''; }  // Reclamos: solo admin
+          { const mcl = document.getElementById('mob-claims'); if (mcl) mcl.style.display = ''; }
           { const mp = document.getElementById('mob-publicidad'); if (mp) mp.style.display = ''; }
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
@@ -576,6 +594,10 @@
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
           document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
+          { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
+          { const ncl = document.getElementById('nav-claims'); if (ncl) ncl.style.display = ''; }  // Reclamos: solo admin
+          { const mcl = document.getElementById('mob-claims'); if (mcl) mcl.style.display = ''; }
           { const mp = document.getElementById('mob-publicidad'); if (mp) mp.style.display = ''; }
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
@@ -665,6 +687,8 @@
       case 'questions': loadQuestions(); break;
       case 'messages': loadMessages(); break;
       case 'sales': loadSales(); break;
+      case 'reputation': loadReputation(); break;
+      case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
       case 'accounts': loadAccountsSection(); break;
       case 'users': loadUsers(); break;
@@ -686,6 +710,166 @@
       html += `<option value="${a.id}">${a.name}</option>`;
     }
     return html;
+  }
+  // ==================== REPUTACIÓN ====================
+  async function loadReputation() {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (currentUser?.role !== 'admin') { content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver la Reputación.</p></div>'; return; }
+    try {
+      const res = await fetch('/api/reputation');
+      const data = await res.json();
+      if (navToken !== myNav) return;
+      const pct = (r) => (r == null ? '—' : ((r * 100).toFixed(2).replace(/\.?0+$/, '') || '0') + '%');
+      const levelInfo = (lid) => {
+        const map = { '5_green': ['#00a650', 'Verde'], '4_light_green': ['#7dd056', 'Verde claro'], '3_yellow': ['#ffcc00', 'Amarillo'], '2_orange': ['#ff7733', 'Naranja'], '1_red': ['#e74c3c', 'Rojo'] };
+        return map[lid] || ['#cccccc', 'Sin nivel / nuevo'];
+      };
+      const psLabel = (s) => s === 'platinum' ? 'MercadoLíder Platinum' : s === 'gold' ? 'MercadoLíder Gold' : s === 'silver' ? 'MercadoLíder' : '';
+      let html = '<h2 style="margin-bottom:20px;color:#2d3277">Reputación de las cuentas</h2>';
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px">';
+      for (const a of data) {
+        if (a.error) {
+          html += `<div class="card"><div style="font-weight:700;color:#2d3277">${escapeHtml(a.account_name)}</div><div style="color:#e74c3c;font-size:13px;margin-top:8px">No se pudo obtener (${escapeHtml(a.error)})</div></div>`;
+          continue;
+        }
+        const li = levelInfo(a.level_id); const col = li[0]; const lname = li[1];
+        const ps = psLabel(a.power_seller_status);
+        const lvlNum = parseInt(String(a.level_id || '').charAt(0)) || 0;
+        const segColors = ['#e74c3c', '#ff7733', '#ffcc00', '#7dd056', '#00a650'];
+        let bar = '<div style="display:flex;gap:3px;margin:12px 0">';
+        for (let i = 0; i < 5; i++) { bar += `<div style="flex:1;height:9px;border-radius:3px;background:${(i < lvlNum) ? segColors[i] : '#eee'}"></div>`; }
+        bar += '</div>';
+        html += `
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="width:13px;height:13px;border-radius:50%;background:${col};display:inline-block;border:1px solid rgba(0,0,0,0.1)"></span>
+              <span style="font-weight:800;color:#2d3277;font-size:15px">${escapeHtml(a.nickname || a.account_name)}</span>
+            </div>
+            ${ps ? `<div style="color:#00a650;font-weight:700;font-size:14px;margin-top:6px">${ps} ✔</div>` : `<div style="color:#666;font-size:13px;margin-top:6px">Nivel: ${lname}</div>`}
+            ${bar}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px">
+              <div><div style="font-size:20px;font-weight:800;color:#2d3277">${a.operaciones != null ? Number(a.operaciones).toLocaleString('es-AR') : '—'}</div><div style="font-size:12px;color:#666">Operaciones</div></div>
+              <div><div style="font-size:20px;font-weight:800;color:${(a.canceladas_rate || 0) > 0 ? '#e67e22' : '#00a650'}">${pct(a.canceladas_rate)}</div><div style="font-size:12px;color:#666">Canceladas por vos</div></div>
+              <div><div style="font-size:20px;font-weight:800;color:${(a.demorados_rate || 0) > 0.05 ? '#e67e22' : '#2d3277'}">${pct(a.demorados_rate)}</div><div style="font-size:12px;color:#666">Envíos demorados</div></div>
+              <div><div style="font-size:20px;font-weight:800;color:${(a.reclamos_rate || 0) > 0.01 ? '#e74c3c' : '#00a650'}">${pct(a.reclamos_rate)}</div><div style="font-size:12px;color:#666">Reclamos</div></div>
+            </div>
+            <div style="font-size:11px;color:#999;margin-top:12px">Información en base a los últimos 60 días.</div>
+          </div>`;
+      }
+      html += '</div>';
+      content.innerHTML = html;
+    } catch (e) {
+      if (navToken !== myNav) return;
+      content.innerHTML = '<div class="empty"><p>Error al cargar la reputación</p></div>';
+    }
+  }
+  // ==================== RECLAMOS ====================
+  let claimsStatus = 'opened';
+  let claimsAccount = '';
+  let claimsSearch = '';
+  let claimsCache = [];
+  function claimTypeLabel(t) { return ({ mediations: 'Mediación', cancel_purchase: 'Cancelación (comprador)', cancel_sale: 'Cancelación (venta)', return: 'Devolución', change: 'Cambio', fulfillment: 'Logística' })[t] || (t || 'Reclamo'); }
+  function claimStageLabel(s) { return ({ claim: 'Reclamo', dispute: 'Disputa', recontact: 'Recontacto', none: '—' })[s] || (s || ''); }
+  async function loadClaims() {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (currentUser?.role !== 'admin') { content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver Reclamos.</p></div>'; return; }
+    try {
+      const res = await fetch(`/api/claims?status=${claimsStatus}&account_id=${encodeURIComponent(claimsAccount)}`);
+      claimsCache = await res.json();
+      if (navToken !== myNav) return;
+      renderClaims();
+    } catch (e) { if (navToken !== myNav) return; content.innerHTML = '<div class="empty"><p>Error al cargar reclamos</p></div>'; }
+  }
+  function renderClaims() {
+    const content = document.getElementById('content');
+    const search = claimsSearch.trim().toLowerCase();
+    let list = claimsCache;
+    if (search) list = list.filter(c => (c.buyer_name || '').toLowerCase().includes(search) || (c.item_title || '').toLowerCase().includes(search) || String(c.order_id || '').includes(search) || String(c.id || '').includes(search));
+    let accSel = '<option value="">Todas las cuentas</option>';
+    for (const a of accounts) accSel += `<option value="${a.id}"${String(a.id) === String(claimsAccount) ? ' selected' : ''}>${escapeHtml(a.name)}</option>`;
+    let html = `<h2 style="margin-bottom:16px;color:#2d3277">Reclamos</h2>
+      <div class="filters" style="flex-wrap:wrap;gap:8px">
+        <button class="${claimsStatus === 'opened' ? 'active' : ''}" onclick="claimsStatus='opened';loadClaims()">Abiertos</button>
+        <button class="${claimsStatus === 'closed' ? 'active' : ''}" onclick="claimsStatus='closed';loadClaims()">Cerrados</button>
+        <button class="${claimsStatus === 'all' ? 'active' : ''}" onclick="claimsStatus='all';loadClaims()">Todos</button>
+        <select onchange="claimsAccount=this.value;loadClaims()">${accSel}</select>
+        <input type="text" placeholder="🔍 Buscar comprador, producto, N° orden..." value="${escapeHtml(claimsSearch)}" oninput="claimsSearch=this.value;renderClaims()" style="flex:1;min-width:180px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
+      </div>`;
+    if (!list.length) { html += `<div class="empty"><p>No hay reclamos ${claimsStatus === 'opened' ? 'abiertos' : claimsStatus === 'closed' ? 'cerrados' : ''}.</p></div>`; }
+    else {
+      for (const c of list) {
+        const sc = c.status === 'opened' ? '#e74c3c' : '#27ae60';
+        html += `<div class="card" style="border-left:4px solid ${sc}">
+          <div class="card-header">
+            <span class="card-account">${escapeHtml(c.account_name)}</span>
+            <span class="card-date">${c.date_created ? formatDateTime(c.date_created) : ''}</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0">
+            <span style="background:${sc};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${c.status === 'opened' ? 'Abierto' : 'Cerrado'}</span>
+            <span style="background:#eef;color:#3b3b8f;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${escapeHtml(claimTypeLabel(c.type))}</span>
+            ${c.stage ? `<span style="background:#f5f5f5;color:#555;font-size:11px;padding:2px 8px;border-radius:10px">${escapeHtml(claimStageLabel(c.stage))}</span>` : ''}
+          </div>
+          <div class="card-item-title" style="margin-bottom:4px">📦 ${escapeHtml(c.item_title || 'Producto')} ${c.order_id ? `<a href="/?section=sales&order_id=${encodeURIComponent(c.order_id)}&account_id=${encodeURIComponent(c.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none">Orden #${escapeHtml(String(c.order_id))}</a>` : ''}</div>
+          <div style="font-size:13px;color:#555;margin-bottom:8px">Comprador: <b>${escapeHtml(c.buyer_name || '—')}</b> · Reclamo #${escapeHtml(String(c.id))}</div>
+          <button onclick="openClaim('${escapeHtml(String(c.id))}', ${c.account_id})" style="background:#3483fa;color:white;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:600">Ver conversación / Responder</button>
+        </div>`;
+      }
+    }
+    content.innerHTML = html;
+  }
+  async function openClaim(claimId, accountId) {
+    let modal = document.getElementById('claimModal');
+    if (!modal) { modal = document.createElement('div'); modal.id = 'claimModal'; modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px'; document.body.appendChild(modal); }
+    modal.innerHTML = `<div style="background:white;border-radius:12px;max-width:640px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:14px 18px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center">
+        <b style="color:#2d3277">Reclamo #${escapeHtml(String(claimId))}</b>
+        <span onclick="document.getElementById('claimModal').remove()" style="cursor:pointer;font-size:20px;color:#999">✕</span>
+      </div>
+      <div id="claimConv" style="padding:16px 18px;overflow:auto;flex:1;background:#fafbfc"><div class="loading"><div class="spinner"></div><p>Cargando...</p></div></div>
+      <div style="padding:12px 18px;border-top:1px solid #eee">
+        <div style="display:flex;gap:8px;align-items:stretch">
+          <textarea id="claimReplyText" placeholder="Escribí tu respuesta al reclamo..." style="flex:1;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;font-size:14px;min-height:70px;font-family:inherit;resize:vertical"></textarea>
+          <div style="display:flex;flex-direction:column;gap:6px;width:150px">
+            <select id="claimReceiver" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:12px"><option value="complainant">Al comprador</option><option value="mediator">A la mediación</option></select>
+            <button id="claimSendBtn" onclick="sendClaimReply('${escapeHtml(String(claimId))}', ${accountId})" style="flex:1;background:#3dd6a3;color:white;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700">Enviar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+    try {
+      const res = await fetch(`/api/claims/messages?claim_id=${encodeURIComponent(claimId)}&account_id=${accountId}`);
+      const data = await res.json();
+      const conv = document.getElementById('claimConv');
+      if (!conv) return;
+      const msgs = data.messages || [];
+      if (!msgs.length) { conv.innerHTML = '<p style="color:#999;text-align:center">Sin mensajes en este reclamo todavía. Podés escribir el primero abajo.</p>'; return; }
+      conv.innerHTML = msgs.map(m => {
+        const mine = m.role === 'respondent';
+        const who = m.role === 'respondent' ? 'Vos (vendedor)' : m.role === 'complainant' ? 'Comprador' : m.role === 'mediator' ? 'Mediador ML' : (m.role || '');
+        const att = (m.attachments || []).map(a => `<span style="display:inline-block;font-size:12px;opacity:0.85;margin-top:4px">📎 ${escapeHtml(a.name)}</span>`).join(' ');
+        return `<div style="margin-bottom:10px;text-align:${mine ? 'right' : 'left'}">
+          <div style="display:inline-block;max-width:82%;background:${mine ? '#2563eb' : '#eef1f4'};color:${mine ? 'white' : '#1e293b'};padding:8px 12px;border-radius:10px;text-align:left">
+            <div style="font-size:11px;opacity:0.7;margin-bottom:2px">${escapeHtml(who)}</div>
+            ${escapeHtml(m.text)}${att ? ('<div>' + att + '</div>') : ''}
+            ${m.date ? `<div style="font-size:10px;opacity:0.6;margin-top:4px">${formatDateTime(m.date)}</div>` : ''}
+          </div></div>`;
+      }).join('');
+      conv.scrollTop = conv.scrollHeight;
+    } catch (e) { const conv = document.getElementById('claimConv'); if (conv) conv.innerHTML = '<p style="color:#e74c3c">Error al cargar los mensajes del reclamo.</p>'; }
+  }
+  async function sendClaimReply(claimId, accountId) {
+    const ta = document.getElementById('claimReplyText');
+    const txt = ta.value.trim(); if (!txt) return;
+    const receiver = document.getElementById('claimReceiver').value;
+    const btn = document.getElementById('claimSendBtn'); btn.disabled = true; btn.textContent = '...';
+    try {
+      const res = await fetch('/api/claims/reply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ claim_id: claimId, account_id: accountId, message: txt, receiver_role: receiver }) });
+      const data = await res.json();
+      if (res.ok) { showToast('Respuesta enviada al reclamo', 'success'); ta.value = ''; openClaim(claimId, accountId); }
+      else { showToast(data.error || 'No se pudo enviar', 'error'); btn.disabled = false; btn.textContent = 'Enviar'; }
+    } catch (e) { showToast('Error de conexión', 'error'); btn.disabled = false; btn.textContent = 'Enviar'; }
   }
   // ==================== DASHBOARD ====================
   async function loadDashboard() {
@@ -979,6 +1163,7 @@
                   </div>
                 </div>
               </div>
+              ${q.buyer_has_purchased ? `<div style="margin-bottom:6px"><span style="display:inline-block;background:#27ae60;color:white;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px">✔ Este comprador ya te compró</span></div>` : ''}
               <div class="card-question">${escapeHtml(q.text)}</div>
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
@@ -1282,6 +1467,47 @@
   let msgBuyerSearch = '';
   let msgAccountFilter = '';
   let allConversationsCache = [];
+  // Adjuntos seleccionados por conversación (order_id -> [{name, type, data(base64)}])
+  const msgAttachments = {};
+  const MAX_ATT_BYTES = 10 * 1024 * 1024; // 10MB por archivo
+  async function onMsgFilePick(orderId, input) {
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+    if (!msgAttachments[orderId]) msgAttachments[orderId] = [];
+    for (const f of files) {
+      if (f.size > MAX_ATT_BYTES) { showToast(`"${f.name}" supera 10MB`, 'error'); continue; }
+      try {
+        const data = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result).split(',')[1] || '');
+          r.onerror = reject;
+          r.readAsDataURL(f);
+        });
+        msgAttachments[orderId].push({ name: f.name, type: f.type || 'application/octet-stream', data });
+      } catch (e) { showToast('No se pudo leer el archivo', 'error'); }
+    }
+    input.value = '';
+    renderMsgAttachChips(orderId);
+  }
+  function renderMsgAttachChips(orderId) {
+    const box = document.getElementById('msgatt-' + orderId);
+    if (!box) return;
+    const list = msgAttachments[orderId] || [];
+    box.innerHTML = list.map((a, i) => `<span style="display:inline-flex;align-items:center;gap:4px;background:#eef;color:#3b3b8f;border-radius:8px;padding:2px 8px;font-size:12px;margin:2px">📎 ${escapeHtml(a.name)} <span onclick="removeMsgAttach('${orderId}', ${i})" style="cursor:pointer;font-weight:700">✕</span></span>`).join('');
+  }
+  function removeMsgAttach(orderId, i) {
+    if (msgAttachments[orderId]) { msgAttachments[orderId].splice(i, 1); renderMsgAttachChips(orderId); }
+  }
+  // Muestra los adjuntos recibidos: imágenes en línea, el resto como link de descarga (vía proxy con token).
+  function msgAttachHtml(atts, accountId) {
+    if (!atts || !atts.length) return '';
+    return atts.map(a => {
+      const url = `/api/messages/attachment?id=${encodeURIComponent(a.id)}&account_id=${accountId}`;
+      const isImg = /\.(jpe?g|png|gif|webp)$/i.test(a.name || '') || String(a.type || '').indexOf('image') >= 0;
+      if (isImg) return `<div style="margin-top:6px"><a href="${url}" target="_blank"><img src="${url}" style="max-width:200px;max-height:200px;border-radius:8px;display:block" onerror="this.style.display='none'"></a></div>`;
+      return `<div style="margin-top:6px"><a href="${url}" target="_blank" style="font-size:12px;color:inherit;text-decoration:underline">📎 ${escapeHtml(a.name || 'archivo')}</a></div>`;
+    }).join('');
+  }
   async function loadMessages(accountId) {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_messages) {
@@ -1356,7 +1582,7 @@
                     } catch(e) {}
                   }
                   const unreadDot = m.mlUnread ? ' <span style="display:inline-block;width:7px;height:7px;background:#e74c3c;border-radius:50%;vertical-align:middle" title="No leído por ML"></span>' : '';
-                  return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + unreadDot + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
+                  return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + unreadDot + msgAttachHtml(m.attachments, conv.account_id) + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
                 }
                 if (ordered.length <= 2) {
                   return ordered.map(renderMsgBubble).join('');
@@ -1377,6 +1603,11 @@
                   <button class="msg-send" onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
                   ${messageStatus === 'unread' ? `<button class="msg-done" onclick="dismissMessage('${conv.pack_id}', this)" title="Marcar como respondido y mover a Respondidos">✓ Respondido</button>` : ''}
                 </div>
+              </div>
+              <input type="file" id="msgfile-${conv.order_id}" accept=".jpg,.jpeg,.png,.pdf,.txt" multiple style="display:none" onchange="onMsgFilePick('${conv.order_id}', this)">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px">
+                <button type="button" onclick="document.getElementById('msgfile-${conv.order_id}').click()" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">📎 Adjuntar</button>
+                <span id="msgatt-${conv.order_id}"></span>
               </div>
             </div>
           </div>
@@ -1400,6 +1631,8 @@
     content.innerHTML = html;
     // Restaurar borradores de texto
     Object.keys(draft).forEach(id => { const ta = document.getElementById(id); if (ta) ta.value = draft[id]; });
+    // Restaurar los chips de adjuntos seleccionados (que viven en memoria) tras el refresco
+    Object.keys(msgAttachments).forEach(oid => { if ((msgAttachments[oid] || []).length) renderMsgAttachChips(oid); });
     // Restaurar historial de mensajes expandido
     expandedMsgIds.forEach(id => {
       const box = document.getElementById(id);
@@ -1422,19 +1655,33 @@
   async function replyMessage(orderId, accountId) {
     const textarea = document.getElementById('msg-' + orderId);
     const text = textarea.value.trim();
-    if (!text) return;
+    const pending = msgAttachments[orderId] || [];
+    if (!text && !pending.length) return;
     const box = textarea.closest('.reply-box');
     const btn = (box && box.querySelector('.msg-send')) || textarea.nextElementSibling;
     btn.disabled = true;
     btn.textContent = 'Enviando...';
     try {
+      // 1) Subir los adjuntos a ML y juntar sus IDs.
+      const attachmentIds = [];
+      for (const a of pending) {
+        const up = await fetch('/api/messages/attachment-upload', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: accountId, filename: a.name, content_type: a.type, data: a.data })
+        });
+        const uj = await up.json();
+        if (up.ok && uj.id) attachmentIds.push(uj.id);
+        else { showToast('No se pudo subir "' + a.name + '": ' + (uj.error || ''), 'error'); btn.disabled = false; btn.textContent = 'Enviar'; return; }
+      }
+      // 2) Enviar el mensaje (texto + adjuntos).
       const res = await fetch('/api/messages/reply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: orderId, text, account_id: accountId })
+        body: JSON.stringify({ order_id: orderId, text: text || '', account_id: accountId, attachments: attachmentIds })
       });
       if (res.ok) {
         showToast('Mensaje enviado', 'success');
+        delete msgAttachments[orderId];
         // Quitar la tarjeta al instante y refrescar en segundo plano.
         const card = textarea.closest('.card');
         if (card) { card.style.transition = 'opacity 0.15s'; card.style.opacity = '0'; setTimeout(() => card.remove(), 150); }
@@ -1528,7 +1775,7 @@
                         }
                       } catch(e) {}
                     }
-                    return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
+                    return '<div class="msg-bubble ' + m.from + '">' + escapeHtml(m.text||'') + msgAttachHtml(m.attachments, conv.account_id) + (dateStr ? '<div class="msg-date">' + dateStr + '</div>' : '') + '</div>';
                   }).join('');
                 })()}
               </div>
@@ -1538,6 +1785,11 @@
                   <div class="msg-btns">
                     <button class="msg-send" onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
                   </div>
+                </div>
+                <input type="file" id="msgfile-${conv.order_id}" accept=".jpg,.jpeg,.png,.pdf,.txt" multiple style="display:none" onchange="onMsgFilePick('${conv.order_id}', this)">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px">
+                  <button type="button" onclick="document.getElementById('msgfile-${conv.order_id}').click()" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">📎 Adjuntar</button>
+                  <span id="msgatt-${conv.order_id}"></span>
                 </div>
               </div>
             </div>
@@ -1583,6 +1835,7 @@
                   </div>
                 </div>
               </div>
+              ${q.buyer_has_purchased ? `<div style="margin-bottom:6px"><span style="display:inline-block;background:#27ae60;color:white;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px">✔ Este comprador ya te compró</span></div>` : ''}
               <div class="card-question">${escapeHtml(q.text)}</div>
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
