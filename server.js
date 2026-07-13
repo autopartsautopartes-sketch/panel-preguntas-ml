@@ -1,4 +1,4 @@
- http = require('http');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -2101,6 +2101,7 @@ route('GET', '/api/reputation', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const debug = new URL(req.url, 'http://localhost').searchParams.get('debug') === '1';
   const db = loadDB();
   const out = [];
   await Promise.all((db.ml_accounts || []).map(async (account) => {
@@ -2111,6 +2112,17 @@ route('GET', '/api/reputation', async (req, res) => {
       const r = u.seller_reputation || {};
       const m = r.metrics || {};
       const tx = r.transactions || {};
+      if (debug) { out.push({ account_name: account.name, _raw: r }); return; }
+      const opsBase = (m.sales && m.sales.completed != null) ? m.sales.completed : (tx.completed || 0);
+      // Tasa de una métrica: usamos rate si viene > 0; si no, la calculamos como value / operaciones
+      // (algunas cuentas devuelven el conteo pero el rate en 0/ausente). Si no hay nada, null.
+      const rateOf = (metric) => {
+        if (!metric) return null;
+        if (metric.rate != null && Number(metric.rate) > 0) return Number(metric.rate);
+        if (metric.value != null && opsBase > 0) return Number(metric.value) / opsBase;
+        if (metric.rate != null) return Number(metric.rate);
+        return null;
+      };
       out.push({
         account_id: account.id, account_name: account.name,
         nickname: u.nickname || account.name,
@@ -2118,11 +2130,11 @@ route('GET', '/api/reputation', async (req, res) => {
         power_seller_status: r.power_seller_status || '',
         period: (m.sales && m.sales.period) || '60 días',
         operaciones: (m.sales && m.sales.completed != null) ? m.sales.completed : (tx.completed != null ? tx.completed : null),
-        canceladas_rate: (m.cancellations && m.cancellations.rate != null) ? m.cancellations.rate : null,
+        canceladas_rate: rateOf(m.cancellations),
         canceladas_value: (m.cancellations && m.cancellations.value != null) ? m.cancellations.value : null,
-        demorados_rate: (m.delayed_handling_time && m.delayed_handling_time.rate != null) ? m.delayed_handling_time.rate : null,
+        demorados_rate: rateOf(m.delayed_handling_time),
         demorados_value: (m.delayed_handling_time && m.delayed_handling_time.value != null) ? m.delayed_handling_time.value : null,
-        reclamos_rate: (m.claims && m.claims.rate != null) ? m.claims.rate : null,
+        reclamos_rate: rateOf(m.claims),
         reclamos_value: (m.claims && m.claims.value != null) ? m.claims.value : null,
         ratings: tx.ratings || {}, total_tx: tx.total != null ? tx.total : null
       });
@@ -2702,18 +2714,28 @@ route('GET', '/api/claims', async (req, res) => {
           list.push(...arr);
         } catch (e) {}
       }
-      // Enriquecer con datos de la orden (comprador + producto). Reclamos suelen ser pocos.
+      // Enriquecer con datos de la orden (comprador + producto) y con la fecha límite de respuesta. Reclamos suelen ser pocos.
       await Promise.allSettled(list.map(async (c) => {
         const oid = String(c.resource_id || c.order_id || '');
         let buyer = '', item = '';
         if (oid) {
           try { const od = await mlGet(`https://api.mercadolibre.com/orders/${oid}`, token); buyer = od.buyer?.nickname || ''; item = od.order_items?.[0]?.item?.title || ''; } catch (e) {}
         }
+        // Fecha límite para responder: la más próxima entre las available_actions del reclamo.
+        let dueDate = null;
+        try {
+          const det = await mlGet(`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}`, token);
+          const dues = [];
+          for (const p of (det.players || [])) for (const ac of (p.available_actions || [])) { if (ac && ac.due_date) dues.push(ac.due_date); }
+          if (det.due_date) dues.push(det.due_date);
+          dues.sort();
+          dueDate = dues[0] || null;
+        } catch (e) {}
         out.push({
           id: c.id, account_id: account.id, account_name: account.name,
           status: c.status, stage: c.stage, type: c.type, reason_id: c.reason_id,
           resource: c.resource, order_id: oid || null,
-          buyer_name: buyer, item_title: item,
+          buyer_name: buyer, item_title: item, due_date: dueDate,
           date_created: c.date_created, last_updated: c.last_updated
         });
       }));
@@ -2780,6 +2802,37 @@ route('POST', '/api/claims/reply', async (req, res) => {
     } catch (e) { lastErr = e.message || 'error'; }
   }
   sendJSON(res, 500, { error: lastErr || 'No se pudo enviar la respuesta al reclamo' });
+});
+// Descargar/servir un adjunto de un reclamo (imagen que mandó el comprador/mediador), con el token de la cuenta.
+route('GET', '/api/claims/attachment', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) { res.writeHead(401); return res.end('no auth'); }
+  if (sess.role !== 'admin') { res.writeHead(403); return res.end('denegado'); }
+  const u = new URL(req.url, 'http://localhost');
+  const claimId = u.searchParams.get('claim_id');
+  const id = u.searchParams.get('id');
+  const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(u.searchParams.get('account_id')));
+  if (!account || !claimId || !id) { res.writeHead(400); return res.end('bad request'); }
+  const token = await getValidToken(account);
+  if (!token) { res.writeHead(500); return res.end('sin token'); }
+  const eid = encodeURIComponent(id);
+  const urls = [
+    `https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/attachments/${eid}/download`,
+    `https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/attachments/${eid}/download`,
+    `https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/attachments/${eid}`,
+    `https://api.mercadolibre.com/v1/claims/${claimId}/attachments/${eid}`
+  ];
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) continue;
+      const ct = r.headers.get('content-type') || 'application/octet-stream';
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' });
+      return res.end(buf);
+    } catch (e) {}
+  }
+  res.writeHead(502); res.end('no disponible');
 });
 // SALES
 // In-memory caches to speed up repeated requests
