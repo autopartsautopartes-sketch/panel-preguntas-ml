@@ -154,6 +154,12 @@
     }
     .reply-box button:hover { background: #2fc593; }
     .reply-box button:disabled { background: #cbd5e1; cursor: not-allowed; color: #94a3b8; font-size: 14px; }
+    .msg-btns { display: flex; flex-direction: column; gap: 8px; width: 130px; flex: none; }
+    .msg-btns button { width: 100%; min-width: 0; flex: 1; padding: 10px 8px; font-size: 14px; font-weight: 700; border-radius: 10px; }
+    .msg-btns .msg-send { background: #3dd6a3; }
+    .msg-btns .msg-send:hover { background: #2fc593; }
+    .msg-btns .msg-done { background: #6c757d; }
+    .msg-btns .msg-done:hover { background: #5a6268; }
     /* MESSAGES */
     .msg-conversation { margin-bottom: 16px; }
     .msg-bubble {
@@ -281,6 +287,8 @@
       .reply-box { flex-direction: column; }
       .reply-row { flex-direction: column; }
       .reply-box button { width: 100%; padding: 12px; font-size: 18px; }
+      .msg-btns { width: 100%; flex-direction: row; }
+      .msg-btns button { font-size: 15px; }
       .msg-bubble { max-width: 85%; }
       .sale-card { padding: 12px; }
       .sale-header { font-size: 12px; gap: 6px; }
@@ -1077,10 +1085,17 @@
       });
       if (res.ok) {
         showToast('Respuesta enviada', 'success');
-        // Clear textarea before reloading so isUserTyping() doesn't block
+        // Quitar la tarjeta AL INSTANTE (sin esperar el reload del servidor).
         textarea.value = '';
         textarea.blur();
-        loadQuestions();
+        const card = textarea.closest('.card');
+        if (card) {
+          card.style.transition = 'opacity 0.15s';
+          card.style.opacity = '0';
+          setTimeout(() => { card.remove(); }, 150);
+        }
+        // Refrescamos en segundo plano para actualizar contadores/lista.
+        setTimeout(() => loadQuestions(), 400);
       } else {
         const data = await res.json();
         showToast(data.error || 'Error al responder', 'error');
@@ -1147,36 +1162,27 @@
       `<button class="qr-btn" onclick="insertQuickReply(${i})" title="${escapeHtml(r.text)}">${escapeHtml(r.label)}</button>`
     ).join('');
   }
+  // Rastreamos la última caja de respuesta enfocada (pregunta o mensaje). Al hacer click en un
+  // botón de respuesta rápida el textarea pierde el foco, por eso guardamos la referencia acá.
+  let _lastReplyTA = null;
+  const _isReplyTA = (el) => el && el.tagName === 'TEXTAREA' && el.closest && !!el.closest('.reply-box');
+  document.addEventListener('focusin', (e) => { if (_isReplyTA(e.target)) _lastReplyTA = e.target; });
+  document.addEventListener('click', (e) => { if (_isReplyTA(e.target)) _lastReplyTA = e.target; });
   function insertQuickReply(index) {
     const reply = quickRepliesData[index];
     if (!reply) return;
-    // Find textareas in both questions and messages
-    const textareas = document.querySelectorAll('.reply-box textarea, .card textarea, textarea[id^="reply-"], textarea[id^="msg-reply-"]');
-    let target = null;
-    for (const ta of textareas) {
-      if (ta === document.activeElement) { target = ta; break; }
-    }
-    if (!target) {
-      for (const ta of textareas) {
-        if (!ta.value.trim()) { target = ta; break; }
-      }
-    }
-    if (!target && textareas.length > 0) target = textareas[0];
-    if (target) {
-      // Insert at cursor position or append
-      const start = target.selectionStart;
-      const end = target.selectionEnd;
-      const current = target.value;
-      if (current.length === 0) {
-        target.value = reply.text;
-      } else {
-        target.value = current.substring(0, start) + reply.text + current.substring(end);
-      }
-      target.focus();
-      showToast('Respuesta insertada', 'success');
-    } else {
-      showToast('No hay pregunta abierta para responder', 'error');
-    }
+    // Insertar SIEMPRE donde está el cursor: la última caja enfocada (no la primera).
+    let target = _isReplyTA(document.activeElement) ? document.activeElement : null;
+    if (!target && _isReplyTA(_lastReplyTA) && document.body.contains(_lastReplyTA)) target = _lastReplyTA;
+    if (!target) { showToast('Hacé click en la caja de respuesta donde querés insertar el texto', 'error'); return; }
+    const start = (target.selectionStart != null) ? target.selectionStart : target.value.length;
+    const end = (target.selectionEnd != null) ? target.selectionEnd : target.value.length;
+    const cur = target.value;
+    target.value = cur.substring(0, start) + reply.text + cur.substring(end);
+    const pos = start + reply.text.length;
+    target.focus();
+    try { target.setSelectionRange(pos, pos); } catch (e) {}
+    showToast('Respuesta insertada', 'success');
   }
   function openQuickRepliesAdmin() {
     const panel = document.getElementById('quickRepliesList');
@@ -1365,9 +1371,13 @@
               })()}
             </div>
             <div class="reply-box">
-              <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
-              <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
-              ${messageStatus === 'unread' ? `<button onclick="dismissMessage('${conv.pack_id}', this)" style="background:#6c757d;margin-left:6px" title="Marcar como respondido y mover a Respondidos">✓ Respondido</button>` : ''}
+              <div class="reply-row">
+                <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
+                <div class="msg-btns">
+                  <button class="msg-send" onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
+                  ${messageStatus === 'unread' ? `<button class="msg-done" onclick="dismissMessage('${conv.pack_id}', this)" title="Marcar como respondido y mover a Respondidos">✓ Respondido</button>` : ''}
+                </div>
+              </div>
             </div>
           </div>
         `;
@@ -1378,7 +1388,18 @@
     document.querySelectorAll('[id^="msgexp-"]').forEach(el => {
       if (el.style.display !== 'none') expandedMsgIds.add(el.id);
     });
+    // PRESERVAR lo que el usuario está escribiendo y el scroll, para que un refresco automático
+    // no le borre el mensaje ni lo devuelva arriba de golpe.
+    const draft = {};
+    document.querySelectorAll('.reply-box textarea[id^="msg-"]').forEach(ta => { if (ta.value) draft[ta.id] = ta.value; });
+    const focEl = document.activeElement;
+    const focId = (focEl && focEl.id) ? focEl.id : null;
+    const focStart = (focEl && focEl.selectionStart != null) ? focEl.selectionStart : null;
+    const focEnd = (focEl && focEl.selectionEnd != null) ? focEl.selectionEnd : null;
+    const prevScroll = content.scrollTop;
     content.innerHTML = html;
+    // Restaurar borradores de texto
+    Object.keys(draft).forEach(id => { const ta = document.getElementById(id); if (ta) ta.value = draft[id]; });
     // Restaurar historial de mensajes expandido
     expandedMsgIds.forEach(id => {
       const box = document.getElementById(id);
@@ -1387,15 +1408,23 @@
       const btn = box.nextElementSibling;
       if (btn && btn.tagName === 'BUTTON') btn.textContent = 'Ocultar mensajes anteriores ▲';
     });
-    // Restore search input focus position if user was typing
-    const searchInput = document.getElementById('msg-buyer-search');
-    if (searchInput && document.activeElement !== searchInput && msgBuyerSearch) searchInput.focus();
+    // Restaurar el foco y la posición del cursor donde estaba escribiendo (sin mover el scroll)
+    if (focId) {
+      const el = document.getElementById(focId);
+      if (el) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } if (focStart != null) { try { el.setSelectionRange(focStart, focEnd); } catch (e) {} } }
+    } else {
+      const searchInput = document.getElementById('msg-buyer-search');
+      if (searchInput && document.activeElement !== searchInput && msgBuyerSearch) { try { searchInput.focus({ preventScroll: true }); } catch (e) { searchInput.focus(); } }
+    }
+    // Restaurar scroll al final para que gane
+    content.scrollTop = prevScroll;
   }
   async function replyMessage(orderId, accountId) {
     const textarea = document.getElementById('msg-' + orderId);
     const text = textarea.value.trim();
     if (!text) return;
-    const btn = textarea.nextElementSibling;
+    const box = textarea.closest('.reply-box');
+    const btn = (box && box.querySelector('.msg-send')) || textarea.nextElementSibling;
     btn.disabled = true;
     btn.textContent = 'Enviando...';
     try {
@@ -1406,7 +1435,10 @@
       });
       if (res.ok) {
         showToast('Mensaje enviado', 'success');
-        loadMessages();
+        // Quitar la tarjeta al instante y refrescar en segundo plano.
+        const card = textarea.closest('.card');
+        if (card) { card.style.transition = 'opacity 0.15s'; card.style.opacity = '0'; setTimeout(() => card.remove(), 150); }
+        setTimeout(() => loadMessages(), 500);
       } else {
         const data = await res.json();
         showToast(data.error || 'Error al enviar', 'error');
@@ -1501,8 +1533,12 @@
                 })()}
               </div>
               <div class="reply-box">
-                <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
-                <button onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
+                <div class="reply-row">
+                  <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
+                  <div class="msg-btns">
+                    <button class="msg-send" onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -5676,6 +5712,12 @@
     }
     return false;
   }
+  // Badge en la PESTAÑA del navegador (estilo WhatsApp): muestra las preguntas + mensajes pendientes.
+  const _baseTitle = 'AUTOCHAP VENTAS';
+  function updateTitleBadge() {
+    const total = (knownQuestionIds ? knownQuestionIds.size : 0) + (knownMessageIds ? knownMessageIds.size : 0);
+    document.title = total > 0 ? ('(' + total + ') ' + _baseTitle) : _baseTitle;
+  }
   let pendingNewQuestions = 0;
   function showNewQuestionsBanner(count) {
     let banner = document.getElementById('newQuestionsBanner');
@@ -5723,6 +5765,7 @@
         badge.style.display = 'none';
         if (mobBadge) { mobBadge.style.display = 'none'; }
       }
+      updateTitleBadge();
       if (notificationsReady && hadKnownBefore && newIds.length > 0) {
         // Sound + popup notification (if user has alerts enabled)
         if (currentUser?.alerts_questions) {
@@ -5779,6 +5822,7 @@
         msgBadge.style.display = 'none';
         if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
       }
+      updateTitleBadge();
       if (notificationsReady && hadKnownBefore && newIds.length > 0 && currentUser?.alerts_messages) {
         playNotificationSound();
         const newConvs = conversations.filter(c => newIds.includes(c.messages?.[0]?.id));
