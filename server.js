@@ -1,4 +1,4 @@
-const http = require('http');
+ http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -2096,6 +2096,43 @@ route('GET', '/api/accounts', async (req, res) => {
   const db = loadDB();
   sendJSON(res, 200, db.ml_accounts.map(a => ({ id: a.id, name: a.name, seller_id: a.seller_id, token_expires_at: a.token_expires_at })));
 });
+// REPUTACIÓN: estado actual de cada cuenta (nivel + métricas de los últimos 60 días).
+route('GET', '/api/reputation', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const db = loadDB();
+  const out = [];
+  await Promise.all((db.ml_accounts || []).map(async (account) => {
+    try {
+      const token = await getValidToken(account);
+      if (!token) { out.push({ account_id: account.id, account_name: account.name, error: 'sin token' }); return; }
+      const u = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}`, token);
+      const r = u.seller_reputation || {};
+      const m = r.metrics || {};
+      const tx = r.transactions || {};
+      out.push({
+        account_id: account.id, account_name: account.name,
+        nickname: u.nickname || account.name,
+        level_id: r.level_id || '',
+        power_seller_status: r.power_seller_status || '',
+        period: (m.sales && m.sales.period) || '60 días',
+        operaciones: (m.sales && m.sales.completed != null) ? m.sales.completed : (tx.completed != null ? tx.completed : null),
+        canceladas_rate: (m.cancellations && m.cancellations.rate != null) ? m.cancellations.rate : null,
+        canceladas_value: (m.cancellations && m.cancellations.value != null) ? m.cancellations.value : null,
+        demorados_rate: (m.delayed_handling_time && m.delayed_handling_time.rate != null) ? m.delayed_handling_time.rate : null,
+        demorados_value: (m.delayed_handling_time && m.delayed_handling_time.value != null) ? m.delayed_handling_time.value : null,
+        reclamos_rate: (m.claims && m.claims.rate != null) ? m.claims.rate : null,
+        reclamos_value: (m.claims && m.claims.value != null) ? m.claims.value : null,
+        ratings: tx.ratings || {}, total_tx: tx.total != null ? tx.total : null
+      });
+    } catch (e) {
+      out.push({ account_id: account.id, account_name: account.name, error: (e && e.message) || 'error' });
+    }
+  }));
+  out.sort((a, b) => (a.account_name || '').localeCompare(b.account_name || ''));
+  sendJSON(res, 200, out);
+});
 route('GET', '/auth/mercadolibre', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2148,6 +2185,9 @@ route('GET', '/callback', async (req, res) => {
   }
 });
 // QUESTIONS
+// Cache de "el comprador ya compró en esta cuenta" (evita consultar ML en cada refresco de 15s).
+const buyerBoughtCache = {}; // clave: accountId:buyerId -> { bought, ts }
+const BUYER_BOUGHT_TTL = 60 * 60 * 1000; // 1 hora
 route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2246,9 +2286,31 @@ route('GET', '/api/questions', async (req, res) => {
           itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
         }
       }
+      // ¿El comprador YA compró en esta cuenta? Se avisa en la pregunta. Con cache de 1h por comprador.
+      const purchasedBuyers = new Set();
+      const uniqueBuyers = [...new Set(questions.map(q => q.from?.id).filter(Boolean))];
+      const toQuery = [];
+      for (const bid of uniqueBuyers) {
+        const c = buyerBoughtCache[account.id + ':' + bid];
+        if (c && (Date.now() - c.ts) < BUYER_BOUGHT_TTL) { if (c.bought) purchasedBuyers.add(String(bid)); }
+        else toQuery.push(bid);
+      }
+      for (let i = 0; i < toQuery.length; i += 5) {
+        const batch = toQuery.slice(i, i + 5);
+        await Promise.allSettled(batch.map(async (bid) => {
+          try {
+            const od = await mlGet('https://api.mercadolibre.com/orders/search', token, { seller: account.seller_id, buyer: bid, sort: 'date_desc', limit: 10 });
+            const results = od.results || [];
+            const bought = results.some(o => o.status !== 'cancelled') || (results.length === 0 && od.paging && od.paging.total > 0);
+            buyerBoughtCache[account.id + ':' + bid] = { bought, ts: Date.now() };
+            if (bought) purchasedBuyers.add(String(bid));
+          } catch (e) {}
+        }));
+      }
       for (const q of questions) {
         allQuestions.push({
           ...q, account_name: account.name, account_id: account.id,
+          buyer_has_purchased: purchasedBuyers.has(String(q.from?.id || '')),
           item_title: itemDetails[q.item_id]?.title || '',
           item_thumbnail: itemDetails[q.item_id]?.thumbnail || '',
           item_permalink: itemDetails[q.item_id]?.permalink || '',
@@ -2349,6 +2411,41 @@ route('GET', '/api/messages', async (req, res) => {
         seenPacks.add(packId);
         uniqueOrders.push(order);
       }
+      // ===== Traer TODOS los packs con mensajes pendientes (no solo los de las últimas 50 órdenes).
+      // ML: GET /messages/packs?role=seller&tag=post_sale devuelve los packs con mensajes sin leer sin
+      // importar qué tan vieja es la orden. Resolvemos su orden para no perder conversaciones antiguas.
+      if (!orderFilter && !buyerFilter) {
+        try {
+          const pend = await mlGet('https://api.mercadolibre.com/messages/packs', token, { role: 'seller', tag: 'post_sale' });
+          const pendResults = pend.results || [];
+          for (const pr of pendResults) {
+            const mm = String(pr.resource || '').match(/\/packs\/(\d+)/);
+            const pid = mm ? mm[1] : null;
+            if (!pid || seenPacks.has(Number(pid)) || seenPacks.has(pid)) continue;
+            // Resolver la orden del pack (comprador + ítem). Primero como orden directa; si no, vía /packs.
+            let ord = null;
+            try { ord = await mlGet(`https://api.mercadolibre.com/orders/${pid}`, token); }
+            catch (e1) {
+              try {
+                const pk = await mlGet(`https://api.mercadolibre.com/packs/${pid}`, token);
+                const oid = pk.orders && pk.orders[0] && pk.orders[0].id;
+                if (oid) ord = await mlGet(`https://api.mercadolibre.com/orders/${oid}`, token);
+              } catch (e2) {}
+            }
+            if (!ord) continue;
+            if (ord.status === 'cancelled') continue;
+            if (claimedOrderIds.has(String(ord.id))) continue;
+            const otags = ord.tags || [];
+            if (otags.includes('mediations') || otags.includes('claim')) continue;
+            const opk = ord.pack_id || ord.id;
+            if (seenPacks.has(opk)) continue;
+            seenPacks.add(opk);
+            uniqueOrders.push(ord);
+          }
+        } catch (e) {
+          console.log(`[MESSAGES] No se pudo obtener pendientes para ${account.name}:`, e.response?.data?.message || e.message || '');
+        }
+      }
       // Fetch message packs in parallel (batches of 5 to avoid rate limits)
       for (let i = 0; i < uniqueOrders.length; i += 5) {
         const batch = uniqueOrders.slice(i, i + 5);
@@ -2357,14 +2454,14 @@ route('GET', '/api/messages', async (req, res) => {
           let msgData;
           try {
             msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
-              tag: 'post_sale', limit: 15
+              tag: 'post_sale', limit: 15, mark_as_read: false
             });
           } catch (e) {
             // Retry once after a short delay — avoids transient rate-limit/network blips
             // causing a conversation to flicker in/out of the unread list between polls
             await new Promise(r => setTimeout(r, 400));
             msgData = await mlGet(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`, token, {
-              tag: 'post_sale', limit: 15
+              tag: 'post_sale', limit: 15, mark_as_read: false
             });
           }
           const messages = msgData.messages || [];
@@ -2376,12 +2473,20 @@ route('GET', '/api/messages', async (req, res) => {
             // message_date.read === null means the RECIPIENT hasn't read it yet
             // For buyer messages: null read means seller (us) hasn't read it → genuinely unread
             const mlUnread = !fromSeller && !m.message_date?.read;
+            // Adjuntos del mensaje: ML puede devolverlos como message_attachments o attachments,
+            // y cada uno como string (nombre de archivo) u objeto con filename/original_filename.
+            const rawAtt = m.message_attachments || m.attachments || [];
+            const atts = (Array.isArray(rawAtt) ? rawAtt : []).map(a => {
+              if (typeof a === 'string') return { id: a, name: a, type: '' };
+              return { id: a.filename || a.id || '', name: a.original_filename || a.filename || 'archivo', type: a.type || '' };
+            }).filter(a => a.id);
             return {
               id: m.id,
               from: fromRole,
               text: m.text || m.plain?.content || '',
               date: m.date_created || m.date || m.created_at || m.date_received || m.message_date?.created || '',
-              mlUnread
+              mlUnread,
+              attachments: atts
             };
           });
           // ML returns messages newest first, so [0] is the most recent message
@@ -2434,7 +2539,7 @@ route('GET', '/api/messages', async (req, res) => {
 route('POST', '/api/messages/reply', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-  const { order_id, text, account_id } = await parseBody(req);
+    const { order_id, text, account_id, attachments } = await parseBody(req);
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
@@ -2454,6 +2559,7 @@ route('POST', '/api/messages/reply', async (req, res) => {
       to: { user_id: String(buyerId) },
       text: text
     };
+    if (Array.isArray(attachments) && attachments.length) msgBody.attachments = attachments;
     console.log('[MSG REPLY] Body:', JSON.stringify(msgBody));
     const msgRes = await fetch(msgUrl, {
       method: 'POST',
@@ -2473,6 +2579,56 @@ route('POST', '/api/messages/reply', async (req, res) => {
   } catch (err) {
     console.error('Error sending message:', err.response?.data || err.message || err);
     sendJSON(res, 500, { error: err.response?.data?.message || err.message || 'Error al enviar mensaje' });
+  }
+});
+// Subir un adjunto a ML (JPG/PNG/PDF/TXT, hasta ~18MB por el límite del body). Devuelve el id del adjunto.
+route('POST', '/api/messages/attachment-upload', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { account_id, filename, content_type, data } = await parseBody(req);
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+  if (!data) return sendJSON(res, 400, { error: 'Sin archivo' });
+  try {
+    const buf = Buffer.from(data, 'base64');
+    const fd = new FormData();
+    fd.append('file', new Blob([buf], { type: content_type || 'application/octet-stream' }), filename || 'archivo');
+    const r = await fetch(`https://api.mercadolibre.com/messages/attachments?tag=post_sale&site_id=${account.site_id || 'MLA'}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd
+    });
+    const txt = await r.text();
+    if (!r.ok) { let m = ''; try { m = JSON.parse(txt).message; } catch (e) {} return sendJSON(res, 500, { error: m || ('Error de ML: ' + r.status) }); }
+    const j = JSON.parse(txt);
+    sendJSON(res, 200, { id: j.id });
+  } catch (e) {
+    sendJSON(res, 500, { error: e.message || 'Error al subir el adjunto' });
+  }
+});
+// Descargar/servir un adjunto de mensaje desde ML (con el token de la cuenta), para poder verlo en el panel.
+route('GET', '/api/messages/attachment', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const u = new URL(req.url, 'http://localhost');
+  const accId = u.searchParams.get('account_id');
+  const id = u.searchParams.get('id');
+  const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(accId));
+  if (!account || !id) { res.writeHead(400); return res.end('bad request'); }
+  const token = await getValidToken(account);
+  if (!token) { res.writeHead(500); return res.end('sin token'); }
+  try {
+    const r = await fetch(`https://api.mercadolibre.com/messages/attachments/${encodeURIComponent(id)}?tag=post_sale&site_id=${account.site_id || 'MLA'}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!r.ok) { res.writeHead(502); return res.end('no disponible'); }
+    const ct = r.headers.get('content-type') || 'application/octet-stream';
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' });
+    res.end(buf);
+  } catch (e) {
+    res.writeHead(502); res.end('error');
   }
 });
 route('POST', '/api/messages/dismiss', async (req, res) => {
@@ -2520,6 +2676,110 @@ route('GET', '/api/prep/claims', async (req, res) => {
     }
   }));
   sendJSON(res, 200, claimsMap);
+});
+// ===================== RECLAMOS (solo admin) =====================
+// Lista de reclamos con filtros, enriquecida con comprador + producto de la orden.
+route('GET', '/api/claims', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const status = u.searchParams.get('status') || 'opened'; // opened | closed | all
+  const accId = u.searchParams.get('account_id');
+  const db = loadDB();
+  const targets = accId ? db.ml_accounts.filter(a => a.id === parseInt(accId)) : db.ml_accounts;
+  const out = [];
+  await Promise.all(targets.map(async (account) => {
+    try {
+      const token = await getValidToken(account);
+      if (!token) return;
+      const statuses = (status === 'all') ? ['opened', 'closed'] : [status];
+      let list = [];
+      for (const st of statuses) {
+        try {
+          const data = await mlGet('https://api.mercadolibre.com/post-purchase/v1/claims/search', token, { seller_id: account.seller_id, status: st, limit: 50 });
+          const arr = data?.data || data?.results || data?.claims || [];
+          list.push(...arr);
+        } catch (e) {}
+      }
+      // Enriquecer con datos de la orden (comprador + producto). Reclamos suelen ser pocos.
+      await Promise.allSettled(list.map(async (c) => {
+        const oid = String(c.resource_id || c.order_id || '');
+        let buyer = '', item = '';
+        if (oid) {
+          try { const od = await mlGet(`https://api.mercadolibre.com/orders/${oid}`, token); buyer = od.buyer?.nickname || ''; item = od.order_items?.[0]?.item?.title || ''; } catch (e) {}
+        }
+        out.push({
+          id: c.id, account_id: account.id, account_name: account.name,
+          status: c.status, stage: c.stage, type: c.type, reason_id: c.reason_id,
+          resource: c.resource, order_id: oid || null,
+          buyer_name: buyer, item_title: item,
+          date_created: c.date_created, last_updated: c.last_updated
+        });
+      }));
+    } catch (e) { console.log('[CLAIMS list]', account.name, e.message || ''); }
+  }));
+  out.sort((a, b) => new Date(b.last_updated || b.date_created) - new Date(a.last_updated || a.date_created));
+  sendJSON(res, 200, out);
+});
+// Mensajes de un reclamo. Probamos varias versiones de la API (según permisos del app).
+async function claimMessagesGet(token, claimId) {
+  const urls = [
+    `https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/messages`,
+    `https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/messages`,
+    `https://api.mercadolibre.com/claims/${claimId}/messages`
+  ];
+  for (const url of urls) { try { const d = await mlGet(url, token); if (d) return d; } catch (e) {} }
+  return null;
+}
+route('GET', '/api/claims/messages', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const claimId = u.searchParams.get('claim_id');
+  const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(u.searchParams.get('account_id')));
+  if (!account || !claimId) return sendJSON(res, 400, { error: 'Faltan datos' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+  const d = await claimMessagesGet(token, claimId);
+  const arr = Array.isArray(d) ? d : (d && (d.messages || d.data)) || [];
+  const msgs = (arr || []).map(m => ({
+    role: m.sender_role || m.from?.role || '',
+    text: m.message || m.text || (m.plain && m.plain.content) || '',
+    date: m.date_created || m.date || '',
+    attachments: (m.attachments || []).map(a => ({ name: a.original_filename || a.filename || 'archivo', id: a.filename || a.id || '' }))
+  }));
+  sendJSON(res, 200, { messages: msgs });
+});
+// Responder un reclamo. receiver_role: complainant (comprador) | mediator.
+route('POST', '/api/claims/reply', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { account_id, claim_id, message, receiver_role } = await parseBody(req);
+  if (!claim_id || !message) return sendJSON(res, 400, { error: 'Faltan datos' });
+  const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+  const body = JSON.stringify({ receiver_role: receiver_role || 'complainant', message });
+  const urls = [
+    `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/actions/send-message`,
+    `https://api.mercadolibre.com/marketplace/v2/claims/${claim_id}/actions/send-message`,
+    `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/messages`,
+    `https://api.mercadolibre.com/claims/${claim_id}/messages`
+  ];
+  let lastErr = '';
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body });
+      const t = await r.text();
+      if (r.ok) return sendJSON(res, 200, { ok: true });
+      try { lastErr = JSON.parse(t).message || JSON.parse(t).error || t; } catch (e) { lastErr = t; }
+    } catch (e) { lastErr = e.message || 'error'; }
+  }
+  sendJSON(res, 500, { error: lastErr || 'No se pudo enviar la respuesta al reclamo' });
 });
 // SALES
 // In-memory caches to speed up repeated requests
