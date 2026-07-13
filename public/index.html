@@ -720,6 +720,9 @@
       const res = await fetch('/api/reputation');
       const data = await res.json();
       if (navToken !== myNav) return;
+      // Orden fijo pedido de las cuentas.
+      const REP_ORDER = ['MARA_PRATO_8', 'REPUESTOSEXPRESS_1', 'AUTOCHAPAUTOPARTES07', 'RUIZDARIO20220906163653', 'AUTOPARTESARG', 'SAEZJORGE34'];
+      data.sort((a, b) => { const ia = REP_ORDER.indexOf(a.account_name); const ib = REP_ORDER.indexOf(b.account_name); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
       const pct = (r) => (r == null ? '—' : ((r * 100).toFixed(2).replace(/\.?0+$/, '') || '0') + '%');
       const levelInfo = (lid) => {
         const map = { '5_green': ['#00a650', 'Verde'], '4_light_green': ['#7dd056', 'Verde claro'], '3_yellow': ['#ffcc00', 'Amarillo'], '2_orange': ['#ff7733', 'Naranja'], '1_red': ['#e74c3c', 'Rojo'] };
@@ -736,9 +739,11 @@
         const li = levelInfo(a.level_id); const col = li[0]; const lname = li[1];
         const ps = psLabel(a.power_seller_status);
         const lvlNum = parseInt(String(a.level_id || '').charAt(0)) || 0;
-        const segColors = ['#e74c3c', '#ff7733', '#ffcc00', '#7dd056', '#00a650'];
+        // Colores suaves en toda la barra; SOLO el nivel actual va en color pleno (como la muestra de ML).
+        const paleColors = ['#f6c9cc', '#ffd9c2', '#fff0b8', '#d8efc5', '#bfe6c8'];
+        const fullColors = ['#e74c3c', '#ff7733', '#ffcc00', '#7dd056', '#00a650'];
         let bar = '<div style="display:flex;gap:3px;margin:12px 0">';
-        for (let i = 0; i < 5; i++) { bar += `<div style="flex:1;height:9px;border-radius:3px;background:${(i < lvlNum) ? segColors[i] : '#eee'}"></div>`; }
+        for (let i = 0; i < 5; i++) { bar += `<div style="flex:1;height:9px;border-radius:3px;background:${(i === (lvlNum - 1)) ? fullColors[i] : paleColors[i]}"></div>`; }
         bar += '</div>';
         html += `
           <div class="card">
@@ -768,9 +773,32 @@
   let claimsStatus = 'opened';
   let claimsAccount = '';
   let claimsSearch = '';
+  let claimsSort = 'urgent';
   let claimsCache = [];
   function claimTypeLabel(t) { return ({ mediations: 'Mediación', cancel_purchase: 'Cancelación (comprador)', cancel_sale: 'Cancelación (venta)', return: 'Devolución', change: 'Cambio', fulfillment: 'Logística' })[t] || (t || 'Reclamo'); }
   function claimStageLabel(s) { return ({ claim: 'Reclamo', dispute: 'Disputa', recontact: 'Recontacto', none: '—' })[s] || (s || ''); }
+  // Los mensajes de mediación de ML vienen con <strong>...</strong> y <br>. Los mostramos con formato
+  // (negrita y saltos de línea) de forma segura: escapamos todo y volvemos a habilitar solo esas etiquetas.
+  function renderRichText(t) {
+    let h = escapeHtml(String(t || ''));
+    h = h.replace(/&lt;(\/?)(strong|b|br|u|em|i)\s*\/?&gt;/gi, (mm, slash, tag) => {
+      tag = tag.toLowerCase();
+      if (tag === 'br') return '<br>';
+      return '<' + slash + tag + '>';
+    });
+    return h;
+  }
+  // Tiempo restante para responder un reclamo → {text, color}.
+  function claimTimeLeft(due) {
+    if (!due) return null;
+    const ms = new Date(due).getTime() - Date.now();
+    if (isNaN(ms)) return null;
+    if (ms <= 0) return { text: 'Plazo vencido', color: '#e74c3c' };
+    const h = Math.floor(ms / 3600000), d = Math.floor(h / 24);
+    const txt = d >= 1 ? `Faltan ${d} día${d > 1 ? 's' : ''} ${h % 24}h` : `Faltan ${h}h`;
+    const color = h < 24 ? '#e74c3c' : (h < 72 ? '#e67e22' : '#27ae60');
+    return { text: txt, color };
+  }
   async function loadClaims() {
     const myNav = navToken;
     const content = document.getElementById('content');
@@ -785,8 +813,19 @@
   function renderClaims() {
     const content = document.getElementById('content');
     const search = claimsSearch.trim().toLowerCase();
-    let list = claimsCache;
+    let list = claimsCache.slice();
     if (search) list = list.filter(c => (c.buyer_name || '').toLowerCase().includes(search) || (c.item_title || '').toLowerCase().includes(search) || String(c.order_id || '').includes(search) || String(c.id || '').includes(search));
+    // Orden: por urgencia (plazo de respuesta más próximo primero) o por más reciente.
+    if (claimsSort === 'urgent') {
+      list.sort((a, b) => {
+        const da = a.due_date ? new Date(a.due_date).getTime() : Infinity;
+        const db2 = b.due_date ? new Date(b.due_date).getTime() : Infinity;
+        if (da !== db2) return da - db2;
+        return new Date(b.last_updated || b.date_created) - new Date(a.last_updated || a.date_created);
+      });
+    } else {
+      list.sort((a, b) => new Date(b.last_updated || b.date_created) - new Date(a.last_updated || a.date_created));
+    }
     let accSel = '<option value="">Todas las cuentas</option>';
     for (const a of accounts) accSel += `<option value="${a.id}"${String(a.id) === String(claimsAccount) ? ' selected' : ''}>${escapeHtml(a.name)}</option>`;
     let html = `<h2 style="margin-bottom:16px;color:#2d3277">Reclamos</h2>
@@ -795,12 +834,17 @@
         <button class="${claimsStatus === 'closed' ? 'active' : ''}" onclick="claimsStatus='closed';loadClaims()">Cerrados</button>
         <button class="${claimsStatus === 'all' ? 'active' : ''}" onclick="claimsStatus='all';loadClaims()">Todos</button>
         <select onchange="claimsAccount=this.value;loadClaims()">${accSel}</select>
+        <select onchange="claimsSort=this.value;renderClaims()" title="Ordenar">
+          <option value="urgent"${claimsSort === 'urgent' ? ' selected' : ''}>⏱ Menos tiempo para responder</option>
+          <option value="recent"${claimsSort === 'recent' ? ' selected' : ''}>🕒 Más recientes</option>
+        </select>
         <input type="text" placeholder="🔍 Buscar comprador, producto, N° orden..." value="${escapeHtml(claimsSearch)}" oninput="claimsSearch=this.value;renderClaims()" style="flex:1;min-width:180px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
       </div>`;
     if (!list.length) { html += `<div class="empty"><p>No hay reclamos ${claimsStatus === 'opened' ? 'abiertos' : claimsStatus === 'closed' ? 'cerrados' : ''}.</p></div>`; }
     else {
       for (const c of list) {
         const sc = c.status === 'opened' ? '#e74c3c' : '#27ae60';
+        const tl = (c.status === 'opened') ? claimTimeLeft(c.due_date) : null;
         html += `<div class="card" style="border-left:4px solid ${sc}">
           <div class="card-header">
             <span class="card-account">${escapeHtml(c.account_name)}</span>
@@ -810,6 +854,7 @@
             <span style="background:${sc};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${c.status === 'opened' ? 'Abierto' : 'Cerrado'}</span>
             <span style="background:#eef;color:#3b3b8f;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${escapeHtml(claimTypeLabel(c.type))}</span>
             ${c.stage ? `<span style="background:#f5f5f5;color:#555;font-size:11px;padding:2px 8px;border-radius:10px">${escapeHtml(claimStageLabel(c.stage))}</span>` : ''}
+            ${tl ? `<span style="background:${tl.color};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px" title="Plazo para responder">⏱ ${tl.text}</span>` : ''}
           </div>
           <div class="card-item-title" style="margin-bottom:4px">📦 ${escapeHtml(c.item_title || 'Producto')} ${c.order_id ? `<a href="/?section=sales&order_id=${encodeURIComponent(c.order_id)}&account_id=${encodeURIComponent(c.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none">Orden #${escapeHtml(String(c.order_id))}</a>` : ''}</div>
           <div style="font-size:13px;color:#555;margin-bottom:8px">Comprador: <b>${escapeHtml(c.buyer_name || '—')}</b> · Reclamo #${escapeHtml(String(c.id))}</div>
@@ -848,11 +893,16 @@
       conv.innerHTML = msgs.map(m => {
         const mine = m.role === 'respondent';
         const who = m.role === 'respondent' ? 'Vos (vendedor)' : m.role === 'complainant' ? 'Comprador' : m.role === 'mediator' ? 'Mediador ML' : (m.role || '');
-        const att = (m.attachments || []).map(a => `<span style="display:inline-block;font-size:12px;opacity:0.85;margin-top:4px">📎 ${escapeHtml(a.name)}</span>`).join(' ');
+        const att = (m.attachments || []).map(a => {
+          const url = `/api/claims/attachment?claim_id=${encodeURIComponent(claimId)}&account_id=${accountId}&id=${encodeURIComponent(a.id)}`;
+          const isImg = /\.(jpe?g|png|gif|webp)$/i.test(a.name || '');
+          if (isImg) return `<a href="${url}" target="_blank" style="display:inline-block;margin-top:6px"><img src="${url}" style="max-width:170px;max-height:170px;border-radius:8px;display:block" onerror="this.style.display='none'"></a>`;
+          return `<a href="${url}" target="_blank" style="display:inline-block;font-size:12px;margin-top:4px;color:inherit;text-decoration:underline">📎 ${escapeHtml(a.name)}</a>`;
+        }).join(' ');
         return `<div style="margin-bottom:10px;text-align:${mine ? 'right' : 'left'}">
           <div style="display:inline-block;max-width:82%;background:${mine ? '#2563eb' : '#eef1f4'};color:${mine ? 'white' : '#1e293b'};padding:8px 12px;border-radius:10px;text-align:left">
             <div style="font-size:11px;opacity:0.7;margin-bottom:2px">${escapeHtml(who)}</div>
-            ${escapeHtml(m.text)}${att ? ('<div>' + att + '</div>') : ''}
+            ${renderRichText(m.text)}${att ? ('<div>' + att + '</div>') : ''}
             ${m.date ? `<div style="font-size:10px;opacity:0.6;margin-top:4px">${formatDateTime(m.date)}</div>` : ''}
           </div></div>`;
       }).join('');
