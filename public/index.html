@@ -799,15 +799,28 @@
     return h;
   }
   // Tiempo restante para responder un reclamo → {text, color}.
+  // El plazo cuenta TODO el día indicado (hasta las 23:59 hora Argentina): si dice "hasta el 14",
+  // vence recién al final del 14, no al principio.
   function claimTimeLeft(due) {
     if (!due) return null;
-    const ms = new Date(due).getTime() - Date.now();
-    if (isNaN(ms)) return null;
+    const d = new Date(due);
+    if (isNaN(d.getTime())) return null;
+    let deadline;
+    try {
+      const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+      const y = p.find(x => x.type === 'year').value, mo = p.find(x => x.type === 'month').value, da = p.find(x => x.type === 'day').value;
+      deadline = new Date(`${y}-${mo}-${da}T23:59:59-03:00`).getTime();
+    } catch (e) { deadline = d.getTime(); }
+    const ms = deadline - Date.now();
     if (ms <= 0) return { text: 'Plazo vencido', color: '#e74c3c' };
-    const h = Math.floor(ms / 3600000), d = Math.floor(h / 24);
-    const txt = d >= 1 ? `Faltan ${d} día${d > 1 ? 's' : ''} ${h % 24}h` : `Faltan ${h}h`;
+    const h = Math.floor(ms / 3600000), dd = Math.floor(h / 24);
+    const txt = dd >= 1 ? `Faltan ${dd} día${dd > 1 ? 's' : ''} ${h % 24}h` : `Faltan ${h}h`;
     const color = h < 24 ? '#e74c3c' : (h < 72 ? '#e67e22' : '#27ae60');
     return { text: txt, color };
+  }
+  // Estado de una devolución → [texto, colorTexto, colorFondo].
+  function returnStatusLabel(rs) {
+    return ({ preparing: ['🛠 En preparación', '#8a6d00', '#fff8e1'], shipped: ['🚚 Enviada / En camino', '#2f80ed', '#eaf2ff'], delivered: ['✅ Recibida', '#1e7e46', '#e8f7ee'] })[rs] || null;
   }
   async function loadClaims() {
     const myNav = navToken;
@@ -871,6 +884,7 @@
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0">
             <span style="background:${sc};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${c.status === 'opened' ? 'Abierto' : 'Cerrado'}</span>
             ${c.kind === 'return' ? `<span style="background:#6b46c1;color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">📦 Devolución</span>` : ''}
+            ${(c.kind === 'return' && returnStatusLabel(c.return_status)) ? `<span style="background:${returnStatusLabel(c.return_status)[2]};color:${returnStatusLabel(c.return_status)[1]};font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${returnStatusLabel(c.return_status)[0]}</span>` : ''}
             <span style="background:#eef;color:#3b3b8f;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${escapeHtml(claimTypeLabel(c.type))}</span>
             ${c.stage ? `<span style="background:#f5f5f5;color:#555;font-size:11px;padding:2px 8px;border-radius:10px">${escapeHtml(claimStageLabel(c.stage))}</span>` : ''}
             ${c.affects_reputation === false ? `<span style="background:#e8f7ee;color:#1e7e46;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">✔ No afecta tu reputación</span>` : (c.affects_reputation === true ? `<span style="background:#fdeaea;color:#c0392b;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">⚠ Afecta tu reputación</span>` : '')}
