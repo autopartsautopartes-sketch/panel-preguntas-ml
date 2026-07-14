@@ -2731,40 +2731,60 @@ route('GET', '/api/claims', async (req, res) => {
         if (oid) {
           try { const od = await mlGet(`https://api.mercadolibre.com/orders/${oid}`, token); buyer = od.buyer?.nickname || ''; item = od.order_items?.[0]?.item?.title || ''; } catch (e) {}
         }
-        // Fecha límite para responder + si es devolución + si afecta la reputación.
-        let dueDate = null, relatedReturn = false, affectsRep = null;
+        // Fecha límite + si es devolución + si afecta la reputación.
+        let dueDate = null, relatedReturn = false, affectsRep = null, repDue = null;
+        // 1) Endpoint "afecta la reputación": trae el PLAZO DE RESOLUCIÓN del reclamo (el que muestra ML,
+        //    ej. "hasta el 14") + si afecta o no. Es el plazo autoritativo, tiene prioridad.
+        for (const url of [`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}/affects-reputation`, `https://api.mercadolibre.com/marketplace/v2/claims/${c.id}/affects-reputation`]) {
+          try {
+            const ar = await mlGet(url, token);
+            if (!ar) continue;
+            if (ar.due_date) repDue = ar.due_date;
+            let v = null;
+            if (ar.affects_reputation != null) v = ar.affects_reputation;
+            else if (ar.affected != null) v = ar.affected;
+            else if (ar.reputation && ar.reputation.affected != null) v = ar.reputation.affected;
+            else if (typeof ar.result === 'string') v = !/not|no_afect|sin/i.test(ar.result);
+            if (v != null) affectsRep = !!v;
+            if (repDue != null || v != null) break;
+          } catch (e) {}
+        }
+        // 2) Detalle del reclamo: plazos de acciones (fallback) + si es devolución + reputación de respaldo.
+        let actionDues = [];
         try {
           const det = await mlGet(`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}`, token);
-          const dues = [];
-          for (const p of (det.players || [])) for (const ac of (p.available_actions || [])) { if (ac && ac.due_date) dues.push(ac.due_date); }
-          if (det.due_date) dues.push(det.due_date);
-          dues.sort();
-          dueDate = dues[0] || null;
+          for (const p of (det.players || [])) for (const ac of (p.available_actions || [])) { if (ac && ac.due_date) actionDues.push(ac.due_date); }
+          if (det.due_date) actionDues.push(det.due_date);
           const rel = det.related_entities || det.related_entity || [];
           relatedReturn = Array.isArray(rel) ? rel.some(x => /return/i.test(String(x))) : /return/i.test(String(rel));
-          if (det.reputation && det.reputation.affected != null) affectsRep = !!det.reputation.affected;
+          if (affectsRep == null && det.reputation && det.reputation.affected != null) affectsRep = !!det.reputation.affected;
         } catch (e) {}
-        // Endpoint dedicado de "afecta la reputación" (también trae due_date).
-        if (affectsRep == null) {
-          for (const url of [`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}/affects-reputation`, `https://api.mercadolibre.com/marketplace/v2/claims/${c.id}/affects-reputation`]) {
+        // El plazo de resolución (repDue) manda; si no vino, usamos el próximo plazo futuro de las acciones.
+        dueDate = repDue || pickDue(actionDues);
+        const kind = (relatedReturn || /return|change|devol|cambio/i.test(String(c.type || ''))) ? 'return' : 'claim';
+        // Estado de la devolución: en preparación / enviada / entregada.
+        let returnStatus = null;
+        if (kind === 'return') {
+          for (const url of [`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}/returns`, `https://api.mercadolibre.com/marketplace/v2/claims/${c.id}/returns`]) {
             try {
-              const ar = await mlGet(url, token);
-              if (!ar) continue;
-              if (ar.due_date && !dueDate) dueDate = ar.due_date;
-              let v = null;
-              if (ar.affects_reputation != null) v = ar.affects_reputation;
-              else if (ar.affected != null) v = ar.affected;
-              else if (ar.reputation && ar.reputation.affected != null) v = ar.reputation.affected;
-              else if (typeof ar.result === 'string') v = !/not|no_afect|sin/i.test(ar.result);
-              if (v != null) { affectsRep = !!v; break; }
+              const rt = await mlGet(url, token);
+              const r0 = Array.isArray(rt) ? rt[0] : (rt && rt.results ? rt.results[0] : rt);
+              if (r0) {
+                const sh = r0.shipping || (Array.isArray(r0.shipments) ? r0.shipments[0] : {}) || {};
+                const st = String(sh.status || sh.substatus || r0.status || '').toLowerCase();
+                if (/deliver|entreg/.test(st)) returnStatus = 'delivered';
+                else if (/ship|transit|camino|enviad|handling|ready/.test(st)) returnStatus = 'shipped';
+                else returnStatus = 'preparing';
+                break;
+              }
             } catch (e) {}
           }
+          if (!returnStatus) returnStatus = 'preparing';
         }
-        const kind = (relatedReturn || /return|change|devol|cambio/i.test(String(c.type || ''))) ? 'return' : 'claim';
         out.push({
           id: c.id, account_id: account.id, account_name: account.name,
           status: c.status, stage: c.stage, type: c.type, reason_id: c.reason_id,
-          resource: c.resource, order_id: oid || null, kind, affects_reputation: affectsRep,
+          resource: c.resource, order_id: oid || null, kind, affects_reputation: affectsRep, return_status: returnStatus,
           buyer_name: buyer, item_title: item, due_date: dueDate,
           date_created: c.date_created, last_updated: c.last_updated
         });
@@ -2774,6 +2794,16 @@ route('GET', '/api/claims', async (req, res) => {
   out.sort((a, b) => new Date(b.last_updated || b.date_created) - new Date(a.last_updated || a.date_created));
   sendJSON(res, 200, out);
 });
+// Elige el plazo relevante: el próximo VENCIMIENTO FUTURO (no uno ya pasado de otra acción).
+// Si todos pasaron, devuelve el más reciente. Así no marca "vencido" cuando todavía hay plazo real.
+function pickDue(dues) {
+  const now = Date.now();
+  const parsed = (dues || []).map(x => ({ raw: x, t: new Date(x).getTime() })).filter(x => !isNaN(x.t));
+  if (!parsed.length) return null;
+  const future = parsed.filter(x => x.t > now).sort((a, b) => a.t - b.t);
+  if (future.length) return future[0].raw;
+  return parsed.sort((a, b) => b.t - a.t)[0].raw;
+}
 // Mensajes de un reclamo. Probamos varias versiones de la API (según permisos del app).
 async function claimMessagesGet(token, claimId) {
   const urls = [
@@ -2889,14 +2919,23 @@ route('GET', '/api/claims/detail', async (req, res) => {
   const actions = new Set();
   let due = null;
   if (claim) {
+    const dues = [];
     for (const p of (claim.players || [])) for (const ac of (p.available_actions || [])) {
       if (!ac) continue;
       const nm = ac.action || ac.name || (typeof ac === 'string' ? ac : '');
       if (nm) actions.add(String(nm));
-      if (ac.due_date && (!due || ac.due_date < due)) due = ac.due_date;
+      if (ac.due_date) dues.push(ac.due_date);
     }
-    if (claim.due_date && (!due || claim.due_date < due)) due = claim.due_date;
+    if (claim.due_date) dues.push(claim.due_date);
+    due = pickDue(dues);
   }
+  // Plazo de resolución autoritativo (el que muestra ML, ej. "hasta el 14"): tiene prioridad.
+  try {
+    for (const url of [`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/affects-reputation`, `https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/affects-reputation`]) {
+      const ar = await mlGet(url, token);
+      if (ar && ar.due_date) { due = ar.due_date; break; }
+    }
+  } catch (e) {}
   // Datos del producto/orden
   let order = null;
   const orderId = claim ? (claim.resource_id || claim.order_id) : null;
