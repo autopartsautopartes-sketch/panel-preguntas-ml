@@ -777,15 +777,23 @@
   let claimsCache = [];
   function claimTypeLabel(t) { return ({ mediations: 'Mediación', cancel_purchase: 'Cancelación (comprador)', cancel_sale: 'Cancelación (venta)', return: 'Devolución', change: 'Cambio', fulfillment: 'Logística' })[t] || (t || 'Reclamo'); }
   function claimStageLabel(s) { return ({ claim: 'Reclamo', dispute: 'Disputa', recontact: 'Recontacto', none: '—' })[s] || (s || ''); }
-  // Los mensajes de mediación de ML vienen con <strong>...</strong> y <br>. Los mostramos con formato
-  // (negrita y saltos de línea) de forma segura: escapamos todo y volvemos a habilitar solo esas etiquetas.
+  // Los mensajes de mediación de ML vienen con HTML del editor (<p>, <span style>, <strong class>, &nbsp;…).
+  // Lo limpiamos: convertimos <strong>/<b> a negrita real, los cierres de párrafo/<br> a saltos de línea,
+  // quitamos el resto de etiquetas, decodificamos entidades y volvemos a escapar para mostrar seguro.
   function renderRichText(t) {
-    let h = escapeHtml(String(t || ''));
-    h = h.replace(/&lt;(\/?)(strong|b|br|u|em|i)\s*\/?&gt;/gi, (mm, slash, tag) => {
-      tag = tag.toLowerCase();
-      if (tag === 'br') return '<br>';
-      return '<' + slash + tag + '>';
-    });
+    let s = String(t || '');
+    // Marcar negritas antes de borrar etiquetas
+    s = s.replace(/<\s*(strong|b)\b[^>]*>/gi, 'B').replace(/<\s*\/\s*(strong|b)\s*>/gi, '/B');
+    // Saltos de línea a partir de <br>, cierres de <p> y <div>
+    s = s.replace(/<br\s*\/?>/gi, '\n').replace(/<\s*\/\s*(p|div)\s*>/gi, '\n');
+    // Quitar todas las demás etiquetas
+    s = s.replace(/<[^>]+>/g, '');
+    // Decodificar entidades HTML (&nbsp; &amp; etc.) de forma segura
+    const ta = document.createElement('textarea'); ta.innerHTML = s; s = ta.value;
+    // Escapar para mostrar, restaurar negritas y saltos, y colapsar líneas en blanco de más
+    let h = escapeHtml(s);
+    h = h.replace(/B/g, '<strong>').replace(/\/B/g, '</strong>');
+    h = h.replace(/\n{2,}/g, '\n').replace(/\n/g, '<br>').replace(/^(<br>)+|(<br>)+$/g, '');
     return h;
   }
   // Tiempo restante para responder un reclamo → {text, color}.
