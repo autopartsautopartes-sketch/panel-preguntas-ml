@@ -5019,7 +5019,7 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-08-anto-upid-v11', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
+  sendJSON(res, 200, { version: '2026-07-14-resiliencia-v13', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
