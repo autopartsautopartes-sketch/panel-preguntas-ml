@@ -2757,7 +2757,8 @@ route('GET', '/api/claims', async (req, res) => {
           if (det.due_date) actionDues.push(det.due_date);
           const rel = det.related_entities || det.related_entity || [];
           relatedReturn = Array.isArray(rel) ? rel.some(x => /return/i.test(String(x))) : /return/i.test(String(rel));
-          if (affectsRep == null && det.reputation && det.reputation.affected != null) affectsRep = !!det.reputation.affected;
+          // Nota: NO usamos det.reputation como respaldo porque devolvía "afecta" en casi todos.
+          // La reputación solo se marca cuando el endpoint dedicado la confirma explícitamente.
         } catch (e) {}
         // El plazo de resolución (repDue) manda; si no vino, usamos el próximo plazo futuro de las acciones.
         dueDate = repDue || pickDue(actionDues);
@@ -2845,20 +2846,44 @@ route('POST', '/api/claims/reply', async (req, res) => {
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
-  const body = JSON.stringify({ receiver_role: receiver_role || 'complainant', message });
-  const urls = [
-    `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/actions/send-message`,
-    `https://api.mercadolibre.com/marketplace/v2/claims/${claim_id}/actions/send-message`,
-    `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/messages`,
-    `https://api.mercadolibre.com/claims/${claim_id}/messages`
-  ];
+  const receiver = receiver_role || 'complainant';
+  // Resolver la orden/paquete del reclamo para poder usar la MENSAJERÍA NORMAL (que sí funciona en tu app)
+  // cuando la respuesta va al comprador. Los endpoints propios de reclamos no siempre están habilitados.
+  let orderId = null, packId = null, buyerId = null;
+  try {
+    const det = await mlGet(`https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}`, token);
+    orderId = det.resource_id || det.order_id || null;
+  } catch (e) {}
+  if (orderId) {
+    try { const od = await mlGet(`https://api.mercadolibre.com/orders/${orderId}`, token); packId = od.pack_id || orderId; buyerId = od.buyer && od.buyer.id; } catch (e) {}
+  }
+  const claimBody = JSON.stringify({ receiver_role: receiver, message });
+  const attempts = [];
+  // Para el COMPRADOR: primero la mensajería normal (confiable).
+  if (receiver === 'complainant' && packId && buyerId) {
+    attempts.push({
+      url: `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}?tag=post_sale&application_id=${ML_CLIENT_ID}`,
+      body: JSON.stringify({ from: { user_id: String(account.seller_id) }, to: { user_id: String(buyerId) }, text: message })
+    });
+  }
+  // Endpoints propios de reclamos (para mediación o como respaldo).
+  attempts.push({ url: `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/actions/send-message`, body: claimBody });
+  attempts.push({ url: `https://api.mercadolibre.com/marketplace/v2/claims/${claim_id}/actions/send-message`, body: claimBody });
+  attempts.push({ url: `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/messages`, body: claimBody });
+  // Respaldo final: mensajería normal al comprador aunque el receiver fuera otro.
+  if (packId && buyerId) {
+    attempts.push({
+      url: `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}?tag=post_sale&application_id=${ML_CLIENT_ID}`,
+      body: JSON.stringify({ from: { user_id: String(account.seller_id) }, to: { user_id: String(buyerId) }, text: message })
+    });
+  }
   let lastErr = '';
-  for (const url of urls) {
+  for (const at of attempts) {
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body });
+      const r = await fetch(at.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: at.body });
       const t = await r.text();
       if (r.ok) return sendJSON(res, 200, { ok: true });
-      try { lastErr = JSON.parse(t).message || JSON.parse(t).error || t; } catch (e) { lastErr = t; }
+      try { lastErr = JSON.parse(t).message || JSON.parse(t).error || t; } catch (e) { lastErr = (t || '').slice(0, 200); }
     } catch (e) { lastErr = e.message || 'error'; }
   }
   sendJSON(res, 500, { error: lastErr || 'No se pudo enviar la respuesta al reclamo' });
