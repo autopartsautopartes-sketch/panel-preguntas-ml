@@ -752,6 +752,7 @@
               <span style="font-weight:800;color:#2d3277;font-size:15px">${escapeHtml(a.nickname || a.account_name)}</span>
             </div>
             ${ps ? `<div style="color:#00a650;font-weight:700;font-size:14px;margin-top:6px">${ps} ✔</div>` : `<div style="color:#666;font-size:13px;margin-top:6px">Nivel: ${lname}</div>`}
+            ${a.protected ? `<div style="color:#2f80ed;font-size:11px;margin-top:4px" title="Métricas en período de protección: se muestran los valores reales, aunque por ahora no afectan tu reputación">🛡 En protección${a.protection_end_date ? ' hasta ' + new Date(a.protection_end_date).toLocaleDateString('es-AR') : ''}</div>` : ''}
             ${bar}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px">
               <div><div style="font-size:20px;font-weight:800;color:#2d3277">${a.operaciones != null ? Number(a.operaciones).toLocaleString('es-AR') : '—'}</div><div style="font-size:12px;color:#666">Operaciones</div></div>
@@ -774,6 +775,7 @@
   let claimsAccount = '';
   let claimsSearch = '';
   let claimsSort = 'urgent';
+  let claimsKind = 'all'; // all | claim | return
   let claimsCache = [];
   function claimTypeLabel(t) { return ({ mediations: 'Mediación', cancel_purchase: 'Cancelación (comprador)', cancel_sale: 'Cancelación (venta)', return: 'Devolución', change: 'Cambio', fulfillment: 'Logística' })[t] || (t || 'Reclamo'); }
   function claimStageLabel(s) { return ({ claim: 'Reclamo', dispute: 'Disputa', recontact: 'Recontacto', none: '—' })[s] || (s || ''); }
@@ -822,7 +824,10 @@
     const content = document.getElementById('content');
     const search = claimsSearch.trim().toLowerCase();
     let list = claimsCache.slice();
+    if (claimsKind !== 'all') list = list.filter(c => (c.kind || 'claim') === claimsKind);
     if (search) list = list.filter(c => (c.buyer_name || '').toLowerCase().includes(search) || (c.item_title || '').toLowerCase().includes(search) || String(c.order_id || '').includes(search) || String(c.id || '').includes(search));
+    const nReturns = claimsCache.filter(c => c.kind === 'return').length;
+    const nClaims = claimsCache.length - nReturns;
     // Orden: por urgencia (plazo de respuesta más próximo primero) o por más reciente.
     if (claimsSort === 'urgent') {
       list.sort((a, b) => {
@@ -847,6 +852,11 @@
           <option value="recent"${claimsSort === 'recent' ? ' selected' : ''}>🕒 Más recientes</option>
         </select>
         <input type="text" placeholder="🔍 Buscar comprador, producto, N° orden..." value="${escapeHtml(claimsSearch)}" oninput="claimsSearch=this.value;renderClaims()" style="flex:1;min-width:180px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
+      </div>
+      <div style="display:flex;gap:8px;margin:4px 0 14px;flex-wrap:wrap">
+        <button onclick="claimsKind='all';renderClaims()" style="border:none;border-radius:20px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:600;${claimsKind === 'all' ? 'background:#2d3277;color:white' : 'background:#eef;color:#3b3b8f'}">Todos (${claimsCache.length})</button>
+        <button onclick="claimsKind='claim';renderClaims()" style="border:none;border-radius:20px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:600;${claimsKind === 'claim' ? 'background:#2d3277;color:white' : 'background:#eef;color:#3b3b8f'}">⚠️ Reclamos a responder (${nClaims})</button>
+        <button onclick="claimsKind='return';renderClaims()" style="border:none;border-radius:20px;padding:6px 14px;cursor:pointer;font-size:13px;font-weight:600;${claimsKind === 'return' ? 'background:#2d3277;color:white' : 'background:#eef;color:#3b3b8f'}">📦 Devoluciones (${nReturns})</button>
       </div>`;
     if (!list.length) { html += `<div class="empty"><p>No hay reclamos ${claimsStatus === 'opened' ? 'abiertos' : claimsStatus === 'closed' ? 'cerrados' : ''}.</p></div>`; }
     else {
@@ -856,12 +866,14 @@
         html += `<div class="card" style="border-left:4px solid ${sc}">
           <div class="card-header">
             <span class="card-account">${escapeHtml(c.account_name)}</span>
-            <span class="card-date">${c.date_created ? formatDateTime(c.date_created) : ''}</span>
+            <span class="card-date">${c.date_created ? fmtAR(c.date_created) : ''}</span>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0">
             <span style="background:${sc};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${c.status === 'opened' ? 'Abierto' : 'Cerrado'}</span>
+            ${c.kind === 'return' ? `<span style="background:#6b46c1;color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">📦 Devolución</span>` : ''}
             <span style="background:#eef;color:#3b3b8f;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${escapeHtml(claimTypeLabel(c.type))}</span>
             ${c.stage ? `<span style="background:#f5f5f5;color:#555;font-size:11px;padding:2px 8px;border-radius:10px">${escapeHtml(claimStageLabel(c.stage))}</span>` : ''}
+            ${c.affects_reputation === false ? `<span style="background:#e8f7ee;color:#1e7e46;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">✔ No afecta tu reputación</span>` : (c.affects_reputation === true ? `<span style="background:#fdeaea;color:#c0392b;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">⚠ Afecta tu reputación</span>` : '')}
             ${tl ? `<span style="background:${tl.color};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px" title="Plazo para responder">⏱ ${tl.text}</span>` : ''}
           </div>
           <div class="card-item-title" style="margin-bottom:4px">📦 ${escapeHtml(c.item_title || 'Producto')} ${c.order_id ? `<a href="/?section=sales&order_id=${encodeURIComponent(c.order_id)}&account_id=${encodeURIComponent(c.account_id)}" target="_blank" style="color:#3483fa;font-size:12px;text-decoration:none">Orden #${escapeHtml(String(c.order_id))}</a>` : ''}</div>
@@ -875,22 +887,51 @@
   async function openClaim(claimId, accountId) {
     let modal = document.getElementById('claimModal');
     if (!modal) { modal = document.createElement('div'); modal.id = 'claimModal'; modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px'; document.body.appendChild(modal); }
-    modal.innerHTML = `<div style="background:white;border-radius:12px;max-width:640px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
+    modal.innerHTML = `<div style="background:white;border-radius:12px;max-width:660px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden">
       <div style="padding:14px 18px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center">
         <b style="color:#2d3277">Reclamo #${escapeHtml(String(claimId))}</b>
         <span onclick="document.getElementById('claimModal').remove()" style="cursor:pointer;font-size:20px;color:#999">✕</span>
       </div>
-      <div id="claimConv" style="padding:16px 18px;overflow:auto;flex:1;background:#fafbfc"><div class="loading"><div class="spinner"></div><p>Cargando...</p></div></div>
+      <div id="claimInfo" style="padding:12px 18px;border-bottom:1px solid #f0f0f0"></div>
+      <div id="claimConv" style="padding:16px 18px;overflow:auto;flex:1;background:#fafbfc;min-height:120px"><div class="loading"><div class="spinner"></div><p>Cargando...</p></div></div>
+      <div id="claimActionMsg" style="padding:0 18px"></div>
       <div style="padding:12px 18px;border-top:1px solid #eee">
         <div style="display:flex;gap:8px;align-items:stretch">
-          <textarea id="claimReplyText" placeholder="Escribí tu respuesta al reclamo..." style="flex:1;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;font-size:14px;min-height:70px;font-family:inherit;resize:vertical"></textarea>
+          <textarea id="claimReplyText" placeholder="Escribí tu respuesta al reclamo..." style="flex:1;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;font-size:14px;min-height:64px;font-family:inherit;resize:vertical"></textarea>
           <div style="display:flex;flex-direction:column;gap:6px;width:150px">
             <select id="claimReceiver" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:12px"><option value="complainant">Al comprador</option><option value="mediator">A la mediación</option></select>
             <button id="claimSendBtn" onclick="sendClaimReply('${escapeHtml(String(claimId))}', ${accountId})" style="flex:1;background:#3dd6a3;color:white;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700">Enviar</button>
           </div>
         </div>
+        <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+          <button onclick="claimActionConfirm('open-dispute','${escapeHtml(String(claimId))}',${accountId})" style="background:#fff;color:#2f80ed;border:1.5px solid #2f80ed;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:600;font-size:13px">📞 Contactar a Mercado Libre</button>
+          <button onclick="claimActionConfirm('refund','${escapeHtml(String(claimId))}',${accountId})" style="background:#fff;color:#e67e22;border:1.5px solid #e67e22;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:600;font-size:13px">💸 Reembolsar dinero</button>
+        </div>
       </div>
     </div>`;
+    // Info del reclamo + producto (en paralelo)
+    fetch(`/api/claims/detail?claim_id=${encodeURIComponent(claimId)}&account_id=${accountId}`).then(r => r.json()).then(d => {
+      const box = document.getElementById('claimInfo'); if (!box) return;
+      const o = d.order || {}; const cl = d.claim || {};
+      const tl = d.due_date ? claimTimeLeft(d.due_date) : null;
+      box.innerHTML = `
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          ${o.thumbnail ? `<img src="${o.thumbnail}" style="width:54px;height:54px;border-radius:8px;object-fit:cover" onerror="this.style.display='none'">` : ''}
+          <div style="flex:1">
+            <div style="font-weight:700;color:#2d3277;font-size:14px">${escapeHtml(o.title || 'Producto')}</div>
+            <div style="font-size:13px;color:#444;margin-top:2px">${o.unit_price ? ('$ ' + Number(o.unit_price).toLocaleString('es-AR')) : ''}${o.qty ? (' · x' + o.qty) : ''}${o.buyer ? (' · Comprador: ' + escapeHtml(o.buyer)) : ''}</div>
+            <div style="font-size:12px;color:#777;margin-top:4px">
+              ${cl.type ? ('<span style="background:#eef;color:#3b3b8f;padding:1px 7px;border-radius:8px;margin-right:6px">' + escapeHtml(claimTypeLabel(cl.type)) + '</span>') : ''}
+              ${cl.stage ? ('<span style="background:#f5f5f5;color:#555;padding:1px 7px;border-radius:8px;margin-right:6px">' + escapeHtml(claimStageLabel(cl.stage)) + '</span>') : ''}
+              ${cl.status ? ('Estado: ' + (cl.status === 'opened' ? 'Abierto' : 'Cerrado')) : ''}
+            </div>
+            ${tl ? `<div style="margin-top:5px"><span style="background:${tl.color};color:white;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">⏱ ${tl.text} para responder</span></div>` : ''}
+          </div>
+        </div>
+        ${d.reason_detail ? `<div style="margin-top:8px;font-size:13px;color:#333;background:#f7f8fa;border-radius:8px;padding:8px 10px"><b>Motivo:</b> ${renderRichText(d.reason_detail)}</div>` : ''}
+        ${d.detail_text ? `<div style="margin-top:6px;font-size:13px;color:#333;background:#eaf2ff;border:1px solid #d6e6ff;border-radius:8px;padding:8px 10px">${renderRichText(d.detail_text)}</div>` : ''}
+        ${(cl.status === 'opened' && d.due_date) ? `<div style="margin-top:6px;font-size:12px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe59a;border-radius:8px;padding:8px 10px">⚠️ Actuá antes del <b>${fmtAR(d.due_date)}</b> para que el reclamo no afecte tu reputación. Si dejás vencer el plazo, el comprador podría cancelar la venta.</div>` : ''}`;
+    }).catch(() => {});
     try {
       const res = await fetch(`/api/claims/messages?claim_id=${encodeURIComponent(claimId)}&account_id=${accountId}`);
       const data = await res.json();
@@ -911,7 +952,7 @@
           <div style="display:inline-block;max-width:82%;background:${mine ? '#2563eb' : '#eef1f4'};color:${mine ? 'white' : '#1e293b'};padding:8px 12px;border-radius:10px;text-align:left">
             <div style="font-size:11px;opacity:0.7;margin-bottom:2px">${escapeHtml(who)}</div>
             ${renderRichText(m.text)}${att ? ('<div>' + att + '</div>') : ''}
-            ${m.date ? `<div style="font-size:10px;opacity:0.6;margin-top:4px">${formatDateTime(m.date)}</div>` : ''}
+            ${m.date ? `<div style="font-size:10px;opacity:0.6;margin-top:4px">${fmtAR(m.date)}</div>` : ''}
           </div></div>`;
       }).join('');
       conv.scrollTop = conv.scrollHeight;
@@ -928,6 +969,39 @@
       if (res.ok) { showToast('Respuesta enviada al reclamo', 'success'); ta.value = ''; openClaim(claimId, accountId); }
       else { showToast(data.error || 'No se pudo enviar', 'error'); btn.disabled = false; btn.textContent = 'Enviar'; }
     } catch (e) { showToast('Error de conexión', 'error'); btn.disabled = false; btn.textContent = 'Enviar'; }
+  }
+  // Pide confirmación antes de una acción sensible del reclamo (el reembolso mueve dinero real).
+  function claimActionConfirm(action, claimId, accountId) {
+    const box = document.getElementById('claimActionMsg'); if (!box) return;
+    const isRefund = action === 'refund';
+    const txt = isRefund
+      ? '⚠️ Vas a <b>REEMBOLSAR el dinero</b> al comprador. Esta acción es <b>irreversible</b> y devuelve la plata de la venta. ¿Confirmás?'
+      : '¿Contactar a <b>Mercado Libre</b> para que intervenga en este reclamo (abrir disputa/mediación)? No podrás volver atrás la escalada.';
+    const cActionColor = isRefund ? '#e67e22' : '#2f80ed';
+    box.innerHTML = `<div style="background:${isRefund ? '#fff4e5' : '#eaf2ff'};border:1px solid ${cActionColor};border-radius:8px;padding:10px 12px;margin:8px 0;font-size:13px;color:#333">
+      ${txt}
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button onclick="doClaimAction('${action}','${escapeHtml(String(claimId))}',${accountId})" style="background:${cActionColor};color:white;border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:700;font-size:12px">Sí, confirmar</button>
+        <button onclick="document.getElementById('claimActionMsg').innerHTML=''" style="background:#eee;color:#555;border:none;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:12px">Cancelar</button>
+      </div>
+    </div>`;
+  }
+  async function doClaimAction(action, claimId, accountId) {
+    const box = document.getElementById('claimActionMsg');
+    if (box) box.innerHTML = '<div style="padding:8px 0;color:#777;font-size:13px">Procesando...</div>';
+    try {
+      const res = await fetch('/api/claims/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ claim_id: claimId, account_id: accountId, action }) });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(action === 'refund' ? 'Reembolso enviado a Mercado Libre' : 'Se contactó a Mercado Libre', 'success');
+        if (box) box.innerHTML = '';
+        openClaim(claimId, accountId);
+        setTimeout(() => loadClaims(), 800);
+      } else {
+        showToast(data.error || 'No se pudo ejecutar la acción', 'error');
+        if (box) box.innerHTML = `<div style="color:#e74c3c;font-size:12px;padding:6px 0">${escapeHtml(data.error || 'Error')}</div>`;
+      }
+    } catch (e) { showToast('Error de conexión', 'error'); if (box) box.innerHTML = ''; }
   }
   // ==================== DASHBOARD ====================
   async function loadDashboard() {
@@ -5863,14 +5937,25 @@
     const m = d.getMinutes().toString().padStart(2,'0');
     return `${day}/${mon}/${yr} ${h}:${m} hs`;
   }
+  // Fecha/hora SIEMPRE en zona horaria Argentina (independiente del navegador o del servidor).
+  function fmtAR(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '';
+    try {
+      const s = d.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+      return s.replace(',', '') + ' hs';
+    } catch (e) { return formatDateTime(dateStr); }
+  }
   function formatSaleDate(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
     const day = d.getDate().toString().padStart(2,'0');
     const mon = d.toLocaleDateString('es-AR',{month:'short'});
+    const yr = d.getFullYear();
     const h = d.getHours().toString().padStart(2,'0');
     const m = d.getMinutes().toString().padStart(2,'0');
-    return `${day} ${mon} ${h}:${m} hs`;
+    return `${day} ${mon} ${yr} · ${h}:${m} hs`;
   }
   function showToast(msg, type = 'success') {
     const toast = document.createElement('div');
