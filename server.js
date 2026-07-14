@@ -2762,6 +2762,14 @@ route('GET', '/api/claims', async (req, res) => {
         } catch (e) {}
         // El plazo de resolución (repDue) manda; si no vino, usamos el próximo plazo futuro de las acciones.
         dueDate = repDue || pickDue(actionDues);
+        // Reputación CONFIABLE: la leemos del texto del hilo del reclamo (lo que muestra ML).
+        try {
+          const md = await claimMessagesGet(token, c.id);
+          const marr = Array.isArray(md) ? md : (md && (md.messages || md.data)) || [];
+          const mmsgs = (marr || []).map(x => ({ text: x.message || x.text || (x.plain && x.plain.content) || '' }));
+          const repMsg = repFromMessages(mmsgs);
+          if (repMsg != null) affectsRep = repMsg;
+        } catch (e) {}
         const kind = (relatedReturn || /return|change|devol|cambio/i.test(String(c.type || ''))) ? 'return' : 'claim';
         // Estado de la devolución: en preparación / enviada / entregada.
         let returnStatus = null;
@@ -2804,6 +2812,17 @@ function pickDue(dues) {
   const future = parsed.filter(x => x.t > now).sort((a, b) => a.t - b.t);
   if (future.length) return future[0].raw;
   return parsed.sort((a, b) => b.t - a.t)[0].raw;
+}
+// Determina si el reclamo afecta la reputación leyendo el texto del hilo (lo que muestra ML:
+// "No afectó tu reputación" / "afectará tu reputación"). Es la fuente confiable.
+function repFromMessages(msgs) {
+  for (const m of (msgs || [])) {
+    const t = String(m.text || '').toLowerCase();
+    if (t.indexOf('reputaci') === -1) continue;
+    if (/no\s+afect/.test(t)) return false;
+    if (/afect/.test(t)) return true;
+  }
+  return null;
 }
 // Mensajes de un reclamo. Probamos varias versiones de la API (según permisos del app).
 async function claimMessagesGet(token, claimId) {
@@ -2877,14 +2896,20 @@ route('POST', '/api/claims/reply', async (req, res) => {
       body: JSON.stringify({ from: { user_id: String(account.seller_id) }, to: { user_id: String(buyerId) }, text: message })
     });
   }
-  let lastErr = '';
+  let lastErr = '', sawMediationBlock = false;
   for (const at of attempts) {
     try {
       const r = await fetch(at.url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: at.body });
       const t = await r.text();
       if (r.ok) return sendJSON(res, 200, { ok: true });
-      try { lastErr = JSON.parse(t).message || JSON.parse(t).error || t; } catch (e) { lastErr = (t || '').slice(0, 200); }
+      let em = '';
+      try { em = JSON.parse(t).message || JSON.parse(t).error || t; } catch (e) { em = (t || '').slice(0, 200); }
+      if (/blocked_by_mediation|mediation/i.test(String(em) + String(t))) sawMediationBlock = true;
+      lastErr = em;
     } catch (e) { lastErr = e.message || 'error'; }
+  }
+  if (sawMediationBlock) {
+    return sendJSON(res, 409, { error: 'Este reclamo está en mediación de Mercado Libre. Por ahora, mientras esté en mediación, la respuesta hay que enviarla desde el sitio de Mercado Libre (tu aplicación no tiene habilitado el canal de mensajes de mediación).' });
   }
   sendJSON(res, 500, { error: lastErr || 'No se pudo enviar la respuesta al reclamo' });
 });
