@@ -2708,6 +2708,7 @@ route('GET', '/api/claims', async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
   const status = u.searchParams.get('status') || 'opened'; // opened | closed | all
   const accId = u.searchParams.get('account_id');
+  const debugClaims = u.searchParams.get('debug') === '1';
   const db = loadDB();
   const targets = accId ? db.ml_accounts.filter(a => a.id === parseInt(accId)) : db.ml_accounts;
   const out = [];
@@ -2735,20 +2736,19 @@ route('GET', '/api/claims', async (req, res) => {
         let dueDate = null, relatedReturn = false, affectsRep = null, repDue = null;
         // 1) Endpoint "afecta la reputación": trae el PLAZO DE RESOLUCIÓN del reclamo (el que muestra ML,
         //    ej. "hasta el 14") + si afecta o no. Es el plazo autoritativo, tiene prioridad.
+        let arRaw = null;
         for (const url of [`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}/affects-reputation`, `https://api.mercadolibre.com/marketplace/v2/claims/${c.id}/affects-reputation`]) {
           try {
             const ar = await mlGet(url, token);
             if (!ar) continue;
+            arRaw = ar;
             if (ar.due_date) repDue = ar.due_date;
-            let v = null;
-            if (ar.affects_reputation != null) v = ar.affects_reputation;
-            else if (ar.affected != null) v = ar.affected;
-            else if (ar.reputation && ar.reputation.affected != null) v = ar.reputation.affected;
-            else if (typeof ar.result === 'string') v = !/not|no_afect|sin/i.test(ar.result);
-            if (v != null) affectsRep = !!v;
+            const v = parseAffect(ar.affects_reputation != null ? ar.affects_reputation : (ar.affected != null ? ar.affected : (ar.reputation && ar.reputation.affected != null ? ar.reputation.affected : ar.result)));
+            if (v != null) affectsRep = v;
             if (repDue != null || v != null) break;
           } catch (e) {}
         }
+        if (debugClaims) { out.push({ __debug: true, account: account.name, claim_id: c.id, type: c.type, stage: c.stage, affects_reputation_raw: arRaw || 'sin respuesta' }); return; }
         // 2) Detalle del reclamo: plazos de acciones (fallback) + si es devolución + reputación de respaldo.
         let actionDues = [];
         try {
@@ -2803,6 +2803,22 @@ route('GET', '/api/claims', async (req, res) => {
   out.sort((a, b) => new Date(b.last_updated || b.date_created) - new Date(a.last_updated || a.date_created));
   sendJSON(res, 200, out);
 });
+// Interpreta el valor de "afecta la reputación" que puede venir como booleano, string ("affected",
+// "not_affected", "no", "yes"…) u objeto. Devuelve true/false/null. Clave: NO tratar el string como
+// booleano crudo (¡"not_affected" es truthy!), sino leer su significado.
+function parseAffect(v) {
+  if (v == null) return null;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v > 0;
+  if (typeof v === 'string') {
+    const s = v.toLowerCase().trim();
+    if (/not[_\s-]?affect|no[_\s-]?afect|no afecta|sin afect|unaffected|^no$|^false$/.test(s)) return false;
+    if (/affect|afecta|^yes$|^si$|^true$/.test(s)) return true;
+    return null;
+  }
+  if (typeof v === 'object') { if (v.affected != null) return parseAffect(v.affected); if (v.value != null) return parseAffect(v.value); }
+  return null;
+}
 // Elige el plazo relevante: el próximo VENCIMIENTO FUTURO (no uno ya pasado de otra acción).
 // Si todos pasaron, devuelve el más reciente. Así no marca "vencido" cuando todavía hay plazo real.
 function pickDue(dues) {
