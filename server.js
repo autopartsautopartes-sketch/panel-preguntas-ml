@@ -2114,15 +2114,24 @@ route('GET', '/api/reputation', async (req, res) => {
       const tx = r.transactions || {};
       if (debug) { out.push({ account_name: account.name, _raw: r }); return; }
       const opsBase = (m.sales && m.sales.completed != null) ? m.sales.completed : (tx.completed || 0);
-      // Tasa de una métrica: usamos rate si viene > 0; si no, la calculamos como value / operaciones
-      // (algunas cuentas devuelven el conteo pero el rate en 0/ausente). Si no hay nada, null.
+      // Tasa de una métrica. Cuando la cuenta está EN PROTECCIÓN de reputación, ML deja rate/value en 0
+      // pero guarda el valor real en metric.excluded.real_rate → usamos ese para reflejar lo real.
       const rateOf = (metric) => {
         if (!metric) return null;
         if (metric.rate != null && Number(metric.rate) > 0) return Number(metric.rate);
-        if (metric.value != null && opsBase > 0) return Number(metric.value) / opsBase;
+        if (metric.excluded && metric.excluded.real_rate != null) return Number(metric.excluded.real_rate);
+        if (metric.value != null && opsBase > 0 && Number(metric.value) > 0) return Number(metric.value) / opsBase;
         if (metric.rate != null) return Number(metric.rate);
         return null;
       };
+      const valOf = (metric) => {
+        if (!metric) return null;
+        if (metric.value != null && Number(metric.value) > 0) return Number(metric.value);
+        if (metric.excluded && metric.excluded.real_value != null) return Number(metric.excluded.real_value);
+        return (metric.value != null) ? Number(metric.value) : null;
+      };
+      const protUntil = r.protection_end_date || null;
+      const isProtected = !!(protUntil && new Date(protUntil).getTime() > Date.now());
       out.push({
         account_id: account.id, account_name: account.name,
         nickname: u.nickname || account.name,
@@ -2131,11 +2140,12 @@ route('GET', '/api/reputation', async (req, res) => {
         period: (m.sales && m.sales.period) || '60 días',
         operaciones: (m.sales && m.sales.completed != null) ? m.sales.completed : (tx.completed != null ? tx.completed : null),
         canceladas_rate: rateOf(m.cancellations),
-        canceladas_value: (m.cancellations && m.cancellations.value != null) ? m.cancellations.value : null,
+        canceladas_value: valOf(m.cancellations),
         demorados_rate: rateOf(m.delayed_handling_time),
-        demorados_value: (m.delayed_handling_time && m.delayed_handling_time.value != null) ? m.delayed_handling_time.value : null,
+        demorados_value: valOf(m.delayed_handling_time),
         reclamos_rate: rateOf(m.claims),
-        reclamos_value: (m.claims && m.claims.value != null) ? m.claims.value : null,
+        reclamos_value: valOf(m.claims),
+        protected: isProtected, protection_end_date: protUntil,
         ratings: tx.ratings || {}, total_tx: tx.total != null ? tx.total : null
       });
     } catch (e) {
@@ -2721,8 +2731,8 @@ route('GET', '/api/claims', async (req, res) => {
         if (oid) {
           try { const od = await mlGet(`https://api.mercadolibre.com/orders/${oid}`, token); buyer = od.buyer?.nickname || ''; item = od.order_items?.[0]?.item?.title || ''; } catch (e) {}
         }
-        // Fecha límite para responder: la más próxima entre las available_actions del reclamo.
-        let dueDate = null;
+        // Fecha límite para responder + si es devolución + si afecta la reputación.
+        let dueDate = null, relatedReturn = false, affectsRep = null;
         try {
           const det = await mlGet(`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}`, token);
           const dues = [];
@@ -2730,11 +2740,31 @@ route('GET', '/api/claims', async (req, res) => {
           if (det.due_date) dues.push(det.due_date);
           dues.sort();
           dueDate = dues[0] || null;
+          const rel = det.related_entities || det.related_entity || [];
+          relatedReturn = Array.isArray(rel) ? rel.some(x => /return/i.test(String(x))) : /return/i.test(String(rel));
+          if (det.reputation && det.reputation.affected != null) affectsRep = !!det.reputation.affected;
         } catch (e) {}
+        // Endpoint dedicado de "afecta la reputación" (también trae due_date).
+        if (affectsRep == null) {
+          for (const url of [`https://api.mercadolibre.com/post-purchase/v1/claims/${c.id}/affects-reputation`, `https://api.mercadolibre.com/marketplace/v2/claims/${c.id}/affects-reputation`]) {
+            try {
+              const ar = await mlGet(url, token);
+              if (!ar) continue;
+              if (ar.due_date && !dueDate) dueDate = ar.due_date;
+              let v = null;
+              if (ar.affects_reputation != null) v = ar.affects_reputation;
+              else if (ar.affected != null) v = ar.affected;
+              else if (ar.reputation && ar.reputation.affected != null) v = ar.reputation.affected;
+              else if (typeof ar.result === 'string') v = !/not|no_afect|sin/i.test(ar.result);
+              if (v != null) { affectsRep = !!v; break; }
+            } catch (e) {}
+          }
+        }
+        const kind = (relatedReturn || /return|change|devol|cambio/i.test(String(c.type || ''))) ? 'return' : 'claim';
         out.push({
           id: c.id, account_id: account.id, account_name: account.name,
           status: c.status, stage: c.stage, type: c.type, reason_id: c.reason_id,
-          resource: c.resource, order_id: oid || null,
+          resource: c.resource, order_id: oid || null, kind, affects_reputation: affectsRep,
           buyer_name: buyer, item_title: item, due_date: dueDate,
           date_created: c.date_created, last_updated: c.last_updated
         });
@@ -2833,6 +2863,99 @@ route('GET', '/api/claims/attachment', async (req, res) => {
     } catch (e) {}
   }
   res.writeHead(502); res.end('no disponible');
+});
+// Detalle enriquecido de un reclamo: acciones disponibles + producto/precio/comprador de la orden.
+route('GET', '/api/claims/detail', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const claimId = u.searchParams.get('claim_id');
+  const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(u.searchParams.get('account_id')));
+  if (!account || !claimId) return sendJSON(res, 400, { error: 'Faltan datos' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+  let claim = null;
+  try { claim = await mlGet(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`, token); } catch (e) {}
+  // Motivo del reclamo (texto para el vendedor) + posible recomendación/detalle de ML.
+  let reasonText = '', detailText = '';
+  if (claim) {
+    reasonText = (claim.reason && (claim.reason.detail || claim.reason.name || claim.reason.description)) || '';
+    detailText = claim.detail || claim.description || (claim.reason && claim.reason.recommendation) || '';
+    if (!reasonText && claim.reason_id) {
+      try { const rs = await mlGet(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/reason`, token); reasonText = rs && (rs.detail || rs.name || rs.description) || ''; } catch (e) {}
+    }
+  }
+  const actions = new Set();
+  let due = null;
+  if (claim) {
+    for (const p of (claim.players || [])) for (const ac of (p.available_actions || [])) {
+      if (!ac) continue;
+      const nm = ac.action || ac.name || (typeof ac === 'string' ? ac : '');
+      if (nm) actions.add(String(nm));
+      if (ac.due_date && (!due || ac.due_date < due)) due = ac.due_date;
+    }
+    if (claim.due_date && (!due || claim.due_date < due)) due = claim.due_date;
+  }
+  // Datos del producto/orden
+  let order = null;
+  const orderId = claim ? (claim.resource_id || claim.order_id) : null;
+  if (orderId) {
+    try {
+      const od = await mlGet(`https://api.mercadolibre.com/orders/${orderId}`, token);
+      const it = (od.order_items || [])[0] || {};
+      let thumb = '';
+      try { const itm = await mlGet(`https://api.mercadolibre.com/items/${it.item && it.item.id}`, token); thumb = imgProxy(itm.thumbnail); } catch (e) {}
+      order = {
+        order_id: orderId,
+        title: (it.item && it.item.title) || '', qty: it.quantity || 1,
+        unit_price: it.unit_price || 0, currency: od.currency_id || 'ARS',
+        total: od.total_amount || 0, thumbnail: thumb,
+        buyer: od.buyer && od.buyer.nickname || ''
+      };
+    } catch (e) {}
+  }
+  sendJSON(res, 200, {
+    claim: claim ? { id: claim.id, status: claim.status, stage: claim.stage, type: claim.type, reason_id: claim.reason_id } : null,
+    reason_detail: reasonText, detail_text: detailText,
+    actions: [...actions], due_date: due, order
+  });
+});
+// Acciones de resolución de un reclamo: contactar a ML (abrir disputa) o reembolsar (total/parcial).
+route('POST', '/api/claims/action', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  if (sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { account_id, claim_id, action, percentage } = await parseBody(req);
+  if (!claim_id || !action) return sendJSON(res, 400, { error: 'Faltan datos' });
+  const account = (loadDB().ml_accounts || []).find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
+  let urls = [], body;
+  if (action === 'open-dispute') {
+    urls = [
+      `https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/actions/open-dispute`,
+      `https://api.mercadolibre.com/marketplace/v2/claims/${claim_id}/actions/open-dispute`
+    ];
+  } else if (action === 'refund') {
+    urls = [`https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/expected-resolutions/refund`];
+  } else if (action === 'partial-refund') {
+    urls = [`https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/expected-resolutions/partial-refund`];
+    body = JSON.stringify({ percentage: Number(percentage) });
+  } else {
+    return sendJSON(res, 400, { error: 'Acción no soportada' });
+  }
+  let lastErr = '';
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body });
+      const t = await r.text();
+      if (r.ok) return sendJSON(res, 200, { ok: true });
+      try { lastErr = JSON.parse(t).message || JSON.parse(t).error || t; } catch (e) { lastErr = t; }
+    } catch (e) { lastErr = e.message || 'error'; }
+  }
+  sendJSON(res, 500, { error: lastErr || 'No se pudo ejecutar la acción' });
 });
 // SALES
 // In-memory caches to speed up repeated requests
