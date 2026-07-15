@@ -5087,9 +5087,92 @@ route('GET', '/api/simular-costos', async (req, res) => {
   };
   sendJSON(res, 200, out);
 });
+// ===========================================================================
+// FASE 2a - MOTOR DE COSTOS REALES por publicacion.
+// Trae de ML (2 llamadas + lectura del item): comision, costo fijo, cuota
+// (incorporada al tipo o por campaña co-financiada), envio real y el codigo de
+// campaña. Devuelve el desglose listo para cachear/volcar al _COMPLETO.
+// impuestos = 4% y factura = 5% son porcentajes fijos (config).
+// ===========================================================================
+function _r2(x) { return Math.round((Number(x) || 0) * 100) / 100; }
+async function fetchRealCosts(account, token, itemId, cfg) {
+  cfg = cfg || {};
+  const impuestosPct    = cfg.impuestosPct    != null ? cfg.impuestosPct    : 4;
+  const facturaPct      = cfg.facturaPct      != null ? cfg.facturaPct      : 5;
+  const cuotaCampanaPct = cfg.cuotaCampanaPct != null ? cfg.cuotaCampanaPct : 5;
+  const get = async (url, params) => { try { return await mlGet(url, token, params || {}); } catch (e) { return null; } };
+  // Item: precio, categoria, tipo, seller, free_shipping, sale_terms (campaña)
+  const it = await get(`https://api.mercadolibre.com/items/${itemId}`, { attributes: 'id,price,category_id,listing_type_id,seller_id,shipping,sale_terms,tags' });
+  if (!it) return { item_id: itemId, error: 'no se pudo leer el item' };
+  const price = Number(it.price) || 0;
+  const sellerId = it.seller_id || account.seller_id;
+  const freeShip = !!(it.shipping && it.shipping.free_shipping);
+  // Campaña de cuotas (co-financiada): guardamos el codigo
+  let campaignCode = null;
+  const st = Array.isArray(it.sale_terms) ? it.sale_terms.find(s => s.id === 'INSTALLMENTS_CAMPAIGN') : null;
+  if (st) campaignCode = st.value_name || (st.values && st.values[0] && st.values[0].name) || 'campaña';
+  // Comision + costo fijo + cuota incorporada al tipo (listing_prices)
+  const lp = await get('https://api.mercadolibre.com/sites/MLA/listing_prices',
+    { price: Math.round(price), category_id: it.category_id || '', listing_type_id: it.listing_type_id || '' });
+  let comPct = 0, fixed = 0, cuotaTipoPct = 0, saleFee = 0;
+  if (lp) {
+    const pick = Array.isArray(lp) ? (lp.find(x => String(x.listing_type_id) === String(it.listing_type_id)) || lp[0]) : lp;
+    const det = (pick && pick.sale_fee_details) || {};
+    comPct = Number(det.meli_percentage_fee) || 0;
+    fixed = Number(det.fixed_fee) || 0;
+    cuotaTipoPct = Number(det.financing_add_on_fee) || 0;
+    saleFee = Number(pick && pick.sale_fee_amount) || 0;
+  }
+  // Cuota total: la del tipo (si la API la trae) o, si es 0 y hay campaña, la tasa de campaña
+  const cuotaPct = cuotaTipoPct > 0 ? cuotaTipoPct : (campaignCode ? cuotaCampanaPct : 0);
+  const cuotaFuente = cuotaTipoPct > 0 ? 'tipo' : (campaignCode ? 'campaña' : 'sin_cuota');
+  // Envio real (el endpoint ya devuelve 0 si lo paga el comprador)
+  let envio = 0;
+  const sh = await get(`https://api.mercadolibre.com/users/${sellerId}/shipping_options/free`, { item_id: itemId, verbose: 'true' });
+  if (sh && sh.coverage && sh.coverage.all_country) envio = Number(sh.coverage.all_country.list_cost) || 0;
+  // Montos
+  const comisionAmount  = price * comPct / 100;
+  const cuotaAmount     = price * cuotaPct / 100;
+  const impuestosAmount = price * impuestosPct / 100;
+  const facturaAmount   = price * facturaPct / 100;
+  const recibis = price - comisionAmount - fixed - cuotaAmount - envio - impuestosAmount;
+  return {
+    item_id: itemId, price,
+    category_id: it.category_id, listing_type_id: it.listing_type_id, free_shipping: freeShip,
+    comision_pct: comPct, comision_amount: _r2(comisionAmount),
+    costo_fijo: _r2(fixed),
+    cuota_pct: cuotaPct, cuota_amount: _r2(cuotaAmount), cuota_fuente: cuotaFuente, campaign_code: campaignCode,
+    envio: _r2(envio),
+    impuestos_pct: impuestosPct, impuestos_amount: _r2(impuestosAmount),
+    factura_pct: facturaPct, factura_amount: _r2(facturaAmount),
+    recibis: _r2(recibis),
+    sale_fee_amount: _r2(saleFee),
+    updated_at: new Date().toISOString(),
+  };
+}
+// GET /api/costos-reales?item_id=MLAxxxx&account_id=N  (admin). Calcula, CACHEA y devuelve.
+route('GET', '/api/costos-reales', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado (solo admin)' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const accountId = parseInt(u.searchParams.get('account_id'));
+  if (!itemId || !accountId) return sendJSON(res, 400, { error: 'Faltan item_id y account_id' });
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token invalido, reconecta la cuenta' });
+  const costos = await fetchRealCosts(account, token, itemId);
+  // cachear en db.real_costs[item_id]
+  if (!db.real_costs) db.real_costs = {};
+  db.real_costs[itemId] = { ...costos, account_id: accountId };
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, cacheado: true, costos });
+});
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-simular-costos-v15', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v16', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
