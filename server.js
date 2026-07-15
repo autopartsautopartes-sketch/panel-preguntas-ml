@@ -5180,7 +5180,7 @@ route('GET', '/api/costos-reales', async (req, res) => {
 //   GET  /api/costos-reales/estado?job_id=...   -> progreso
 // ===========================================================================
 const costJobs = {};
-async function scanAllItemIds(account, token) {
+async function scanAllItemIds(account, token, cap) {
   const ids = [];
   for (const status of ['active', 'paused']) {
     let scrollId = null;
@@ -5194,6 +5194,7 @@ async function scanAllItemIds(account, token) {
       const r = page.results || [];
       if (!r.length) break;
       ids.push(...r);
+      if (cap && ids.length >= cap) return ids.slice(0, cap);   // tope -> corta el escaneo de entrada
       if (!scrollId) break;
     }
   }
@@ -5229,16 +5230,23 @@ async function enrichItems(jobId, account, token, itemIds, opts) {
   job.finished_at = new Date().toISOString();
 }
 async function _startEnrich(account, token, o) {
-  let itemIds = Array.isArray(o.itemIds) ? o.itemIds.filter(Boolean) : [];
-  let modo = 'items';
-  if (!itemIds.length && o.all) { modo = 'all'; itemIds = await scanAllItemIds(account, token); }
-  if (!itemIds.length) return { _err: 'pasá item_ids o all:true' };
-  if (o.limit) itemIds = itemIds.slice(0, parseInt(o.limit));
+  const explicit = Array.isArray(o.itemIds) ? o.itemIds.filter(Boolean) : [];
+  if (!explicit.length && !o.all) return { _err: 'pasá item_ids o all:true' };
+  const modo = explicit.length ? 'items' : 'all';
+  const cap = o.limit ? parseInt(o.limit) : 0;
   const jobId = 'cost_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-  costJobs[jobId] = { id: jobId, account: account.name, modo, total: itemIds.length, done: 0, ok: 0, errors: 0, skipped: 0, status: 'running', created_at: new Date().toISOString(), cancelled: false, error_items: [] };
-  enrichItems(jobId, account, token, itemIds, { maxAgeHours: o.maxAgeHours != null ? o.maxAgeHours : 0 })
-    .catch(e => { const j = costJobs[jobId]; if (j) { j.status = 'error'; j.detail = String(e.message || e); } });
-  return { ok: true, job_id: jobId, modo, total: itemIds.length };
+  costJobs[jobId] = { id: jobId, account: account.name, modo, total: explicit.length || null, done: 0, ok: 0, errors: 0, skipped: 0, status: modo === 'all' ? 'escaneando' : 'running', created_at: new Date().toISOString(), cancelled: false, error_items: [] };
+  // TODO en segundo plano: el escaneo de 'all' (decenas de miles) NO debe bloquear la respuesta.
+  (async () => {
+    let itemIds = explicit;
+    if (modo === 'all') itemIds = await scanAllItemIds(account, token, cap);
+    if (cap) itemIds = itemIds.slice(0, cap);
+    const job = costJobs[jobId];
+    job.total = itemIds.length;
+    job.status = 'running';
+    await enrichItems(jobId, account, token, itemIds, { maxAgeHours: o.maxAgeHours != null ? o.maxAgeHours : 0 });
+  })().catch(e => { const j = costJobs[jobId]; if (j) { j.status = 'error'; j.detail = String(e.message || e); } });
+  return { ok: true, job_id: jobId, modo, total: costJobs[jobId].total };
 }
 async function _resolveAccTok(accountId, res) {
   const db = loadDB();
@@ -5286,7 +5294,7 @@ route('GET', '/api/costos-reales/estado', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v18', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v19', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
