@@ -1,4 +1,4 @@
- http = require('http');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -5126,10 +5126,15 @@ async function fetchRealCosts(account, token, itemId, cfg) {
   // Cuota total: la del tipo (si la API la trae) o, si es 0 y hay campaña, la tasa de campaña
   const cuotaPct = cuotaTipoPct > 0 ? cuotaTipoPct : (campaignCode ? cuotaCampanaPct : 0);
   const cuotaFuente = cuotaTipoPct > 0 ? 'tipo' : (campaignCode ? 'campaña' : 'sin_cuota');
-  // Envio real (el endpoint ya devuelve 0 si lo paga el comprador)
+  // Envio real: SOLO lo paga el vendedor si la publicacion ofrece envio gratis
+  // (free_shipping=true). Si no, lo paga el comprador -> envio 0. El list_cost viene
+  // >0 igual en items caros sin envio gratis, por eso hay que gatear por free_shipping.
+  // Bonus: nos ahorramos la llamada de envio cuando no aplica.
   let envio = 0;
-  const sh = await get(`https://api.mercadolibre.com/users/${sellerId}/shipping_options/free`, { item_id: itemId, verbose: 'true' });
-  if (sh && sh.coverage && sh.coverage.all_country) envio = Number(sh.coverage.all_country.list_cost) || 0;
+  if (freeShip) {
+    const sh = await get(`https://api.mercadolibre.com/users/${sellerId}/shipping_options/free`, { item_id: itemId, verbose: 'true' });
+    if (sh && sh.coverage && sh.coverage.all_country) envio = Number(sh.coverage.all_country.list_cost) || 0;
+  }
   // Montos
   const comisionAmount  = price * comPct / 100;
   const cuotaAmount     = price * cuotaPct / 100;
@@ -5315,7 +5320,7 @@ route('GET', '/api/costos-reales/export', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v20', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v21', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
