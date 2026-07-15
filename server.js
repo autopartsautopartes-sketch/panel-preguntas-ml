@@ -1,4 +1,4 @@
-const http = require('http');
+ http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -5292,9 +5292,30 @@ route('GET', '/api/costos-reales/estado', async (req, res) => {
   if (!job) return sendJSON(res, 404, { error: 'job no encontrado o expirado' });
   sendJSON(res, 200, job);
 });
+// Exporta los costos reales cacheados (para que el Python los vuelque al _COMPLETO).
+// Auth: sesion admin (para probar en el navegador) o x-api-token (para la automatizacion).
+//   GET /api/costos-reales/export?account_id=N   -> NDJSON, una linea por item + resumen final
+route('GET', '/api/costos-reales/export', async (req, res) => {
+  const sess = requireAuth(req);
+  const okAuth = (sess && sess.role === 'admin') || checkApiToken(req);
+  if (!okAuth) return sendJSON(res, 401, { error: 'No autorizado (sesion admin o x-api-token)' });
+  const u = new URL(req.url, 'http://localhost');
+  const accountId = u.searchParams.get('account_id') ? parseInt(u.searchParams.get('account_id')) : null;
+  const db = loadDB();
+  const rc = db.real_costs || {};
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'X-Accel-Buffering': 'no' });
+  let n = 0;
+  for (const iid of Object.keys(rc)) {
+    const c = rc[iid];
+    if (accountId && c.account_id !== accountId) continue;
+    res.write(JSON.stringify(c) + '\n'); n++;
+  }
+  res.write(JSON.stringify({ _resumen: true, exportados: n, account_id: accountId }) + '\n');
+  res.end();
+});
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v19', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v20', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
