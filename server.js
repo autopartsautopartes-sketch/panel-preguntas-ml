@@ -5116,7 +5116,19 @@ async function fetchRealCosts(account, token, itemId, cfg) {
   const impuestosPct    = cfg.impuestosPct    != null ? cfg.impuestosPct    : 4;
   const facturaPct      = cfg.facturaPct      != null ? cfg.facturaPct      : 5;
   const cuotaCampanaPct = cfg.cuotaCampanaPct != null ? cfg.cuotaCampanaPct : 5;
-  const get = async (url, params) => { try { return await mlGet(url, token, params || {}); } catch (e) { return null; } };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Reintenta ante 429 (rate limit) / 503 con espera creciente. Otros errores -> null.
+  const get = async (url, params) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try { return await mlGet(url, token, params || {}); }
+      catch (e) {
+        const st = e && e.response && e.response.status;
+        if (st === 429 || st === 503) { await sleep([2000, 5000, 12000, 25000][attempt] || 25000); continue; }
+        return null;
+      }
+    }
+    return null;
+  };
   // Item: precio, categoria, tipo, seller, free_shipping, sale_terms (campaña)
   const it = await get(`https://api.mercadolibre.com/items/${itemId}`, { attributes: 'id,price,category_id,listing_type_id,seller_id,shipping,sale_terms,tags' });
   if (!it) return { item_id: itemId, error: 'no se pudo leer el item' };
@@ -5227,7 +5239,7 @@ async function enrichItems(jobId, account, token, itemIds, opts) {
   const job = costJobs[jobId];
   const maxAgeMs = (opts && opts.maxAgeHours != null ? opts.maxAgeHours : 0) * 3600 * 1000;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const CONC = 2, PAUSE = 250, PERSIST_EVERY = 200;
+  const CONC = 2, PAUSE = 400, PERSIST_EVERY = 200;   // ritmo un poco mas suave para pegarle menos al rate limit
   const rcFile = loadRealCosts(account.seller_id);
   const cache = rcFile.costs || (rcFile.costs = {});
   let sinceSave = 0;
@@ -5339,7 +5351,7 @@ route('GET', '/api/costos-reales/export', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-persistente-v22', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-429retry-v23', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
