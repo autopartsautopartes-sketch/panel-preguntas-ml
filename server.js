@@ -5059,6 +5059,20 @@ route('GET', '/api/simular-costos', async (req, res) => {
   out.envio_candidatos.users_free = await safe(`https://api.mercadolibre.com/users/${sellerId}/shipping_options/free`, { item_id: itemId, verbose: 'true' });
   out.envio_candidatos.item_free  = await safe(`https://api.mercadolibre.com/items/${itemId}/shipping_options/free`);
   out.envio_candidatos.item_opts  = await safe(`https://api.mercadolibre.com/items/${itemId}/shipping_options`);
+  // 3b) CUOTAS ("costo por ofrecer cuotas"): probamos de donde sale el numero real
+  out.cuotas_candidatos = {};
+  // a) financing_add_on_fee que ya viene (o no) en listing_prices
+  let lpFin = null;
+  if (out.comision.ok) {
+    const d = out.comision.data;
+    const pick = Array.isArray(d) ? (d.find(x => String(x.listing_type_id) === String(lt)) || d[0]) : d;
+    lpFin = pick && pick.sale_fee_details ? pick.sale_fee_details.financing_add_on_fee : null;
+  }
+  out.cuotas_candidatos.listing_prices_financing = lpFin;
+  // b) Prices API del item (a veces trae la financiacion)
+  out.cuotas_candidatos.item_prices = await safe(`https://api.mercadolibre.com/items/${itemId}/prices`);
+  // c) sale_terms / tags del item (config de cuotas del vendedor)
+  out.cuotas_candidatos.item_sale_terms = await safe(`https://api.mercadolibre.com/items/${itemId}`, { attributes: 'id,sale_terms,tags,catalog_listing' });
   // 4) Resumen best-effort de la comision (el envio se lee del candidato que sirva)
   let comision = null;
   if (out.comision.ok) {
@@ -5075,7 +5089,7 @@ route('GET', '/api/simular-costos', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-simular-costos-v14', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag'] });
+  sendJSON(res, 200, { version: '2026-07-15-simular-costos-v15', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
