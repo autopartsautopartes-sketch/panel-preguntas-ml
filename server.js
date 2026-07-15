@@ -5017,9 +5017,65 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
     sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
   }
 });
+// ===========================================================================
+// DIAGNOSTICO (FASE 1): costos REALES de una publicacion, como el "Simulador de
+// costos" de ML. Trae la comision real (listing_prices) y prueba varios endpoints
+// de costo de envio del vendedor para descubrir cual devuelve el numero con el
+// descuento por reputacion. Solo admin, SOLO LECTURA (no cambia nada en ML).
+//   GET /api/simular-costos?item_id=MLAxxxx&account_id=N
+// Usar: abrir para 5-10 MLA y comparar 'resumen' + 'envio_candidatos' contra el
+// simulador de ML del mismo item. Cuando el envio coincida, cerramos la pieza.
+// ===========================================================================
+route('GET', '/api/simular-costos', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado (solo admin)' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const accountId = parseInt(u.searchParams.get('account_id'));
+  if (!itemId || !accountId) return sendJSON(res, 400, { error: 'Faltan item_id y account_id' });
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token invalido, reconecta la cuenta' });
+  const safe = async (url, params = {}) => {
+    try { return { ok: true, url, params, data: await mlGet(url, token, params) }; }
+    catch (e) { return { ok: false, url, params, error: (e && e.response && e.response.data) || String(e && e.message || e) }; }
+  };
+  const out = { item_id: itemId, cuenta: account.name };
+  // 1) Item: precio, categoria, tipo, seller, shipping
+  const itR = await safe(`https://api.mercadolibre.com/items/${itemId}`, { attributes: 'id,price,base_price,category_id,listing_type_id,seller_id,available_quantity,shipping' });
+  out.item = itR;
+  const it = itR.ok ? itR.data : {};
+  const price = it.price, cat = it.category_id, lt = it.listing_type_id;
+  const sellerId = it.seller_id || account.seller_id;
+  out.datos = { price, category_id: cat, listing_type_id: lt, seller_id: sellerId,
+                logistic_type: it.shipping && (it.shipping.logistic_type || it.shipping.mode) };
+  // 2) COMISION real (cargo por vender) = listing_prices
+  out.comision = await safe('https://api.mercadolibre.com/sites/MLA/listing_prices',
+    { price: Math.round(Number(price) || 0), category_id: cat || '', listing_type_id: lt || '' });
+  // 3) ENVIO del vendedor con reputacion: probamos varios candidatos y dejamos el crudo
+  out.envio_candidatos = {};
+  out.envio_candidatos.users_free = await safe(`https://api.mercadolibre.com/users/${sellerId}/shipping_options/free`, { item_id: itemId, verbose: 'true' });
+  out.envio_candidatos.item_free  = await safe(`https://api.mercadolibre.com/items/${itemId}/shipping_options/free`);
+  out.envio_candidatos.item_opts  = await safe(`https://api.mercadolibre.com/items/${itemId}/shipping_options`);
+  // 4) Resumen best-effort de la comision (el envio se lee del candidato que sirva)
+  let comision = null;
+  if (out.comision.ok) {
+    const d = out.comision.data;
+    const pick = Array.isArray(d) ? (d.find(x => String(x.listing_type_id) === String(lt)) || d[0]) : d;
+    if (pick) comision = (Number(pick.sale_fee_amount) || (pick.sale_fee_details && Number(pick.sale_fee_details.gross_amount)) || null);
+  }
+  out.resumen = {
+    precio: price,
+    comision_real: comision,
+    nota: 'Compara contra el Simulador de costos de ML del mismo MLA. El envio real esta en envio_candidatos: busca el que traiga cost/list_cost con el descuento por reputacion (ej. list_cost y loyal_discount).'
+  };
+  sendJSON(res, 200, out);
+});
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-14-resiliencia-v13', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers'] });
+  sendJSON(res, 200, { version: '2026-07-15-simular-costos-v14', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
