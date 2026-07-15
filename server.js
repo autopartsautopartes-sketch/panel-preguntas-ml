@@ -5095,6 +5095,22 @@ route('GET', '/api/simular-costos', async (req, res) => {
 // impuestos = 4% y factura = 5% son porcentajes fijos (config).
 // ===========================================================================
 function _r2(x) { return Math.round((Number(x) || 0) * 100) / 100; }
+// Los costos reales viven en su PROPIO archivo por cuenta en DATA_DIR (disco
+// persistente), igual que ads_costs_*. NO dentro de data.json -> sobreviven deploys
+// y no reescriben la base entera. Estructura: { costs: { item_id: {...} }, updated }.
+function _realCostsPath(sellerId) { return path.join(DATA_DIR, 'costos_reales_' + String(sellerId) + '.json'); }
+function loadRealCosts(sellerId) { try { return JSON.parse(fs.readFileSync(_realCostsPath(sellerId), 'utf8')) || { costs: {} }; } catch (e) { return { costs: {} }; } }
+function saveRealCosts(sellerId, obj) { try { fs.writeFileSync(_realCostsPath(sellerId), JSON.stringify(obj)); } catch (e) {} }
+function loadAllRealCosts() {
+  const merged = {};
+  try {
+    for (const fn of fs.readdirSync(DATA_DIR)) {
+      if (!/^costos_reales_.+\.json$/.test(fn)) continue;
+      try { const f = JSON.parse(fs.readFileSync(path.join(DATA_DIR, fn), 'utf8')); if (f && f.costs) Object.assign(merged, f.costs); } catch (e) {}
+    }
+  } catch (e) {}
+  return merged;
+}
 async function fetchRealCosts(account, token, itemId, cfg) {
   cfg = cfg || {};
   const impuestosPct    = cfg.impuestosPct    != null ? cfg.impuestosPct    : 4;
@@ -5169,10 +5185,12 @@ route('GET', '/api/costos-reales', async (req, res) => {
   const token = await getValidToken(account);
   if (!token) return sendJSON(res, 401, { error: 'Token invalido, reconecta la cuenta' });
   const costos = await fetchRealCosts(account, token, itemId);
-  // cachear en db.real_costs[item_id]
-  if (!db.real_costs) db.real_costs = {};
-  db.real_costs[itemId] = { ...costos, account_id: accountId };
-  saveDB(db);
+  // cachear en el archivo por cuenta (disco persistente), NO en data.json
+  const rc = loadRealCosts(account.seller_id);
+  if (!rc.costs) rc.costs = {};
+  rc.costs[itemId] = { ...costos, account_id: accountId };
+  rc.updated = new Date().toISOString();
+  saveRealCosts(account.seller_id, rc);
   sendJSON(res, 200, { ok: true, cacheado: true, costos });
 });
 // ===========================================================================
@@ -5210,9 +5228,10 @@ async function enrichItems(jobId, account, token, itemIds, opts) {
   const maxAgeMs = (opts && opts.maxAgeHours != null ? opts.maxAgeHours : 0) * 3600 * 1000;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const CONC = 2, PAUSE = 250, PERSIST_EVERY = 200;
-  let cache = (loadDB().real_costs) || {};
+  const rcFile = loadRealCosts(account.seller_id);
+  const cache = rcFile.costs || (rcFile.costs = {});
   let sinceSave = 0;
-  const persist = () => { const d = loadDB(); d.real_costs = { ...(d.real_costs || {}), ...cache }; saveDB(d); };
+  const persist = () => { rcFile.updated = new Date().toISOString(); saveRealCosts(account.seller_id, rcFile); };
   for (let i = 0; i < itemIds.length; i += CONC) {
     if (job.cancelled) break;
     const wave = itemIds.slice(i, i + CONC);
@@ -5307,20 +5326,20 @@ route('GET', '/api/costos-reales/export', async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
   const accountId = u.searchParams.get('account_id') ? parseInt(u.searchParams.get('account_id')) : null;
   const db = loadDB();
-  const rc = db.real_costs || {};
+  let costs = {};
+  if (accountId) { const acc = db.ml_accounts.find(a => a.id === accountId); costs = acc ? (loadRealCosts(acc.seller_id).costs || {}) : {}; }
+  else costs = loadAllRealCosts();
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'X-Accel-Buffering': 'no' });
   let n = 0;
-  for (const iid of Object.keys(rc)) {
-    const c = rc[iid];
-    if (accountId && c.account_id !== accountId) continue;
-    res.write(JSON.stringify(c) + '\n'); n++;
+  for (const iid of Object.keys(costs)) {
+    res.write(JSON.stringify(costs[iid]) + '\n'); n++;
   }
   res.write(JSON.stringify({ _resumen: true, exportados: n, account_id: accountId }) + '\n');
   res.end();
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v21', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-persistente-v22', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
