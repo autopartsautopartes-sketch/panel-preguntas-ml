@@ -5170,9 +5170,123 @@ route('GET', '/api/costos-reales', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, cacheado: true, costos });
 });
+// ===========================================================================
+// FASE 2b - ENRIQUECIMIENTO EN LOTE (3 modos) en segundo plano, con freno.
+//   POST /api/costos-reales/enriquecer  body:{ account_id, all?:true | item_ids?:[], limit?, max_age_hours? }
+//     - all:true          -> escanea TODAS las publicaciones (primera vez / a demanda)
+//     - item_ids:[...]     -> solo esas (incremental: las que cambiaron en el _CAMBIOS)
+//     - limit              -> tope para probar (ej. 20)
+//     - max_age_hours      -> saltea las que ya tienen costo fresco (resumible). 0 = recalcula todo
+//   GET  /api/costos-reales/estado?job_id=...   -> progreso
+// ===========================================================================
+const costJobs = {};
+async function scanAllItemIds(account, token) {
+  const ids = [];
+  for (const status of ['active', 'paused']) {
+    let scrollId = null;
+    for (let guard = 0; guard < 5000; guard++) {
+      const params = { limit: 100, status, search_type: 'scan' };
+      if (scrollId) params.scroll_id = scrollId;
+      let page;
+      try { page = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, params); }
+      catch (e) { break; }
+      scrollId = page.scroll_id || null;
+      const r = page.results || [];
+      if (!r.length) break;
+      ids.push(...r);
+      if (!scrollId) break;
+    }
+  }
+  return ids;
+}
+async function enrichItems(jobId, account, token, itemIds, opts) {
+  const job = costJobs[jobId];
+  const maxAgeMs = (opts && opts.maxAgeHours != null ? opts.maxAgeHours : 0) * 3600 * 1000;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const CONC = 2, PAUSE = 250, PERSIST_EVERY = 200;
+  let cache = (loadDB().real_costs) || {};
+  let sinceSave = 0;
+  const persist = () => { const d = loadDB(); d.real_costs = { ...(d.real_costs || {}), ...cache }; saveDB(d); };
+  for (let i = 0; i < itemIds.length; i += CONC) {
+    if (job.cancelled) break;
+    const wave = itemIds.slice(i, i + CONC);
+    await Promise.all(wave.map(async (iid) => {
+      if (maxAgeMs > 0) {
+        const c = cache[iid];
+        if (c && c.updated_at && (Date.now() - new Date(c.updated_at).getTime()) < maxAgeMs) { job.skipped++; job.done++; return; }
+      }
+      const costos = await fetchRealCosts(account, token, iid);
+      if (costos && !costos.error) { cache[iid] = { ...costos, account_id: account.id }; job.ok++; }
+      else { job.errors++; if (job.error_items.length < 50) job.error_items.push({ item_id: iid, error: costos && costos.error }); }
+      job.done++;
+    }));
+    sinceSave += wave.length;
+    if (sinceSave >= PERSIST_EVERY) { persist(); sinceSave = 0; }
+    await sleep(PAUSE);
+  }
+  persist();
+  job.status = job.cancelled ? 'cancelado' : 'done';
+  job.finished_at = new Date().toISOString();
+}
+async function _startEnrich(account, token, o) {
+  let itemIds = Array.isArray(o.itemIds) ? o.itemIds.filter(Boolean) : [];
+  let modo = 'items';
+  if (!itemIds.length && o.all) { modo = 'all'; itemIds = await scanAllItemIds(account, token); }
+  if (!itemIds.length) return { _err: 'pasá item_ids o all:true' };
+  if (o.limit) itemIds = itemIds.slice(0, parseInt(o.limit));
+  const jobId = 'cost_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+  costJobs[jobId] = { id: jobId, account: account.name, modo, total: itemIds.length, done: 0, ok: 0, errors: 0, skipped: 0, status: 'running', created_at: new Date().toISOString(), cancelled: false, error_items: [] };
+  enrichItems(jobId, account, token, itemIds, { maxAgeHours: o.maxAgeHours != null ? o.maxAgeHours : 0 })
+    .catch(e => { const j = costJobs[jobId]; if (j) { j.status = 'error'; j.detail = String(e.message || e); } });
+  return { ok: true, job_id: jobId, modo, total: itemIds.length };
+}
+async function _resolveAccTok(accountId, res) {
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(accountId));
+  if (!account) { sendJSON(res, 404, { error: 'Cuenta no encontrada' }); return null; }
+  const token = await getValidToken(account);
+  if (!token) { sendJSON(res, 401, { error: 'Token invalido, reconecta la cuenta' }); return null; }
+  return { account, token };
+}
+route('POST', '/api/costos-reales/enriquecer', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado (solo admin)' });
+  const body = await parseBody(req);
+  const at = await _resolveAccTok(body.account_id, res); if (!at) return;
+  const r = await _startEnrich(at.account, at.token, { itemIds: body.item_ids, all: body.all, limit: body.limit, maxAgeHours: body.max_age_hours });
+  if (r._err) return sendJSON(res, 400, { error: r._err });
+  sendJSON(res, 200, r);
+});
+// Variante GET (para disparar desde el navegador):
+//   /api/costos-reales/enriquecer?account_id=1&all=true&limit=20
+//   /api/costos-reales/enriquecer?account_id=1&item_ids=MLAxxx,MLAyyy
+route('GET', '/api/costos-reales/enriquecer', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado (solo admin)' });
+  const u = new URL(req.url, 'http://localhost');
+  const at = await _resolveAccTok(u.searchParams.get('account_id'), res); if (!at) return;
+  const idsRaw = u.searchParams.get('item_ids');
+  const r = await _startEnrich(at.account, at.token, {
+    itemIds: idsRaw ? idsRaw.split(',').map(s => s.trim()).filter(Boolean) : [],
+    all: u.searchParams.get('all') === 'true',
+    limit: u.searchParams.get('limit'),
+    maxAgeHours: u.searchParams.get('max_age_hours'),
+  });
+  if (r._err) return sendJSON(res, 400, { error: r._err });
+  sendJSON(res, 200, r);
+});
+route('GET', '/api/costos-reales/estado', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://localhost');
+  const jobId = u.searchParams.get('job_id');
+  const job = costJobs[jobId];
+  if (!job) return sendJSON(res, 404, { error: 'job no encontrado o expirado' });
+  sendJSON(res, 200, job);
+});
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v16', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-reales-v18', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
