@@ -5242,16 +5242,23 @@ async function enrichItems(jobId, account, token, itemIds, opts) {
   const CONC = 2, PAUSE = 400, PERSIST_EVERY = 200;   // ritmo un poco mas suave para pegarle menos al rate limit
   const rcFile = loadRealCosts(account.seller_id);
   const cache = rcFile.costs || (rcFile.costs = {});
+  // PRE-FILTRO: los que ya tienen costo fresco se saltean AL INSTANTE (sin freno),
+  // asi reanudar NO "repasa" 15.000 con pausa -> procesa solo los pendientes.
+  let pend = itemIds;
+  if (maxAgeMs > 0) {
+    pend = [];
+    for (const iid of itemIds) {
+      const c = cache[iid];
+      if (c && c.updated_at && (Date.now() - new Date(c.updated_at).getTime()) < maxAgeMs) { job.skipped++; job.done++; }
+      else pend.push(iid);
+    }
+  }
   let sinceSave = 0;
   const persist = () => { rcFile.updated = new Date().toISOString(); saveRealCosts(account.seller_id, rcFile); };
-  for (let i = 0; i < itemIds.length; i += CONC) {
+  for (let i = 0; i < pend.length; i += CONC) {
     if (job.cancelled) break;
-    const wave = itemIds.slice(i, i + CONC);
+    const wave = pend.slice(i, i + CONC);
     await Promise.all(wave.map(async (iid) => {
-      if (maxAgeMs > 0) {
-        const c = cache[iid];
-        if (c && c.updated_at && (Date.now() - new Date(c.updated_at).getTime()) < maxAgeMs) { job.skipped++; job.done++; return; }
-      }
       const costos = await fetchRealCosts(account, token, iid);
       if (costos && !costos.error) { cache[iid] = { ...costos, account_id: account.id }; job.ok++; }
       else { job.errors++; if (job.error_items.length < 50) job.error_items.push({ item_id: iid, error: costos && costos.error }); }
@@ -5351,7 +5358,7 @@ route('GET', '/api/costos-reales/export', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-15-costos-429retry-v23', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
+  sendJSON(res, 200, { version: '2026-07-15-costos-resume-v24', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'crash_handlers', 'simular_costos_diag', 'costos_reales_cache', 'costos_batch', 'costos_export'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
