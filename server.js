@@ -5540,13 +5540,16 @@ function makeEngine(deps) {
           if (sndSave > 0) bonus = sndSave;
           else if (sndCost === 0 && rcvSave > 0) bonus = rcvSave;
           else {
-            // Otros casos (ej. el comprador pagó el envío): la bonificación puede venir como "compensation"
-            // o como un COSTO NEGATIVO del sender (ML le acredita dinero al vendedor).
+            // Otros casos: la bonificación puede venir como "compensation", como COSTO NEGATIVO del sender
+            // (ML te acredita), o —en Flex donde el comprador pagó el envío— es ese envío que vos cobrás
+            // por hacer la entrega (receiver.cost). Según la regla: precio ≤ 32999 → todo va a bonificación.
             const sndComp = Number(snd.compensation) || 0;
             const rcvComp = (rcv && Number(rcv.compensation)) || 0;
+            const rcvCost = (rcv && Number(rcv.cost)) || 0;
             if (sndComp > 0) bonus = sndComp;
             else if (rcvComp > 0) bonus = rcvComp;
             else if (sndCost < 0) bonus = -sndCost;
+            else if (logistic === 'self_service' && rcvCost > 0) bonus = rcvCost;
           }
         }
       }
