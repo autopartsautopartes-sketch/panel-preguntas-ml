@@ -5231,6 +5231,99 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
     sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
   }
 });
+// DEBUG PROMO: diagnostico completo del bloqueo por promocion en un item.
+// Por defecto SOLO LEE (no toca nada). Muestra el estado real del item en ML,
+// las promos que ML reporta (respuestas CRUDAS de cada endpoint), y las promos
+// que el panel detecta/normaliza. Opcionalmente prueba sacar la promo (&remove=1)
+// y/o cambiar el precio (&set_price=NUM) y hace read-back para ver que quedo.
+// Auth: sesion admin  O  token de API (?token= / x-api-token).
+route('GET', '/api/debug-promo', async (req, res) => {
+  const sess = requireAuth(req);
+  const isAdmin = !!(sess && sess.role === 'admin');
+  if (!isAdmin && !checkApiToken(req)) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token)' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const db = loadDB();
+  const account = resolveApiAccount(db, u) || (u.searchParams.get('account_id') ? db.ml_accounts.find(a => a.id === parseInt(u.searchParams.get('account_id'))) : null);
+  if (!itemId) return sendJSON(res, 400, { error: 'Falta ?item_id=' });
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada (usá ?account_id=ID o ?account=NOMBRE)' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token ML inválido, reconectá la cuenta' });
+  const doRemove = ['1', 'true', 'si', 'yes'].includes(String(u.searchParams.get('remove') || '').toLowerCase());
+  const setPriceRaw = u.searchParams.get('set_price');
+  const setPrice = (setPriceRaw != null && setPriceRaw !== '') ? Number(setPriceRaw) : null;
+  const out = { item_id: itemId, account: account.name, seller_id: account.seller_id, steps: {} };
+  // Helper: GET crudo con status + cuerpo, sin lanzar.
+  async function rawGet(url, tok, headers = {}) {
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${tok}`, ...headers } });
+      const text = await r.text().catch(() => '');
+      let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { _raw: text.slice(0, 400) }; }
+      return { status: r.status, ok: r.ok, body: data };
+    } catch (e) { return { status: null, ok: false, error: String(e.message || e) }; }
+  }
+  try {
+    // 1) Item real en ML (campos relevantes al precio/promo)
+    out.steps['1_item'] = await rawGet(
+      `https://api.mercadolibre.com/items/${itemId}?attributes=id,price,base_price,original_price,status,sub_status,deal_ids,tags,catalog_listing,catalog_product_id,variations,shipping`,
+      token
+    );
+    // 2) Respuestas CRUDAS de cada endpoint de promociones (para ver tipo/estado real)
+    const appTok = await getAppToken().catch(() => null);
+    const promoEndpoints = [
+      { label: 'old_user_v2',            url: `${PROMO_OLD_BASE}/items/${itemId}?app_version=v2`,               tok: token,  headers: {} },
+      { label: 'old_user_2_0_0',         url: `${PROMO_OLD_BASE}/items/${itemId}?app_version=2.0.0`,            tok: token,  headers: {} },
+      { label: 'marketplace_user_v2',    url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,     tok: token,  headers: promoH() },
+      { label: 'marketplace_app_v2',     url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,     tok: appTok, headers: promoH() },
+    ];
+    out.steps['2_promos_raw'] = {};
+    for (const ep of promoEndpoints) {
+      if (!ep.tok) { out.steps['2_promos_raw'][ep.label] = { skipped: 'sin token' }; continue; }
+      out.steps['2_promos_raw'][ep.label] = await rawGet(ep.url, ep.tok, ep.headers);
+    }
+    // 3) Lo que el panel detecta/normaliza (la logica real que usa el bulk update)
+    const detected = await getActivePromotionsForItemBeforeUpdate(itemId, account, token);
+    out.steps['3_panel_detecta'] = {
+      source: detected.source,
+      count: (detected.promos || []).length,
+      promos: (detected.promos || []).map(p => ({ id: promoValueId(p), type: promoValueType(p), status: p.status || p.promotion_status || p.state || null, _full: p })),
+      errors: detected.errors,
+    };
+    // 4) OPCIONAL: sacar la promo
+    if (doRemove) {
+      out.steps['4_remove'] = await removeActivePromotionsBeforeItemUpdate(itemId, account, token);
+    }
+    // 5) OPCIONAL: cambiar el precio y verificar
+    if (setPrice != null && isFinite(setPrice)) {
+      const before = out.steps['1_item']?.body?.price ?? null;
+      let putRes;
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ price: setPrice })
+        });
+        const text = await r.text().catch(() => '');
+        let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { _raw: text.slice(0, 400) }; }
+        putRes = { status: r.status, ok: r.ok, body: data };
+      } catch (e) { putRes = { status: null, ok: false, error: String(e.message || e) }; }
+      // read-back
+      const after = await rawGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,price,base_price,original_price`, token);
+      out.steps['5_set_price'] = {
+        target: setPrice,
+        price_antes: before,
+        put: putRes,
+        price_despues: after?.body?.price ?? null,
+        base_price_despues: after?.body?.base_price ?? null,
+        aplicado: Math.floor(Number(after?.body?.price)) === Math.floor(setPrice),
+      };
+    }
+    return sendJSON(res, 200, out);
+  } catch (e) {
+    out.error = (e && e.response && e.response.data) || String(e.message || e);
+    return sendJSON(res, 500, out);
+  }
+});
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
   sendJSON(res, 200, { version: '2026-07-08-anto-upid-v11', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
