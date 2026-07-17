@@ -659,6 +659,28 @@ async function updateFlexForItem(itemId, flexStr, token) {
 // ML no permite modificar algunos campos cuando la publicación participa en promociones.
 // Antes de actualizar una publicación, buscamos promociones activas y las removemos.
 // Si no hay promociones activas o ML no devuelve datos, continúa normalmente.
+//
+// SERIALIZACIÓN POR CAMPAÑA: cuando muchas publicaciones comparten la MISMA campaña
+// (ej. "TOTAL_MARA0807") y se las saca en paralelo, la API de ML (Fury/KVS) devuelve
+// 409 Conflict porque el objeto campaña se muta concurrentemente. Para evitarlo,
+// serializamos las bajas de una misma promotion_id: solo una baja en vuelo por campaña.
+// Campañas distintas siguen en paralelo, y los updates de precio también. Así escala
+// a miles de ítems sin conflictos y sin pausar nada a mano.
+const _promoLockTails = new Map(); // promotionId -> Promise (cola de la cadena)
+async function withPromoLock(key, fn) {
+  const prev = _promoLockTails.get(key) || Promise.resolve();
+  let releaseFn;
+  const gate = new Promise(r => { releaseFn = r; });
+  const mine = prev.then(() => gate);
+  _promoLockTails.set(key, mine);
+  await prev.catch(() => {});      // espera el turno (que termine la baja anterior de esta campaña)
+  try {
+    return await fn();
+  } finally {
+    releaseFn();                    // libera al siguiente
+    if (_promoLockTails.get(key) === mine) _promoLockTails.delete(key); // limpia cuando queda ociosa
+  }
+}
 function normalizePromoListForItem(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -763,6 +785,8 @@ async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo
       body
     }
   ];
+  // Serializamos por campaña: una sola baja en vuelo por promotion_id (evita 409).
+  return await withPromoLock(promotionId, async () => {
   const errors = [];
   const _sleep = ms => new Promise(r => setTimeout(r, ms));
   for (const c of candidates) {
@@ -798,6 +822,7 @@ async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo
     errors.push({ tried: c.label, status: lastStatus, error: lastErrTxt });
   }
   return { ok: false, removed: promotionId, type: promotionType, error: errors.map(e => `${e.tried}: ${e.status || ''} ${e.error}`).join(' | ') };
+  });
 }
 async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
   const found = await getActivePromotionsForItemBeforeUpdate(itemId, account, token);
@@ -5393,7 +5418,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-17-promo-proactive-409retry-v13', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry'] });
+  sendJSON(res, 200, { version: '2026-07-17-promo-serialize-per-campaign-v14', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
