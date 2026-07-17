@@ -4963,6 +4963,44 @@ route('GET', '/api/actualizar-estado', async (req, res) => {
   }
   return sendJSON(res, 200, job);
 });
+// GET /api/ads/costs/export?account_id=N  — exporta la tabla de costos ENRIQUECIDA de una
+// cuenta en NDJSON (una linea por publicacion). Auth: token de API (para el motor) o admin.
+// Lo usa la FASE 3 del motor Python para leer la comision y la cuota REALES por publicacion
+// (del enriquecimiento con el simulador de ML) y fijar el precio al margen objetivo.
+route('GET', '/api/ads/costs/export', async (req, res) => {
+  const okApi = checkApiToken(req);
+  const sess = okApi ? null : requireAuth(req);
+  if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+  const url = new URL(req.url, 'http://localhost');
+  const accountId = parseInt(url.searchParams.get('account_id'));
+  if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+  const account = (loadDB().ml_accounts || []).find(a => a.id === accountId);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const table = (loadAccountCosts(account.seller_id).costs) || {};
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8' });
+  let n = 0;
+  for (const id in table) {
+    const c = table[id];
+    if (c == null || c.simFee == null) continue;   // solo los que estan enriquecidos
+    res.write(JSON.stringify({
+      item_id: id,
+      price: Number(c.price) || Number(c.listPrice) || 0,   // precio al que se enriquecio (para sacar las tasas)
+      cost: Number(c.cost) || 0,
+      cost_ship: Number(c.costShip) || 0,
+      ship: c.ship || 'NO',                                 // 'ME' | 'NO'
+      sim_fee: Number(c.simFee) || 0,                       // comision + cargo fijo (simulador)
+      sim_fixed: Number(c.simFixed) || 0,                   // cargo fijo por unidad
+      sim_cuotas: Number(c.simCuotas) || 0,                 // costo de cuotas
+      sim_imp: Number(c.simImp) || 0,                       // retenciones reales (el motor usa 4% fijo igual)
+      sim_envio: Number(c.simEnvio) || 0,                   // envio (gateado por umbral al enriquecer)
+      listing_type: c.listingType || '',
+      account_id: c.account_id != null ? c.account_id : accountId,
+    }) + '\n');
+    n++;
+  }
+  res.write(JSON.stringify({ _resumen: true, total: n, account: account.name }) + '\n');
+  res.end();
+});
 // DEBUG temporal: ver la estructura de stock por deposito de un item (user_products)
 route('GET', '/api/debug-userstock', async (req, res) => {
   const sess = requireAuth(req);
