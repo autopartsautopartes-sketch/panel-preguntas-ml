@@ -764,24 +764,38 @@ async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo
     }
   ];
   const errors = [];
+  const _sleep = ms => new Promise(r => setTimeout(r, ms));
   for (const c of candidates) {
     if (!c.token) continue;
-    try {
-      const r = await fetch(c.url, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${c.token}`, ...c.headers },
-        body: JSON.stringify(c.body)
-      });
-      const text = await r.text().catch(() => '');
-      let data = {};
-      try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
-      if (r.ok || r.status === 204 || r.status === 404) {
-        return { ok: true, removed: promotionId, type: promotionType, via: c.label, response: data };
+    // Reintento por candidato ante conflictos transitorios (409 Fury/KVS) o rate limit,
+    // que aparecen cuando varias publicaciones se sacan de la MISMA campaña a la vez.
+    let lastStatus = null, lastErrTxt = '';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const r = await fetch(c.url, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${c.token}`, ...c.headers },
+          body: JSON.stringify(c.body)
+        });
+        const text = await r.text().catch(() => '');
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
+        if (r.ok || r.status === 204 || r.status === 404) {
+          return { ok: true, removed: promotionId, type: promotionType, via: c.label, response: data };
+        }
+        lastStatus = r.status;
+        lastErrTxt = data.message || data.error || text.slice(0, 200);
+        if (r.status === 409 || r.status === 429 || r.status >= 500) {
+          await _sleep([1500, 4000, 9000, 15000][attempt] + Math.floor(Math.random() * 2500));
+          continue; // reintenta el MISMO endpoint
+        }
+        break; // otro error (400/403/etc.) -> probamos el siguiente candidato
+      } catch(e) {
+        lastErrTxt = e.message || String(e);
+        await _sleep(1500 + Math.floor(Math.random() * 2000));
       }
-      errors.push({ tried: c.label, status: r.status, error: data.message || data.error || text.slice(0, 200) });
-    } catch(e) {
-      errors.push({ tried: c.label, error: e.message || String(e) });
     }
+    errors.push({ tried: c.label, status: lastStatus, error: lastErrTxt });
   }
   return { ok: false, removed: promotionId, type: promotionType, error: errors.map(e => `${e.tried}: ${e.status || ''} ${e.error}`).join(' | ') };
 }
@@ -902,6 +916,17 @@ async function runBulkJob(jobId, items, account, initialToken) {
           const wait = [15000, 35000, 70000, 120000][attempt] || 120000;
           mark429(wait);
           await sleep(wait);
+          continue;
+        }
+        if (status === 409) {
+          // Conflicto transitorio de ML (Fury/KVS 409). Pasa cuando recién sacamos
+          // la publicación de una campaña y su registro sigue procesándose, o cuando
+          // varios workers tocan la misma campaña a la vez. Reintentamos con backoff
+          // + jitter para no volver a chocar en paralelo.
+          job.conflicts_409 = (job.conflicts_409 || 0) + 1;
+          const base = [1500, 4000, 9000, 15000][attempt] || 15000;
+          const jitter = Math.floor(Math.random() * 2500);
+          await sleep(base + jitter);
           continue;
         }
         throw e;
@@ -1111,6 +1136,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
         if (removedList.length) {
           job.promotions_removed = (job.promotions_removed || 0) + removedList.length;
           warnings.push(`Promo activa removida antes de actualizar: ${removedList.join(', ')}`);
+          // Pausa breve SOLO cuando sacamos una promo: ML necesita un instante para
+          // reprocesar la publicación; si hacemos el PUT de precio pegado, devuelve 409.
+          await sleep(1800 + Math.floor(Math.random() * 1200));
         }
         if (failList.length) warnings.push(`No se pudo remover promo activa: ${failList.join(' | ')}`);
       } catch (e) {
@@ -5365,7 +5393,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-08-anto-upid-v11', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
+  sendJSON(res, 200, { version: '2026-07-17-promo-proactive-409retry-v13', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
