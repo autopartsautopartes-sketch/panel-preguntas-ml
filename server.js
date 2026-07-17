@@ -4968,38 +4968,53 @@ route('GET', '/api/actualizar-estado', async (req, res) => {
 // Lo usa la FASE 3 del motor Python para leer la comision y la cuota REALES por publicacion
 // (del enriquecimiento con el simulador de ML) y fijar el precio al margen objetivo.
 route('GET', '/api/ads/costs/export', async (req, res) => {
-  const okApi = checkApiToken(req);
-  const sess = okApi ? null : requireAuth(req);
-  if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
-  const url = new URL(req.url, 'http://localhost');
-  const accountId = parseInt(url.searchParams.get('account_id'));
-  if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
-  const account = (loadDB().ml_accounts || []).find(a => a.id === accountId);
-  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
-  const table = (loadAccountCosts(account.seller_id).costs) || {};
-  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8' });
-  let n = 0;
-  for (const id in table) {
-    const c = table[id];
-    if (c == null || c.simFee == null) continue;   // solo los que estan enriquecidos
-    res.write(JSON.stringify({
-      item_id: id,
-      price: Number(c.price) || Number(c.listPrice) || 0,   // precio al que se enriquecio (para sacar las tasas)
-      cost: Number(c.cost) || 0,
-      cost_ship: Number(c.costShip) || 0,
-      ship: c.ship || 'NO',                                 // 'ME' | 'NO'
-      sim_fee: Number(c.simFee) || 0,                       // comision + cargo fijo (simulador)
-      sim_fixed: Number(c.simFixed) || 0,                   // cargo fijo por unidad
-      sim_cuotas: Number(c.simCuotas) || 0,                 // costo de cuotas
-      sim_imp: Number(c.simImp) || 0,                       // retenciones reales (el motor usa 4% fijo igual)
-      sim_envio: Number(c.simEnvio) || 0,                   // envio (gateado por umbral al enriquecer)
-      listing_type: c.listingType || '',
-      account_id: c.account_id != null ? c.account_id : accountId,
-    }) + '\n');
-    n++;
+  try {
+    const okApi = checkApiToken(req);
+    const sess = okApi ? null : requireAuth(req);
+    if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const url = new URL(req.url, 'http://localhost');
+    const accountId = parseInt(url.searchParams.get('account_id'));
+    if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+    const dbX = (typeof loadDB === 'function') ? loadDB() : {};
+    const account = ((dbX && dbX.ml_accounts) || []).find(a => a.id === accountId);
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    // Leemos el archivo de costos por cuenta DIRECTO con fs (las funciones
+    // loadAccountCosts/accountCostsPath viven en otro scope y no son visibles aca).
+    // Mismo path que usa el panel: DATA_DIR/ads_costs_<sellerId>.json
+    let table = {};
+    try {
+      const costPath = path.join(DATA_DIR, 'ads_costs_' + String(account.seller_id) + '.json');
+      const parsed = JSON.parse(fs.readFileSync(costPath, 'utf8'));
+      table = (parsed && parsed.costs) || {};
+    } catch (e) { table = {}; }
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+    let n = 0;
+    for (const id in table) {
+      const c = table[id];
+      if (c == null || c.simFee == null) continue;   // solo los que estan enriquecidos
+      res.write(JSON.stringify({
+        item_id: id,
+        price: Number(c.price) || Number(c.listPrice) || 0,
+        cost: Number(c.cost) || 0,
+        cost_ship: Number(c.costShip) || 0,
+        ship: c.ship || 'NO',
+        sim_fee: Number(c.simFee) || 0,
+        sim_fixed: Number(c.simFixed) || 0,
+        sim_cuotas: Number(c.simCuotas) || 0,
+        sim_imp: Number(c.simImp) || 0,
+        sim_envio: Number(c.simEnvio) || 0,
+        listing_type: c.listingType || '',
+        account_id: c.account_id != null ? c.account_id : accountId,
+      }) + '\n');
+      n++;
+    }
+    res.write(JSON.stringify({ _resumen: true, total: n, account: account.name }) + '\n');
+    res.end();
+  } catch (e) {
+    console.error('[ads/costs/export] error:', e);
+    if (!res.headersSent) return sendJSON(res, 500, { error: 'export fallo: ' + (e && (e.message || String(e))) });
+    try { res.end(); } catch (_) {}
   }
-  res.write(JSON.stringify({ _resumen: true, total: n, account: account.name }) + '\n');
-  res.end();
 });
 // DEBUG temporal: ver la estructura de stock por deposito de un item (user_products)
 route('GET', '/api/debug-userstock', async (req, res) => {
