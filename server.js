@@ -1083,9 +1083,45 @@ async function runBulkJob(jobId, items, account, initialToken) {
       }
       return errs;
     }
+    // 0) PROACTIVO: si hay un cambio de precio, primero miramos si la publicación
+    //    tiene una promo/campaña ACTIVA (status "started") que pisa el precio.
+    //    Mientras esa promo esté aplicada, ML NO muestra el precio nuevo (lo tapa con
+    //    el descuento de la campaña). Por eso la sacamos ANTES de actualizar el precio,
+    //    y después vos volvés a aplicar tus promos nuevas.
+    //    Solo tocamos las que están APLICADAS (started/active); las "candidate"
+    //    (ofrecidas pero no aplicadas) NO se tocan. Controlado por job.remove_promos_before
+    //    (default: ON). Si falla la detección, seguimos: el flujo reactivo queda de backstop.
+    async function removeAppliedPromosProactive() {
+      if (job.remove_promos_before === false) return;
+      if (_targetPrice == null) return; // solo cuando cambia el precio
+      try {
+        const found = await getActivePromotionsForItemBeforeUpdate(item.item_id, account, token);
+        const applied = (found.promos || []).filter(p => {
+          const st = String(p?.status || p?.promotion_status || p?.state || '').toLowerCase();
+          return st === 'started' || st === 'active' || st === 'running' || st === 'on' || st === 'ongoing';
+        });
+        if (!applied.length) return;
+        const removedList = [];
+        const failList = [];
+        for (const promo of applied) {
+          const r = await removePromotionFromItemBeforeUpdate(item.item_id, account, token, promo);
+          if (r.ok) removedList.push(`${r.removed}/${r.type}`);
+          else failList.push(`${promoValueId(promo)}/${promoValueType(promo)}: ${r.error || 'no se pudo'}`);
+        }
+        if (removedList.length) {
+          job.promotions_removed = (job.promotions_removed || 0) + removedList.length;
+          warnings.push(`Promo activa removida antes de actualizar: ${removedList.join(', ')}`);
+        }
+        if (failList.length) warnings.push(`No se pudo remover promo activa: ${failList.join(' | ')}`);
+      } catch (e) {
+        if (e._cancelled) throw e;
+        // no bloqueamos el update por un error de promos; el reactivo reintenta si hace falta
+      }
+    }
+    await removeAppliedPromosProactive();
     // 1) Intento directo. La mayoría entra por acá y ahorra todas las llamadas de promociones.
     let errors = await attemptWithVerify();
-    if (!errors.length) return { item_id: item.item_id, ok: true };
+    if (!errors.length) return { item_id: item.item_id, ok: true, warning: warnings.length ? warnings.join(' | ') : undefined };
     // 1b) Fallback de stock por depósito (solo multiorigen; ej. ANTO)
     const depFb = await tryDepositFallback(errors);
     if (depFb) return depFb;
@@ -4886,7 +4922,10 @@ route('POST', '/api/actualizar', async (req, res) => {
     id: jobId, status: 'starting', phase: 'starting', total: items.length, done: 0, ok: 0, errors: 0,
     to_update: null, skipped: null, eta_sec: null, velocity: 0, active_workers: 0, desired_workers: 3,
     max_workers: 5, rate_limits: 0, retries: 0, promotions_removed: 0, promo_retry_ok: 0,
-    error_items: [], report: null, cancelled: false, created: Date.now(), username: 'api'
+    error_items: [], report: null, cancelled: false, created: Date.now(), username: 'api',
+    // Sacar promos/campañas ACTIVAS antes de cambiar el precio (default ON).
+    // Se puede desactivar mandando "quitar_promos": false en el body.
+    remove_promos_before: body.quitar_promos !== false
   };
   runBulkJob(jobId, items, account, token).catch(e => {
     if (bulkJobs[jobId] && !['done','cancelled'].includes(bulkJobs[jobId].status)) {
