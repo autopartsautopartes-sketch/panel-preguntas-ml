@@ -5016,6 +5016,126 @@ route('GET', '/api/ads/costs/export', async (req, res) => {
     try { res.end(); } catch (_) {}
   }
 });
+// POST /api/ads/costs/restore  — RESTAURA el enriquecimiento (simFee, simEnvio, ...) en la
+// tabla de costos de una cuenta, MERGEANDO sin pisar el resto. Sirve para recuperar el
+// enriquecimiento desde los _COMPLETO ya generados (sin re-llamar a ML). Auth: token o admin.
+// body: { account_id, items: [{item_id, sim_fee, sim_fixed, sim_cuotas, sim_imp, sim_envio, price}] }
+route('POST', '/api/ads/costs/restore', async (req, res) => {
+  try {
+    const okApi = checkApiToken(req);
+    const sess = okApi ? null : requireAuth(req);
+    if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const body = await parseBody(req);
+    const accountId = parseInt(body.account_id);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+    const account = ((loadDB() || {}).ml_accounts || []).find(a => a.id === accountId);
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    const costPath = path.join(DATA_DIR, 'ads_costs_' + String(account.seller_id) + '.json');
+    let file = { costs: {} };
+    try { file = JSON.parse(fs.readFileSync(costPath, 'utf8')) || { costs: {} }; } catch (e) { file = { costs: {} }; }
+    if (!file.costs) file.costs = {};
+    const nowIso = new Date().toISOString();
+    let restored = 0, nuevos = 0;
+    for (const it of items) {
+      const id = String(it.item_id || '').trim();
+      if (!id) continue;
+      const prev = file.costs[id] || null;
+      const base = prev || { seller_id: account.seller_id, account_id: accountId, account_name: account.name };
+      if (!prev) nuevos++;
+      const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+      file.costs[id] = {
+        ...base,
+        price: it.price != null ? num(it.price) : (base.price || 0),
+        simFee: num(it.sim_fee),
+        simFixed: num(it.sim_fixed),
+        simCuotas: num(it.sim_cuotas),
+        simImp: num(it.sim_imp),
+        simEnvio: num(it.sim_envio),
+        enrichAt: nowIso,
+        enrichSrc: 'restore',
+      };
+      restored++;
+    }
+    file.updated = nowIso;
+    fs.writeFileSync(costPath, JSON.stringify(file));
+    if (typeof bustStrat === 'function') { try { bustStrat(); } catch (e) {} }
+    return sendJSON(res, 200, { ok: true, restored, nuevos, total_tabla: Object.keys(file.costs).length, account: account.name });
+  } catch (e) {
+    console.error('[ads/costs/restore] error:', e);
+    if (!res.headersSent) return sendJSON(res, 500, { error: 'restore fallo: ' + (e && (e.message || String(e))) });
+  }
+});
+// GET /api/ads/costs/legacy-migrate?account_id=N[&dry=1]  — RECUPERA el enriquecimiento
+// desde los archivos VIEJOS costos_reales_<sellerId>.json (del sistema anterior, que quedaron
+// en el disco persistente) y los convierte al formato ads (simFee...), mergeando. Con dry=1
+// solo informa si el archivo existe y cuántos ítems trae, sin escribir nada. Auth: token o admin.
+route('GET', '/api/ads/costs/legacy-migrate', async (req, res) => {
+  try {
+    const okApi = checkApiToken(req);
+    const sess = okApi ? null : requireAuth(req);
+    if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const url = new URL(req.url, 'http://localhost');
+    const accountId = parseInt(url.searchParams.get('account_id'));
+    const dry = url.searchParams.get('dry') === '1';
+    if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+    const account = ((loadDB() || {}).ml_accounts || []).find(a => a.id === accountId);
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    const legacyPath = path.join(DATA_DIR, 'costos_reales_' + String(account.seller_id) + '.json');
+    let legacy = null;
+    try { legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf8')); } catch (e) {}
+    if (!legacy || !legacy.costs) {
+      return sendJSON(res, 200, { ok: false, existe: false, account: account.name,
+        msg: 'no encontre costos_reales_<sellerId>.json en el disco persistente', path: legacyPath });
+    }
+    const src = legacy.costs;
+    const ids = Object.keys(src);
+    const enriquecido = c => c && (Number(c.comision_amount) > 0 || Number(c.comision_pct) > 0);
+    const conEnriq = ids.filter(id => enriquecido(src[id])).length;
+    if (dry) {
+      const ej = src[ids.find(id => enriquecido(src[id])) || ids[0]] || null;
+      return sendJSON(res, 200, { ok: true, existe: true, account: account.name,
+        total: ids.length, enriquecidos: conEnriq, ejemplo: ej });
+    }
+    // migrar -> ads (merge, sin pisar el resto del registro)
+    const costPath = path.join(DATA_DIR, 'ads_costs_' + String(account.seller_id) + '.json');
+    let file = { costs: {} };
+    try { file = JSON.parse(fs.readFileSync(costPath, 'utf8')) || { costs: {} }; } catch (e) { file = { costs: {} }; }
+    if (!file.costs) file.costs = {};
+    const nowIso = new Date().toISOString();
+    const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+    let migr = 0;
+    for (const id of ids) {
+      const c = src[id];
+      if (!enriquecido(c)) continue;
+      const comAmt = num(c.comision_amount);
+      const fijo = num(c.costo_fijo);
+      const price = num(c.price);
+      // si no vino comision_amount pero sí comision_pct + price, lo reconstruimos
+      const comFinal = comAmt > 0 ? comAmt : (num(c.comision_pct) * price / 100);
+      const prev = file.costs[id] || { seller_id: account.seller_id, account_id: accountId, account_name: account.name };
+      file.costs[id] = {
+        ...prev,
+        price: price || prev.price || 0,
+        simFee: comFinal + fijo,                 // comision total = variable + cargo fijo
+        simFixed: fijo,
+        simCuotas: num(c.cuota_amount),
+        simImp: num(c.impuestos_amount),
+        simEnvio: num(c.envio),
+        enrichAt: nowIso,
+        enrichSrc: 'legacy-migrate',
+      };
+      migr++;
+    }
+    file.updated = nowIso;
+    fs.writeFileSync(costPath, JSON.stringify(file));
+    if (typeof bustStrat === 'function') { try { bustStrat(); } catch (e) {} }
+    return sendJSON(res, 200, { ok: true, migrados: migr, total_tabla: Object.keys(file.costs).length, account: account.name });
+  } catch (e) {
+    console.error('[ads/costs/legacy-migrate] error:', e);
+    if (!res.headersSent) return sendJSON(res, 500, { error: 'legacy-migrate fallo: ' + (e && (e.message || String(e))) });
+  }
+});
 // DEBUG temporal: ver la estructura de stock por deposito de un item (user_products)
 route('GET', '/api/debug-userstock', async (req, res) => {
   const sess = requireAuth(req);
@@ -7156,12 +7276,18 @@ function registerAds(deps) {
     const accName = account ? account.name : null;
     if (sellerId == null) return sendJSON(res, 400, { error: 'account_id inválido: elegí la cuenta del casillero.' });
     // Escribimos SOLO el archivo de esta cuenta (no toca las otras, no hay carrera entre imports simultáneos).
-    const table = body.replace ? {} : (loadAccountCosts(sellerId).costs || {});
+    // IMPORTANTE: cargamos SIEMPRE la tabla previa (aunque replace=true) para PRESERVAR los
+    // campos del ENRIQUECIMIENTO (simFee, simEnvio, simCuotas, simImp, price, enrichAt, ...).
+    // Antes el import pisaba el registro entero y borraba el enriquecimiento de toda la cuenta.
+    const prior = (loadAccountCosts(sellerId).costs) || {};
+    const table = body.replace ? {} : { ...prior };
     let n = 0;
     for (const r of arr) {
       const id = String(r.item_id || r.id || '').trim();
       if (!id) continue;
+      const p = prior[id] || {};   // registro previo (para no perder el enriquecimiento)
       table[id] = {
+        ...p,                                            // conserva simFee/simEnvio/simCuotas/simImp/price/enrichAt/... si existían
         cost: Number(r.cost) || 0,                       // col P
         costShip: Number(r.costShip) || Number(r.cost) || 0, // col T
         ship: normShip(r.ship),                          // col D → 'ME' | 'NO'
