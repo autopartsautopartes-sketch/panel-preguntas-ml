@@ -938,6 +938,10 @@ async function runBulkJob(jobId, items, account, initialToken) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
     const payload = buildItemPayload(item);
     const cur = currentState[item.item_id];
+    // Precio objetivo (para verificar despues que ML lo haya aplicado). Lo guardamos ACA,
+    // antes de que el bloque de variaciones lo mueva/borre del payload.
+    const _targetPrice = (payload.price != null && payload.price !== '') ? Number(payload.price) : null;
+    const _isVariation = !!(cur?.variation_ids?.length);
     // Para ítems con variaciones, ML no acepta price ni available_quantity a nivel raíz.
     // Hay que mandarlos dentro de cada variante: variations: [{id, price, available_quantity}]
     if (cur?.variation_ids?.length) {
@@ -1056,8 +1060,31 @@ async function runBulkJob(jobId, items, account, initialToken) {
       if (depErr) parts.push('stock depósito: ' + depErr);
       return { item_id: item.item_id, ok: false, error: parts.join(' | ') };
     }
+    // Lee el precio actual del item en ML y confirma si quedo aplicado (piso a entero).
+    // Devuelve true si coincide o si no se pudo leer (para no bloquear por un error de lectura).
+    async function verifyPriceApplied(itemId, target) {
+      try {
+        const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, { attributes: 'price' });
+        const curP = Number(it && it.price);
+        if (!isFinite(curP)) return true;
+        return Math.floor(curP) === Math.floor(Number(target));
+      } catch (e) { return true; }
+    }
+    // Intenta actualizar y, si hubo cambio de precio, VERIFICA que ML lo haya aplicado de verdad.
+    // Si ML devolvio OK pero el precio no cambio (falla silenciosa por promocion), lo marcamos
+    // como bloqueo de promo para que el flujo de abajo saque la promo y reintente.
+    async function attemptWithVerify() {
+      let errs = await attemptUpdateOnce();
+      if (!errs.length && _targetPrice != null && !_isVariation) {
+        const aplicado = await verifyPriceApplied(item.item_id, _targetPrice);
+        if (!aplicado) {
+          errs = [{ kind: 'promo-silent', status: 400, message: 'promotion: el precio no quedo aplicado (probable promo activa)' }];
+        }
+      }
+      return errs;
+    }
     // 1) Intento directo. La mayoría entra por acá y ahorra todas las llamadas de promociones.
-    let errors = await attemptUpdateOnce();
+    let errors = await attemptWithVerify();
     if (!errors.length) return { item_id: item.item_id, ok: true };
     // 1b) Fallback de stock por depósito (solo multiorigen; ej. ANTO)
     const depFb = await tryDepositFallback(errors);
@@ -1083,7 +1110,7 @@ async function runBulkJob(jobId, items, account, initialToken) {
         }
         await sleep(2000);
         job.retries = (job.retries || 0) + 1;
-        errors = await attemptUpdateOnce();
+        errors = await attemptWithVerify();   // reintento CON verificacion de que el precio quede
         if (!errors.length) {
           job.promo_retry_ok = (job.promo_retry_ok || 0) + 1;
           return { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
