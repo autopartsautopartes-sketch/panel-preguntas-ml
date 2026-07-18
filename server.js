@@ -1133,6 +1133,52 @@ async function runBulkJob(jobId, items, account, initialToken) {
       }
       return errs;
     }
+    // Fallback envío/atributos: ML rechaza el update cuando el precio nuevo cruza el
+    // umbral de envío gratis (mandatory_free_shipping / lost_me1) — el motor YA calculó
+    // ese precio CON el costo de envío incluido, así que activar envío gratis es lo correcto.
+    // También reintenta SIN atributos cuando la marca es inválida/duplicada. Manda solo
+    // precio (en variaciones si corresponde) + stock + estado, sin atributos.
+    async function tryShippingAttrsFallback(errs) {
+      const msgs = errs.map(e => String(e.message || ''));
+      const needFreeShip = msgs.some(m => /mandatory_free_shipping|lost_me1|lost_me2|shipping\.(lost|default)/i.test(m));
+      const attrsBad = msgs.some(m => /attributes\.(invalid|duplicated)/i.test(m));
+      const priceDropped = msgs.some(m => /item\.price\.dropped/i.test(m));
+      if (!needFreeShip && !attrsBad && !priceDropped) return null;
+      const clean = {};
+      const st = String(item.status == null ? '' : item.status).trim().toLowerCase();
+      if (st === 'active' || st === 'paused') clean.status = st;
+      const qty = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
+      const price = (item.price !== '' && item.price != null) ? parseFloat(item.price) : null;
+      const isVar = !!(cur?.variation_ids?.length);
+      if (isVar) {
+        clean.variations = cur.variation_ids.map(id => {
+          const v = { id };
+          if (price != null && !isNaN(price)) v.price = price;
+          if (qty != null && !isNaN(qty)) v.available_quantity = qty;
+          return v;
+        });
+      } else {
+        if (price != null && !isNaN(price)) clean.price = price;
+        if (qty != null && !isNaN(qty)) clean.available_quantity = qty;
+      }
+      // Envío gratis SOLO si ML lo exige (precio sobre umbral en ítem con Mercado Envío).
+      if (needFreeShip) clean.shipping = { mode: 'me2', free_shipping: true };
+      // A propósito: NO mandamos attributes ni seller_custom_field (la marca inválida es lo que rompe).
+      const hasBody = !!clean.variations || clean.price != null || clean.available_quantity != null || clean.status != null || clean.shipping != null;
+      if (!hasBody) return null;
+      try {
+        await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, clean, workerId);
+        const notes = [];
+        if (needFreeShip) notes.push('envío gratis activado (precio sobre umbral)');
+        if (attrsBad) notes.push('atributos/marca omitidos (inválidos)');
+        if (warnings.length) notes.unshift(...warnings);
+        return { item_id: item.item_id, ok: true, warning: notes.join(' | ') };
+      } catch (e) {
+        if (e._cancelled) throw e;
+        // si aún falla por stock de depósito, dejamos que el mensaje real quede registrado
+        return { item_id: item.item_id, ok: false, error: parseMLError(e) };
+      }
+    }
     // 0) PROACTIVO: si hay un cambio de precio, primero miramos si la publicación
     //    tiene una promo/campaña ACTIVA (status "started") que pisa el precio.
     //    Mientras esa promo esté aplicada, ML NO muestra el precio nuevo (lo tapa con
@@ -1209,6 +1255,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
         return { item_id: item.item_id, ok: false, error: parseMLError(e) };
       }
     }
+    // 2b) Envío gratis obligatorio (precio sobre umbral) y/o atributos inválidos.
+    const shipAttrFb = await tryShippingAttrsFallback(errors);
+    if (shipAttrFb) return shipAttrFb;
     // 3) Si ML bloqueó por campos no modificables (precio/atributos), intentar precio y stock
     //    por separado. Si alguno de los dos falla → pausar el ítem directamente.
     const fieldsBlocked = errors.some(e =>
@@ -5410,6 +5459,43 @@ route('GET', '/api/debug-promo', async (req, res) => {
         aplicado: Math.floor(Number(after?.body?.price)) === Math.floor(setPrice),
       };
     }
+    // 6) OPCIONAL: replay del UPDATE REAL sobre item con variaciones, probando combinaciones
+    //    para aislar el bloqueo (envío gratis / atributos / precio). NO usa fallbacks: manda
+    //    tal cual para ver la respuesta CRUDA de ML.
+    //    ?varprice=N            -> precio N dentro de cada variación
+    //    &freeship=1            -> agrega shipping {mode:me2, free_shipping:true}
+    //    &withattrs=MARCA       -> agrega attributes [{BRAND: MARCA}]
+    const varPriceRaw = u.searchParams.get('varprice');
+    const varPrice = (varPriceRaw != null && varPriceRaw !== '') ? Number(varPriceRaw) : null;
+    if (varPrice != null && isFinite(varPrice)) {
+      const it = out.steps['1_item']?.body || {};
+      const varIds = Array.isArray(it.variations) ? it.variations.map(v => v.id) : [];
+      const payload = {};
+      if (varIds.length) payload.variations = varIds.map(id => ({ id, price: varPrice }));
+      else payload.price = varPrice;
+      const freeship = ['1', 'true', 'si', 'yes'].includes(String(u.searchParams.get('freeship') || '').toLowerCase());
+      if (freeship) payload.shipping = { mode: 'me2', free_shipping: true };
+      const withAttrs = u.searchParams.get('withattrs');
+      if (withAttrs) payload.attributes = [{ id: 'BRAND', value_name: String(withAttrs) }];
+      let putRes;
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload)
+        });
+        const text = await r.text().catch(() => '');
+        let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { _raw: text.slice(0, 600) }; }
+        putRes = { status: r.status, ok: r.ok, body: data };
+      } catch (e) { putRes = { status: null, ok: false, error: String(e.message || e) }; }
+      const after = await rawGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,price,variations,shipping`, token);
+      out.steps['6_var_update'] = {
+        payload_enviado: payload,
+        put: putRes,
+        precio_var_despues: after?.body?.variations?.[0]?.price ?? after?.body?.price ?? null,
+        free_shipping_despues: after?.body?.shipping?.free_shipping ?? null,
+      };
+    }
     return sendJSON(res, 200, out);
   } catch (e) {
     out.error = (e && e.response && e.response.data) || String(e.message || e);
@@ -5418,7 +5504,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-17-promo-serialize-per-campaign-v14', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign'] });
+  sendJSON(res, 200, { version: '2026-07-17-freeship-attrs-fallback-v15', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
