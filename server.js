@@ -432,6 +432,7 @@ route('GET', '/img', async (req, res) => {
     res.writeHead(502); res.end('fetch failed');
   }
 });
+// AUTH
 // Proxy de librerías JS (XLSX, Chart.js): las servimos desde NUESTRO dominio para que el panel no
 // dependa de un CDN externo (que puede caerse o ser bloqueado por el navegador/ad-blocker del usuario).
 // El server las baja UNA vez del CDN y las cachea en memoria.
@@ -452,7 +453,6 @@ async function serveVendor(res, key, url) {
 }
 route('GET', '/vendor/xlsx.js', async (req, res) => serveVendor(res, 'xlsx', 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'));
 route('GET', '/vendor/chart.js', async (req, res) => serveVendor(res, 'chart', 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'));
-// AUTH
 route('POST', '/api/login', async (req, res) => {
   const ip = getClientIp(req);
   const rl = checkLoginRateLimit(ip);
@@ -679,6 +679,28 @@ async function updateFlexForItem(itemId, flexStr, token) {
 // ML no permite modificar algunos campos cuando la publicación participa en promociones.
 // Antes de actualizar una publicación, buscamos promociones activas y las removemos.
 // Si no hay promociones activas o ML no devuelve datos, continúa normalmente.
+//
+// SERIALIZACIÓN POR CAMPAÑA: cuando muchas publicaciones comparten la MISMA campaña
+// (ej. "TOTAL_MARA0807") y se las saca en paralelo, la API de ML (Fury/KVS) devuelve
+// 409 Conflict porque el objeto campaña se muta concurrentemente. Para evitarlo,
+// serializamos las bajas de una misma promotion_id: solo una baja en vuelo por campaña.
+// Campañas distintas siguen en paralelo, y los updates de precio también. Así escala
+// a miles de ítems sin conflictos y sin pausar nada a mano.
+const _promoLockTails = new Map(); // promotionId -> Promise (cola de la cadena)
+async function withPromoLock(key, fn) {
+  const prev = _promoLockTails.get(key) || Promise.resolve();
+  let releaseFn;
+  const gate = new Promise(r => { releaseFn = r; });
+  const mine = prev.then(() => gate);
+  _promoLockTails.set(key, mine);
+  await prev.catch(() => {});      // espera el turno (que termine la baja anterior de esta campaña)
+  try {
+    return await fn();
+  } finally {
+    releaseFn();                    // libera al siguiente
+    if (_promoLockTails.get(key) === mine) _promoLockTails.delete(key); // limpia cuando queda ociosa
+  }
+}
 function normalizePromoListForItem(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -783,27 +805,44 @@ async function removePromotionFromItemBeforeUpdate(itemId, account, token, promo
       body
     }
   ];
+  // Serializamos por campaña: una sola baja en vuelo por promotion_id (evita 409).
+  return await withPromoLock(promotionId, async () => {
   const errors = [];
+  const _sleep = ms => new Promise(r => setTimeout(r, ms));
   for (const c of candidates) {
     if (!c.token) continue;
-    try {
-      const r = await fetch(c.url, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${c.token}`, ...c.headers },
-        body: JSON.stringify(c.body)
-      });
-      const text = await r.text().catch(() => '');
-      let data = {};
-      try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
-      if (r.ok || r.status === 204 || r.status === 404) {
-        return { ok: true, removed: promotionId, type: promotionType, via: c.label, response: data };
+    // Reintento por candidato ante conflictos transitorios (409 Fury/KVS) o rate limit,
+    // que aparecen cuando varias publicaciones se sacan de la MISMA campaña a la vez.
+    let lastStatus = null, lastErrTxt = '';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const r = await fetch(c.url, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${c.token}`, ...c.headers },
+          body: JSON.stringify(c.body)
+        });
+        const text = await r.text().catch(() => '');
+        let data = {};
+        try { data = text ? JSON.parse(text) : {}; } catch(e) { data = { raw: text }; }
+        if (r.ok || r.status === 204 || r.status === 404) {
+          return { ok: true, removed: promotionId, type: promotionType, via: c.label, response: data };
+        }
+        lastStatus = r.status;
+        lastErrTxt = data.message || data.error || text.slice(0, 200);
+        if (r.status === 409 || r.status === 429 || r.status >= 500) {
+          await _sleep([1500, 4000, 9000, 15000][attempt] + Math.floor(Math.random() * 2500));
+          continue; // reintenta el MISMO endpoint
+        }
+        break; // otro error (400/403/etc.) -> probamos el siguiente candidato
+      } catch(e) {
+        lastErrTxt = e.message || String(e);
+        await _sleep(1500 + Math.floor(Math.random() * 2000));
       }
-      errors.push({ tried: c.label, status: r.status, error: data.message || data.error || text.slice(0, 200) });
-    } catch(e) {
-      errors.push({ tried: c.label, error: e.message || String(e) });
     }
+    errors.push({ tried: c.label, status: lastStatus, error: lastErrTxt });
   }
   return { ok: false, removed: promotionId, type: promotionType, error: errors.map(e => `${e.tried}: ${e.status || ''} ${e.error}`).join(' | ') };
+  });
 }
 async function removeActivePromotionsBeforeItemUpdate(itemId, account, token) {
   const found = await getActivePromotionsForItemBeforeUpdate(itemId, account, token);
@@ -924,6 +963,17 @@ async function runBulkJob(jobId, items, account, initialToken) {
           await sleep(wait);
           continue;
         }
+        if (status === 409) {
+          // Conflicto transitorio de ML (Fury/KVS 409). Pasa cuando recién sacamos
+          // la publicación de una campaña y su registro sigue procesándose, o cuando
+          // varios workers tocan la misma campaña a la vez. Reintentamos con backoff
+          // + jitter para no volver a chocar en paralelo.
+          job.conflicts_409 = (job.conflicts_409 || 0) + 1;
+          const base = [1500, 4000, 9000, 15000][attempt] || 15000;
+          const jitter = Math.floor(Math.random() * 2500);
+          await sleep(base + jitter);
+          continue;
+        }
         throw e;
       }
     }
@@ -958,6 +1008,10 @@ async function runBulkJob(jobId, items, account, initialToken) {
     if (!item.item_id) return { item_id: '?', ok: false, error: 'Sin item_id' };
     const payload = buildItemPayload(item);
     const cur = currentState[item.item_id];
+    // Precio objetivo (para verificar despues que ML lo haya aplicado). Lo guardamos ACA,
+    // antes de que el bloque de variaciones lo mueva/borre del payload.
+    const _targetPrice = (payload.price != null && payload.price !== '') ? Number(payload.price) : null;
+    const _isVariation = !!(cur?.variation_ids?.length);
     // Para ítems con variaciones, ML no acepta price ni available_quantity a nivel raíz.
     // Hay que mandarlos dentro de cada variante: variations: [{id, price, available_quantity}]
     if (cur?.variation_ids?.length) {
@@ -1076,9 +1130,117 @@ async function runBulkJob(jobId, items, account, initialToken) {
       if (depErr) parts.push('stock depósito: ' + depErr);
       return { item_id: item.item_id, ok: false, error: parts.join(' | ') };
     }
+    // Lee el precio actual del item en ML y confirma si quedo aplicado (piso a entero).
+    // Devuelve true si coincide o si no se pudo leer (para no bloquear por un error de lectura).
+    async function verifyPriceApplied(itemId, target) {
+      try {
+        const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, { attributes: 'price' });
+        const curP = Number(it && it.price);
+        if (!isFinite(curP)) return true;
+        return Math.floor(curP) === Math.floor(Number(target));
+      } catch (e) { return true; }
+    }
+    // Intenta actualizar y, si hubo cambio de precio, VERIFICA que ML lo haya aplicado de verdad.
+    // Si ML devolvio OK pero el precio no cambio (falla silenciosa por promocion), lo marcamos
+    // como bloqueo de promo para que el flujo de abajo saque la promo y reintente.
+    async function attemptWithVerify() {
+      let errs = await attemptUpdateOnce();
+      if (!errs.length && _targetPrice != null && !_isVariation) {
+        const aplicado = await verifyPriceApplied(item.item_id, _targetPrice);
+        if (!aplicado) {
+          errs = [{ kind: 'promo-silent', status: 400, message: 'promotion: el precio no quedo aplicado (probable promo activa)' }];
+        }
+      }
+      return errs;
+    }
+    // Fallback envío/atributos: ML rechaza el update cuando el precio nuevo cruza el
+    // umbral de envío gratis (mandatory_free_shipping / lost_me1) — el motor YA calculó
+    // ese precio CON el costo de envío incluido, así que activar envío gratis es lo correcto.
+    // También reintenta SIN atributos cuando la marca es inválida/duplicada. Manda solo
+    // precio (en variaciones si corresponde) + stock + estado, sin atributos.
+    async function tryShippingAttrsFallback(errs) {
+      const msgs = errs.map(e => String(e.message || ''));
+      const needFreeShip = msgs.some(m => /mandatory_free_shipping|lost_me1|lost_me2|shipping\.(lost|default)/i.test(m));
+      const attrsBad = msgs.some(m => /attributes\.(invalid|duplicated)/i.test(m));
+      const priceDropped = msgs.some(m => /item\.price\.dropped/i.test(m));
+      if (!needFreeShip && !attrsBad && !priceDropped) return null;
+      const clean = {};
+      const st = String(item.status == null ? '' : item.status).trim().toLowerCase();
+      if (st === 'active' || st === 'paused') clean.status = st;
+      const qty = (item.available_quantity !== '' && item.available_quantity != null) ? parseInt(item.available_quantity) : null;
+      const price = (item.price !== '' && item.price != null) ? parseFloat(item.price) : null;
+      const isVar = !!(cur?.variation_ids?.length);
+      if (isVar) {
+        clean.variations = cur.variation_ids.map(id => {
+          const v = { id };
+          if (price != null && !isNaN(price)) v.price = price;
+          if (qty != null && !isNaN(qty)) v.available_quantity = qty;
+          return v;
+        });
+      } else {
+        if (price != null && !isNaN(price)) clean.price = price;
+        if (qty != null && !isNaN(qty)) clean.available_quantity = qty;
+      }
+      // Envío gratis SOLO si ML lo exige (precio sobre umbral en ítem con Mercado Envío).
+      if (needFreeShip) clean.shipping = { mode: 'me2', free_shipping: true };
+      // A propósito: NO mandamos attributes ni seller_custom_field (la marca inválida es lo que rompe).
+      const hasBody = !!clean.variations || clean.price != null || clean.available_quantity != null || clean.status != null || clean.shipping != null;
+      if (!hasBody) return null;
+      try {
+        await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, clean, workerId);
+        const notes = [];
+        if (needFreeShip) notes.push('envío gratis activado (precio sobre umbral)');
+        if (attrsBad) notes.push('atributos/marca omitidos (inválidos)');
+        if (warnings.length) notes.unshift(...warnings);
+        return { item_id: item.item_id, ok: true, warning: notes.join(' | ') };
+      } catch (e) {
+        if (e._cancelled) throw e;
+        // si aún falla por stock de depósito, dejamos que el mensaje real quede registrado
+        return { item_id: item.item_id, ok: false, error: parseMLError(e) };
+      }
+    }
+    // 0) PROACTIVO: si hay un cambio de precio, primero miramos si la publicación
+    //    tiene una promo/campaña ACTIVA (status "started") que pisa el precio.
+    //    Mientras esa promo esté aplicada, ML NO muestra el precio nuevo (lo tapa con
+    //    el descuento de la campaña). Por eso la sacamos ANTES de actualizar el precio,
+    //    y después vos volvés a aplicar tus promos nuevas.
+    //    Solo tocamos las que están APLICADAS (started/active); las "candidate"
+    //    (ofrecidas pero no aplicadas) NO se tocan. Controlado por job.remove_promos_before
+    //    (default: ON). Si falla la detección, seguimos: el flujo reactivo queda de backstop.
+    async function removeAppliedPromosProactive() {
+      if (job.remove_promos_before === false) return;
+      if (_targetPrice == null) return; // solo cuando cambia el precio
+      try {
+        const found = await getActivePromotionsForItemBeforeUpdate(item.item_id, account, token);
+        const applied = (found.promos || []).filter(p => {
+          const st = String(p?.status || p?.promotion_status || p?.state || '').toLowerCase();
+          return st === 'started' || st === 'active' || st === 'running' || st === 'on' || st === 'ongoing';
+        });
+        if (!applied.length) return;
+        const removedList = [];
+        const failList = [];
+        for (const promo of applied) {
+          const r = await removePromotionFromItemBeforeUpdate(item.item_id, account, token, promo);
+          if (r.ok) removedList.push(`${r.removed}/${r.type}`);
+          else failList.push(`${promoValueId(promo)}/${promoValueType(promo)}: ${r.error || 'no se pudo'}`);
+        }
+        if (removedList.length) {
+          job.promotions_removed = (job.promotions_removed || 0) + removedList.length;
+          warnings.push(`Promo activa removida antes de actualizar: ${removedList.join(', ')}`);
+          // Pausa breve SOLO cuando sacamos una promo: ML necesita un instante para
+          // reprocesar la publicación; si hacemos el PUT de precio pegado, devuelve 409.
+          await sleep(1800 + Math.floor(Math.random() * 1200));
+        }
+        if (failList.length) warnings.push(`No se pudo remover promo activa: ${failList.join(' | ')}`);
+      } catch (e) {
+        if (e._cancelled) throw e;
+        // no bloqueamos el update por un error de promos; el reactivo reintenta si hace falta
+      }
+    }
+    await removeAppliedPromosProactive();
     // 1) Intento directo. La mayoría entra por acá y ahorra todas las llamadas de promociones.
-    let errors = await attemptUpdateOnce();
-    if (!errors.length) return { item_id: item.item_id, ok: true };
+    let errors = await attemptWithVerify();
+    if (!errors.length) return { item_id: item.item_id, ok: true, warning: warnings.length ? warnings.join(' | ') : undefined };
     // 1b) Fallback de stock por depósito (solo multiorigen; ej. ANTO)
     const depFb = await tryDepositFallback(errors);
     if (depFb) return depFb;
@@ -1103,7 +1265,7 @@ async function runBulkJob(jobId, items, account, initialToken) {
         }
         await sleep(2000);
         job.retries = (job.retries || 0) + 1;
-        errors = await attemptUpdateOnce();
+        errors = await attemptWithVerify();   // reintento CON verificacion de que el precio quede
         if (!errors.length) {
           job.promo_retry_ok = (job.promo_retry_ok || 0) + 1;
           return { item_id: item.item_id, ok: true, warning: warnings.join(' | ') };
@@ -1113,6 +1275,9 @@ async function runBulkJob(jobId, items, account, initialToken) {
         return { item_id: item.item_id, ok: false, error: parseMLError(e) };
       }
     }
+    // 2b) Envío gratis obligatorio (precio sobre umbral) y/o atributos inválidos.
+    const shipAttrFb = await tryShippingAttrsFallback(errors);
+    if (shipAttrFb) return shipAttrFb;
     // 3) Si ML bloqueó por campos no modificables (precio/atributos), intentar precio y stock
     //    por separado. Si alguno de los dos falla → pausar el ítem directamente.
     const fieldsBlocked = errors.some(e =>
@@ -4879,7 +5044,10 @@ route('POST', '/api/actualizar', async (req, res) => {
     id: jobId, status: 'starting', phase: 'starting', total: items.length, done: 0, ok: 0, errors: 0,
     to_update: null, skipped: null, eta_sec: null, velocity: 0, active_workers: 0, desired_workers: 3,
     max_workers: 5, rate_limits: 0, retries: 0, promotions_removed: 0, promo_retry_ok: 0,
-    error_items: [], report: null, cancelled: false, created: Date.now(), username: 'api'
+    error_items: [], report: null, cancelled: false, created: Date.now(), username: 'api',
+    // Sacar promos/campañas ACTIVAS antes de cambiar el precio (default ON).
+    // Se puede desactivar mandando "quitar_promos": false en el body.
+    remove_promos_before: body.quitar_promos !== false
   };
   runBulkJob(jobId, items, account, token).catch(e => {
     if (bulkJobs[jobId] && !['done','cancelled'].includes(bulkJobs[jobId].status)) {
@@ -4983,6 +5151,179 @@ route('GET', '/api/actualizar-estado', async (req, res) => {
   }
   return sendJSON(res, 200, job);
 });
+// GET /api/ads/costs/export?account_id=N  — exporta la tabla de costos ENRIQUECIDA de una
+// cuenta en NDJSON (una linea por publicacion). Auth: token de API (para el motor) o admin.
+// Lo usa la FASE 3 del motor Python para leer la comision y la cuota REALES por publicacion
+// (del enriquecimiento con el simulador de ML) y fijar el precio al margen objetivo.
+route('GET', '/api/ads/costs/export', async (req, res) => {
+  try {
+    const okApi = checkApiToken(req);
+    const sess = okApi ? null : requireAuth(req);
+    if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const url = new URL(req.url, 'http://localhost');
+    const accountId = parseInt(url.searchParams.get('account_id'));
+    if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+    const dbX = (typeof loadDB === 'function') ? loadDB() : {};
+    const account = ((dbX && dbX.ml_accounts) || []).find(a => a.id === accountId);
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    // Leemos el archivo de costos por cuenta DIRECTO con fs (las funciones
+    // loadAccountCosts/accountCostsPath viven en otro scope y no son visibles aca).
+    // Mismo path que usa el panel: DATA_DIR/ads_costs_<sellerId>.json
+    let table = {};
+    try {
+      const costPath = path.join(DATA_DIR, 'ads_costs_' + String(account.seller_id) + '.json');
+      const parsed = JSON.parse(fs.readFileSync(costPath, 'utf8'));
+      table = (parsed && parsed.costs) || {};
+    } catch (e) { table = {}; }
+    res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+    let n = 0;
+    for (const id in table) {
+      const c = table[id];
+      if (c == null || c.simFee == null) continue;   // solo los que estan enriquecidos
+      res.write(JSON.stringify({
+        item_id: id,
+        price: Number(c.price) || Number(c.listPrice) || 0,
+        cost: Number(c.cost) || 0,
+        cost_ship: Number(c.costShip) || 0,
+        ship: c.ship || 'NO',
+        sim_fee: Number(c.simFee) || 0,
+        sim_fixed: Number(c.simFixed) || 0,
+        sim_cuotas: Number(c.simCuotas) || 0,
+        sim_imp: Number(c.simImp) || 0,
+        sim_envio: Number(c.simEnvio) || 0,
+        listing_type: c.listingType || '',
+        account_id: c.account_id != null ? c.account_id : accountId,
+      }) + '\n');
+      n++;
+    }
+    res.write(JSON.stringify({ _resumen: true, total: n, account: account.name }) + '\n');
+    res.end();
+  } catch (e) {
+    console.error('[ads/costs/export] error:', e);
+    if (!res.headersSent) return sendJSON(res, 500, { error: 'export fallo: ' + (e && (e.message || String(e))) });
+    try { res.end(); } catch (_) {}
+  }
+});
+// POST /api/ads/costs/restore  — RESTAURA el enriquecimiento (simFee, simEnvio, ...) en la
+// tabla de costos de una cuenta, MERGEANDO sin pisar el resto. Sirve para recuperar el
+// enriquecimiento desde los _COMPLETO ya generados (sin re-llamar a ML). Auth: token o admin.
+// body: { account_id, items: [{item_id, sim_fee, sim_fixed, sim_cuotas, sim_imp, sim_envio, price}] }
+route('POST', '/api/ads/costs/restore', async (req, res) => {
+  try {
+    const okApi = checkApiToken(req);
+    const sess = okApi ? null : requireAuth(req);
+    if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const body = await parseBody(req);
+    const accountId = parseInt(body.account_id);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+    const account = ((loadDB() || {}).ml_accounts || []).find(a => a.id === accountId);
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    const costPath = path.join(DATA_DIR, 'ads_costs_' + String(account.seller_id) + '.json');
+    let file = { costs: {} };
+    try { file = JSON.parse(fs.readFileSync(costPath, 'utf8')) || { costs: {} }; } catch (e) { file = { costs: {} }; }
+    if (!file.costs) file.costs = {};
+    const nowIso = new Date().toISOString();
+    let restored = 0, nuevos = 0;
+    for (const it of items) {
+      const id = String(it.item_id || '').trim();
+      if (!id) continue;
+      const prev = file.costs[id] || null;
+      const base = prev || { seller_id: account.seller_id, account_id: accountId, account_name: account.name };
+      if (!prev) nuevos++;
+      const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+      file.costs[id] = {
+        ...base,
+        price: it.price != null ? num(it.price) : (base.price || 0),
+        simFee: num(it.sim_fee),
+        simFixed: num(it.sim_fixed),
+        simCuotas: num(it.sim_cuotas),
+        simImp: num(it.sim_imp),
+        simEnvio: num(it.sim_envio),
+        enrichAt: nowIso,
+        enrichSrc: 'restore',
+      };
+      restored++;
+    }
+    file.updated = nowIso;
+    fs.writeFileSync(costPath, JSON.stringify(file));
+    if (typeof bustStrat === 'function') { try { bustStrat(); } catch (e) {} }
+    return sendJSON(res, 200, { ok: true, restored, nuevos, total_tabla: Object.keys(file.costs).length, account: account.name });
+  } catch (e) {
+    console.error('[ads/costs/restore] error:', e);
+    if (!res.headersSent) return sendJSON(res, 500, { error: 'restore fallo: ' + (e && (e.message || String(e))) });
+  }
+});
+// GET /api/ads/costs/legacy-migrate?account_id=N[&dry=1]  — RECUPERA el enriquecimiento
+// desde los archivos VIEJOS costos_reales_<sellerId>.json (del sistema anterior, que quedaron
+// en el disco persistente) y los convierte al formato ads (simFee...), mergeando. Con dry=1
+// solo informa si el archivo existe y cuántos ítems trae, sin escribir nada. Auth: token o admin.
+route('GET', '/api/ads/costs/legacy-migrate', async (req, res) => {
+  try {
+    const okApi = checkApiToken(req);
+    const sess = okApi ? null : requireAuth(req);
+    if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const url = new URL(req.url, 'http://localhost');
+    const accountId = parseInt(url.searchParams.get('account_id'));
+    const dry = url.searchParams.get('dry') === '1';
+    if (!accountId) return sendJSON(res, 400, { error: 'account_id requerido' });
+    const account = ((loadDB() || {}).ml_accounts || []).find(a => a.id === accountId);
+    if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+    const legacyPath = path.join(DATA_DIR, 'costos_reales_' + String(account.seller_id) + '.json');
+    let legacy = null;
+    try { legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf8')); } catch (e) {}
+    if (!legacy || !legacy.costs) {
+      return sendJSON(res, 200, { ok: false, existe: false, account: account.name,
+        msg: 'no encontre costos_reales_<sellerId>.json en el disco persistente', path: legacyPath });
+    }
+    const src = legacy.costs;
+    const ids = Object.keys(src);
+    const enriquecido = c => c && (Number(c.comision_amount) > 0 || Number(c.comision_pct) > 0);
+    const conEnriq = ids.filter(id => enriquecido(src[id])).length;
+    if (dry) {
+      const ej = src[ids.find(id => enriquecido(src[id])) || ids[0]] || null;
+      return sendJSON(res, 200, { ok: true, existe: true, account: account.name,
+        total: ids.length, enriquecidos: conEnriq, ejemplo: ej });
+    }
+    // migrar -> ads (merge, sin pisar el resto del registro)
+    const costPath = path.join(DATA_DIR, 'ads_costs_' + String(account.seller_id) + '.json');
+    let file = { costs: {} };
+    try { file = JSON.parse(fs.readFileSync(costPath, 'utf8')) || { costs: {} }; } catch (e) { file = { costs: {} }; }
+    if (!file.costs) file.costs = {};
+    const nowIso = new Date().toISOString();
+    const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+    let migr = 0;
+    for (const id of ids) {
+      const c = src[id];
+      if (!enriquecido(c)) continue;
+      const comAmt = num(c.comision_amount);
+      const fijo = num(c.costo_fijo);
+      const price = num(c.price);
+      // si no vino comision_amount pero sí comision_pct + price, lo reconstruimos
+      const comFinal = comAmt > 0 ? comAmt : (num(c.comision_pct) * price / 100);
+      const prev = file.costs[id] || { seller_id: account.seller_id, account_id: accountId, account_name: account.name };
+      file.costs[id] = {
+        ...prev,
+        price: price || prev.price || 0,
+        simFee: comFinal + fijo,                 // comision total = variable + cargo fijo
+        simFixed: fijo,
+        simCuotas: num(c.cuota_amount),
+        simImp: num(c.impuestos_amount),
+        simEnvio: num(c.envio),
+        enrichAt: nowIso,
+        enrichSrc: 'legacy-migrate',
+      };
+      migr++;
+    }
+    file.updated = nowIso;
+    fs.writeFileSync(costPath, JSON.stringify(file));
+    if (typeof bustStrat === 'function') { try { bustStrat(); } catch (e) {} }
+    return sendJSON(res, 200, { ok: true, migrados: migr, total_tabla: Object.keys(file.costs).length, account: account.name });
+  } catch (e) {
+    console.error('[ads/costs/legacy-migrate] error:', e);
+    if (!res.headersSent) return sendJSON(res, 500, { error: 'legacy-migrate fallo: ' + (e && (e.message || String(e))) });
+  }
+});
 // DEBUG temporal: ver la estructura de stock por deposito de un item (user_products)
 route('GET', '/api/debug-userstock', async (req, res) => {
   const sess = requireAuth(req);
@@ -5051,9 +5392,139 @@ route('GET', '/api/debug-userstock-write', async (req, res) => {
     sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
   }
 });
+// DEBUG PROMO: diagnostico completo del bloqueo por promocion en un item.
+// Por defecto SOLO LEE (no toca nada). Muestra el estado real del item en ML,
+// las promos que ML reporta (respuestas CRUDAS de cada endpoint), y las promos
+// que el panel detecta/normaliza. Opcionalmente prueba sacar la promo (&remove=1)
+// y/o cambiar el precio (&set_price=NUM) y hace read-back para ver que quedo.
+// Auth: sesion admin  O  token de API (?token= / x-api-token).
+route('GET', '/api/debug-promo', async (req, res) => {
+  const sess = requireAuth(req);
+  const isAdmin = !!(sess && sess.role === 'admin');
+  if (!isAdmin && !checkApiToken(req)) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token)' });
+  const u = new URL(req.url, 'http://localhost');
+  const itemId = u.searchParams.get('item_id');
+  const db = loadDB();
+  const account = resolveApiAccount(db, u) || (u.searchParams.get('account_id') ? db.ml_accounts.find(a => a.id === parseInt(u.searchParams.get('account_id'))) : null);
+  if (!itemId) return sendJSON(res, 400, { error: 'Falta ?item_id=' });
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada (usá ?account_id=ID o ?account=NOMBRE)' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token ML inválido, reconectá la cuenta' });
+  const doRemove = ['1', 'true', 'si', 'yes'].includes(String(u.searchParams.get('remove') || '').toLowerCase());
+  const setPriceRaw = u.searchParams.get('set_price');
+  const setPrice = (setPriceRaw != null && setPriceRaw !== '') ? Number(setPriceRaw) : null;
+  const out = { item_id: itemId, account: account.name, seller_id: account.seller_id, steps: {} };
+  // Helper: GET crudo con status + cuerpo, sin lanzar.
+  async function rawGet(url, tok, headers = {}) {
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${tok}`, ...headers } });
+      const text = await r.text().catch(() => '');
+      let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { _raw: text.slice(0, 400) }; }
+      return { status: r.status, ok: r.ok, body: data };
+    } catch (e) { return { status: null, ok: false, error: String(e.message || e) }; }
+  }
+  try {
+    // 1) Item real en ML (campos relevantes al precio/promo)
+    out.steps['1_item'] = await rawGet(
+      `https://api.mercadolibre.com/items/${itemId}?attributes=id,price,base_price,original_price,status,sub_status,deal_ids,tags,catalog_listing,catalog_product_id,variations,shipping`,
+      token
+    );
+    // 2) Respuestas CRUDAS de cada endpoint de promociones (para ver tipo/estado real)
+    const appTok = await getAppToken().catch(() => null);
+    const promoEndpoints = [
+      { label: 'old_user_v2',            url: `${PROMO_OLD_BASE}/items/${itemId}?app_version=v2`,               tok: token,  headers: {} },
+      { label: 'old_user_2_0_0',         url: `${PROMO_OLD_BASE}/items/${itemId}?app_version=2.0.0`,            tok: token,  headers: {} },
+      { label: 'marketplace_user_v2',    url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,     tok: token,  headers: promoH() },
+      { label: 'marketplace_app_v2',     url: `${PROMO_BASE}/items/${itemId}?user_id=${account.seller_id}`,     tok: appTok, headers: promoH() },
+    ];
+    out.steps['2_promos_raw'] = {};
+    for (const ep of promoEndpoints) {
+      if (!ep.tok) { out.steps['2_promos_raw'][ep.label] = { skipped: 'sin token' }; continue; }
+      out.steps['2_promos_raw'][ep.label] = await rawGet(ep.url, ep.tok, ep.headers);
+    }
+    // 3) Lo que el panel detecta/normaliza (la logica real que usa el bulk update)
+    const detected = await getActivePromotionsForItemBeforeUpdate(itemId, account, token);
+    out.steps['3_panel_detecta'] = {
+      source: detected.source,
+      count: (detected.promos || []).length,
+      promos: (detected.promos || []).map(p => ({ id: promoValueId(p), type: promoValueType(p), status: p.status || p.promotion_status || p.state || null, _full: p })),
+      errors: detected.errors,
+    };
+    // 4) OPCIONAL: sacar la promo
+    if (doRemove) {
+      out.steps['4_remove'] = await removeActivePromotionsBeforeItemUpdate(itemId, account, token);
+    }
+    // 5) OPCIONAL: cambiar el precio y verificar
+    if (setPrice != null && isFinite(setPrice)) {
+      const before = out.steps['1_item']?.body?.price ?? null;
+      let putRes;
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ price: setPrice })
+        });
+        const text = await r.text().catch(() => '');
+        let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { _raw: text.slice(0, 400) }; }
+        putRes = { status: r.status, ok: r.ok, body: data };
+      } catch (e) { putRes = { status: null, ok: false, error: String(e.message || e) }; }
+      // read-back
+      const after = await rawGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,price,base_price,original_price`, token);
+      out.steps['5_set_price'] = {
+        target: setPrice,
+        price_antes: before,
+        put: putRes,
+        price_despues: after?.body?.price ?? null,
+        base_price_despues: after?.body?.base_price ?? null,
+        aplicado: Math.floor(Number(after?.body?.price)) === Math.floor(setPrice),
+      };
+    }
+    // 6) OPCIONAL: replay del UPDATE REAL sobre item con variaciones, probando combinaciones
+    //    para aislar el bloqueo (envío gratis / atributos / precio). NO usa fallbacks: manda
+    //    tal cual para ver la respuesta CRUDA de ML.
+    //    ?varprice=N            -> precio N dentro de cada variación
+    //    &freeship=1            -> agrega shipping {mode:me2, free_shipping:true}
+    //    &withattrs=MARCA       -> agrega attributes [{BRAND: MARCA}]
+    const varPriceRaw = u.searchParams.get('varprice');
+    const varPrice = (varPriceRaw != null && varPriceRaw !== '') ? Number(varPriceRaw) : null;
+    if (varPrice != null && isFinite(varPrice)) {
+      const it = out.steps['1_item']?.body || {};
+      const varIds = Array.isArray(it.variations) ? it.variations.map(v => v.id) : [];
+      const payload = {};
+      if (varIds.length) payload.variations = varIds.map(id => ({ id, price: varPrice }));
+      else payload.price = varPrice;
+      const freeship = ['1', 'true', 'si', 'yes'].includes(String(u.searchParams.get('freeship') || '').toLowerCase());
+      if (freeship) payload.shipping = { mode: 'me2', free_shipping: true };
+      const withAttrs = u.searchParams.get('withattrs');
+      if (withAttrs) payload.attributes = [{ id: 'BRAND', value_name: String(withAttrs) }];
+      let putRes;
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload)
+        });
+        const text = await r.text().catch(() => '');
+        let data; try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { _raw: text.slice(0, 600) }; }
+        putRes = { status: r.status, ok: r.ok, body: data };
+      } catch (e) { putRes = { status: null, ok: false, error: String(e.message || e) }; }
+      const after = await rawGet(`https://api.mercadolibre.com/items/${itemId}?attributes=id,price,variations,shipping`, token);
+      out.steps['6_var_update'] = {
+        payload_enviado: payload,
+        put: putRes,
+        precio_var_despues: after?.body?.variations?.[0]?.price ?? after?.body?.price ?? null,
+        free_shipping_despues: after?.body?.shipping?.free_shipping ?? null,
+      };
+    }
+    return sendJSON(res, 200, out);
+  } catch (e) {
+    out.error = (e && e.response && e.response.data) || String(e.message || e);
+    return sendJSON(res, 500, out);
+  }
+});
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-08-anto-upid-v11', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin'] });
+  sendJSON(res, 200, { version: '2026-07-19-gestion-vendor-v16', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -7123,12 +7594,18 @@ function registerAds(deps) {
     const accName = account ? account.name : null;
     if (sellerId == null) return sendJSON(res, 400, { error: 'account_id inválido: elegí la cuenta del casillero.' });
     // Escribimos SOLO el archivo de esta cuenta (no toca las otras, no hay carrera entre imports simultáneos).
-    const table = body.replace ? {} : (loadAccountCosts(sellerId).costs || {});
+    // IMPORTANTE: cargamos SIEMPRE la tabla previa (aunque replace=true) para PRESERVAR los
+    // campos del ENRIQUECIMIENTO (simFee, simEnvio, simCuotas, simImp, price, enrichAt, ...).
+    // Antes el import pisaba el registro entero y borraba el enriquecimiento de toda la cuenta.
+    const prior = (loadAccountCosts(sellerId).costs) || {};
+    const table = body.replace ? {} : { ...prior };
     let n = 0;
     for (const r of arr) {
       const id = String(r.item_id || r.id || '').trim();
       if (!id) continue;
+      const p = prior[id] || {};   // registro previo (para no perder el enriquecimiento)
       table[id] = {
+        ...p,                                            // conserva simFee/simEnvio/simCuotas/simImp/price/enrichAt/... si existían
         cost: Number(r.cost) || 0,                       // col P
         costShip: Number(r.costShip) || Number(r.cost) || 0, // col T
         ship: normShip(r.ship),                          // col D → 'ME' | 'NO'
