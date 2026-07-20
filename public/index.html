@@ -1266,6 +1266,10 @@
   }
   // ==================== QUESTIONS ====================
   let questionStatus = 'UNANSWERED';
+  // Preguntas que YA respondimos en esta sesión. ML a veces las sigue devolviendo como
+  // "sin responder" unos segundos (lag), y reaparecían: al re-responderlas daban error
+  // "ya respondida". Las ocultamos de la lista apenas se responden.
+  const answeredQuestionIds = new Set();
   async function loadQuestions(accountId = '') {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_questions) {
@@ -1275,7 +1279,20 @@
     const content = document.getElementById('content');
     try {
       const res = await fetch(`/api/questions?status=${questionStatus}&account_id=${accountId}`);
-      const questions = await res.json();
+      let questions = await res.json();
+      // En "sin responder": de-duplicar por id y ocultar las que ya respondimos (aunque ML
+      // todavía las liste como pendientes por unos segundos). Así no reaparecen ni se
+      // pueden re-responder por error.
+      if (questionStatus === 'UNANSWERED' && Array.isArray(questions)) {
+        const _seen = new Set();
+        questions = questions.filter(q => {
+          const idk = String(q.id);
+          if (answeredQuestionIds.has(idk)) return false;
+          if (_seen.has(idk)) return false;
+          _seen.add(idk);
+          return true;
+        });
+      }
       let html = `
         <h2 style="margin-bottom:20px;color:#2d3277">Preguntas</h2>
         <div class="filters">
@@ -1438,6 +1455,11 @@
       });
       if (res.ok) {
         showToast('Respuesta enviada', 'success');
+        // Recordar que esta pregunta ya fue respondida para que NO reaparezca en la lista
+        // (ML la sigue mostrando como pendiente unos segundos por lag de su índice).
+        answeredQuestionIds.add(String(questionId));
+        knownQuestionIds.delete(questionId);
+        knownQuestionIds.delete(String(questionId));
         // Quitar la tarjeta AL INSTANTE (sin esperar el reload del servidor).
         textarea.value = '';
         textarea.blur();
@@ -1451,11 +1473,23 @@
         setTimeout(() => loadQuestions(), 400);
       } else {
         const data = await res.json();
-        showToast(data.error || 'Error al responder', 'error');
-        // If question was already answered, reload to remove it from list
+        const emsg = String(data.error || '').toLowerCase();
+        const yaRespondida = /already|answered|ya\s*(fue)?\s*respond|has an answer/.test(emsg);
+        if (yaRespondida) {
+          // La pregunta ya estaba respondida (típico cuando reapareció por el lag de ML).
+          // La ocultamos y no mostramos un error rojo alarmante.
+          showToast('Esa pregunta ya estaba respondida', 'success');
+          answeredQuestionIds.add(String(questionId));
+          knownQuestionIds.delete(questionId);
+          knownQuestionIds.delete(String(questionId));
+          const card = textarea.closest('.card');
+          if (card) { card.style.transition = 'opacity 0.15s'; card.style.opacity = '0'; setTimeout(() => card.remove(), 150); }
+        } else {
+          showToast(data.error || 'Error al responder', 'error');
+        }
         textarea.value = '';
         textarea.blur();
-        loadQuestions();
+        setTimeout(() => loadQuestions(), 400);
       }
     } catch (e) {
       showToast('Error de conexión', 'error');
@@ -6167,7 +6201,10 @@
     try {
       const res = await fetch('/api/questions?status=UNANSWERED&account_id=');
       if (!res.ok) return;
-      const questions = await res.json();
+      let questions = await res.json();
+      // Ignorar las que ya respondimos (ML puede seguir devolviéndolas unos segundos):
+      // así no vuelven a sumar al badge ni disparan alerta de "pregunta nueva".
+      if (Array.isArray(questions)) questions = questions.filter(q => !answeredQuestionIds.has(String(q.id)));
       const currentIds = questions.map(q => q.id);
       const currentSet = new Set(currentIds);
       // Truly-new ids: present now AND not already known (avoids re-alerting on ids that
