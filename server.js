@@ -3903,16 +3903,44 @@ route('GET', '/api/backup', async (req, res) => {
   });
   res.end(JSON.stringify(db, null, 2));
 });
-// GET backup as base64 - returns the string you need to paste in Render DB_BACKUP env var
+// Claves ESTABLES: la config que NO cambia a diario. Es lo ÚNICO que va al backup de Render
+// (Secret File). Todo lo operativo/diario (prep_orders, sale_orders, históricos, sesiones, etc.)
+// NO va acá: vive en el DISCO PERSISTENTE y sobrevive los deploys por sí solo.
+const BACKUP_STABLE_KEYS = ['users', 'ml_accounts', 'saludo_inicial', 'quick_replies', 'ads_config', 'nextUserId', 'nextAccountId'];
+// GET backup as base64 - returns the string you paste in Render Secret File db_backup.txt.
+//   (por defecto)  → SOLO la config estable (chica, entra siempre en el 1 MB de Render).
+//   ?full=1        → TODO (data.json completo + sesiones). Sirve para diagnóstico/migración.
 route('GET', '/api/backup/env', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const u = new URL(req.url, 'http://x');
+  const full = u.searchParams.get('full') === '1';
   const db = loadDB();
-  // Include sessions in backup so logins persist across deploys
-  db.sessions = sessions;
-  const b64 = Buffer.from(JSON.stringify(db)).toString('base64');
+  const dbForBreakdown = { ...db, sessions };
+  // Desglose por clave: para ver EXACTAMENTE qué ocupa cada cosa (ordenado de mayor a menor).
+  const breakdown = Object.keys(dbForBreakdown).map(k => ({ key: k, bytes: Buffer.byteLength(JSON.stringify(dbForBreakdown[k] == null ? null : dbForBreakdown[k])) }))
+    .sort((a, b) => b.bytes - a.bytes).slice(0, 20);
+  let payloadObj;
+  if (full) {
+    payloadObj = { ...db, sessions };   // TODO (para migración/diagnóstico)
+  } else {
+    payloadObj = {};                    // SOLO estable
+    for (const k of BACKUP_STABLE_KEYS) if (db[k] !== undefined) payloadObj[k] = db[k];
+  }
+  const json = JSON.stringify(payloadObj);
+  const b64 = Buffer.from(json).toString('base64');
+  const RENDER_LIMIT = 1024 * 1024;   // 1 MB: tope combinado de Secret Files en Render
   sendJSON(res, 200, {
-    instructions: 'Copia este valor y pegalo en Render > Environment > Secret Files > db_backup.txt. Asi tus datos se restauran automaticamente en cada deploy.',
+    instructions: full
+      ? 'Backup COMPLETO (todo data.json + sesiones). Úsalo para migrar o diagnosticar, NO para el Secret File si supera 1 MB.'
+      : 'Backup ESTABLE (solo config que no cambia a diario). Pegalo en Render > Secret Files > db_backup.txt. Lo operativo/diario vive en el disco persistente.',
+    modo: full ? 'full' : 'estable',
+    incluye: full ? 'TODO' : BACKUP_STABLE_KEYS,
+    json_bytes: Buffer.byteLength(json),
+    base64_bytes: Buffer.byteLength(b64),
+    render_secret_limit_bytes: RENDER_LIMIT,
+    entra_en_render: Buffer.byteLength(b64) <= RENDER_LIMIT,
+    desglose_top_claves: breakdown,
     base64: b64,
     users: db.users.length,
     accounts: (db.ml_accounts || []).length,
@@ -3931,6 +3959,82 @@ route('POST', '/api/restore', async (req, res) => {
   saveDB(body);
   console.log('[RESTORE] Base de datos restaurada:', body.users.length, 'usuarios,', (body.ml_accounts || []).length, 'cuentas ML');
   sendJSON(res, 200, { ok: true, users: body.users.length, accounts: (body.ml_accounts || []).length });
+});
+// ==================== MIGRACIÓN A DISCO PERSISTENTE ====================
+// Baja/sube TODO el contenido de DATA_DIR (los .json) en UN solo archivo, por HTTP (sin el
+// límite de 1 MB de los Secret Files). Sirve para mover el estado actual al disco nuevo sin
+// perder nada: 1) export ANTES de migrar (guarda el archivo), 2) montás el disco + DATA_DIR,
+// 3) import DESPUÉS (repuebla el disco). Los ads_costs_* (enormes) se excluyen por defecto:
+// esos se repueblan con restaurar_enriquecimiento.py. Con ?include_costs=1 se incluyen también.
+function _migDataFiles(includeCosts) {
+  const out = [];
+  try {
+    for (const fn of fs.readdirSync(DATA_DIR)) {
+      if (!fn.endsWith('.json')) continue;
+      if (!includeCosts && /^ads_costs.*\.json$/.test(fn)) continue;   // enormes → van por el script
+      out.push(fn);
+    }
+  } catch (e) {}
+  return out;
+}
+route('GET', '/api/migrate/export', async (req, res) => {
+  const okApi = checkApiToken(req);
+  const sess = okApi ? null : requireAuth(req);
+  if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token)' });
+  const u = new URL(req.url, 'http://x');
+  const includeCosts = u.searchParams.get('include_costs') === '1';
+  const files = {};
+  let total = 0;
+  for (const fn of _migDataFiles(includeCosts)) {
+    try { const raw = fs.readFileSync(path.join(DATA_DIR, fn), 'utf8'); files[fn] = raw; total += Buffer.byteLength(raw); } catch (e) {}
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': 'attachment; filename="autochap_migracion.json"' });
+  res.end(JSON.stringify({ _bundle: true, generado: new Date().toISOString(), include_costs: includeCosts, total_bytes: total, archivos: Object.keys(files), files }));
+});
+route('POST', '/api/migrate/import', async (req, res) => {
+  const okApi = checkApiToken(req);
+  const sess = okApi ? null : requireAuth(req);
+  if (!okApi && (!sess || sess.role !== 'admin')) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token)' });
+  const body = await parseBody(req);
+  const files = body && body.files;
+  if (!files || typeof files !== 'object') return sendJSON(res, 400, { error: 'Falta files{} (subí el archivo de export)' });
+  const written = []; const errores = [];
+  for (const fn of Object.keys(files)) {
+    // Guarda anti-traversal: solo nombre base .json, sin barras ni ".."
+    if (!/^[A-Za-z0-9._-]+\.json$/.test(fn) || fn.includes('..')) { errores.push(fn + ': nombre inválido'); continue; }
+    try {
+      const content = typeof files[fn] === 'string' ? files[fn] : JSON.stringify(files[fn]);
+      JSON.parse(content);   // valida que sea JSON antes de escribir
+      fs.writeFileSync(path.join(DATA_DIR, fn), content);
+      written.push(fn);
+    } catch (e) { errores.push(fn + ': ' + ((e && e.message) || e)); }
+  }
+  console.log('[MIGRATE] importados:', written.length, 'archivos →', DATA_DIR);
+  sendJSON(res, 200, { ok: true, data_dir: DATA_DIR, escritos: written, errores });
+});
+// PODA del panel de preparación: deja SOLO los últimos N días (90 por defecto). Los "en preparación"
+// (in_prep) NO se tocan nunca (son trabajo pendiente); solo se borran los FINALIZADOS (done) viejos.
+function pruneOldPrepOrders(days) {
+  days = Number(days) || 90;
+  const db = loadDB();
+  if (!Array.isArray(db.prep_orders)) return { removed: 0, kept: 0 };
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+  const before = db.prep_orders.length;
+  db.prep_orders = db.prep_orders.filter(o => {
+    if (!o || o.status !== 'done') return true;   // en preparación / cualquier no-finalizado: se mantiene
+    const ref = o.done_at || o.date_created;
+    const t = ref ? new Date(ref).getTime() : 0;
+    return !(t && t < cutoff);                     // finalizado: se mantiene si es de los últimos N días
+  });
+  const removed = before - db.prep_orders.length;
+  if (removed > 0) saveDB(db);
+  return { removed, kept: db.prep_orders.length, days };
+}
+route('POST', '/api/prep/prune', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  sendJSON(res, 200, pruneOldPrepOrders(body && body.days));
 });
 // ==================== PREP ROUTES ====================
 route('GET', '/api/prep/list', async (req, res) => {
@@ -5628,7 +5732,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-20-rediseno-v22', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad'] });
+  sendJSON(res, 200, { version: '2026-07-21-v27-backup-estable-disco-prep90', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -5808,6 +5912,50 @@ function costsFilePath() { return _pathCosts.join(DATA_DIR, 'ads_costs.json'); }
 function accountCostsPath(sellerId) { return _pathCosts.join(DATA_DIR, 'ads_costs_' + String(sellerId) + '.json'); }
 function loadAccountCosts(sellerId) { try { return JSON.parse(_fsCosts.readFileSync(accountCostsPath(sellerId), 'utf8')) || { costs: {} }; } catch (e) { return { costs: {} }; } }
 function saveAccountCosts(sellerId, obj) { _fsCosts.writeFileSync(accountCostsPath(sellerId), JSON.stringify(obj)); }
+// ---------------------------------------------------------------------------
+// DESCUBRIMIENTO DE PUBLICACIONES NUEVAS (Gatillo 1)
+// Marca de tiempo del último escaneo de ML por cuenta. Es SOLO un reloj (no guarda
+// precios ni publicaciones): sirve para no re-escanear todo ML en cada 🎯.
+// Las publicaciones nuevas que se descubran se agregan al MISMO ads_costs_<sid>.json.
+// ---------------------------------------------------------------------------
+function discFilePath(sellerId) { return _pathCosts.join(DATA_DIR, 'ads_disc_' + String(sellerId) + '.json'); }
+function lastDiscoveryAt(sellerId) { try { return JSON.parse(_fsCosts.readFileSync(discFilePath(sellerId), 'utf8')).at || 0; } catch (e) { return 0; } }
+function setDiscoveryAt(sellerId, ms) { try { _fsCosts.writeFileSync(discFilePath(sellerId), JSON.stringify({ at: ms })); } catch (e) {} }
+// Escanea las ACTIVAS de ML (solo IDs, liviano) y devuelve las que NO están en la tabla.
+// Throttle: no vuelve a escanear si pasó menos de DISCOVERY_TTL desde el último escaneo.
+// Todo va envuelto en try/catch por el que llama: si falla, el enriquecimiento sigue igual.
+async function discoverNewItems(account, table) {
+  const DISCOVERY_TTL = 30 * 60 * 1000;   // 30 min: la mayoría de los 🎯 saltan el escaneo (rápido)
+  const MAX_PAGES = 800;                  // paracaídas: 800 páginas x100 = 80k ids tope por escaneo
+  const sid = account.seller_id;
+  if (Date.now() - lastDiscoveryAt(sid) < DISCOVERY_TTL) return { skipped: true, added: 0 };
+  const token = await getValidToken(account);
+  if (!token) return { skipped: true, added: 0, reason: 'sin token' };
+  const found = new Set();
+  let scrollId = null, pages = 0;
+  while (pages < MAX_PAGES) {
+    const params = { limit: 100, status: 'active', search_type: 'scan' };
+    if (scrollId) params.scroll_id = scrollId;
+    const page = await mlGet(`https://api.mercadolibre.com/users/${sid}/items/search`, token, params);
+    scrollId = page && page.scroll_id || null;
+    const ids = (page && page.results) || [];
+    if (!ids.length) break;
+    for (const id of ids) if (/^MLA/i.test(id)) found.add(id);
+    pages++;
+    if (!scrollId) break;
+  }
+  // Marcamos el escaneo como hecho aunque no haya nuevas (evita re-escanear enseguida).
+  setDiscoveryAt(sid, Date.now());
+  let added = 0;
+  for (const id of found) {
+    if (!table[id]) {
+      // Entrada mínima SIN enriquecer: el propio refinar la va a enriquecer (calcula envío/cuotas/etc).
+      table[id] = { seller_id: String(sid), account_id: account.id, status: 'active', discoveredAt: new Date().toISOString() };
+      added++;
+    }
+  }
+  return { skipped: false, added, scanned: found.size, pages };
+}
 // Lectura combinada: junta el legacy + todos los archivos por cuenta en una sola tabla { costs, updated }.
 function loadCostsFile() {
   const merged = {}; let updated = null;
@@ -7451,22 +7599,27 @@ function registerAds(deps) {
   // ENRIQUECER (refinar) una cuenta con la DATA REAL de ML por publicación:
   // título real, precio CON promo, precio de lista, ventas, visitas, exposición (tipo), health,
   // y el margen simulado al precio real. Es el cimiento del motor inteligente. Tope por velocidad.
-  route('GET', '/api/ads/estrategia/refinar', async (req, res) => {
-    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
-    const account = getAccount(req);
-    if (!account) return sendJSON(res, 404, { error: 'account_id inválido' });
+  // NÚCLEO del enriquecimiento de UNA cuenta. Lo usan el botón 🎯 (ruta) y el scheduler automático.
+  // Devuelve un objeto resultado (nunca escribe en res). opts: { cap, cuotasPct, retencionPct, onlyNew }.
+  // onlyNew=true → enriquece SOLO las publicaciones RECIÉN DESCUBIERTAS y aún sin enriquecer
+  // (marca discoveredAt), para que el job automático sea liviano y no re-toque el catálogo entero.
+  async function refinarAccount(account, opts = {}) {
     // CANDADO: si ya hay un enriquecimiento en curso para esta cuenta, respondemos "ocupado" al toque
     // (sin tocar ML ni el archivo) para no duplicar la carga en memoria. El front espera y reintenta.
-    if (_enrichLocks[account.id]) return sendJSON(res, 200, { refined: 0, busy: true, note: 'Ya hay un enriquecimiento en curso para esta cuenta; esperá que termine el lote.' });
+    if (_enrichLocks[account.id]) return { refined: 0, busy: true, note: 'Ya hay un enriquecimiento en curso para esta cuenta; esperá que termine el lote.' };
     _enrichLocks[account.id] = true;
-    const u = new URL(req.url, 'http://x');
-    const cap = Math.min(Number(u.searchParams.get('cap')) || 12, 600);   // lote chico: ahora hay 2 llamadas por ítem (visitas + precios); concurrencia 6 + paracaídas + candado
+    const cap = Math.min(Number(opts.cap) || 12, 600);   // lote chico: ahora hay 2 llamadas por ítem (visitas + precios); concurrencia 6 + paracaídas + candado
     const cfg = getAccountCfg(account);
-    if (u.searchParams.get('cuotasPct') != null) cfg.cuotasPct = Number(u.searchParams.get('cuotasPct')) || 0;
-    if (u.searchParams.get('retencionPct') != null) cfg.retencionPct = Number(u.searchParams.get('retencionPct')) || 0;
+    if (opts.cuotasPct != null) cfg.cuotasPct = Number(opts.cuotasPct) || 0;
+    if (opts.retencionPct != null) cfg.retencionPct = Number(opts.retencionPct) || 0;
     // Trabajamos SOLO con el archivo de esta cuenta (rápido, no toca las demás).
     const file = loadAccountCosts(account.seller_id);
     const table = file.costs || {};
+    // GATILLO 1 — descubrir publicaciones NUEVAS de ML y sumarlas a la MISMA tabla (sin enriquecer aún).
+    // Throttle 30 min por cuenta; envuelto en try/catch: si falla, el enriquecimiento sigue normal.
+    let _discAdded = 0;
+    try { const _disc = await discoverNewItems(account, table); _discAdded = (_disc && _disc.added) || 0; if (_discAdded) saveAccountCosts(account.seller_id, { costs: table, updated: new Date().toISOString() }); }
+    catch (e) { console.error('[DISCOVERY]', account && account.name, (e && e.message) || e); }
     const allMLA = Object.keys(table).filter(id => /^MLA/i.test(id));   // todas las publicaciones del archivo
     // SOLO ACTIVAS: excluyo las que ya sabemos pausadas/cerradas (no vuelven a pasar por ningún proceso).
     const mine = allMLA.filter(id => {
@@ -7482,14 +7635,16 @@ function registerAds(deps) {
     // Unidades vendidas en 90d (del archivo ya calculado por el paso sold90). Las que VENDIERON van
     // primero — son las que importan (tus estrellas/vacas) y así se refrescan antes que el resto.
     const soldUnits = (() => { try { const c = (loadSold90File().accounts || {})[account.id]; return (c && c.map) || {}; } catch (e) { return {}; } })();
-    const ids = mine
+    // POOL: en modo automático (onlyNew) SOLO las recién descubiertas y aún sin enriquecer (no re-toca el catálogo).
+    const pool = opts.onlyNew ? mine.filter(id => table[id].discoveredAt && needsRefresh(id) === 0) : mine;
+    const ids = pool
       .sort((a, b) =>
         needsRefresh(a) - needsRefresh(b) ||
         ((soldUnits[b] || 0) > 0 ? 1 : 0) - ((soldUnits[a] || 0) > 0 ? 1 : 0) ||   // vendió → primero
         (Number(soldUnits[b] || 0)) - (Number(soldUnits[a] || 0)) ||               // más ventas → primero
         (Number(table[b].marginList) || 0) - (Number(table[a].marginList) || 0))   // luego por margen de lista
       .slice(0, cap);
-    if (!ids.length) { _enrichLocks[account.id] = false; return sendJSON(res, 200, { refined: 0, account_total: mine.length, file_total: allMLA.length, pausadas, note: `No hay publicaciones activas para enriquecer. En el archivo hay ${allMLA.length} (${pausadas} pausadas). Si esperabas más, puede que la importación del _COMPLETO de esta cuenta haya quedado incompleta.` }); }
+    if (!ids.length) { _enrichLocks[account.id] = false; return { refined: 0, nuevas: _discAdded, account_total: mine.length, file_total: allMLA.length, pausadas, note: `No hay publicaciones activas para enriquecer. En el archivo hay ${allMLA.length} (${pausadas} pausadas). Si esperabas más, puede que la importación del _COMPLETO de esta cuenta haya quedado incompleta.` }; }
     try {
       // Ventas de los últimos 90 días de la cuenta (se recalcula si está vieja, > 6h). Una sola vez por corrida.
       const s90 = loadSold90File(); s90.accounts = s90.accounts || {};
@@ -7579,14 +7734,99 @@ function registerAds(deps) {
       // "Al día" = enriquecidas con la versión ACTUAL del código (enrichVer >= ENRICH_VER). Así el progreso
       // refleja el refresco real y el loop sigue hasta refrescar TODAS (no se corta con datos viejos).
       const enrichedTotal = mine.filter(id => table[id].enrichAt && (Number(table[id].enrichVer) || 0) >= ENRICH_VER).length;
-      sendJSON(res, 200, { refined, failed, scanned: ids.length, cap, account: account.name, enriched_total: enrichedTotal, account_total: mine.length,
-        file_total: allMLA.length, activas: mine.length, pausadas,
-        note: enrichedTotal < mine.length ? `Enriquecí ${enrichedTotal} de ${mine.length} ACTIVAS. Volvé a tocar 🎯 para seguir con el resto.` : `Enriquecí TODAS las ACTIVAS (${mine.length}). En el archivo hay ${allMLA.length} en total${pausadas ? ` (${pausadas} pausadas quedan fuera a propósito)` : ''}.` });
+      return { refined, failed, scanned: ids.length, cap, account: account.name, enriched_total: enrichedTotal, account_total: mine.length,
+        nuevas: _discAdded, file_total: allMLA.length, activas: mine.length, pausadas,
+        note: enrichedTotal < mine.length ? `Enriquecí ${enrichedTotal} de ${mine.length} ACTIVAS. Volvé a tocar 🎯 para seguir con el resto.` : `Enriquecí TODAS las ACTIVAS (${mine.length}). En el archivo hay ${allMLA.length} en total${pausadas ? ` (${pausadas} pausadas quedan fuera a propósito)` : ''}.` };
     } catch (e) {
-      sendJSON(res, 500, { error: (e && e.response && e.response.data) || String(e.message || e) });
+      return { error: (e && e.response && e.response.data) || String(e.message || e) };
     } finally {
       _enrichLocks[account.id] = false;   // liberar el candado siempre (éxito o error)
     }
+  }
+
+  // Ruta del botón 🎯: valida admin/cuenta y delega en refinarAccount (mismo núcleo que el auto).
+  route('GET', '/api/ads/estrategia/refinar', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const account = getAccount(req);
+    if (!account) return sendJSON(res, 404, { error: 'account_id inválido' });
+    const u = new URL(req.url, 'http://x');
+    const result = await refinarAccount(account, {
+      cap: Number(u.searchParams.get('cap')) || 12,
+      cuotasPct: u.searchParams.get('cuotasPct') != null ? Number(u.searchParams.get('cuotasPct')) : null,
+      retencionPct: u.searchParams.get('retencionPct') != null ? Number(u.searchParams.get('retencionPct')) : null,
+    });
+    sendJSON(res, result && result.error ? 500 : 200, result);
+  });
+
+  // ---------------------------------------------------------------------------
+  // AUTO-ENRIQUECIMIENTO de publicaciones NUEVAS (Gatillo 1, AUTOMÁTICO).
+  // Una vez por día recorre las cuentas y enriquece SOLO las recién descubiertas
+  // (discoveredAt + sin enrichAt). Liviano: no re-toca el catálogo ni cambia precios
+  // (sólo completa envío/cuotas/comisión de las nuevas). Resiste reinicios vía db.ads_enrich_last_run.
+  // ---------------------------------------------------------------------------
+  async function autoEnrichNewJob() {
+    const accounts = loadDB().ml_accounts || [];
+    const summary = { at: new Date().toISOString(), accounts: [] };
+    for (const account of accounts) {
+      let nuevasTot = 0, refinadasTot = 0, err = null;
+      try {
+        // Hasta 4 lotes por cuenta: alcanza para las nuevas de un día; si hubiera más, quedan para mañana o el 🎯.
+        for (let i = 0; i < 4; i++) {
+          const r = await refinarAccount(account, { cap: 24, onlyNew: true });
+          if (!r || r.busy) break;
+          if (r.error) { err = r.error; break; }
+          nuevasTot += r.nuevas || 0; refinadasTot += r.refined || 0;
+          if ((r.refined || 0) < 1) break;   // ya no quedan nuevas por enriquecer
+          await new Promise(s => setTimeout(s, 1500));
+          if (global.gc) { try { global.gc(); } catch (e) {} }
+        }
+      } catch (e) { err = String((e && e.message) || e); }
+      summary.accounts.push({ account: account.name, nuevas: nuevasTot, enriquecidas: refinadasTot, error: err });
+      await new Promise(s => setTimeout(s, 1000));   // respiro entre cuentas
+    }
+    // PODA diaria del panel de preparación: deja solo los últimos 90 días (finalizados viejos fuera).
+    try { const pr = pruneOldPrepOrders(90); if (pr.removed) console.log('[PREP-PRUNE] borrados', pr.removed, 'finalizados +90d; quedan', pr.kept); summary.prep_prune = pr; } catch (e) {}
+    try {
+      const db = loadDB();
+      db.ads_enrich_last_run = summary.at;
+      db.ads_enrich_last_run_ar = arParts().date;   // fecha ARGENTINA de la corrida (para "1 vez por día" en tu huso)
+      db.ads_enrich_log = (db.ads_enrich_log || []).slice(-9);
+      db.ads_enrich_log.push(summary);
+      saveDB(db);
+    } catch (e) {}
+    console.log('[ENRICH-AUTO] nuevas:', summary.accounts.map(a => a.account + ':' + a.nuevas).join(' '));
+    return summary;
+  }
+  // Hora y fecha LOCAL de Argentina (UTC-3), sin depender del TZ del server (Render corre en UTC).
+  function arParts() {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false });
+      const p = {}; for (const x of fmt.formatToParts(new Date())) p[x.type] = x.value;
+      return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) % 24 };
+    } catch (e) {
+      const d = new Date(Date.now() - 3 * 3600 * 1000);   // respaldo: UTC-3 fijo
+      return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours() };
+    }
+  }
+  function startEnrichScheduler() {
+    const HOUR = Number(process.env.ENRICH_RUN_HOUR || 20);   // 20:00 hora ARGENTINA (default). Cambiable por env.
+    async function tick() {
+      try {
+        const db = loadDB();
+        const { date, hour } = arParts();
+        const ranToday = db.ads_enrich_last_run_ar === date;   // ya corrió HOY (fecha argentina)
+        if (hour >= HOUR && !ranToday) await autoEnrichNewJob();
+      } catch (e) { console.error('[ENRICH-AUTO] scheduler error:', (e && e.message) || e); }
+    }
+    setInterval(tick, 20 * 60 * 1000);   // cada 20 min → arranca dentro de los ~20 min de las 20:00 ARG
+    setTimeout(tick, 90 * 1000);         // primer chequeo 90s tras arrancar (después del scheduler de ADS)
+  }
+  startEnrichScheduler();
+  // DISPARO MANUAL del auto-enriquecimiento (para probarlo sin esperar al horario). Solo admin.
+  route('GET', '/api/ads/estrategia/auto-enrich-now', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    try { const s = await autoEnrichNewJob(); sendJSON(res, 200, { ok: true, summary: s }); }
+    catch (e) { sendJSON(res, 500, { error: String((e && e.message) || e) }); }
   });
 
   // Helpers compartidos por el actualizador de precios.
