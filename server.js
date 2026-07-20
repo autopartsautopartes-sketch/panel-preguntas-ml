@@ -2438,6 +2438,11 @@ route('GET', '/callback', async (req, res) => {
 // Cache de "el comprador ya compró en esta cuenta" (evita consultar ML en cada refresco de 15s).
 const buyerBoughtCache = {}; // clave: accountId:buyerId -> { bought, ts }
 const BUYER_BOUGHT_TTL = 60 * 60 * 1000; // 1 hora
+// Preguntas respondidas hace poco. ML puede seguir devolviéndolas como UNANSWERED unos
+// segundos después de responderlas (lag de su índice), así que reaparecían en la lista y,
+// al re-responderlas, ML tiraba error "ya respondida". Las ocultamos por un ratito.
+const recentlyAnsweredQuestions = {}; // { question_id: timestamp }
+const RECENT_ANSWERED_TTL = 5 * 60 * 1000; // 5 min
 route('GET', '/api/questions', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -2577,6 +2582,21 @@ route('GET', '/api/questions', async (req, res) => {
       console.error(`Error questions ${account.name}:`, err.response?.data || err.message || err);
     }
   }
+  // De-duplicar por id (evita tarjetas repetidas de la misma pregunta) y ocultar las
+  // respondidas hace poco cuando se pide la lista de "sin responder".
+  const _nowTs = Date.now();
+  for (const k of Object.keys(recentlyAnsweredQuestions)) {
+    if (_nowTs - recentlyAnsweredQuestions[k] > RECENT_ANSWERED_TTL) delete recentlyAnsweredQuestions[k];
+  }
+  const _seenQ = new Set();
+  allQuestions = allQuestions.filter(q => {
+    const idk = String(q.id);
+    if (_seenQ.has(idk)) return false;      // duplicada → la sacamos
+    _seenQ.add(idk);
+    // Solo ocultamos en la vista "sin responder" (no cuando se filtra por comprador).
+    if (status === 'UNANSWERED' && !buyerFilter && recentlyAnsweredQuestions[idk]) return false;
+    return true;
+  });
   allQuestions.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
   sendJSON(res, 200, allQuestions);
 });
@@ -2591,9 +2611,19 @@ route('POST', '/api/questions/answer', async (req, res) => {
   if (!token) return sendJSON(res, 500, { error: 'Token invalido' });
   try {
     await mlPost('https://api.mercadolibre.com/answers', { question_id: parseInt(question_id), text }, token);
+    // Marcamos la pregunta como respondida hace poco para que NO reaparezca en "sin responder"
+    // mientras el índice de ML todavía la sigue listando como UNANSWERED (lag de unos segundos).
+    recentlyAnsweredQuestions[String(question_id)] = Date.now();
     sendJSON(res, 200, { ok: true });
   } catch (err) {
     console.error('Error answering:', err.response?.data || err.message || err);
+    // Si ML dice que ya estaba respondida, la ocultamos igual y lo tratamos como OK
+    // (la respuesta ya existe), para que no quede trabada en la lista.
+    const emsg = String(err.response?.data?.message || err.message || '').toLowerCase();
+    if (/already|answered|ya\s*(fue)?\s*respond|has an answer|question_id/.test(emsg)) {
+      recentlyAnsweredQuestions[String(question_id)] = Date.now();
+      return sendJSON(res, 200, { ok: true, already: true });
+    }
     sendJSON(res, 500, { error: err.response?.data?.message || 'Error al responder' });
   }
 });
@@ -5577,7 +5607,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-20-faseA-v17', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss'] });
+  sendJSON(res, 200, { version: '2026-07-20-faseA-v18', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
