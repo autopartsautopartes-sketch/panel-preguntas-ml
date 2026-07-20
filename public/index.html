@@ -1347,7 +1347,22 @@
           expandedPrevQ.set(key, box.innerHTML);
         }
       });
+      // PRESERVAR lo que el usuario está escribiendo (borrador), las tildes saludo/firma,
+      // el foco/cursor y el scroll, para que un refresco (post-envío o automático cada 15s)
+      // no le borre la respuesta que está tipeando en OTRA pregunta.
+      const qDraft = {};
+      content.querySelectorAll('.reply-box textarea[id^="reply-"]').forEach(ta => { if (ta.value) qDraft[ta.id] = ta.value; });
+      const qChecks = {};
+      content.querySelectorAll('.reply-box input[type="checkbox"][id^="saludo-"], .reply-box input[type="checkbox"][id^="firma-"]').forEach(cb => { qChecks[cb.id] = cb.checked; });
+      const qFocEl = document.activeElement;
+      const qFocId = (qFocEl && qFocEl.id) ? qFocEl.id : null;
+      const qFocStart = (qFocEl && qFocEl.selectionStart != null) ? qFocEl.selectionStart : null;
+      const qFocEnd = (qFocEl && qFocEl.selectionEnd != null) ? qFocEl.selectionEnd : null;
+      const qPrevScroll = content.scrollTop;
       content.innerHTML = html;
+      // Restaurar borradores de texto y tildes
+      Object.keys(qDraft).forEach(id => { const ta = document.getElementById(id); if (ta) ta.value = qDraft[id]; });
+      Object.keys(qChecks).forEach(id => { const cb = document.getElementById(id); if (cb) cb.checked = qChecks[id]; });
       // Restaurar acordeones que estaban abiertos
       if (expandedPrevQ.size > 0) {
         content.querySelectorAll('.prev-q-wrapper').forEach(wrapper => {
@@ -1362,6 +1377,13 @@
           }
         });
       }
+      // Restaurar el foco y la posición del cursor donde estaba escribiendo (sin mover el scroll)
+      if (qFocId) {
+        const el = document.getElementById(qFocId);
+        if (el) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } if (qFocStart != null) { try { el.setSelectionRange(qFocStart, qFocEnd); } catch (e) {} } }
+      }
+      // Restaurar scroll para que un refresco no devuelva la vista al tope de golpe
+      content.scrollTop = qPrevScroll;
       // Verificar en paralelo si cada comprador tiene preguntas anteriores.
       // Solo muestra el botón "Ver preguntas anteriores" cuando hay al menos una.
       // (Solo para wrappers que NO fueron ya restaurados arriba)
