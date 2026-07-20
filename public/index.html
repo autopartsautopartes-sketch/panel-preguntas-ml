@@ -1071,8 +1071,11 @@
           </div>
         ` : ''}
       ` : '';
+      const _isAdminDash = currentUser?.role === 'admin';
       document.getElementById('content').innerHTML = `
         <h2 style="margin-bottom:20px;color:#2d3277">Dashboard</h2>
+        <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:320px">
         <div class="stats">
           <div class="stat-card">
             <div class="label">Cuentas conectadas</div>
@@ -1107,6 +1110,18 @@
               <button onclick="setDashPeriod(30)" id="dcp-30" style="padding:5px 14px;border-radius:20px;border:1px solid #e2e8f0;font-size:12px;cursor:pointer;font-weight:600;background:white;color:#64748b">30 días</button>
             </div>
           </div>
+          <div style="display:flex;align-items:flex-end;gap:10px;margin-bottom:16px;flex-wrap:wrap;background:#f8fafc;padding:10px 12px;border-radius:8px">
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <label style="font-size:11px;color:#64748b;font-weight:600">Desde</label>
+              <input type="date" id="dashFrom" style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 8px;font-size:13px;color:#0f172a;font-family:inherit">
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <label style="font-size:11px;color:#64748b;font-weight:600">Hasta</label>
+              <input type="date" id="dashTo" style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 8px;font-size:13px;color:#0f172a;font-family:inherit">
+            </div>
+            <button onclick="applyDashRange()" style="padding:6px 16px;border-radius:8px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#2563eb;color:white">Ver rango</button>
+            <span style="font-size:11px;color:#94a3b8">o usá los atajos de arriba (Hoy / 7 / 30)</span>
+          </div>
           <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
             <button onclick="setDashMetric('sales')" id="dcm-sales" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#f8fafc;color:#64748b">Ventas</button>
             <button onclick="setDashMetric('revenue')" id="dcm-revenue" style="padding:6px 16px;border-radius:6px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#f8fafc;color:#64748b">Dinero</button>
@@ -1120,7 +1135,17 @@
           <div style="position:relative;height:220px"><canvas id="dashChart"></canvas></div>
           <div id="dashChartLoader" style="text-align:center;padding:40px;color:#94a3b8;font-size:13px">Cargando...</div>
         </div>
+        </div>
+        ${_isAdminDash ? `
+        <div id="dashRepCol" style="width:300px;flex-shrink:0">
+          <div style="background:white;border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+            <h3 style="font-size:15px;font-weight:700;color:#2d3277;margin-bottom:12px;display:flex;align-items:center;gap:6px">⭐ Reputación <a onclick="showSection('reputation')" style="font-size:11px;color:#3483fa;cursor:pointer;font-weight:600;margin-left:auto">ver todo ›</a></h3>
+            <div id="dashRepBody"><div style="color:#94a3b8;font-size:13px;text-align:center;padding:20px">Cargando…</div></div>
+          </div>
+        </div>` : ''}
+        </div>
       `;
+      if (_isAdminDash) loadDashReputation(myNav);
       // Inicializar gráfico — NO resetear _dashPeriod/_dashMetric ni _dashAccountId
       // para conservar la selección del usuario entre refrescos automáticos.
       _dashData = null;
@@ -1159,11 +1184,56 @@
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar el dashboard</p></div>';
     }
   }
+  // Reputación compacta en la columna derecha del Dashboard (misma data que la solapa Reputación).
+  async function loadDashReputation(myNav) {
+    const body = document.getElementById('dashRepBody');
+    if (!body) return;
+    try {
+      const res = await fetch('/api/reputation');
+      const data = await res.json();
+      if (navToken !== myNav) return;
+      const REP_ORDER = ['MARA_PRATO_8', 'REPUESTOSEXPRESS_1', 'AUTOCHAPAUTOPARTES07', 'RUIZDARIO20220906163653', 'AUTOPARTESARG', 'SAEZJORGE34'];
+      data.sort((a, b) => { const ia = REP_ORDER.indexOf(a.account_name); const ib = REP_ORDER.indexOf(b.account_name); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
+      const pct = (r) => (r == null ? '—' : ((r * 100).toFixed(2).replace(/\.?0+$/, '') || '0') + '%');
+      const levelInfo = (lid) => ({ '5_green': ['#00a650', 'Verde'], '4_light_green': ['#7dd056', 'Verde claro'], '3_yellow': ['#ffcc00', 'Amarillo'], '2_orange': ['#ff7733', 'Naranja'], '1_red': ['#e74c3c', 'Rojo'] }[lid] || ['#cccccc', 'Nuevo']);
+      const psLabel = (s) => s === 'platinum' ? 'Platinum' : s === 'gold' ? 'Gold' : s === 'silver' ? 'MercadoLíder' : '';
+      const paleColors = ['#f6c9cc', '#ffd9c2', '#fff0b8', '#d8efc5', '#bfe6c8'];
+      const fullColors = ['#e74c3c', '#ff7733', '#ffcc00', '#7dd056', '#00a650'];
+      let html = '';
+      for (const a of data) {
+        if (a.error) { html += `<div style="padding:10px 0;border-bottom:1px solid #f0f0f0"><div style="font-weight:700;color:#2d3277;font-size:13px">${escapeHtml(a.account_name)}</div><div style="color:#e74c3c;font-size:11px">No disponible</div></div>`; continue; }
+        const li = levelInfo(a.level_id); const col = li[0]; const lname = li[1];
+        const ps = psLabel(a.power_seller_status);
+        const lvlNum = parseInt(String(a.level_id || '').charAt(0)) || 0;
+        let bar = '<div style="display:flex;gap:2px;margin:7px 0">';
+        for (let i = 0; i < 5; i++) bar += `<div style="flex:1;height:7px;border-radius:2px;background:${(i === (lvlNum - 1)) ? fullColors[i] : paleColors[i]}"></div>`;
+        bar += '</div>';
+        html += `
+          <div style="padding:10px 0;border-bottom:1px solid #f0f0f0">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="width:11px;height:11px;border-radius:50%;background:${col};display:inline-block;flex-shrink:0;border:1px solid rgba(0,0,0,0.1)"></span>
+              <span style="font-weight:700;color:#2d3277;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(a.nickname || a.account_name)}</span>
+            </div>
+            ${bar}
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+              <span style="font-size:11px;color:${ps ? '#00a650' : '#666'};font-weight:${ps ? 700 : 400}">${ps ? ('🏅 ' + ps) : lname}</span>
+              <span style="font-size:11px;color:#666" title="Reclamos">Recl: <b style="color:${(a.reclamos_rate || 0) > 0.01 ? '#e74c3c' : '#00a650'}">${pct(a.reclamos_rate)}</b></span>
+            </div>
+          </div>`;
+      }
+      body.innerHTML = html || '<div style="color:#94a3b8;font-size:13px;text-align:center;padding:20px">Sin datos</div>';
+    } catch (e) {
+      if (navToken !== myNav) return;
+      body.innerHTML = '<div style="color:#e74c3c;font-size:12px;text-align:center;padding:16px">No se pudo cargar la reputación</div>';
+    }
+  }
   // ==================== DASHBOARD CHART ====================
   let _dashChart = null;
   let _dashPeriod = 1;
   let _dashMetric = 'sales';
   let _dashAccountId = '';   // '' = todas las cuentas
+  let _dashFrom = '';        // rango personalizado (tiene prioridad sobre _dashPeriod si está seteado)
+  let _dashTo = '';
   let _dashData = null;
   const DASH_METRIC_LABELS = { sales: 'Ventas', revenue: 'Dinero ($)', units: 'Unidades', questions: 'Preguntas' };
   const DASH_METRIC_FORMAT = {
@@ -1179,12 +1249,27 @@
   }
   function setDashPeriod(p) {
     _dashPeriod = p;
+    // Usar un atajo cancela el rango de fechas personalizado.
+    _dashFrom = ''; _dashTo = '';
+    const fEl = document.getElementById('dashFrom'); if (fEl) fEl.value = '';
+    const tEl = document.getElementById('dashTo'); if (tEl) tEl.value = '';
     [1,7,30].forEach(n => {
       const btn = document.getElementById('dcp-' + n);
       if (!btn) return;
       if (n === p) { btn.style.background = '#2563eb'; btn.style.color = 'white'; }
       else { btn.style.background = 'white'; btn.style.color = '#64748b'; }
     });
+    loadDashboardChart();
+  }
+  // Rango de fechas personalizado del gráfico (además de los atajos Hoy/7/30).
+  function applyDashRange() {
+    const f = (document.getElementById('dashFrom') || {}).value || '';
+    const t = (document.getElementById('dashTo') || {}).value || '';
+    if (!f || !t) { showToast('Elegí Desde y Hasta', 'error'); return; }
+    if (f > t) { showToast('«Desde» no puede ser posterior a «Hasta»', 'error'); return; }
+    _dashFrom = f; _dashTo = t;
+    // Apagar el resaltado de los atajos (ya no representan lo que se ve).
+    [1,7,30].forEach(n => { const btn = document.getElementById('dcp-' + n); if (btn) { btn.style.background = 'white'; btn.style.color = '#64748b'; } });
     loadDashboardChart();
   }
   function setDashMetric(m) {
@@ -1256,7 +1341,8 @@
     canvas.style.display = 'none';
     if (_dashChart) { _dashChart.destroy(); _dashChart = null; }
     try {
-      const res = await fetch(`/api/dashboard-chart?period=${_dashPeriod}&account_id=${encodeURIComponent(_dashAccountId)}`);
+      const rangeQS = (_dashFrom && _dashTo) ? `&from=${_dashFrom}&to=${_dashTo}` : '';
+      const res = await fetch(`/api/dashboard-chart?period=${_dashPeriod}&account_id=${encodeURIComponent(_dashAccountId)}${rangeQS}`);
       if (!res.ok) throw new Error('Error');
       _dashData = await res.json();
       renderDashChart(_dashData);
