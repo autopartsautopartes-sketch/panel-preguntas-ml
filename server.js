@@ -886,6 +886,10 @@ async function runBulkJob(jobId, items, account, initialToken) {
   let successSince429 = 0;
   const SPEEDUP_EVERY = 300;
   const ERROR_ITEMS_MAX = 800;
+  // Umbral de envío gratis obligatorio de ML (MLA). Se usa para mandar envío gratis en el
+  // PRIMER PUT de los ítems por encima del umbral (ver updateOne → "envío gratis por adelantado").
+  // Configurable por env por si ML cambia el valor; el fallback reactivo queda de backstop.
+  const UMBRAL_ENVIO_GRATIS = Number(process.env.UMBRAL_ENVIO || 33000) || 33000;
   job.mode = 'smart_workers_v2';
   job.min_workers = MIN_WORKERS;
   job.max_workers = MAX_WORKERS;
@@ -1037,6 +1041,19 @@ async function runBulkJob(jobId, items, account, initialToken) {
       return { item_id: item.item_id, ok: true, warning: 'Sin cambios — se omitió' };
     }
     const warnings = [];
+    // FASE A — envío gratis POR ADELANTADO (ahorra 1 llamada por ítem sobre el umbral).
+    // Un ítem Mercado Envío (me2) SIN envío gratis cuyo precio nuevo cruza el umbral es
+    // rechazado por ML en el primer PUT (mandatory_free_shipping/lost_me1) y recién el
+    // fallback lo reintenta con envío gratis => 2 PUTs. Acá lo mandamos ya en el PRIMER PUT.
+    // Conservador: solo ítems me2 que NO son flex (self_service) y que hoy no tienen envío
+    // gratis. Los flex y cualquier caso raro quedan para el fallback reactivo (backstop).
+    if (_targetPrice != null && _targetPrice >= UMBRAL_ENVIO_GRATIS && !hasFlex && cur &&
+        String(cur.ship_mode || '').toLowerCase() === 'me2' &&
+        String(cur.logistic_type || '').toLowerCase() !== 'self_service' &&
+        cur.ship_free !== true) {
+      payload.shipping = Object.assign({ mode: 'me2', free_shipping: true }, payload.shipping || {});
+      job.freeship_upfront = (job.freeship_upfront || 0) + 1;
+    }
     async function attemptUpdateOnce() {
       const errors = [];
       if (Object.keys(payload).length) {
@@ -1132,12 +1149,24 @@ async function runBulkJob(jobId, items, account, initialToken) {
     }
     // Lee el precio actual del item en ML y confirma si quedo aplicado (piso a entero).
     // Devuelve true si coincide o si no se pudo leer (para no bloquear por un error de lectura).
-    async function verifyPriceApplied(itemId, target) {
+    async function verifyPriceApplied(itemId, target, isVar) {
       try {
-        const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, { attributes: 'price' });
+        const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, { attributes: 'price,variations' });
+        const tgt = Math.floor(Number(target));
+        if (!isFinite(tgt)) return true;
+        // Ítems con variaciones: el precio vive dentro de cada variante, no en la raíz.
+        // Consideramos aplicado si TODAS las variantes con precio legible coinciden con el objetivo.
+        if (isVar && Array.isArray(it.variations) && it.variations.length) {
+          const prices = it.variations.map(v => Number(v.price)).filter(p => isFinite(p));
+          if (!prices.length) {
+            const rp = Number(it.price);
+            return !isFinite(rp) || Math.floor(rp) === tgt;
+          }
+          return prices.every(p => Math.floor(p) === tgt);
+        }
         const curP = Number(it && it.price);
         if (!isFinite(curP)) return true;
-        return Math.floor(curP) === Math.floor(Number(target));
+        return Math.floor(curP) === tgt;
       } catch (e) { return true; }
     }
     // Intenta actualizar y, si hubo cambio de precio, VERIFICA que ML lo haya aplicado de verdad.
@@ -1145,8 +1174,11 @@ async function runBulkJob(jobId, items, account, initialToken) {
     // como bloqueo de promo para que el flujo de abajo saque la promo y reintente.
     async function attemptWithVerify() {
       let errs = await attemptUpdateOnce();
-      if (!errs.length && _targetPrice != null && !_isVariation) {
-        const aplicado = await verifyPriceApplied(item.item_id, _targetPrice);
+      // Verificamos SIEMPRE que haya cambio de precio, tanto en ítems simples como con
+      // variaciones. Si ML devolvió OK pero el precio no quedó (falla silenciosa por promo
+      // activa), lo marcamos como bloqueo de promo para que el flujo saque la promo y reintente.
+      if (!errs.length && _targetPrice != null) {
+        const aplicado = await verifyPriceApplied(item.item_id, _targetPrice, _isVariation);
         if (!aplicado) {
           errs = [{ kind: 'promo-silent', status: 400, message: 'promotion: el precio no quedo aplicado (probable promo activa)' }];
         }
@@ -1188,6 +1220,15 @@ async function runBulkJob(jobId, items, account, initialToken) {
       if (!hasBody) return null;
       try {
         await putWithRetry(`https://api.mercadolibre.com/items/${item.item_id}`, clean, workerId);
+        // Verificar que el precio realmente haya quedado aplicado (no una FALSA OK por promo
+        // que sigue tapando el precio). Si no quedó, lo reportamos como error para que se
+        // reintente en la próxima corrida en vez de darlo por bueno.
+        if (_targetPrice != null) {
+          const okPrice = await verifyPriceApplied(item.item_id, _targetPrice, isVar);
+          if (!okPrice) {
+            return { item_id: item.item_id, ok: false, error: 'precio no aplicado tras activar envío gratis (probable promo activa) — se reintenta en la próxima corrida' };
+          }
+        }
         const notes = [];
         if (needFreeShip) notes.push('envío gratis activado (precio sobre umbral)');
         if (attrsBad) notes.push('atributos/marca omitidos (inválidos)');
@@ -1373,6 +1414,8 @@ async function runBulkJob(jobId, items, account, initialToken) {
                 status: it.status ?? '',
                 seller_custom_field: it.seller_custom_field ?? '',
                 logistic_type: it.shipping?.logistic_type ?? '',
+                ship_mode: it.shipping?.mode ?? '',
+                ship_free: it.shipping?.free_shipping === true,
                 variation_ids: varIds,
                 user_product_id: it.user_product_id ?? null
               };
@@ -2796,6 +2839,16 @@ route('POST', '/api/messages/reply', async (req, res) => {
       const parsed = JSON.parse(msgData);
       return sendJSON(res, 500, { error: parsed.message || parsed.error || 'Error de ML: ' + msgRes.status });
     }
+    // Al responder, mover la conversación a "Respondidos" (sale de "Sin leer").
+    // Motivo: ML deja el mensaje del comprador como "no leído" (usamos mark_as_read:false),
+    // así que sin esto la conversación reaparecía en "Sin leer" apenas se refrescaba la lista
+    // ("las respuestas no se van"). Si el comprador escribe DESPUÉS, la lógica de
+    // auto-un-dismiss en GET /api/messages la vuelve a mostrar automáticamente.
+    try {
+      if (!db.dismissed_msg_packs) db.dismissed_msg_packs = {};
+      db.dismissed_msg_packs[String(packId)] = new Date().toISOString();
+      saveDB(db);
+    } catch (e) { console.log('[MSG REPLY] no se pudo auto-dismiss:', e.message || e); }
     sendJSON(res, 200, { ok: true });
   } catch (err) {
     console.error('Error sending message:', err.response?.data || err.message || err);
@@ -5524,7 +5577,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-19-gestion-vendor-v16', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion'] });
+  sendJSON(res, 200, { version: '2026-07-20-faseA-v17', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
