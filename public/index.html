@@ -255,10 +255,10 @@
     .copyable { cursor: pointer; border-bottom: 1px dotted currentColor; transition: background 0.15s; }
     .copyable:hover { background: #fee2e2; border-radius: 3px; }
     .copyable.copied { background: #bbf7d0 !important; border-radius: 3px; }
-    .sku-chip { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
-      background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0 6px; margin: 0 2px 2px 0;
-      color: #334155; border-bottom: 1px solid #e2e8f0; }
-    .sku-chip:hover { background: #fee2e2; border-color: #fca5a5; }
+    /* Código copiable DENTRO del SKU completo: se resalta suave, el resto del SKU queda como texto. */
+    .sku-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #b91c1c; font-weight: 600;
+      border-bottom: 1px dashed #fca5a5; padding: 0 1px; cursor: pointer; }
+    .sku-code:hover { background: #fee2e2; border-radius: 3px; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     /* MOBILE BOTTOM NAV */
     .mobile-nav {
@@ -354,6 +354,48 @@
     .btn-finalizar:hover { background:#15803d; }
     .btn-preparar { background:#dc2626; color:white; border:none; border-radius:8px; padding:7px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:background 0.2s; }
     .btn-preparar:hover { background:#b91c1c; }
+  
+/* ===================== REDISEÑO v2 — base clara + rojo de acento + verde-agua ===================== */
+:root{--ac-brand:#e5322d;--ac-brand-ink:#c02722;--ac-brand-soft:#fdecec;--ac-teal:#0ea5a0;--ac-teal-soft:#e5f7f5;--ac-ink:#101828;--ac-body:#475467;--ac-mut:#98a2b3;--ac-line:#eceef2;--ac-bg:#f6f7f9;}
+body{background:var(--ac-bg)!important;color:var(--ac-ink);}
+.header{background:#fff!important;border-top:3px solid var(--ac-brand);border-bottom:1px solid var(--ac-line);box-shadow:none!important;}
+.header h1{color:var(--ac-ink)!important;font-weight:800;}
+.header-right span{color:var(--ac-body)!important;}
+.header-right button{background:#fff!important;color:var(--ac-body)!important;border:1px solid var(--ac-line)!important;font-weight:600;border-radius:9px;}
+.header-right button:hover{background:#f6f7f9!important;}
+#btnBackup{background:var(--ac-teal)!important;color:#fff!important;border-color:var(--ac-teal)!important;}
+.sidebar{background:#fff!important;color:var(--ac-body);border-right:1px solid var(--ac-line);}
+.sidebar a{color:var(--ac-body)!important;font-weight:500;border-radius:10px!important;margin:1px 12px!important;gap:12px;}
+.sidebar a:hover{background:#f6f7f9!important;color:var(--ac-ink)!important;}
+.sidebar a.active{background:var(--ac-brand-soft)!important;color:var(--ac-brand-ink)!important;font-weight:600;}
+.sidebar a.active::before{display:none!important;}
+.sidebar a svg.nvic{width:18px;height:18px;stroke:#98a2b3;stroke-width:1.9;fill:none;flex:none;stroke-linecap:round;stroke-linejoin:round;}
+.sidebar a.active svg.nvic{stroke:var(--ac-brand);}
+.sidebar .badge{background:var(--ac-brand)!important;}
+.sidebar .section-title{color:#c0c6d0!important;}
+.stat-card{background:#fff!important;border:1px solid var(--ac-line)!important;border-radius:16px!important;box-shadow:0 1px 2px rgba(16,24,40,.04)!important;display:flex;flex-direction:column;justify-content:space-between;min-height:112px;}
+.stat-card .label{color:var(--ac-mut)!important;text-transform:none!important;letter-spacing:.1px!important;font-size:12.5px!important;min-height:34px;}
+.stat-card .value{color:var(--ac-ink)!important;}
+.card{border:1px solid var(--ac-line)!important;border-radius:16px!important;box-shadow:0 1px 2px rgba(16,24,40,.04)!important;}
+.card:hover{box-shadow:0 4px 16px rgba(16,24,40,.08)!important;}
+.filters button.active{background:var(--ac-ink)!important;border-color:var(--ac-ink)!important;color:#fff!important;}
+.filters button:hover:not(.active){border-color:var(--ac-brand)!important;color:var(--ac-brand)!important;background:var(--ac-brand-soft)!important;}
+.reply-box button{background:var(--ac-brand)!important;border-radius:10px!important;}
+.reply-box button:hover{background:var(--ac-brand-ink)!important;}
+.reply-box button:disabled{background:#cbd5e1!important;}
+.msg-btns .msg-send{background:var(--ac-brand)!important;}
+.msg-btns .msg-send:hover{background:var(--ac-brand-ink)!important;}
+.mobile-nav{background:#fff!important;border-top:1px solid var(--ac-line);box-shadow:0 -2px 12px rgba(16,24,40,.06)!important;}
+.mobile-nav a{color:var(--ac-mut)!important;}
+.mobile-nav a.active{color:var(--ac-brand)!important;}
+.login-container{background:var(--ac-bg)!important;}
+.login-box{border:1px solid var(--ac-line);box-shadow:0 10px 40px rgba(16,24,40,.10)!important;}
+.login-box h1{color:var(--ac-ink)!important;}
+.login-box button{background:var(--ac-brand)!important;}
+.login-box button:hover{background:var(--ac-brand-ink)!important;}
+.prep-tab.active{background:var(--ac-brand)!important;border-color:var(--ac-brand)!important;}
+.prep-tab:hover:not(.active){border-color:var(--ac-brand)!important;color:var(--ac-brand)!important;background:var(--ac-brand-soft)!important;}
+
   </style>
 </head>
 <body spellcheck="true">
@@ -389,49 +431,49 @@
   <div class="main">
     <nav class="sidebar">
       <a class="active" onclick="showSection('dashboard')" id="nav-dashboard">
-        <span>📊 Dashboard</span>
+        <svg class="nvic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Dashboard</span>
       </a>
       <a onclick="showSection('questions')" id="nav-questions">
-        <span>❓ Preguntas</span>
+        <svg class="nvic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .8-1 1.7"/></svg><span>Preguntas</span>
         <span class="badge" id="badge-unanswered" style="display:none">0</span>
       </a>
       <a onclick="showSection('messages')" id="nav-messages">
-        <span>💬 Mensajes</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 3z"/></svg><span>Mensajes</span>
         <span class="badge" id="badge-unread-messages" style="display:none">0</span>
       </a>
       <a onclick="showSection('sales')" id="nav-sales">
-        <span>🛒 Ventas</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M6 8h12l-1 12H7z"/><path d="M9 8a3 3 0 0 1 6 0"/></svg><span>Ventas</span>
       </a>
       <a onclick="showSection('reputation')" id="nav-reputation" style="display:none">
-        <span>⭐ Reputación</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.5-.8z"/></svg><span>Reputación</span>
       </a>
       <a onclick="showSection('claims')" id="nav-claims" style="display:none">
-        <span>⚠️ Reclamos</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4"/></svg><span>Reclamos</span>
       </a>
       <a onclick="showSection('orders')" id="nav-orders" style="display:none">
-        <span>📋 Pedidos</span>
+        <svg class="nvic" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="M8 10h8M8 14h6"/></svg><span>Pedidos</span>
       </a>
       <a onclick="showSection('prep')" id="nav-prep" style="display:none">
-        <span>📦 Preparación</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/></svg><span>Preparación</span>
       </a>
       <a onclick="showSection('update')" id="nav-update" style="display:none">
-        <span>🔄 Actualizar</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5"/><path d="M18 3v4h-4"/><path d="M20 12a8 8 0 0 1-14 5"/><path d="M6 21v-4h4"/></svg><span>Actualizar</span>
       </a>
       <a onclick="showSection('promos')" id="nav-promos" style="display:none">
-        <span>📣 Promociones</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 10v4l11 4V6z"/><path d="M15 9a3 3 0 0 1 0 6"/></svg><span>Promociones</span>
       </a>
       <a href="/gestion" target="_blank" id="nav-gestion" style="display:none">
-        <span>🗂️ Gestión</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 7h5l2 2h9v9a2 2 0 0 1-2 2H4z"/></svg><span>Gestión</span>
       </a>
       <a href="/publicidad" target="_blank" id="nav-publicidad" style="display:none">
-        <span>🧠 Estrategia</span>
+        <svg class="nvic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg><span>Estrategia</span>
       </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts" style="display:none">
-        <span>🏪 Cuentas ML</span>
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 9l1-4h14l1 4"/><path d="M4 9v10h16V9"/><path d="M9 19v-5h6v5"/></svg><span>Cuentas ML</span>
       </a>
       <a onclick="showSection('users')" id="nav-users" style="display:none">
-        <span>👥 Usuarios</span>
+        <svg class="nvic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M4 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M16 6a3 3 0 0 1 0 6"/><path d="M20 20c0-2.5-1.5-4-3.5-4.5"/></svg><span>Usuarios</span>
       </a>
     </nav>
     <div class="content" id="content">
@@ -543,10 +585,17 @@
       return code.trim();
     }).filter(Boolean);
   }
-  function skuChipsHtml(rawSku) {
-    const codes = parseSkuCodes(rawSku);
-    if (!codes.length) return '';
-    return codes.map(c => `<span class="copyable sku-chip" title="Copiar código">${escapeHtml(c)}</span>`).join(' ');
+  // Muestra el SKU COMPLETO (con cantidades, sufijos _D, proveedores, +, etc.) y deja
+  // clickeables SOLO los códigos (los tramos con "/" o "-"). El resto queda como texto plano.
+  function skuFullHtml(rawSku) {
+    if (!rawSku) return '';
+    return String(rawSku).split('+').map(unit =>
+      unit.split('_').map(seg =>
+        /[\/\-]/.test(seg)
+          ? `<span class="copyable sku-code" title="Copiar ${escapeHtml(seg.trim())}">${escapeHtml(seg)}</span>`
+          : escapeHtml(seg)
+      ).join('_')
+    ).join('+');
   }
   // Un solo listener (delegación) para todo lo copiable. Copia data-copy (si existe) o el texto visible.
   document.addEventListener('click', function (e) {
@@ -559,6 +608,19 @@
       el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 700);
     }).catch(() => { if (typeof showToast === 'function') showToast('No se pudo copiar', 'error'); });
   });
+  // "Gravedad" de la reputación: cuanto más alto, PEOR (va más arriba en la lista).
+  // Suma por: nivel por debajo del verde, y métricas por encima de lo bueno
+  // (reclamos > 1%, envíos demorados > 5%, cancelaciones por el vendedor > 0).
+  function reputationBadness(a) {
+    if (!a || a.error) return -1;
+    let b = 0;
+    const lvl = parseInt(String(a.level_id || '').charAt(0)) || 0; // 5 = verde (mejor)
+    if (lvl && lvl < 5) b += (5 - lvl) * 10;
+    if ((a.reclamos_rate || 0) > 0.01) b += 100 + (a.reclamos_rate || 0) * 1000;
+    if ((a.demorados_rate || 0) > 0.05) b += 50 + (a.demorados_rate || 0) * 100;
+    if ((a.canceladas_rate || 0) > 0) b += 20 + (a.canceladas_rate || 0) * 100;
+    return b;
+  }
   let currentSection = 'dashboard';
   let navToken = 0; // se incrementa en cada navegación para cancelar cargas anteriores
   let currentUser = null;
@@ -852,7 +914,7 @@
       if (navToken !== myNav) return;
       // Orden fijo pedido de las cuentas.
       const REP_ORDER = ['MARA_PRATO_8', 'REPUESTOSEXPRESS_1', 'AUTOCHAPAUTOPARTES07', 'RUIZDARIO20220906163653', 'AUTOPARTESARG', 'SAEZJORGE34'];
-      data.sort((a, b) => { const ia = REP_ORDER.indexOf(a.account_name); const ib = REP_ORDER.indexOf(b.account_name); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
+      data.sort((a, b) => { const db = reputationBadness(b) - reputationBadness(a); if (db !== 0) return db; const ia = REP_ORDER.indexOf(a.account_name); const ib = REP_ORDER.indexOf(b.account_name); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
       const pct = (r) => (r == null ? '—' : ((r * 100).toFixed(2).replace(/\.?0+$/, '') || '0') + '%');
       const levelInfo = (lid) => {
         const map = { '5_green': ['#00a650', 'Verde'], '4_light_green': ['#7dd056', 'Verde claro'], '3_yellow': ['#ffcc00', 'Amarillo'], '2_orange': ['#ff7733', 'Naranja'], '1_red': ['#e74c3c', 'Rojo'] };
@@ -1323,7 +1385,7 @@
       const data = await res.json();
       if (navToken !== myNav) return;
       const REP_ORDER = ['MARA_PRATO_8', 'REPUESTOSEXPRESS_1', 'AUTOCHAPAUTOPARTES07', 'RUIZDARIO20220906163653', 'AUTOPARTESARG', 'SAEZJORGE34'];
-      data.sort((a, b) => { const ia = REP_ORDER.indexOf(a.account_name); const ib = REP_ORDER.indexOf(b.account_name); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
+      data.sort((a, b) => { const db = reputationBadness(b) - reputationBadness(a); if (db !== 0) return db; const ia = REP_ORDER.indexOf(a.account_name); const ib = REP_ORDER.indexOf(b.account_name); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
       const pct = (r) => (r == null ? '—' : ((r * 100).toFixed(2).replace(/\.?0+$/, '') || '0') + '%');
       const levelInfo = (lid) => ({ '5_green': ['#00a650', 'Verde'], '4_light_green': ['#7dd056', 'Verde claro'], '3_yellow': ['#ffcc00', 'Amarillo'], '2_orange': ['#ff7733', 'Naranja'], '1_red': ['#e74c3c', 'Rojo'] }[lid] || ['#cccccc', 'Nuevo']);
       const psLabel = (s) => s === 'platinum' ? 'Platinum' : s === 'gold' ? 'Gold' : s === 'silver' ? 'MercadoLíder' : '';
@@ -1537,7 +1599,7 @@
                   ${q.item_price ? `<div style="font-weight:700;color:#2d3277;font-size:16px;margin-top:4px">$ ${Number(q.item_price).toLocaleString('es-AR')}${q.item_available_quantity ? ` <span style="font-weight:400;font-size:13px;color:#666">x ${q.item_available_quantity} disponibles</span>` : ''}</div>` : ''}
                   <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
                     ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicación #<span class="copyable" title="Copiar número de publicación">${escapeHtml(String(q.item_publication_id).replace('MLA',''))}</span></span>` : ''}
-                    ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${skuChipsHtml(q.item_sku)}</span>` : ''}
+                    ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${skuFullHtml(q.item_sku)}</span>` : ''}
                     ${q.item_mpn ? `<span style="font-size:12px;color:#999">Código: ${q.item_mpn}</span>` : ''}
                   </div>
                 </div>
