@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#ffe600">
+  <meta name="theme-color" content="#b91c1c">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="AUTOCHAP">
   <title>AUTOCHAP VENTAS</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23ffe600'/><text x='50' y='68' font-size='55' font-weight='bold' text-anchor='middle' fill='%232d3277'>ML</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='104' fill='%23b91c1c'/><path d='M70 306 C70 294 80 286 96 285 L172 279 C196 250 230 231 274 231 L322 231 C362 233 398 252 422 283 L446 288 C458 291 454 300 450 306 L450 320 C450 331 442 338 430 338 L92 338 C78 338 70 330 70 318 Z' fill='%23ffffff'/><path d='M198 268 C216 246 242 232 272 231 L300 231 L300 268 Z' fill='%23dc2626'/><path d='M316 231 C352 233 382 250 404 272 L316 272 Z' fill='%23dc2626'/><circle cx='172' cy='344' r='52' fill='%23111827'/><circle cx='172' cy='344' r='21' fill='%23ffffff'/><circle cx='388' cy='344' r='52' fill='%23111827'/><circle cx='388' cy='344' r='21' fill='%23ffffff'/></svg>">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
@@ -19,7 +19,7 @@
     /* LOGIN */
     .login-container {
       display: flex; justify-content: center; align-items: center; min-height: 100vh;
-      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
+      background: linear-gradient(135deg, #7f1d1d 0%, #b91c1c 50%, #7f1d1d 100%);
     }
     .login-box {
       background: white; padding: 40px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
@@ -31,17 +31,17 @@
       width: 100%; padding: 12px 16px; border: 1.5px solid #e2e8f0; border-radius: 10px;
       font-size: 14px; margin-bottom: 12px; outline: none; font-family: inherit; color: #1e293b; transition: border-color 0.2s;
     }
-    .login-box input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .login-box input:focus { border-color: #dc2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.1); }
     .login-box button {
-      width: 100%; padding: 12px; background: #2563eb; color: white; border: none;
+      width: 100%; padding: 12px; background: #dc2626; color: white; border: none;
       border-radius: 10px; font-size: 15px; cursor: pointer; font-weight: 600; font-family: inherit; transition: background 0.2s;
     }
-    .login-box button:hover { background: #1d4ed8; }
+    .login-box button:hover { background: #b91c1c; }
     .login-error { color: #ef4444; text-align: center; margin-bottom: 12px; font-size: 14px; display: none; }
     /* LAYOUT */
     .app { display: none; }
     .header {
-      background: #475569; padding: 12px 24px; display: flex; justify-content: space-between;
+      background: linear-gradient(135deg,#b91c1c,#7f1d1d); padding: 12px 24px; display: flex; justify-content: space-between;
       align-items: center; box-shadow: 0 1px 4px rgba(0,0,0,0.18);
       position: sticky; top: 0; z-index: 50;
     }
@@ -49,14 +49,14 @@
     .header-right { display: flex; align-items: center; gap: 12px; }
     .header-right span { font-size: 13px; color: rgba(255,255,255,0.8); }
     .header-right button {
-      padding: 7px 16px; background: #2563eb; color: white; border: none;
+      padding: 7px 16px; background: #dc2626; color: white; border: none;
       border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; font-family: inherit; transition: background 0.2s;
     }
-    .header-right button:hover { background: #1d4ed8; }
+    .header-right button:hover { background: #b91c1c; }
     .main { display: flex; height: calc(100vh - 57px); overflow: hidden; }
     /* SIDEBAR */
     .sidebar {
-      width: 220px; background: #0f172a; color: white; padding: 16px 0;
+      width: 220px; background: #7f1d1d; color: white; padding: 16px 0;
       display: flex; flex-direction: column; overflow-y: auto; flex: none;
     }
     .sidebar a {
@@ -64,13 +64,13 @@
       text-decoration: none; font-size: 13.5px; font-weight: 500; cursor: pointer; transition: all 0.15s;
       border-radius: 0; margin: 1px 8px; border-radius: 8px; position: relative;
     }
-    .sidebar a:hover { background: #1e293b; color: #e2e8f0; }
+    .sidebar a:hover { background: #991b1b; color: #ffffff; }
     .sidebar a.active {
-      background: #1d4ed8; color: #ffffff; font-weight: 600;
+      background: #b91c1c; color: #ffffff; font-weight: 600;
     }
     .sidebar a.active::before {
       content: ''; position: absolute; left: -8px; top: 50%; transform: translateY(-50%);
-      width: 3px; height: 60%; background: #60a5fa; border-radius: 0 3px 3px 0;
+      width: 3px; height: 60%; background: #f87171; border-radius: 0 3px 3px 0;
     }
     .sidebar .badge {
       background: #ef4444; color: white; font-size: 11px; padding: 2px 7px;
@@ -115,8 +115,8 @@
       padding: 8px 14px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 13px;
       background: white; cursor: pointer; font-family: inherit; color: #334155; font-weight: 500; transition: all 0.15s;
     }
-    .filters button.active { background: #2563eb; color: white; border-color: #2563eb; }
-    .filters button:hover:not(.active) { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+    .filters button.active { background: #dc2626; color: white; border-color: #dc2626; }
+    .filters button:hover:not(.active) { border-color: #dc2626; color: #dc2626; background: #eff6ff; }
     /* QUESTION / MESSAGE CARD */
     .card {
       background: white; border-radius: 12px; padding: 20px; margin-bottom: 12px;
@@ -126,38 +126,38 @@
     .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
     .card-account {
       display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11.5px;
-      font-weight: 600; background: #dbeafe; color: #1d4ed8;
+      font-weight: 600; background: #dbeafe; color: #b91c1c;
     }
     .card-date { font-size: 12px; color: #94a3b8; }
     .card-item { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
     .card-item img { width: 50px; height: 50px; border-radius: 8px; object-fit: cover; }
     .card-item-title { font-size: 13px; color: #64748b; }
-    .card-item-title a { color: #2563eb; text-decoration: none; font-weight: 500; }
+    .card-item-title a { color: #dc2626; text-decoration: none; font-weight: 500; }
     .card-item-title a:hover { text-decoration: underline; }
-    .card-question { font-size: 15px; line-height: 1.6; margin-bottom: 12px; padding: 12px 16px; background: #f8fafc; border-radius: 10px; color: #1e293b; border-left: 3px solid #2563eb; }
+    .card-question { font-size: 15px; line-height: 1.6; margin-bottom: 12px; padding: 12px 16px; background: #f8fafc; border-radius: 10px; color: #1e293b; border-left: 3px solid #dc2626; }
     .card-answer { font-size: 14px; color: #475569; padding: 12px 16px; background: #f0fdf4; border-radius: 10px; margin-bottom: 12px; border-left: 3px solid #22c55e; }
     .card-answer strong { color: #16a34a; }
     /* REPLY BOX */
     .reply-box { display: flex; flex-direction: column; gap: 10px; }
     .reply-row { display: flex; gap: 10px; align-items: stretch; }
     .sig-line { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; color: #334155; cursor: pointer; padding: 2px 0; line-height: 1.4; }
-    .sig-line input[type=checkbox] { margin-top: 3px; flex: none; accent-color: #2563eb; width: 17px; height: 17px; cursor: pointer; }
+    .sig-line input[type=checkbox] { margin-top: 3px; flex: none; accent-color: #dc2626; width: 17px; height: 17px; cursor: pointer; }
     .sig-hint { font-size: 12px; color: #94a3b8; padding: 2px 0; }
     .reply-box textarea {
       flex: 1; padding: 14px 16px; border: 1.5px solid #e2e8f0; border-radius: 10px;
       font-size: 15px; resize: vertical; min-height: 110px; font-family: inherit; outline: none; color: #1e293b; transition: border-color 0.2s; box-sizing: border-box; width: 100%;
     }
-    .reply-box textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
+    .reply-box textarea:focus { border-color: #dc2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.08); }
     .reply-box button {
-      min-width: 66px; padding: 0 22px; background: #3dd6a3; color: white; border: none;
+      min-width: 66px; padding: 0 22px; background: #dc2626; color: white; border: none;
       border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 22px; white-space: nowrap; font-family: inherit; transition: background 0.2s; flex: none;
     }
-    .reply-box button:hover { background: #2fc593; }
+    .reply-box button:hover { background: #b91c1c; }
     .reply-box button:disabled { background: #cbd5e1; cursor: not-allowed; color: #94a3b8; font-size: 14px; }
     .msg-btns { display: flex; flex-direction: column; gap: 8px; width: 130px; flex: none; }
     .msg-btns button { width: 100%; min-width: 0; flex: 1; padding: 10px 8px; font-size: 14px; font-weight: 700; border-radius: 10px; }
-    .msg-btns .msg-send { background: #3dd6a3; }
-    .msg-btns .msg-send:hover { background: #2fc593; }
+    .msg-btns .msg-send { background: #dc2626; }
+    .msg-btns .msg-send:hover { background: #b91c1c; }
     .msg-btns .msg-done { background: #6c757d; }
     .msg-btns .msg-done:hover { background: #5a6268; }
     /* MESSAGES */
@@ -167,7 +167,7 @@
       font-size: 14px; line-height: 1.5;
     }
     .msg-bubble.buyer { background: #f1f5f9; color: #1e293b; border-bottom-left-radius: 4px; }
-    .msg-bubble.seller { background: #2563eb; color: white; margin-left: auto; border-bottom-right-radius: 4px; }
+    .msg-bubble.seller { background: #dc2626; color: white; margin-left: auto; border-bottom-right-radius: 4px; }
     .msg-bubble .msg-date { font-size: 11px; opacity: 0.7; margin-top: 4px; text-align: right; }
     .msg-bubble.seller .msg-date { color: rgba(255,255,255,0.75); }
     /* SALES */
@@ -178,23 +178,23 @@
       display: flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1.5px solid #e2e8f0;
       border-radius: 8px; font-size: 12px; cursor: pointer; background: white; transition: all 0.15s; color: #475569; font-weight: 500;
     }
-    .sales-filters label.chip:hover { border-color: #2563eb; color: #2563eb; }
-    .sales-filters label.chip input { width: 14px; height: 14px; cursor: pointer; accent-color: #2563eb; }
-    .sales-filters label.chip.checked { background: #dbeafe; border-color: #2563eb; color: #1d4ed8; }
+    .sales-filters label.chip:hover { border-color: #dc2626; color: #dc2626; }
+    .sales-filters label.chip input { width: 14px; height: 14px; cursor: pointer; accent-color: #dc2626; }
+    .sales-filters label.chip.checked { background: #dbeafe; border-color: #dc2626; color: #b91c1c; }
     .sale-card {
       background: white; border-radius: 12px; padding: 16px 20px; margin-bottom: 10px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08); transition: box-shadow 0.2s; border: 1px solid #f1f5f9;
     }
     .sale-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
     .sale-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; font-size: 13px; color: #64748b; }
-    .sale-header .order-id { font-weight: 700; color: #2563eb; }
+    .sale-header .order-id { font-weight: 700; color: #dc2626; }
     .sale-header .sale-date { color: #64748b; }
     .sale-status {
       display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
     }
     .sale-status.pending { background: #fef9c3; color: #854d0e; }
     .sale-status.ready_to_print { background: #dcfce7; color: #15803d; }
-    .sale-status.ready_to_ship { background: #dbeafe; color: #1d4ed8; }
+    .sale-status.ready_to_ship { background: #dbeafe; color: #b91c1c; }
     .sale-status.in_transit { background: #cffafe; color: #0e7490; }
     .sale-status.delivered { background: #dcfce7; color: #15803d; }
     .sale-status.cancelled { background: #fee2e2; color: #dc2626; }
@@ -205,7 +205,7 @@
       background: #334155; color: white; text-transform: uppercase; letter-spacing: 0.5px;
     }
     .shipping-badge.flex { background: #16a34a; }
-    .shipping-badge.drop_off { background: #2563eb; }
+    .shipping-badge.drop_off { background: #dc2626; }
     .shipping-badge.agreement { background: #94a3b8; }
     .sale-item { display: flex; gap: 12px; align-items: center; padding: 8px 0; }
     .sale-item img { width: 55px; height: 55px; border-radius: 8px; object-fit: cover; border: 1px solid #f1f5f9; }
@@ -218,11 +218,11 @@
       padding: 6px 14px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 12px;
       cursor: pointer; background: white; color: #475569; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; transition: all 0.15s;
     }
-    .sale-actions button:hover, .sale-actions a:hover { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+    .sale-actions button:hover, .sale-actions a:hover { border-color: #dc2626; color: #dc2626; background: #eff6ff; }
     .sale-actions .btn-print { background: #ea580c; color: white; border-color: #ea580c; font-weight: 600; }
     .sale-actions .btn-print:hover { background: #c2410c; border-color: #c2410c; color: white; }
     .sale-notes { margin-top: 8px; }
-    .sale-notes button:hover { border-color: #2563eb !important; background: #eff6ff !important; color: #2563eb !important; }
+    .sale-notes button:hover { border-color: #dc2626 !important; background: #eff6ff !important; color: #dc2626 !important; }
     /* ACCOUNTS MANAGEMENT */
     .account-card {
       background: white; border-radius: 12px; padding: 20px; margin-bottom: 12px;
@@ -237,10 +237,10 @@
     /* USERS MANAGEMENT */
     .user-form { display: flex; gap: 8px; margin-bottom: 20px; }
     .user-form input { padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 14px; font-family: inherit; outline: none; }
-    .user-form input:focus { border-color: #2563eb; }
+    .user-form input:focus { border-color: #dc2626; }
     /* LOADING */
     .loading { text-align: center; padding: 40px; color: #94a3b8; }
-    .spinner { display: inline-block; width: 30px; height: 30px; border: 3px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    .spinner { display: inline-block; width: 30px; height: 30px; border: 3px solid #e2e8f0; border-top-color: #dc2626; border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .empty { text-align: center; padding: 60px 20px; color: #94a3b8; }
     .empty svg { width: 64px; height: 64px; margin-bottom: 16px; opacity: 0.3; }
@@ -251,11 +251,19 @@
     }
     .toast.success { background: #16a34a; }
     .toast.error { background: #dc2626; }
+    /* Click-para-copiar */
+    .copyable { cursor: pointer; border-bottom: 1px dotted currentColor; transition: background 0.15s; }
+    .copyable:hover { background: #fee2e2; border-radius: 3px; }
+    .copyable.copied { background: #bbf7d0 !important; border-radius: 3px; }
+    .sku-chip { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+      background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0 6px; margin: 0 2px 2px 0;
+      color: #334155; border-bottom: 1px solid #e2e8f0; }
+    .sku-chip:hover { background: #fee2e2; border-color: #fca5a5; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     /* MOBILE BOTTOM NAV */
     .mobile-nav {
       display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
-      background: #0f172a; padding: 0; justify-content: space-around; align-items: stretch;
+      background: #7f1d1d; padding: 0; justify-content: space-around; align-items: stretch;
       box-shadow: 0 -1px 0 rgba(255,255,255,0.06), 0 -4px 16px rgba(0,0,0,0.3);
     }
     .mobile-nav a {
@@ -263,13 +271,33 @@
       padding: 8px 4px; color: #475569; text-decoration: none; font-size: 10px;
       flex: 1; gap: 2px; position: relative; transition: color 0.2s; font-weight: 500;
     }
-    .mobile-nav a.active { color: #60a5fa; }
+    .mobile-nav a.active { color: #f87171; }
     .mobile-nav a .nav-icon { font-size: 20px; }
+    /* En la barra inferior mostramos solo 4 accesos + "Más". El resto vive en el menú desplegable. */
+    .mobile-nav a.mob-extra { display: none !important; }
     .mobile-nav .badge {
       position: absolute; top: 4px; right: calc(50% - 18px);
       background: #ef4444; color: white; font-size: 9px; padding: 1px 5px;
       border-radius: 8px; min-width: 16px; text-align: center; font-weight: 700;
     }
+    /* Menú móvil desplegable (bottom sheet) */
+    .mobile-more { display: none; position: fixed; inset: 0; z-index: 200; }
+    .mobile-more.open { display: block; }
+    .mobile-more .mm-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.45); animation: fadeIn 0.2s; }
+    .mobile-more .mm-sheet {
+      position: absolute; left: 0; right: 0; bottom: 0; background: #fff;
+      border-radius: 18px 18px 0 0; padding: 8px 10px calc(14px + env(safe-area-inset-bottom));
+      max-height: 78vh; overflow-y: auto; box-shadow: 0 -8px 32px rgba(0,0,0,0.35);
+      animation: sheetUp 0.25s ease;
+    }
+    @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .mobile-more .mm-grip { width: 40px; height: 4px; border-radius: 3px; background: #e2e8f0; margin: 6px auto 8px; }
+    .mobile-more .mm-title { font-weight: 800; color: #b91c1c; padding: 4px 12px 10px; font-size: 15px; }
+    .mobile-more .mm-item {
+      display: flex; align-items: center; gap: 10px; padding: 14px 14px; color: #0f172a;
+      text-decoration: none; font-size: 15px; font-weight: 600; border-radius: 10px; border-bottom: 1px solid #f1f5f9;
+    }
+    .mobile-more .mm-item:active { background: #fef2f2; }
     @media (max-width: 768px) {
       .sidebar { display: none; }
       .mobile-nav { display: flex; }
@@ -311,8 +339,8 @@
     /* PREP SECTION */
     .prep-tabs { display:flex; gap:4px; margin-bottom:20px; background:white; padding:8px; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.08); border:1px solid #f1f5f9; }
     .prep-tab { flex:1; padding:10px 12px; border:2px solid transparent; border-radius:8px; background:#f1f5f9; cursor:pointer; font-size:13px; font-weight:600; color:#64748b; transition:all 0.2s; }
-    .prep-tab.active { background:#2563eb; color:white; border-color:#2563eb; }
-    .prep-tab:hover:not(.active) { border-color:#2563eb; color:#2563eb; background:#eff6ff; }
+    .prep-tab.active { background:#dc2626; color:white; border-color:#dc2626; }
+    .prep-tab:hover:not(.active) { border-color:#dc2626; color:#dc2626; background:#eff6ff; }
     .priority-badge { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; font-size:13px; font-weight:700; color:white; flex-shrink:0; }
     .priority-1 { background:#dc2626; }
     .priority-2 { background:#ea580c; }
@@ -324,15 +352,18 @@
     .prep-status-done { background:#dcfce7; color:#15803d; }
     .btn-finalizar { background:#16a34a; color:white; border:none; border-radius:10px; padding:10px 24px; font-size:14px; font-weight:700; cursor:pointer; font-family:inherit; transition:background 0.2s; }
     .btn-finalizar:hover { background:#15803d; }
-    .btn-preparar { background:#2563eb; color:white; border:none; border-radius:8px; padding:7px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:background 0.2s; }
-    .btn-preparar:hover { background:#1d4ed8; }
+    .btn-preparar { background:#dc2626; color:white; border:none; border-radius:8px; padding:7px 16px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:background 0.2s; }
+    .btn-preparar:hover { background:#b91c1c; }
   </style>
 </head>
 <body spellcheck="true">
 <!-- LOGIN -->
 <div class="login-container" id="loginScreen">
   <div class="login-box">
-    <h1>AUTOCHAP VENTAS</h1>
+    <img src="/logo.png" alt="Autochap" style="display:none;max-width:230px;width:100%;height:auto;margin:0 auto 14px"
+         onload="this.style.display='block';var t=document.getElementById('loginBrandText');if(t)t.style.display='none'"
+         onerror="this.remove()">
+    <h1 id="loginBrandText">AUTOCHAP VENTAS</h1>
     <p>MercadoLibre - Gestión Unificada</p>
     <div class="login-error" id="loginError"></div>
     <input type="text" id="loginUser" placeholder="Usuario" autofocus>
@@ -343,7 +374,12 @@
 <!-- APP -->
 <div class="app" id="app">
   <div class="header">
-    <h1>AUTOCHAP VENTAS</h1>
+    <div style="display:flex;align-items:center;gap:10px">
+      <img src="/logo.png" alt="Autochap" style="height:38px;width:auto;display:none;background:#fff;border-radius:8px;padding:3px 8px"
+           onload="this.style.display='';var t=document.getElementById('brandText');if(t)t.style.display='none'"
+           onerror="this.remove()">
+      <h1 id="brandText">AUTOCHAP VENTAS</h1>
+    </div>
     <div class="header-right">
       <span id="currentUser"></span>
       <button id="btnBackup" onclick="doBackup()" style="background:#27ae60;display:none" title="Guardar backup antes de hacer deploy">💾 Backup</button>
@@ -427,30 +463,44 @@
       <span class="nav-icon">🛒</span>
       Ventas
     </a>
-    <a onclick="showSection('reputation')" id="mob-reputation" style="display:none">
+    <a onclick="showSection('reputation')" id="mob-reputation" class="mob-extra" style="display:none">
       <span class="nav-icon">⭐</span>
       Reputación
     </a>
-    <a onclick="showSection('claims')" id="mob-claims" style="display:none">
+    <a onclick="showSection('claims')" id="mob-claims" class="mob-extra" style="display:none">
       <span class="nav-icon">⚠️</span>
       Reclamos
     </a>
-    <a onclick="showSection('orders')" id="mob-orders" style="display:none">
+    <a onclick="showSection('orders')" id="mob-orders" class="mob-extra" style="display:none">
       <span class="nav-icon">📋</span>
       Pedidos
     </a>
-    <a onclick="showSection('prep')" id="mob-prep" style="display:none">
+    <a onclick="showSection('prep')" id="mob-prep" class="mob-extra" style="display:none">
       <span class="nav-icon">📦</span>
       Preparar
     </a>
-    <a onclick="showSection('update')" id="mob-update" style="display:none">
+    <a onclick="showSection('update')" id="mob-update" class="mob-extra" style="display:none">
       <span class="nav-icon">🔄</span>
       Actualizar
     </a>
-    <a href="/publicidad" target="_blank" id="mob-publicidad" style="display:none">
+    <a href="/publicidad" target="_blank" id="mob-publicidad" class="mob-extra" style="display:none">
       <span class="nav-icon">📊</span>
       Estrategia
     </a>
+    <a onclick="toggleMobileMore()" id="mob-more">
+      <span class="nav-icon">☰</span>
+      Más
+    </a>
+  </div>
+  <!-- Menú móvil desplegable: espeja el menú lateral, así SIEMPRE tiene todas las opciones
+       (incluida Gestión) respetando los permisos, sin tocar la lógica de permisos. -->
+  <div class="mobile-more" id="mobileMore">
+    <div class="mm-backdrop" onclick="closeMobileMore()"></div>
+    <div class="mm-sheet">
+      <div class="mm-grip"></div>
+      <div class="mm-title">Menú</div>
+      <div id="mobileMoreList"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -465,6 +515,50 @@
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
   }
+  // ==================== COPIAR AL PORTAPAPELES (click-to-copy) ====================
+  // Copia texto al portapapeles sin navegar a ningún lado. Con fallback para contextos viejos.
+  function copyToClipboard(text) {
+    text = String(text == null ? '' : text);
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    return new Promise((resolve, reject) => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta); resolve();
+      } catch (e) { reject(e); }
+    });
+  }
+  // Limpia un SKU y devuelve los códigos copiables individuales.
+  //   "06/065/092_D"                       -> ["06/065/092"]
+  //   "100240-DI_OTEROx1+100240-DD_OTEROx1"-> ["100240-DI","100240-DD"]
+  //   "OFF_02/027/078_D"                   -> ["02/027/078"]
+  // Regla: se separa por "+", y en cada parte el código es el tramo (separado por "_")
+  // que contiene "/" o "-" (el resto son prefijos tipo OFF o sufijos de proveedor tipo _D/_OTERO).
+  function parseSkuCodes(rawSku) {
+    if (!rawSku) return [];
+    return String(rawSku).split('+').map(u => u.trim()).filter(Boolean).map(unit => {
+      const segs = unit.split('_');
+      const code = segs.find(s => /[\/\-]/.test(s)) || unit;
+      return code.trim();
+    }).filter(Boolean);
+  }
+  function skuChipsHtml(rawSku) {
+    const codes = parseSkuCodes(rawSku);
+    if (!codes.length) return '';
+    return codes.map(c => `<span class="copyable sku-chip" title="Copiar código">${escapeHtml(c)}</span>`).join(' ');
+  }
+  // Un solo listener (delegación) para todo lo copiable. Copia data-copy (si existe) o el texto visible.
+  document.addEventListener('click', function (e) {
+    const el = e.target && e.target.closest ? e.target.closest('.copyable') : null;
+    if (!el) return;
+    e.preventDefault(); e.stopPropagation();
+    const val = el.getAttribute('data-copy') != null ? el.getAttribute('data-copy') : (el.textContent || '').trim();
+    copyToClipboard(val).then(() => {
+      if (typeof showToast === 'function') showToast('Copiado: ' + val, 'success');
+      el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 700);
+    }).catch(() => { if (typeof showToast === 'function') showToast('No se pudo copiar', 'error'); });
+  });
   let currentSection = 'dashboard';
   let navToken = 0; // se incrementa en cada navegación para cancelar cargas anteriores
   let currentUser = null;
@@ -661,7 +755,43 @@
     }
   }
   // ==================== NAVIGATION ====================
+  // Menú móvil desplegable: se arma espejando el menú lateral (respeta permisos automáticamente).
+  function buildMobileMore() {
+    const wrap = document.getElementById('mobileMoreList');
+    if (!wrap) return;
+    // Estos 4 ya están en la barra inferior; no los repetimos en el menú.
+    const enBarra = ['nav-dashboard', 'nav-questions', 'nav-messages', 'nav-sales'];
+    let html = '';
+    document.querySelectorAll('.sidebar a').forEach(a => {
+      if (a.style.display === 'none') return;                 // oculto por permisos → no va
+      if (enBarra.includes(a.id)) return;                     // ya está en la barra
+      const labelSpan = a.querySelector('span');
+      const label = (labelSpan ? labelSpan.textContent : a.textContent).trim();
+      const href = a.getAttribute('href');
+      if (href) {
+        html += `<a href="${href}" target="_blank" onclick="closeMobileMore()" class="mm-item">${escapeHtml(label)}</a>`;
+      } else {
+        const secId = (a.id || '').replace('nav-', '');
+        html += `<a class="mm-item" onclick="closeMobileMore();showSection('${secId}')">${escapeHtml(label)}</a>`;
+      }
+    });
+    wrap.innerHTML = html || '<div style="padding:16px;color:#94a3b8;font-size:14px">Sin más opciones.</div>';
+  }
+  function toggleMobileMore() {
+    const ov = document.getElementById('mobileMore');
+    if (!ov) return;
+    if (ov.classList.contains('open')) { closeMobileMore(); return; }
+    buildMobileMore();
+    ov.classList.add('open');
+    const mm = document.getElementById('mob-more'); if (mm) mm.classList.add('active');
+  }
+  function closeMobileMore() {
+    const ov = document.getElementById('mobileMore');
+    if (ov) ov.classList.remove('open');
+    const mm = document.getElementById('mob-more'); if (mm) mm.classList.remove('active');
+  }
   function showSection(section, skipLoad) {
+    closeMobileMore();
     currentSection = section;
     navToken++; // cancela cualquier carga async anterior
     document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
@@ -914,7 +1044,7 @@
           <textarea id="claimReplyText" placeholder="Escribí tu respuesta al reclamo..." style="flex:1;border:1.5px solid #e2e8f0;border-radius:10px;padding:10px;font-size:14px;min-height:64px;font-family:inherit;resize:vertical"></textarea>
           <div style="display:flex;flex-direction:column;gap:6px;width:150px">
             <select id="claimReceiver" style="border:1px solid #ddd;border-radius:8px;padding:6px;font-size:12px"><option value="complainant">Al comprador</option><option value="mediator">A la mediación</option></select>
-            <button id="claimSendBtn" onclick="sendClaimReply('${escapeHtml(String(claimId))}', ${accountId})" style="flex:1;background:#3dd6a3;color:white;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700">Enviar</button>
+            <button id="claimSendBtn" onclick="sendClaimReply('${escapeHtml(String(claimId))}', ${accountId})" style="flex:1;background:#dc2626;color:white;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700">Enviar</button>
           </div>
         </div>
         <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
@@ -963,7 +1093,7 @@
           return `<a href="${url}" target="_blank" style="display:inline-block;font-size:12px;margin-top:4px;color:inherit;text-decoration:underline">📎 ${escapeHtml(a.name)}</a>`;
         }).join(' ');
         return `<div style="margin-bottom:10px;text-align:${mine ? 'right' : 'left'}">
-          <div style="display:inline-block;max-width:82%;background:${mine ? '#2563eb' : '#eef1f4'};color:${mine ? 'white' : '#1e293b'};padding:8px 12px;border-radius:10px;text-align:left">
+          <div style="display:inline-block;max-width:82%;background:${mine ? '#dc2626' : '#eef1f4'};color:${mine ? 'white' : '#1e293b'};padding:8px 12px;border-radius:10px;text-align:left">
             <div style="font-size:11px;opacity:0.7;margin-bottom:2px">${escapeHtml(who)}</div>
             ${renderRichText(m.text)}${att ? ('<div>' + att + '</div>') : ''}
             ${m.date ? `<div style="font-size:10px;opacity:0.6;margin-top:4px">${fmtAR(m.date)}</div>` : ''}
@@ -1119,7 +1249,7 @@
               <label style="font-size:11px;color:#64748b;font-weight:600">Hasta</label>
               <input type="date" id="dashTo" style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 8px;font-size:13px;color:#0f172a;font-family:inherit">
             </div>
-            <button onclick="applyDashRange()" style="padding:6px 16px;border-radius:8px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#2563eb;color:white">Ver rango</button>
+            <button onclick="applyDashRange()" style="padding:6px 16px;border-radius:8px;border:none;font-size:13px;cursor:pointer;font-weight:600;background:#dc2626;color:white">Ver rango</button>
             <span style="font-size:11px;color:#94a3b8">o usá los atajos de arriba (Hoy / 7 / 30)</span>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
@@ -1153,14 +1283,14 @@
       [1,7,30].forEach(n => {
         const btn = document.getElementById('dcp-' + n);
         if (!btn) return;
-        btn.style.background = n === _dashPeriod ? '#2563eb' : 'white';
+        btn.style.background = n === _dashPeriod ? '#dc2626' : 'white';
         btn.style.color      = n === _dashPeriod ? 'white'   : '#64748b';
       });
       // Aplicar estilos activos en tabs de métrica
       ['sales','revenue','units','questions'].forEach(k => {
         const btn = document.getElementById('dcm-' + k);
         if (!btn) return;
-        if (k === _dashMetric) { btn.style.background = '#eff6ff'; btn.style.color = '#2563eb'; btn.style.borderBottom = '2px solid #2563eb'; }
+        if (k === _dashMetric) { btn.style.background = '#eff6ff'; btn.style.color = '#dc2626'; btn.style.borderBottom = '2px solid #dc2626'; }
         else                   { btn.style.background = '#f8fafc'; btn.style.color = '#64748b'; btn.style.borderBottom = 'none'; }
       });
       // Poblar selector de cuentas y respetar selección actual
@@ -1256,7 +1386,7 @@
     [1,7,30].forEach(n => {
       const btn = document.getElementById('dcp-' + n);
       if (!btn) return;
-      if (n === p) { btn.style.background = '#2563eb'; btn.style.color = 'white'; }
+      if (n === p) { btn.style.background = '#dc2626'; btn.style.color = 'white'; }
       else { btn.style.background = 'white'; btn.style.color = '#64748b'; }
     });
     loadDashboardChart();
@@ -1277,7 +1407,7 @@
     ['sales','revenue','units','questions'].forEach(k => {
       const btn = document.getElementById('dcm-' + k);
       if (!btn) return;
-      if (k === m) { btn.style.background = '#eff6ff'; btn.style.color = '#2563eb'; btn.style.borderBottom = '2px solid #2563eb'; }
+      if (k === m) { btn.style.background = '#eff6ff'; btn.style.color = '#dc2626'; btn.style.borderBottom = '2px solid #dc2626'; }
       else { btn.style.background = '#f8fafc'; btn.style.color = '#64748b'; btn.style.borderBottom = 'none'; }
     });
     if (_dashData) renderDashChart(_dashData);
@@ -1308,11 +1438,11 @@
         datasets: [{
           label: DASH_METRIC_LABELS[_dashMetric],
           data: values,
-          borderColor: '#2563eb',
-          backgroundColor: 'rgba(37,99,235,0.08)',
+          borderColor: '#dc2626',
+          backgroundColor: 'rgba(220,38,38,0.08)',
           borderWidth: 2.5,
           pointRadius: values.length <= 14 ? 4 : 2,
-          pointBackgroundColor: '#2563eb',
+          pointBackgroundColor: '#dc2626',
           tension: 0.4,
           fill: true
         }]
@@ -1406,8 +1536,8 @@
                   </div>
                   ${q.item_price ? `<div style="font-weight:700;color:#2d3277;font-size:16px;margin-top:4px">$ ${Number(q.item_price).toLocaleString('es-AR')}${q.item_available_quantity ? ` <span style="font-weight:400;font-size:13px;color:#666">x ${q.item_available_quantity} disponibles</span>` : ''}</div>` : ''}
                   <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
-                    ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicación #${q.item_publication_id.replace('MLA','')}</span>` : ''}
-                    ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${q.item_sku}</span>` : ''}
+                    ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicación #<span class="copyable" title="Copiar número de publicación">${escapeHtml(String(q.item_publication_id).replace('MLA',''))}</span></span>` : ''}
+                    ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${skuChipsHtml(q.item_sku)}</span>` : ''}
                     ${q.item_mpn ? `<span style="font-size:12px;color:#999">Código: ${q.item_mpn}</span>` : ''}
                   </div>
                 </div>
