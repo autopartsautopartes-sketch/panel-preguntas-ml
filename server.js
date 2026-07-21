@@ -5786,7 +5786,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-21-v33-ventas-paginado-prep', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio'] });
+  sendJSON(res, 200, { version: '2026-07-21-v35-stock-descarga', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -8137,7 +8137,515 @@ function servePanel(mode, req, res) {
 route('GET', '/publicidad', async (req, res) => servePanel('estrategia', req, res));
 route('GET', '/gestion', async (req, res) => servePanel('gestion', req, res));
 registerAds({ route, mlGet, mlPut, getValidToken, refreshToken, loadDB, saveDB, sendJSON, requireAuth, parseBody, ML_CLIENT_ID });
+registerStock({ route, sendJSON, requireAuth, parseBody, loadDB, saveDB, checkApiToken, DATA_DIR });
 })();
+
+
+// ============================================================================
+//  MÓDULO STOCK  —  valuación de inventario por sucursal ($), histórico diario,
+//  movimientos (vendido = rojo / agregado) y lista "sin precio".
+// ----------------------------------------------------------------------------
+//  Fuente de datos:
+//   • Excel de stock en Google Drive (STOCK_FILE_ID). Hojas STOCKBUENOSAIRES y
+//     STOCKRUFINO. Col A = CÓDIGO, Col B = CANTIDAD, Col E = PROVEEDOR.
+//     Celda A en ROJO (FFFF0000) = SIN stock (no se valúa; sirve para detectar
+//     ventas al comparar contra el día anterior).
+//   • Catálogo de costos (código||proveedor → costo) que EMPUJA la automatización
+//     a POST /api/stock/catalog (mismo costo de proveedor que usa el motor).
+//
+//  Todo se guarda en DATA_DIR (disco persistente de Render):
+//   • stock_catalog.json  → { updated, costos:{ "COD||PROV": costo } }
+//   • stock_daily.json    → { dias:[ {date, bsas, rufino, total} ] }  (2 años)
+//   • stock_last.json      → foto actual + movimientos + listas de ítems
+//   • stock_snap_<fecha>.json → mapa por clave para diferencia día a día
+//
+//  Lee el .xlsx con SÓLO módulos nativos de Node (zlib) — sin dependencias npm.
+// ============================================================================
+const _zlib = require('zlib');
+
+const STOCK_SHEET_BSAS = 'STOCKBUENOSAIRES';
+const STOCK_SHEET_RUF  = 'STOCKRUFINO';
+const STOCK_RED = 'FFFF0000';
+
+// --- normalización idéntica a la del motor (engine.norm_code / norm_prov) ----
+function stockNormCode(v) {
+  if (v === null || v === undefined) return '';
+  let s = String(v).trim();
+  if (s === '') return '';
+  if (s.endsWith('.0') && /^\d+$/.test(s.slice(0, -2))) s = s.slice(0, -2);
+  return s.toUpperCase();
+}
+function stockNormProv(v) { return v === null || v === undefined ? '' : String(v).trim().toUpperCase(); }
+
+function stockColOf(ref) { const m = ref.match(/^([A-Z]+)/); let c = 0; for (const ch of m[1]) c = c * 26 + (ch.charCodeAt(0) - 64); return c; }
+function stockRowOf(ref) { return parseInt(ref.match(/(\d+)$/)[1], 10); }
+function stockUnesc(s) { return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'"); }
+
+// --- lector ZIP/XLSX nativo (zlib), sin dependencias npm ---------------------
+function stockReadZip(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i > buf.length - 22 - 65536; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('xlsx inválido (no EOCD)');
+  const cdCount = buf.readUInt16LE(eocd + 10);
+  const cdOff = buf.readUInt32LE(eocd + 16);
+  const entries = {};
+  let p = cdOff;
+  for (let i = 0; i < cdCount; i++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commLen = buf.readUInt16LE(p + 32);
+    const lhOff = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    entries[name] = { method, compSize, lhOff };
+    p += 46 + nameLen + extraLen + commLen;
+  }
+  return entries;
+}
+function stockExtract(buf, e) {
+  const o = e.lhOff;
+  if (buf.readUInt32LE(o) !== 0x04034b50) throw new Error('xlsx inválido (local header)');
+  const nameLen = buf.readUInt16LE(o + 26);
+  const extraLen = buf.readUInt16LE(o + 28);
+  const dataStart = o + 30 + nameLen + extraLen;
+  const comp = buf.slice(dataStart, dataStart + e.compSize);
+  if (e.method === 0) return comp;
+  if (e.method === 8) return _zlib.inflateRawSync(comp);
+  throw new Error('xlsx: método de compresión no soportado ' + e.method);
+}
+
+// Devuelve { STOCKBUENOSAIRES:[{cod,prov,cant,red}], STOCKRUFINO:[...] }
+function parseStockXlsx(buf) {
+  const z = stockReadZip(buf);
+  const get = (n) => (z[n] ? stockExtract(buf, z[n]).toString('utf8') : '');
+
+  // sharedStrings
+  const shared = [];
+  const ssXml = get('xl/sharedStrings.xml');
+  if (ssXml) {
+    const re = /<si>([\s\S]*?)<\/si>/g; let m;
+    while ((m = re.exec(ssXml))) {
+      let txt = ''; const tre = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm;
+      while ((tm = tre.exec(m[1]))) txt += tm[1];
+      shared.push(stockUnesc(txt));
+    }
+  }
+
+  // styles: fillId por cellXf, rgb por fill
+  const stXml = get('xl/styles.xml');
+  const fillRgb = [];
+  {
+    const fillsBlock = (stXml.match(/<fills[^>]*>([\s\S]*?)<\/fills>/) || [])[1] || '';
+    const re = /<fill>([\s\S]*?)<\/fill>/g; let m;
+    while ((m = re.exec(fillsBlock))) {
+      let rgb = null;
+      const fg = m[1].match(/<fgColor[^>]*\/?>/);
+      if (fg) { const rm = fg[0].match(/rgb="([0-9A-Fa-f]{8})"/); if (rm) rgb = rm[1].toUpperCase(); }
+      fillRgb.push(rgb);
+    }
+  }
+  const xfFill = [];
+  {
+    const block = (stXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/) || [])[1] || '';
+    const re = /<xf\b[^>]*>/g; let m;
+    while ((m = re.exec(block))) {
+      const fm = m[0].match(/fillId="(\d+)"/);
+      xfFill.push(fm ? parseInt(fm[1], 10) : 0);
+    }
+  }
+  const styleToRgb = (s) => {
+    if (s === undefined || s === null || s === '') return null;
+    const fid = xfFill[parseInt(s, 10)];
+    return (fid != null) ? fillRgb[fid] : null;
+  };
+
+  // workbook: nombre de hoja -> archivo
+  const wbXml = get('xl/workbook.xml');
+  const relsXml = get('xl/_rels/workbook.xml.rels');
+  const rid2t = {};
+  { let m;
+    let re = /<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g; while ((m = re.exec(relsXml))) rid2t[m[1]] = m[2];
+    re = /<Relationship[^>]*Target="([^"]+)"[^>]*Id="([^"]+)"/g; while ((m = re.exec(relsXml))) rid2t[m[2]] = m[1];
+  }
+  const sheetFile = {};
+  { const re = /<sheet\b[^>]*\/?>/g; let m;
+    while ((m = re.exec(wbXml))) {
+      const nm = m[0].match(/name="([^"]*)"/);
+      const rid = m[0].match(/r:id="([^"]*)"/);
+      if (nm && rid) { let t = rid2t[rid[1]]; if (t) { if (!t.startsWith('xl/')) t = t.startsWith('/') ? t.slice(1) : 'xl/' + t; sheetFile[nm[1]] = t; } }
+    }
+  }
+
+  const out = {};
+  for (const sn of [STOCK_SHEET_BSAS, STOCK_SHEET_RUF]) {
+    const f = sheetFile[sn];
+    out[sn] = [];
+    if (!f || !z[f]) continue;
+    const xml = get(f);
+    const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g; let rm;
+    while ((rm = rowRe.exec(xml))) {
+      const cells = {};
+      const cRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g; let cm;
+      while ((cm = cRe.exec(rm[1]))) {
+        const attrs = cm[1]; const inner = cm[2] || '';
+        const ref = (attrs.match(/r="([A-Z]+\d+)"/) || [])[1]; if (!ref) continue;
+        const col = stockColOf(ref);
+        if (col !== 1 && col !== 2 && col !== 5) continue;   // sólo A, B, E
+        const t = (attrs.match(/t="([^"]+)"/) || [])[1];
+        const s = (attrs.match(/s="(\d+)"/) || [])[1];
+        let val = null;
+        const vm = inner.match(/<v>([\s\S]*?)<\/v>/);
+        if (vm) { val = vm[1]; if (t === 's') val = shared[parseInt(val, 10)]; else val = stockUnesc(val); }
+        else { const im = inner.match(/<t[^>]*>([\s\S]*?)<\/t>/); if (im) val = stockUnesc(im[1]); }
+        cells[col] = { val, ref, s };
+      }
+      const a = cells[1];
+      if (!a || a.val === null || a.val === undefined || String(a.val).trim() === '') continue;
+      if (stockRowOf(a.ref) === 1) continue;   // encabezado
+      const rgb = styleToRgb(a.s);
+      const cantRaw = cells[2] ? parseFloat(cells[2].val) : NaN;
+      out[sn].push({
+        cod: a.val,
+        prov: cells[5] ? cells[5].val : '',
+        cant: isNaN(cantRaw) ? 0 : cantRaw,
+        red: rgb === STOCK_RED,
+      });
+    }
+  }
+  return out;
+}
+
+// Agrupa filas por clave (código||proveedor). cant efectiva = suma de filas NO rojas.
+function stockAgrupar(filas) {
+  const keys = {};
+  for (const f of filas) {
+    const cod = stockNormCode(f.cod);
+    if (cod === '') continue;
+    const prov = stockNormProv(f.prov);
+    const key = cod + '||' + prov;
+    if (!keys[key]) keys[key] = { cod, prov, cant: 0 };
+    if (!f.red) keys[key].cant += (f.cant || 0);   // rojo = sin stock → no suma
+  }
+  return keys;
+}
+function stockValuar(keys, costos) {
+  let valor = 0, unidades = 0, items = 0;
+  const sinPrecio = [];
+  for (const key in keys) {
+    const k = keys[key];
+    if (k.cant <= 0) continue;
+    const costo = costos[key];
+    if (costo === undefined || costo === null || isNaN(Number(costo))) {
+      sinPrecio.push({ cod: k.cod, prov: k.prov, cant: k.cant });
+    } else {
+      valor += k.cant * Number(costo); unidades += k.cant; items++;
+    }
+  }
+  sinPrecio.sort((a, b) => (b.cant - a.cant));
+  return { valor: Math.round(valor), unidades, items, sinPrecio };
+}
+function stockPerKey(keys) { const m = {}; for (const key in keys) if (keys[key].cant > 0) m[key] = keys[key].cant; return m; }
+function stockMovimientos(prev, cur, costos) {
+  const vendidos = [], agregados = [];
+  const all = new Set([...Object.keys(prev || {}), ...Object.keys(cur || {})]);
+  for (const key of all) {
+    const antes = (prev && prev[key]) || 0;
+    const ahora = (cur && cur[key]) || 0;
+    const delta = ahora - antes;
+    if (delta === 0) continue;
+    const i = key.indexOf('||');
+    const cod = i >= 0 ? key.slice(0, i) : key;
+    const prov = i >= 0 ? key.slice(i + 2) : '';
+    const costo = Number(costos[key]);
+    const vU = isNaN(costo) ? null : costo;
+    if (delta < 0) vendidos.push({ cod, prov, antes, ahora, cantidad: -delta, valor: vU != null ? Math.round(-delta * vU) : null });
+    else agregados.push({ cod, prov, antes, ahora, cantidad: delta, valor: vU != null ? Math.round(delta * vU) : null });
+  }
+  vendidos.sort((a, b) => b.cantidad - a.cantidad);
+  agregados.sort((a, b) => b.cantidad - a.cantidad);
+  return { vendidos, agregados };
+}
+
+// Lista de ítems (una fila por código||proveedor, cantidad ya unificada/sumada) con costo y valor.
+function stockItems(keys, costos) {
+  const arr = [];
+  for (const key in keys) {
+    const k = keys[key];
+    if (k.cant <= 0) continue;
+    const c = costos[key];
+    const costo = (c === undefined || c === null || isNaN(Number(c))) ? null : Number(c);
+    arr.push({ cod: k.cod, prov: k.prov, cant: k.cant, costo, valor: costo != null ? Math.round(k.cant * costo) : null });
+  }
+  arr.sort((a, b) => String(a.cod).localeCompare(String(b.cod)) || String(a.prov).localeCompare(String(b.prov)));
+  return arr;
+}
+// Une las dos sucursales por código||proveedor sumando las cantidades (para el "total de ambas").
+function stockMergeTotal(keysB, keysR) {
+  const tot = {};
+  for (const src of [keysB, keysR]) {
+    for (const key in src) {
+      const k = src[key];
+      if (k.cant <= 0) continue;
+      if (!tot[key]) tot[key] = { cod: k.cod, prov: k.prov, cant: 0 };
+      tot[key].cant += k.cant;
+    }
+  }
+  return tot;
+}
+
+// ============================================================================
+function registerStock(deps) {
+  const { route, sendJSON, requireAuth, parseBody, loadDB, saveDB, checkApiToken, DATA_DIR } = deps;
+  const fs = require('fs');
+  const path = require('path');
+
+  const STOCK_FILE_ID = process.env.STOCK_FILE_ID || '1GY0_21ICjf7E4YHZR8cznwiKEstolE8w';
+  const RUN_HOUR = Number(process.env.STOCK_RUN_HOUR || 17);
+  const RUN_MIN  = Number(process.env.STOCK_RUN_MIN  || 30);
+  const SNAP_KEEP_DAYS = 45;
+  const DAILY_KEEP = 730;
+
+  const isAdmin = (req) => { const s = requireAuth(req); return s && s.role === 'admin' ? s : null; };
+  const catalogPath = () => path.join(DATA_DIR, 'stock_catalog.json');
+  const dailyPath   = () => path.join(DATA_DIR, 'stock_daily.json');
+  const lastPath    = () => path.join(DATA_DIR, 'stock_last.json');
+  const itemsPath   = () => path.join(DATA_DIR, 'stock_items.json');
+  const snapPath    = (d) => path.join(DATA_DIR, 'stock_snap_' + d + '.json');
+  const readJson = (p, def) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return def; } };
+  const writeJson = (p, obj) => fs.writeFileSync(p, JSON.stringify(obj));
+  const loadCatalog = () => { const c = readJson(catalogPath(), null); return (c && c.costos) ? c : { updated: null, costos: {} }; };
+
+  async function downloadDriveXlsx(fileId) {
+    if (process.env.STOCK_LOCAL_FILE) {
+      const b = require('fs').readFileSync(process.env.STOCK_LOCAL_FILE);
+      if (b.slice(0, 2).toString('latin1') !== 'PK') throw new Error('STOCK_LOCAL_FILE no es un .xlsx');
+      return b;
+    }
+    const tryFetch = async (url) => {
+      const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0' } });
+      return Buffer.from(await r.arrayBuffer());
+    };
+    let buf = await tryFetch(`https://drive.google.com/uc?export=download&id=${fileId}`);
+    if (buf.slice(0, 2).toString('latin1') !== 'PK') {
+      buf = await tryFetch(`https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=t`);
+    }
+    if (buf.slice(0, 2).toString('latin1') !== 'PK') {
+      throw new Error('Drive no devolvió un .xlsx (revisá que el archivo esté compartido "cualquiera con el enlace")');
+    }
+    return buf;
+  }
+
+  function arParts() {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+      const p = {}; for (const x of fmt.formatToParts(new Date())) p[x.type] = x.value;
+      return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) % 24, min: Number(p.minute) };
+    } catch (e) {
+      const d = new Date(Date.now() - 3 * 3600 * 1000); const s = d.toISOString();
+      return { date: s.slice(0, 10), hour: d.getUTCHours(), min: d.getUTCMinutes() };
+    }
+  }
+  function pruneSnaps(hoy) {
+    try {
+      const lim = new Date(hoy + 'T00:00:00Z').getTime() - SNAP_KEEP_DAYS * 86400000;
+      for (const fn of fs.readdirSync(DATA_DIR)) {
+        const m = fn.match(/^stock_snap_(\d{4}-\d{2}-\d{2})\.json$/);
+        if (m && new Date(m[1] + 'T00:00:00Z').getTime() < lim) { try { fs.unlinkSync(path.join(DATA_DIR, fn)); } catch (e) {} }
+      }
+    } catch (e) {}
+  }
+  function prevSnapKeys(hoy) {
+    let best = null;
+    try {
+      for (const fn of fs.readdirSync(DATA_DIR)) {
+        const m = fn.match(/^stock_snap_(\d{4}-\d{2}-\d{2})\.json$/);
+        if (m && m[1] < hoy && (!best || m[1] > best)) best = m[1];
+      }
+    } catch (e) {}
+    if (!best) return { date: null, bsas: {}, rufino: {} };
+    const s = readJson(snapPath(best), null);
+    return s ? { date: best, bsas: s.bsas || {}, rufino: s.rufino || {} } : { date: null, bsas: {}, rufino: {} };
+  }
+
+  let _running = false;
+  async function refreshStock(origen) {
+    if (_running) return { busy: true };
+    _running = true;
+    const t0 = Date.now();
+    try {
+      const cat = loadCatalog();
+      const costos = cat.costos || {};
+      const buf = await downloadDriveXlsx(STOCK_FILE_ID);
+      const parsed = parseStockXlsx(buf);
+      const filasB = parsed[STOCK_SHEET_BSAS] || [];
+      const filasR = parsed[STOCK_SHEET_RUF] || [];
+      if (!filasB.length && !filasR.length) throw new Error('El Excel no tiene filas en STOCKBUENOSAIRES ni STOCKRUFINO');
+
+      const keysB = stockAgrupar(filasB), keysR = stockAgrupar(filasR);
+      const valB = stockValuar(keysB, costos), valR = stockValuar(keysR, costos);
+      const pkB = stockPerKey(keysB), pkR = stockPerKey(keysR);
+      // Listas de ítems unificadas (para descargar) + total de ambas sucursales por código.
+      const itemsB = stockItems(keysB, costos);
+      const itemsR = stockItems(keysR, costos);
+      const itemsT = stockItems(stockMergeTotal(keysB, keysR), costos);
+
+      const { date: hoy } = arParts();
+      const prev = prevSnapKeys(hoy);
+      const movB = stockMovimientos(prev.bsas, pkB, costos);
+      const movR = stockMovimientos(prev.rufino, pkR, costos);
+
+      writeJson(snapPath(hoy), { date: hoy, at: new Date().toISOString(), bsas: pkB, rufino: pkR });
+      pruneSnaps(hoy);
+
+      // Listas completas de ítems para descarga (archivo aparte para no inflar /api/stock/data)
+      writeJson(itemsPath(), { date: hoy, at: new Date().toISOString(), bsas: itemsB, rufino: itemsR, total: itemsT });
+
+      const daily = readJson(dailyPath(), { dias: [] });
+      const registro = {
+        date: hoy,
+        bsas: { valor: valB.valor, unidades: valB.unidades, items: valB.items, sinPrecio: valB.sinPrecio.length },
+        rufino: { valor: valR.valor, unidades: valR.unidades, items: valR.items, sinPrecio: valR.sinPrecio.length },
+        total: { valor: valB.valor + valR.valor, unidades: valB.unidades + valR.unidades },
+      };
+      const idx = (daily.dias || []).findIndex(d => d.date === hoy);
+      if (idx >= 0) daily.dias[idx] = registro; else (daily.dias = daily.dias || []).push(registro);
+      daily.dias.sort((a, b) => a.date.localeCompare(b.date));
+      if (daily.dias.length > DAILY_KEEP) daily.dias = daily.dias.slice(-DAILY_KEEP);
+      daily.updated = new Date().toISOString();
+      writeJson(dailyPath(), daily);
+
+      const base = prev.date === null;
+      const last = {
+        date: hoy, at: new Date().toISOString(), origen: origen || 'manual', base, comparadoCon: prev.date,
+        catalogo: { updated: cat.updated, costos: Object.keys(costos).length },
+        bsas: { ...registro.bsas, sinPrecioList: valB.sinPrecio.slice(0, 500) },
+        rufino: { ...registro.rufino, sinPrecioList: valR.sinPrecio.slice(0, 500) },
+        total: registro.total,
+        movimientos: { bsas: movB, rufino: movR },
+        ms: Date.now() - t0,
+      };
+      writeJson(lastPath(), last);
+      try {
+        const db = loadDB();
+        db.stock_last_at = last.at;
+        if ((origen || 'manual') === 'auto') db.stock_auto_run_ar = hoy;
+        saveDB(db);
+      } catch (e) {}
+      return { ok: true, ...resumen(last) };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    } finally { _running = false; }
+  }
+  function resumen(last) {
+    return {
+      date: last.date, at: last.at, base: last.base, comparadoCon: last.comparadoCon,
+      bsas: { valor: last.bsas.valor, unidades: last.bsas.unidades, items: last.bsas.items, sinPrecio: last.bsas.sinPrecio },
+      rufino: { valor: last.rufino.valor, unidades: last.rufino.unidades, items: last.rufino.items, sinPrecio: last.rufino.sinPrecio },
+      total: last.total,
+      movimientos: {
+        bsas: { vendidos: last.movimientos.bsas.vendidos.length, agregados: last.movimientos.bsas.agregados.length },
+        rufino: { vendidos: last.movimientos.rufino.vendidos.length, agregados: last.movimientos.rufino.agregados.length },
+      },
+      catalogo: last.catalogo, ms: last.ms,
+    };
+  }
+
+  function startScheduler() {
+    async function tick() {
+      try {
+        const { date, hour, min } = arParts();
+        const ranToday = loadDB().stock_auto_run_ar === date;
+        const pastTime = hour > RUN_HOUR || (hour === RUN_HOUR && min >= RUN_MIN);
+        if (pastTime && !ranToday) {
+          console.log('[STOCK] corrida automática ' + RUN_HOUR + ':' + RUN_MIN + ' ARG…');
+          const r = await refreshStock('auto');
+          console.log('[STOCK] auto:', r.ok ? ('$BsAs ' + (r.bsas && r.bsas.valor) + ' $Ruf ' + (r.rufino && r.rufino.valor)) : ('ERROR ' + r.error));
+        }
+      } catch (e) { console.error('[STOCK] scheduler', e && e.message); }
+    }
+    setInterval(tick, 10 * 60 * 1000);
+    setTimeout(tick, 15 * 1000);
+  }
+
+  route('POST', '/api/stock/catalog', async (req, res) => {
+    if (!checkApiToken(req) && !isAdmin(req)) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const body = await parseBody(req);
+    const incoming = (body && body.costos) || {};
+    if (typeof incoming !== 'object' || Array.isArray(incoming)) return sendJSON(res, 400, { error: 'Pasá { costos: { "COD||PROV": costo } }' });
+    const replace = !!(body && (body.replace === true || body.replace === 1 || body.replace === '1'));
+    const cur = loadCatalog();
+    const costos = replace ? {} : (cur.costos || {});
+    let n = 0;
+    for (const k in incoming) { const v = Number(incoming[k]); if (!isNaN(v)) { costos[String(k).toUpperCase()] = v; n++; } }
+    writeJson(catalogPath(), { updated: new Date().toISOString(), costos });
+    sendJSON(res, 200, { ok: true, recibidos: n, total_catalogo: Object.keys(costos).length, replace });
+  });
+
+  route('POST', '/api/stock/refresh', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const r = await refreshStock('manual');
+    sendJSON(res, r.ok ? 200 : 500, r);
+  });
+
+  route('GET', '/api/stock/data', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const last = readJson(lastPath(), null);
+    const daily = readJson(dailyPath(), { dias: [] });
+    const cat = loadCatalog();
+    const { date, hour, min } = arParts();
+    sendJSON(res, 200, {
+      last, dias: daily.dias || [],
+      catalogo: { updated: cat.updated, costos: Object.keys(cat.costos || {}).length },
+      ahora_ar: { date, hour, min },
+      programado: { hora: RUN_HOUR, min: RUN_MIN, corrio_hoy: loadDB().stock_auto_run_ar === date },
+      file_id: STOCK_FILE_ID,
+    });
+  });
+
+  route('GET', '/api/stock/status', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const last = readJson(lastPath(), null);
+    const cat = loadCatalog();
+    sendJSON(res, 200, {
+      ultima: last ? { date: last.date, at: last.at, total: last.total } : null,
+      catalogo: { updated: cat.updated, costos: Object.keys(cat.costos || {}).length },
+      corriendo: _running,
+    });
+  });
+
+  // Filas unificadas para descargar (una fila por código||proveedor). suc = bsas | rufino | total
+  route('GET', '/api/stock/export', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    let suc = 'total';
+    try { suc = (new URL(req.url, 'http://localhost').searchParams.get('suc') || 'total').toLowerCase(); } catch (e) {}
+    const map = { bsas: 'bsas', buenosaires: 'bsas', rufino: 'rufino', total: 'total' };
+    const key = map[suc];
+    if (!key) return sendJSON(res, 400, { error: 'Pasá ?suc=bsas | rufino | total' });
+    const items = readJson(itemsPath(), null);
+    if (!items || !items[key]) return sendJSON(res, 404, { error: 'Todavía no hay datos. Actualizá el stock primero.' });
+    const rows = items[key];
+    const valor = rows.reduce((s, r) => s + (r.valor || 0), 0);
+    const unidades = rows.reduce((s, r) => s + (r.cant || 0), 0);
+    sendJSON(res, 200, { suc: key, date: items.date, rows, totales: { items: rows.length, unidades, valor } });
+  });
+
+  route('GET', '/api/stock/snap', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    let d = '';
+    try { d = new URL(req.url, 'http://localhost').searchParams.get('date') || ''; } catch (e) {}
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return sendJSON(res, 400, { error: 'Pasá ?date=YYYY-MM-DD' });
+    const s = readJson(snapPath(d), null);
+    if (!s) return sendJSON(res, 404, { error: 'No hay snapshot para esa fecha' });
+    sendJSON(res, 200, s);
+  });
+
+  startScheduler();
+  console.log('[STOCK] Módulo Stock registrado (valuación por sucursal, histórico, ' + RUN_HOUR + ':' + RUN_MIN + ' ARG). file_id=' + STOCK_FILE_ID);
+}
 
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
