@@ -5629,6 +5629,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let _stockChart = null;
   function _stkMoney(v) { return '$ ' + Number(v || 0).toLocaleString('es-AR'); }
   function _stkNum(v) { return Number(v || 0).toLocaleString('es-AR'); }
+  // Fecha y hora SIEMPRE en horario de Argentina (no del navegador).
+  function _fmtAR(iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) + ' hs';
+    } catch (e) { return '—'; }
+  }
 
   async function loadStock() {
     const myNav = navToken;
@@ -5705,10 +5712,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const progTxt = 'Automático todos los días ' + String(prog.hora ?? 17).padStart(2, '0') + ':' + String(prog.min ?? 30).padStart(2, '0') + ' hs (Argentina)' + (prog.corrio_hoy ? ' · ✅ ya corrió hoy' : '');
     let updTxt = 'Todavía no se actualizó.';
     if (last && last.at) {
-      const d = new Date(last.at);
-      updTxt = 'Última actualización: ' + d.toLocaleString('es-AR') + (last.origen ? (' (' + (last.origen === 'auto' ? 'automática' : 'manual') + ')') : '');
+      updTxt = '🕒 Última actualización del stock: <b>' + _fmtAR(last.at) + '</b> (hora Argentina)' + (last.origen ? (' · ' + (last.origen === 'auto' ? 'automática' : 'manual') + '') : '');
     }
-    html += '<div style="color:#666;font-size:13px;margin-bottom:16px">' + updTxt + ' · ' + progTxt + '<br>Catálogo de costos: ' + _stkNum(cat.costos) + ' precios cargados' + (cat.updated ? (' (actualizado ' + new Date(cat.updated).toLocaleDateString('es-AR') + ')') : ' — todavía sin cargar') + '</div>';
+    html += '<div style="color:#666;font-size:13px;margin-bottom:16px">' + updTxt + ' · ' + progTxt + '<br>📥 Último catálogo de costos subido: ' + (cat.updated ? ('<b>' + _fmtAR(cat.updated) + '</b> · ' + _stkNum(cat.costos) + ' precios') : 'todavía sin cargar') + '</div>';
 
     if (!last) {
       html += '<div class="empty" style="padding:30px;text-align:center;background:#f8f9fb;border-radius:12px"><p style="font-size:15px">Todavía no hay datos de stock.</p><p style="color:#666">Tocá <b>Actualizar ahora</b> para crear la base inicial, o esperá a la corrida automática de las ' + String(prog.hora ?? 17).padStart(2, '0') + ':' + String(prog.min ?? 30).padStart(2, '0') + ' hs.</p>';
