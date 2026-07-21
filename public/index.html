@@ -462,6 +462,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('promos')" id="nav-promos" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M4 10v4l11 4V6z"/><path d="M15 9a3 3 0 0 1 0 6"/></svg><span>Promociones</span>
       </a>
+      <a onclick="showSection('stock')" id="nav-stock" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg><span>Stock</span>
+      </a>
       <a href="/gestion" target="_blank" id="nav-gestion" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M4 7h5l2 2h9v9a2 2 0 0 1-2 2H4z"/></svg><span>Gestión</span>
       </a>
@@ -642,6 +645,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
           document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          document.getElementById('nav-stock').style.display = '';  // Stock: solo admin
           { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
           { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
           { const ncl = document.getElementById('nav-claims'); if (ncl) ncl.style.display = ''; }  // Reclamos: solo admin
@@ -750,6 +754,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
           document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          document.getElementById('nav-stock').style.display = '';  // Stock: solo admin
           { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
           { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
           { const ncl = document.getElementById('nav-claims'); if (ncl) ncl.style.display = ''; }  // Reclamos: solo admin
@@ -887,6 +892,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'prep': loadPrepSection(); break;
       case 'update': loadUpdate(); break;
       case 'promos': loadPromos(); break;
+      case 'stock': loadStock(); break;
     }
   }
   // ==================== ACCOUNTS ====================
@@ -5619,6 +5625,225 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let promosCurrentPromoId = '';
   let promosCurrentPromoType = '';
   let promosCurrentPromoName = '';
+  // ==================== STOCK ====================
+  let _stockChart = null;
+  function _stkMoney(v) { return '$ ' + Number(v || 0).toLocaleString('es-AR'); }
+  function _stkNum(v) { return Number(v || 0).toLocaleString('es-AR'); }
+
+  async function loadStock() {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (currentUser?.role !== 'admin') { content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver el Stock.</p></div>'; return; }
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando stock...</p></div>';
+    let data;
+    try {
+      const res = await fetch('/api/stock/data');
+      data = await res.json();
+    } catch (e) { if (navToken !== myNav) return; content.innerHTML = '<div class="empty"><p>Error al cargar el stock.</p></div>'; return; }
+    if (navToken !== myNav) return;
+    renderStock(data);
+  }
+
+  async function refreshStockNow() {
+    const btn = document.getElementById('btnStockRefresh');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Actualizando... (puede tardar unos segundos)'; }
+    try {
+      const res = await fetch('/api/stock/refresh', { method: 'POST' });
+      const r = await res.json();
+      if (!r.ok) { alert('No se pudo actualizar: ' + (r.error || 'error desconocido')); if (btn) { btn.disabled = false; btn.textContent = '🔄 Actualizar ahora'; } return; }
+    } catch (e) {
+      alert('Error de red al actualizar el stock.'); if (btn) { btn.disabled = false; btn.textContent = '🔄 Actualizar ahora'; } return;
+    }
+    loadStock();
+  }
+
+  async function downloadStockXlsx(suc) {
+    try {
+      if (!window.XLSX) { const ok = await loadXLSX(); if (!ok) { alert('No se pudo cargar la librería de Excel. Recargá la página e intentá de nuevo.'); return; } }
+      const res = await fetch('/api/stock/export?suc=' + encodeURIComponent(suc));
+      const d = await res.json();
+      if (!res.ok || !d.rows) { alert('No se pudo generar el archivo: ' + (d.error || 'sin datos')); return; }
+      const nombre = { bsas: 'Buenos Aires', rufino: 'Rufino', total: 'Total (ambas)' }[d.suc] || d.suc;
+      const aoa = [['Código', 'Proveedor', 'Cantidad', 'Costo unitario', 'Valor total']];
+      for (const r of d.rows) aoa.push([r.cod, r.prov || '', r.cant, r.costo != null ? r.costo : '', r.valor != null ? r.valor : '']);
+      aoa.push([]);
+      aoa.push(['TOTAL', '', d.totales.unidades, '', d.totales.valor]);
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 14 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Stock ' + (d.suc || '').slice(0, 20));
+      const fecha = d.date || new Date().toISOString().slice(0, 10);
+      const fn = 'STOCK_' + (d.suc === 'total' ? 'TOTAL' : d.suc.toUpperCase()) + '_' + fecha + '.xlsx';
+      XLSX.writeFile(wb, fn);
+    } catch (e) {
+      alert('Error al descargar: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  function renderStock(data) {
+    const content = document.getElementById('content');
+    const last = data.last;
+    const dias = data.dias || [];
+    const prog = data.programado || {};
+    const cat = data.catalogo || {};
+
+    let html = '<div style="max-width:1100px;margin:0 auto">';
+    // encabezado + botón actualizar
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:6px">';
+    html += '<h2 style="margin:0;color:#2d3277">📦 Stock por sucursal</h2>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+    if (last) {
+      html += '<span style="font-size:13px;color:#888;margin-right:2px">Descargar:</span>';
+      html += '<button onclick="downloadStockXlsx(\'bsas\')" style="background:#eef1fb;color:#2d3277;border:1px solid #d6ddf6;padding:8px 12px;border-radius:9px;font-weight:600;cursor:pointer;font-size:13px">⬇️ Buenos Aires</button>';
+      html += '<button onclick="downloadStockXlsx(\'rufino\')" style="background:#eef1fb;color:#2d3277;border:1px solid #d6ddf6;padding:8px 12px;border-radius:9px;font-weight:600;cursor:pointer;font-size:13px">⬇️ Rufino</button>';
+      html += '<button onclick="downloadStockXlsx(\'total\')" style="background:#fdecec;color:#e5322d;border:1px solid #f6c9c7;padding:8px 12px;border-radius:9px;font-weight:700;cursor:pointer;font-size:13px">⬇️ Total</button>';
+    }
+    html += '<button id="btnStockRefresh" onclick="refreshStockNow()" style="background:#e5322d;color:#fff;border:none;padding:10px 18px;border-radius:10px;font-weight:700;cursor:pointer;font-size:14px">🔄 Actualizar ahora</button>';
+    html += '</div></div>';
+
+    // línea de estado
+    const progTxt = 'Automático todos los días ' + String(prog.hora ?? 17).padStart(2, '0') + ':' + String(prog.min ?? 30).padStart(2, '0') + ' hs (Argentina)' + (prog.corrio_hoy ? ' · ✅ ya corrió hoy' : '');
+    let updTxt = 'Todavía no se actualizó.';
+    if (last && last.at) {
+      const d = new Date(last.at);
+      updTxt = 'Última actualización: ' + d.toLocaleString('es-AR') + (last.origen ? (' (' + (last.origen === 'auto' ? 'automática' : 'manual') + ')') : '');
+    }
+    html += '<div style="color:#666;font-size:13px;margin-bottom:16px">' + updTxt + ' · ' + progTxt + '<br>Catálogo de costos: ' + _stkNum(cat.costos) + ' precios cargados' + (cat.updated ? (' (actualizado ' + new Date(cat.updated).toLocaleDateString('es-AR') + ')') : ' — todavía sin cargar') + '</div>';
+
+    if (!last) {
+      html += '<div class="empty" style="padding:30px;text-align:center;background:#f8f9fb;border-radius:12px"><p style="font-size:15px">Todavía no hay datos de stock.</p><p style="color:#666">Tocá <b>Actualizar ahora</b> para crear la base inicial, o esperá a la corrida automática de las ' + String(prog.hora ?? 17).padStart(2, '0') + ':' + String(prog.min ?? 30).padStart(2, '0') + ' hs.</p>';
+      if (!cat.costos) html += '<p style="color:#b45309;font-size:13px">⚠️ Para valuar en $ primero tiene que llegar el catálogo de costos desde la automatización (corré una actualización de precios).</p>';
+      html += '</div></div>';
+      content.innerHTML = html;
+      return;
+    }
+
+    const b = last.bsas, r = last.rufino, t = last.total;
+    // tarjetas de valuación
+    const card = (titulo, valor, sub, color) =>
+      '<div style="flex:1;min-width:190px;background:#fff;border:1px solid #eef0f4;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,.04)">' +
+      '<div style="font-size:13px;color:#888;font-weight:600;text-transform:uppercase;letter-spacing:.4px">' + titulo + '</div>' +
+      '<div style="font-size:26px;font-weight:800;color:' + (color || '#2d3277') + ';margin-top:4px">' + valor + '</div>' +
+      '<div style="font-size:12px;color:#777;margin-top:4px">' + sub + '</div></div>';
+
+    html += '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px">';
+    html += card('Buenos Aires', _stkMoney(b.valor), _stkNum(b.unidades) + ' unidades · ' + _stkNum(b.items) + ' ítems', '#2d3277');
+    html += card('Rufino', _stkMoney(r.valor), _stkNum(r.unidades) + ' unidades · ' + _stkNum(r.items) + ' ítems', '#2d3277');
+    html += card('TOTAL', _stkMoney(t.valor), _stkNum(t.unidades) + ' unidades en total', '#e5322d');
+    html += '</div>';
+
+    // aviso sin precio
+    const sinP = (b.sinPrecio || 0) + (r.sinPrecio || 0);
+    if (sinP > 0) {
+      html += '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:#9a3412">⚠️ ' + _stkNum(sinP) + ' ítems con stock <b>no tienen precio</b> en el catálogo (no se cuentan en el valor). Ver la lista abajo.</div>';
+    }
+
+    // movimientos
+    if (last.base) {
+      html += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 14px;margin-bottom:18px;font-size:14px;color:#1e40af">🆕 <b>Base inicial creada.</b> A partir de la próxima actualización se empiezan a registrar los movimientos (lo que se vendió y lo que se agregó) comparando contra este día.</div>';
+    } else {
+      html += '<h3 style="color:#2d3277;margin:22px 0 8px">Movimientos ' + (last.comparadoCon ? ('(desde el ' + last.comparadoCon + ')') : '') + '</h3>';
+      html += '<div style="display:flex;gap:16px;flex-wrap:wrap">';
+      html += movBlock('Buenos Aires', last.movimientos.bsas);
+      html += movBlock('Rufino', last.movimientos.rufino);
+      html += '</div>';
+    }
+
+    // histórico diario
+    html += '<h3 style="color:#2d3277;margin:26px 0 8px">Histórico diario</h3>';
+    if (dias.length > 1) html += '<div style="background:#fff;border:1px solid #eef0f4;border-radius:12px;padding:14px;margin-bottom:14px"><canvas id="stockChart" height="90"></canvas></div>';
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px">';
+    html += '<thead><tr style="background:#f8f9fb;color:#555;text-align:right">' +
+      '<th style="padding:8px 10px;text-align:left">Fecha</th>' +
+      '<th style="padding:8px 10px">Buenos Aires</th>' +
+      '<th style="padding:8px 10px">Rufino</th>' +
+      '<th style="padding:8px 10px">Total</th>' +
+      '<th style="padding:8px 10px">Unidades</th></tr></thead><tbody>';
+    const ordenados = dias.slice().sort((a, b2) => b2.date.localeCompare(a.date));
+    for (const d of ordenados.slice(0, 60)) {
+      html += '<tr style="border-top:1px solid #f0f1f4;text-align:right">' +
+        '<td style="padding:8px 10px;text-align:left;font-weight:600">' + d.date + '</td>' +
+        '<td style="padding:8px 10px">' + _stkMoney(d.bsas.valor) + '</td>' +
+        '<td style="padding:8px 10px">' + _stkMoney(d.rufino.valor) + '</td>' +
+        '<td style="padding:8px 10px;font-weight:700;color:#e5322d">' + _stkMoney(d.total.valor) + '</td>' +
+        '<td style="padding:8px 10px;color:#666">' + _stkNum(d.total.unidades) + '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+
+    // lista sin precio (para revisar)
+    const sinList = [];
+    for (const x of (b.sinPrecioList || [])) sinList.push({ ...x, suc: 'BsAs' });
+    for (const x of (r.sinPrecioList || [])) sinList.push({ ...x, suc: 'Rufino' });
+    if (sinList.length) {
+      html += '<h3 style="color:#9a3412;margin:26px 0 8px">Ítems sin precio (' + _stkNum(sinList.length) + ') — para revisar</h3>';
+      html += '<div style="color:#666;font-size:13px;margin-bottom:6px">Tienen stock pero su código+proveedor no está en el catálogo de costos. Revisá el código/proveedor o la lista del proveedor.</div>';
+      html += '<div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:1px solid #eef0f4;border-radius:10px"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+      html += '<thead><tr style="background:#fff7ed;color:#9a3412;position:sticky;top:0"><th style="padding:7px 10px;text-align:left">Código</th><th style="padding:7px 10px;text-align:left">Proveedor</th><th style="padding:7px 10px;text-align:left">Sucursal</th><th style="padding:7px 10px;text-align:right">Cantidad</th></tr></thead><tbody>';
+      for (const x of sinList.slice(0, 400)) {
+        html += '<tr style="border-top:1px solid #f4f5f7"><td style="padding:6px 10px;font-weight:600">' + escapeHtml(x.cod) + '</td><td style="padding:6px 10px">' + escapeHtml(x.prov || '—') + '</td><td style="padding:6px 10px;color:#666">' + x.suc + '</td><td style="padding:6px 10px;text-align:right">' + _stkNum(x.cant) + '</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    html += '</div>';
+    content.innerHTML = html;
+
+    // gráfico (progressive enhancement — sólo si Chart está disponible)
+    if (dias.length > 1 && typeof Chart !== 'undefined') {
+      try {
+        const labels = dias.map(d => d.date.slice(5));
+        const ctx = document.getElementById('stockChart');
+        if (_stockChart) { try { _stockChart.destroy(); } catch (e) {} }
+        if (ctx) _stockChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: 'Buenos Aires', data: dias.map(d => d.bsas.valor), borderColor: '#2d3277', backgroundColor: 'rgba(45,50,119,.08)', tension: .25, fill: false },
+              { label: 'Rufino', data: dias.map(d => d.rufino.valor), borderColor: '#0891b2', backgroundColor: 'rgba(8,145,178,.08)', tension: .25, fill: false },
+              { label: 'Total', data: dias.map(d => d.total.valor), borderColor: '#e5322d', backgroundColor: 'rgba(229,50,45,.10)', tension: .25, fill: true },
+            ],
+          },
+          options: {
+            responsive: true, maintainAspectRatio: true,
+            plugins: { legend: { position: 'bottom' } },
+            scales: { y: { ticks: { callback: v => '$' + Number(v).toLocaleString('es-AR') } } },
+          },
+        });
+      } catch (e) {}
+    }
+  }
+
+  function movBlock(titulo, mov) {
+    const vend = (mov && mov.vendidos) || [];
+    const agr = (mov && mov.agregados) || [];
+    const totVend = vend.reduce((s, x) => s + (x.cantidad || 0), 0);
+    const totAgr = agr.reduce((s, x) => s + (x.cantidad || 0), 0);
+    let h = '<div style="flex:1;min-width:320px;background:#fff;border:1px solid #eef0f4;border-radius:12px;padding:14px 16px">';
+    h += '<div style="font-weight:700;color:#2d3277;margin-bottom:8px">' + titulo + '</div>';
+    h += '<div style="display:flex;gap:16px;font-size:13px;margin-bottom:10px">';
+    h += '<div style="color:#dc2626">🔻 Vendido: <b>' + _stkNum(totVend) + '</b> u. (' + vend.length + ' cód.)</div>';
+    h += '<div style="color:#16a34a">🔺 Agregado: <b>' + _stkNum(totAgr) + '</b> u. (' + agr.length + ' cód.)</div>';
+    h += '</div>';
+    const rows = (arr, color, signo) => {
+      if (!arr.length) return '<div style="color:#999;font-size:12px;padding:4px 0">Sin cambios.</div>';
+      let s = '<table style="width:100%;border-collapse:collapse;font-size:12.5px">';
+      for (const x of arr.slice(0, 40)) {
+        s += '<tr style="border-top:1px solid #f4f5f7"><td style="padding:4px 6px;font-weight:600">' + escapeHtml(x.cod) + '</td>' +
+          '<td style="padding:4px 6px;color:#777">' + escapeHtml(x.prov || '') + '</td>' +
+          '<td style="padding:4px 6px;text-align:right;color:' + color + ';font-weight:700">' + signo + _stkNum(x.cantidad) + '</td>' +
+          '<td style="padding:4px 6px;text-align:right;color:#666">' + (x.antes) + '→' + (x.ahora) + '</td></tr>';
+      }
+      s += '</table>';
+      return s;
+    };
+    if (vend.length) { h += '<div style="font-size:12px;color:#dc2626;font-weight:700;margin-top:6px">Vendidos (rojo)</div>' + rows(vend, '#dc2626', '-'); }
+    if (agr.length) { h += '<div style="font-size:12px;color:#16a34a;font-weight:700;margin-top:8px">Agregados</div>' + rows(agr, '#16a34a', '+'); }
+    if (!vend.length && !agr.length) h += '<div style="color:#999;font-size:13px">Sin movimientos.</div>';
+    h += '</div>';
+    return h;
+  }
+
   function loadPromos() {
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_promos) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permisos para acceder a esta sección</p></div>';
