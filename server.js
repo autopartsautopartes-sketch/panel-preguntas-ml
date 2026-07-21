@@ -3394,6 +3394,9 @@ route('GET', '/api/sales', async (req, res) => {
   const shippingFilters = url.searchParams.get('shipping') ? url.searchParams.get('shipping').split(',') : [];
   const dateFrom = url.searchParams.get('date_from');
   const dateTo = url.searchParams.get('date_to');
+  // Cuántas órdenes traer por cuenta. Ventas usa 50 (rápido); Preparación pide más (300) para
+  // que NO se pierdan las órdenes viejas que quedaron pendientes de despacho. Tope 500.
+  const wantLimit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 50, 1), 500);
   const db = loadDB();
   let rawOrders = [];
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
@@ -3412,10 +3415,25 @@ route('GET', '/api/sales', async (req, res) => {
           ordersData = { results: [] };
         }
       } else {
-        const params = { seller: account.seller_id, sort: 'date_desc', limit: 50 };
-        if (dateFrom) params['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
-        if (dateTo) params['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
-        ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+        // PAGINADO: traemos hasta wantLimit órdenes (de a 50, el máximo de ML por página), así
+        // las viejas pendientes de despacho no quedan afuera. Corta al llegar al tope o al final.
+        const baseParams = { seller: account.seller_id, sort: 'date_desc' };
+        if (dateFrom) baseParams['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
+        if (dateTo) baseParams['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
+        const collected = [];
+        let offset = 0;
+        while (collected.length < wantLimit) {
+          const pageLimit = Math.min(50, wantLimit - collected.length);
+          let page;
+          try { page = await mlGet('https://api.mercadolibre.com/orders/search', token, { ...baseParams, limit: pageLimit, offset }); }
+          catch (e) { break; }
+          const batch = (page && page.results) || [];
+          collected.push(...batch);
+          const total = (page && page.paging && page.paging.total) || 0;
+          offset += batch.length;
+          if (batch.length < pageLimit || offset >= total || offset >= 1000) break;   // no más / tope de ML
+        }
+        ordersData = { results: collected };
       }
       const orders = ordersData.results || [];
       // Step 1: Fetch all unique shipments in parallel
@@ -5768,7 +5786,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-21-v32-enrich-ids-en-corrida', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio'] });
+  sendJSON(res, 200, { version: '2026-07-21-v33-ventas-paginado-prep', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
