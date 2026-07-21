@@ -5768,7 +5768,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-21-v31-boton-completar-faltantes', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio'] });
+  sendJSON(res, 200, { version: '2026-07-21-v32-enrich-ids-en-corrida', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -7651,43 +7651,54 @@ function registerAds(deps) {
     // Trabajamos SOLO con el archivo de esta cuenta (rápido, no toca las demás).
     const file = loadAccountCosts(account.seller_id);
     const table = file.costs || {};
-    // GATILLO 1 — descubrir publicaciones NUEVAS de ML y sumarlas a la MISMA tabla (sin enriquecer aún).
-    // Throttle 30 min por cuenta; envuelto en try/catch: si falla, el enriquecimiento sigue normal.
-    let _discAdded = 0;
-    try { const _disc = await discoverNewItems(account, table); _discAdded = (_disc && _disc.added) || 0; if (_discAdded) saveAccountCosts(account.seller_id, { costs: table, updated: new Date().toISOString() }); }
-    catch (e) { console.error('[DISCOVERY]', account && account.name, (e && e.message) || e); }
-    const allMLA = Object.keys(table).filter(id => /^MLA/i.test(id));   // todas las publicaciones del archivo
-    // SOLO ACTIVAS: excluyo las que ya sabemos pausadas/cerradas (no vuelven a pasar por ningún proceso).
-    const mine = allMLA.filter(id => {
-      const st = String(table[id].status || '').toLowerCase();
-      return !st || st === 'active';   // sin estado conocido (aún sin enriquecer) o activa
-    });
-    const pausadas = allMLA.filter(id => { const st = String(table[id].status || '').toLowerCase(); return st && st !== 'active'; }).length;
-    // "Necesita refresco" = nunca enriquecida (sin enrichAt) O enriquecida con una versión ANTERIOR.
-    // Lo usa el 🎯 clásico (refresco COMPLETO para la estrategia: visitas, ventas, precio con promo, salud).
     const needsRefresh = (id) => (!table[id].enrichAt || (Number(table[id].enrichVer) || 0) < ENRICH_VER) ? 0 : 1;
-    // "FALTANTE" = NO tiene datos de costo (simFee). Es lo único que necesita el PIPELINE. Lo completan
-    // el automático nocturno y el botón "Completar faltantes" (rápido), SIN re-hacer las ya enriquecidas.
     const isFaltante = (id) => table[id].simFee == null;
-    // Unidades vendidas en 90d (del archivo ya calculado por el paso sold90). Las que VENDIERON van
-    // primero — son las que importan (tus estrellas/vacas) y así se refrescan antes que el resto.
-    const soldUnits = (() => { try { const c = (loadSold90File().accounts || {})[account.id]; return (c && c.map) || {}; } catch (e) { return {}; } })();
-    // POOL: modo "faltantes" (automático / botón Completar faltantes) → SOLO las que no tienen costo.
-    //       modo normal (🎯 clásico) → TODAS las activas (refresco completo para estrategia).
-    const pool = opts.onlyFaltantes ? mine.filter(isFaltante) : mine;
-    const ids = pool
-      .sort((a, b) =>
-        needsRefresh(a) - needsRefresh(b) ||
-        ((soldUnits[b] || 0) > 0 ? 1 : 0) - ((soldUnits[a] || 0) > 0 ? 1 : 0) ||   // vendió → primero
-        (Number(soldUnits[b] || 0)) - (Number(soldUnits[a] || 0)) ||               // más ventas → primero
-        (Number(table[b].marginList) || 0) - (Number(table[a].marginList) || 0))   // luego por margen de lista
-      .slice(0, cap);
+    let _discAdded = 0;
+    let ids, mine, allMLA, pausadas = 0;
+    if (Array.isArray(opts.ids) && opts.ids.length) {
+      // MODO IDs EXPLÍCITOS: enriquece ESAS publicaciones (activas O pausadas), agregando al vuelo
+      // las que no estén en la tabla. Sin discovery ni filtro de activas. Lo usa el PIPELINE para
+      // completar en la MISMA corrida el costo de lo que va a precificar (publicaciones nuevas o
+      // reactivadas que nunca tuvieron costo). fetchItems de ML devuelve datos también de pausadas.
+      ids = [];
+      for (const raw of opts.ids) {
+        const id = String(raw).trim();
+        if (!/^MLA/i.test(id)) continue;
+        if (!table[id]) table[id] = { seller_id: String(account.seller_id), account_id: account.id, addedByPipeline: new Date().toISOString() };
+        ids.push(id);
+      }
+      ids = ids.slice(0, Math.min(cap, 1200));
+      allMLA = Object.keys(table).filter(id => /^MLA/i.test(id));
+      mine = allMLA;   // en este modo no filtramos por activas
+    } else {
+      // GATILLO 1 — descubrir publicaciones NUEVAS de ML y sumarlas a la MISMA tabla (sin enriquecer aún).
+      try { const _disc = await discoverNewItems(account, table); _discAdded = (_disc && _disc.added) || 0; if (_discAdded) saveAccountCosts(account.seller_id, { costs: table, updated: new Date().toISOString() }); }
+      catch (e) { console.error('[DISCOVERY]', account && account.name, (e && e.message) || e); }
+      allMLA = Object.keys(table).filter(id => /^MLA/i.test(id));   // todas las publicaciones del archivo
+      // SOLO ACTIVAS: excluyo las que ya sabemos pausadas/cerradas (no vuelven a pasar por ningún proceso).
+      mine = allMLA.filter(id => { const st = String(table[id].status || '').toLowerCase(); return !st || st === 'active'; });
+      pausadas = allMLA.filter(id => { const st = String(table[id].status || '').toLowerCase(); return st && st !== 'active'; }).length;
+      // Unidades vendidas en 90d: las que vendieron van primero (estrellas/vacas).
+      const soldUnits = (() => { try { const c = (loadSold90File().accounts || {})[account.id]; return (c && c.map) || {}; } catch (e) { return {}; } })();
+      // POOL: modo "faltantes" (automático / botón Completar faltantes) → SOLO las que no tienen costo.
+      //       modo normal (🎯 clásico) → TODAS las activas (refresco completo para estrategia).
+      const pool = opts.onlyFaltantes ? mine.filter(isFaltante) : mine;
+      ids = pool
+        .sort((a, b) =>
+          needsRefresh(a) - needsRefresh(b) ||
+          ((soldUnits[b] || 0) > 0 ? 1 : 0) - ((soldUnits[a] || 0) > 0 ? 1 : 0) ||   // vendió → primero
+          (Number(soldUnits[b] || 0)) - (Number(soldUnits[a] || 0)) ||               // más ventas → primero
+          (Number(table[b].marginList) || 0) - (Number(table[a].marginList) || 0))   // luego por margen de lista
+        .slice(0, cap);
+    }
     if (!ids.length) {
       _enrichLocks[account.id] = false;
       const conCosto0 = mine.filter(id => table[id].simFee != null).length;
       const faltantes0 = mine.length - conCosto0;
       return { refined: 0, nuevas: _discAdded, faltantes: faltantes0, account_total: mine.length, file_total: allMLA.length, pausadas,
-        note: opts.onlyFaltantes
+        note: opts.ids
+          ? 'No se pasaron IDs válidos (MLA...) para enriquecer.'
+          : opts.onlyFaltantes
           ? `No quedan faltantes por completar en esta cuenta (${mine.length} activas, todas con costo).`
           : `No hay publicaciones activas para enriquecer. En el archivo hay ${allMLA.length} (${pausadas} pausadas). Si esperabas más, puede que la importación del _COMPLETO de esta cuenta haya quedado incompleta.` };
     }
@@ -7810,6 +7821,23 @@ function registerAds(deps) {
       cuotasPct: u.searchParams.get('cuotasPct') != null ? Number(u.searchParams.get('cuotasPct')) : null,
       retencionPct: u.searchParams.get('retencionPct') != null ? Number(u.searchParams.get('retencionPct')) : null,
     });
+    sendJSON(res, result && result.error ? 500 : 200, result);
+  });
+
+  // ENRIQUECER IDs PUNTUALES (lo usa el PIPELINE con token de API, en la misma corrida):
+  // enriquece las publicaciones cuyos item_id se pasan en el body, activas o pausadas, agregando
+  // al vuelo las que no estén en la tabla. Así una publicación nueva/reactivada que nunca tuvo
+  // costo se enriquece EN EL MOMENTO y el pipeline le puede poner precio en esa misma corrida.
+  // Auth: token de API (checkApiToken) o admin. Cuenta por ?account_id= / ?seller_id= (getAccount).
+  route('POST', '/api/ads/estrategia/enrich-ids', async (req, res) => {
+    const okApi = checkApiToken(req);
+    if (!okApi && !isAdmin(req)) return sendJSON(res, 403, { error: 'Acceso denegado (admin o token de API)' });
+    const account = getAccount(req);
+    if (!account) return sendJSON(res, 404, { error: 'Pasá ?account_id= o ?seller_id=' });
+    const body = await deps.parseBody(req);
+    const rawIds = Array.isArray(body && body.ids) ? body.ids : [];
+    if (!rawIds.length) return sendJSON(res, 400, { error: 'Pasá { ids: [MLA...] } en el body' });
+    const result = await refinarAccount(account, { ids: rawIds, cap: rawIds.length });
     sendJSON(res, result && result.error ? 500 : 200, result);
   });
 
