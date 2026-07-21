@@ -4673,6 +4673,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (prepSalesShippingFilters.length) params.set('shipping', prepSalesShippingFilters.join(','));
       if (prepSalesDateFrom) params.set('date_from', prepSalesDateFrom);
       if (prepSalesDateTo) params.set('date_to', prepSalesDateTo);
+      params.set('limit', '300');   // Preparación mira más atrás que Ventas: así no se pierden las viejas pendientes
       const [salesRes, prepRes, claimsRes] = await Promise.all([
         fetch('/api/sales?' + params.toString()),
         fetch('/api/prep/list'),
