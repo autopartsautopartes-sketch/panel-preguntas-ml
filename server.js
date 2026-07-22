@@ -5786,7 +5786,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-22-v37-stock-derivado', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados'] });
+  sendJSON(res, 200, { version: '2026-07-22-v38-blindaje-enriquecimiento', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -8079,9 +8079,28 @@ function registerAds(deps) {
       };
       n++;
     }
+    // ========================= BLINDAJE ANTI-PÉRDIDA DE ENRIQUECIMIENTO =========================
+    // Una importación de COSTOS jamás puede borrar el ENRIQUECIMIENTO. Recorremos la tabla previa
+    // y, para CADA ítem que estaba enriquecido (simFee != null), garantizamos que siga estándolo:
+    //  - si el replace lo dejó afuera de la tabla → lo re-agregamos con su registro previo entero.
+    //  - si quedó en la tabla pero sin los campos de enriquecimiento → se los reponemos.
+    // Así, aunque un cliente suba en tandas con replace=true (el bug viejo) o pise mal, el panel NO
+    // pierde el enriquecimiento nunca. (Los ítems sin enriquecer sí pueden salir por replace.)
+    const _enrichKeys = ['simFee', 'simFixed', 'simCuotas', 'simImp', 'simEnvio', 'enrichAt', 'enrichVer', 'enrichSrc'];
+    let _repuestos = 0;
+    for (const id in prior) {
+      const p = prior[id];
+      if (!p || p.simFee == null) continue;               // solo protegemos lo que estaba enriquecido
+      if (!table[id]) { table[id] = { ...p }; _repuestos++; continue; }   // el replace lo tiró → lo devolvemos
+      if (table[id].simFee == null) {                     // quedó sin enriquecimiento → reponer
+        for (const k of _enrichKeys) if (p[k] !== undefined) table[id][k] = p[k];
+        if ((table[id].price == null || table[id].price === 0) && p.price != null) table[id].price = p.price;
+        _repuestos++;
+      }
+    }
     saveAccountCosts(sellerId, { costs: table, updated: new Date().toISOString() });
     bustStrat();   // nueva importación → invalidar la foto cacheada
-    sendJSON(res, 200, { ok: true, imported: n, total: Object.keys(table).length, account: accName });
+    sendJSON(res, 200, { ok: true, imported: n, total: Object.keys(table).length, enriquecimiento_protegido: _repuestos, account: accName });
   });
   route('GET', '/api/ads/costs', async (req, res) => {
     if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
