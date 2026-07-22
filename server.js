@@ -5786,7 +5786,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-22-v38-blindaje-enriquecimiento', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento'] });
+  sendJSON(res, 200, { version: '2026-07-22-v39-stock-codigos-fecha', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -8215,6 +8215,14 @@ function stockNormCode(v) {
 function stockNormProv(v) { return v === null || v === undefined ? '' : String(v).trim().toUpperCase(); }
 
 function stockColOf(ref) { const m = ref.match(/^([A-Z]+)/); let c = 0; for (const ch of m[1]) c = c * 26 + (ch.charCodeAt(0) - 64); return c; }
+function stockSerialToYearMonth(serial) {
+  const n = Number(serial);
+  if (!isFinite(n) || n <= 0) return null;
+  const d = new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000);
+  const y = d.getUTCFullYear();
+  if (!isFinite(y) || y < 1900) return null;
+  return y + '/' + (d.getUTCMonth() + 1);
+}
 function stockRowOf(ref) { return parseInt(ref.match(/(\d+)$/)[1], 10); }
 function stockUnesc(s) { return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'"); }
 
@@ -8285,19 +8293,36 @@ function parseStockXlsx(buf) {
       fillRgb.push(rgb);
     }
   }
-  const xfFill = [];
+  const numFmts = {};
+  {
+    const block = (stXml.match(/<numFmts[^>]*>([\s\S]*?)<\/numFmts>/) || [])[1] || '';
+    let m;
+    let re = /<numFmt[^>]*numFmtId="(\d+)"[^>]*formatCode="([^"]*)"/g; while ((m = re.exec(block))) numFmts[m[1]] = m[2];
+    re = /<numFmt[^>]*formatCode="([^"]*)"[^>]*numFmtId="(\d+)"/g; while ((m = re.exec(block))) numFmts[m[2]] = m[1];
+  }
+  const xfFill = [], xfFmt = [];
   {
     const block = (stXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/) || [])[1] || '';
     const re = /<xf\b[^>]*>/g; let m;
     while ((m = re.exec(block))) {
       const fm = m[0].match(/fillId="(\d+)"/);
       xfFill.push(fm ? parseInt(fm[1], 10) : 0);
+      const nf = m[0].match(/numFmtId="(\d+)"/);
+      xfFmt.push(nf ? parseInt(nf[1], 10) : 0);
     }
   }
   const styleToRgb = (s) => {
     if (s === undefined || s === null || s === '') return null;
     const fid = xfFill[parseInt(s, 10)];
     return (fid != null) ? fillRgb[fid] : null;
+  };
+  const styleIsYearMonth = (s) => {
+    if (s === undefined || s === null || s === '') return false;
+    const fid = xfFmt[parseInt(s, 10)];
+    if (fid == null) return false;
+    const code = numFmts[fid];
+    if (code) { const c = code.toLowerCase(); return /y/.test(c) && /m/.test(c) && !/d/.test(c); }
+    return false;
   };
 
   // workbook: nombre de hoja -> archivo
@@ -8338,6 +8363,10 @@ function parseStockXlsx(buf) {
         const vm = inner.match(/<v>([\s\S]*?)<\/v>/);
         if (vm) { val = vm[1]; if (t === 's') val = shared[parseInt(val, 10)]; else val = stockUnesc(val); }
         else { const im = inner.match(/<t[^>]*>([\s\S]*?)<\/t>/); if (im) val = stockUnesc(im[1]); }
+        if (col === 1 && t !== 's' && val != null && val !== '' && styleIsYearMonth(s)) {
+          const ym = stockSerialToYearMonth(val);
+          if (ym) val = ym;
+        }
         cells[col] = { val, ref, s };
       }
       const a = cells[1];
