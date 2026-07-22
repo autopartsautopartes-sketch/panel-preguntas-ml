@@ -5786,7 +5786,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-21-v36-costos-auto', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar'] });
+  sendJSON(res, 200, { version: '2026-07-22-v37-stock-derivado', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -8437,6 +8437,36 @@ function registerStock(deps) {
   const writeJson = (p, obj) => fs.writeFileSync(p, JSON.stringify(obj));
   const loadCatalog = () => { const c = readJson(catalogPath(), null); return (c && c.costos) ? c : { updated: null, costos: {} }; };
 
+  // Deriva un catálogo (código||proveedor → costo) a partir de las TABLAS DE COSTOS que el panel
+  // ya tiene (ads_costs_<sid>.json). Cada publicación trae sku=código utilizado, proveedor y costo.
+  // Así el Stock valúa aunque la automatización no haya empujado el catálogo aparte. Ignora COMBOS
+  // (su "código" son varios juntos y no matchea un código suelto del stock).
+  function deriveStockCatalogFromCosts() {
+    const map = {};
+    let files = 0, used = 0;
+    try {
+      for (const fn of fs.readdirSync(DATA_DIR)) {
+        if (!/^ads_costs_.*\.json$/.test(fn)) continue;
+        files++;
+        let f; try { f = JSON.parse(fs.readFileSync(path.join(DATA_DIR, fn), 'utf8')); } catch (e) { continue; }
+        const costs = (f && f.costs) || {};
+        for (const id in costs) {
+          const c = costs[id];
+          if (!c) continue;
+          const costo = Number(c.cost);
+          if (!(costo > 0)) continue;
+          const prov = stockNormProv(c.proveedor);
+          if (!prov || prov === 'COMBOS') continue;           // combos no matchean un código suelto
+          const cod = stockNormCode(c.sku);
+          if (!cod || cod.indexOf('+') >= 0) continue;         // sku de combo ("A + B") → descartar
+          const key = cod + '||' + prov;
+          if (map[key] === undefined) { map[key] = costo; used++; }
+        }
+      }
+    } catch (e) {}
+    return { map, files, used };
+  }
+
   async function downloadDriveXlsx(fileId) {
     if (process.env.STOCK_LOCAL_FILE) {
       const b = require('fs').readFileSync(process.env.STOCK_LOCAL_FILE);
@@ -8496,7 +8526,11 @@ function registerStock(deps) {
     const t0 = Date.now();
     try {
       const cat = loadCatalog();
-      const costos = cat.costos || {};
+      const derived = deriveStockCatalogFromCosts();
+      // Merge: primero lo derivado de las tablas de costos del panel, y encima el catálogo empujado
+      // por la automatización (lista completa de proveedor) que tiene prioridad si existe.
+      const costos = Object.assign({}, derived.map, cat.costos || {});
+      const costosCount = Object.keys(costos).length;
       const buf = await downloadDriveXlsx(STOCK_FILE_ID);
       const parsed = parseStockXlsx(buf);
       const filasB = parsed[STOCK_SHEET_BSAS] || [];
@@ -8539,9 +8573,9 @@ function registerStock(deps) {
       const base = prev.date === null;
       const last = {
         date: hoy, at: new Date().toISOString(), origen: origen || 'manual', base, comparadoCon: prev.date,
-        catalogo: { updated: cat.updated, costos: Object.keys(costos).length },
-        bsas: { ...registro.bsas, sinPrecioList: valB.sinPrecio.slice(0, 500) },
-        rufino: { ...registro.rufino, sinPrecioList: valR.sinPrecio.slice(0, 500) },
+        catalogo: { updated: cat.updated, costos: costosCount, empujados: Object.keys(cat.costos || {}).length, derivados: derived.used },
+        bsas: { ...registro.bsas, sinPrecioList: valB.sinPrecio.slice(0, 800) },
+        rufino: { ...registro.rufino, sinPrecioList: valR.sinPrecio.slice(0, 800) },
         total: registro.total,
         movimientos: { bsas: movB, rufino: movR },
         ms: Date.now() - t0,
@@ -8614,10 +8648,12 @@ function registerStock(deps) {
     const last = readJson(lastPath(), null);
     const daily = readJson(dailyPath(), { dias: [] });
     const cat = loadCatalog();
+    const derived = deriveStockCatalogFromCosts();
+    const efectivos = Object.keys(Object.assign({}, derived.map, cat.costos || {})).length;
     const { date, hour, min } = arParts();
     sendJSON(res, 200, {
       last, dias: daily.dias || [],
-      catalogo: { updated: cat.updated, costos: Object.keys(cat.costos || {}).length },
+      catalogo: { updated: cat.updated, costos: efectivos, empujados: Object.keys(cat.costos || {}).length, derivados: derived.used },
       ahora_ar: { date, hour, min },
       programado: { hora: RUN_HOUR, min: RUN_MIN, corrio_hoy: loadDB().stock_auto_run_ar === date },
       file_id: STOCK_FILE_ID,
