@@ -5664,6 +5664,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     loadStock();
   }
 
+  async function resetStockHistorial() {
+    if (!confirm('¿Reiniciar el histórico diario y los movimientos del stock?\n\nSe borran el histórico, los movimientos y las fotos guardadas (NO se toca el catálogo de costos). La próxima actualización arranca de cero con una base nueva y limpia.\n\n¿Continuar?')) return;
+    try {
+      const res = await fetch('/api/stock/reset', { method: 'POST' });
+      const r = await res.json();
+      if (!r.ok) { alert('No se pudo reiniciar: ' + (r.error || 'error')); return; }
+      alert('Histórico reiniciado (' + (r.borrados || 0) + ' archivos borrados). Ahora tocá "Actualizar ahora" para crear la base nueva.');
+      loadStock();
+    } catch (e) { alert('Error de red al reiniciar el histórico.'); }
+  }
+
   async function downloadStockXlsx(suc) {
     try {
       if (!window.XLSX) { const ok = await loadXLSX(); if (!ok) { alert('No se pudo cargar la librería de Excel. Recargá la página e intentá de nuevo.'); return; } }
@@ -5759,7 +5770,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
 
     // histórico diario
-    html += '<h3 style="color:#2d3277;margin:26px 0 8px">Histórico diario</h3>';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin:26px 0 8px"><h3 style="color:#2d3277;margin:0">Histórico diario</h3>';
+    html += '<button onclick="resetStockHistorial()" style="background:#fff;color:#b91c1c;border:1px solid #f0c2c2;padding:7px 12px;border-radius:9px;font-weight:600;cursor:pointer;font-size:12px">🗑️ Reiniciar histórico</button></div>';
     if (dias.length > 1) html += '<div style="background:#fff;border:1px solid #eef0f4;border-radius:12px;padding:14px;margin-bottom:14px"><canvas id="stockChart" height="90"></canvas></div>';
     html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px">';
     html += '<thead><tr style="background:#f8f9fb;color:#555;text-align:right">' +
