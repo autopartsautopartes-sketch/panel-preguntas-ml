@@ -5786,7 +5786,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-22-v39-stock-codigos-fecha', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha'] });
+  sendJSON(res, 200, { version: '2026-07-22-v40-stock-reset', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -8733,6 +8733,24 @@ function registerStock(deps) {
     const valor = rows.reduce((s, r) => s + (r.valor || 0), 0);
     const unidades = rows.reduce((s, r) => s + (r.cant || 0), 0);
     sendJSON(res, 200, { suc: key, date: items.date, rows, totales: { items: rows.length, unidades, valor } });
+  });
+
+  // REINICIAR el histórico diario + movimientos + snapshots (arranca de cero). NO borra el
+  // catálogo de costos. La próxima actualización crea una base nueva y limpia.
+  route('POST', '/api/stock/reset', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const borrados = [];
+    for (const p of [dailyPath(), lastPath(), itemsPath()]) {
+      try { if (fs.existsSync(p)) { fs.unlinkSync(p); borrados.push(path.basename(p)); } } catch (e) {}
+    }
+    try {
+      for (const fn of fs.readdirSync(DATA_DIR)) {
+        if (/^stock_snap_\d{4}-\d{2}-\d{2}\.json$/.test(fn)) { try { fs.unlinkSync(path.join(DATA_DIR, fn)); borrados.push(fn); } catch (e) {} }
+      }
+    } catch (e) {}
+    // Reseteamos las marcas para que la próxima corrida haga base nueva.
+    try { const db = loadDB(); delete db.stock_auto_run_ar; delete db.stock_last_at; saveDB(db); } catch (e) {}
+    sendJSON(res, 200, { ok: true, borrados: borrados.length, archivos: borrados });
   });
 
   route('GET', '/api/stock/snap', async (req, res) => {
