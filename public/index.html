@@ -5714,7 +5714,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (last && last.at) {
       updTxt = '🕒 Última actualización del stock: <b>' + _fmtAR(last.at) + '</b> (hora Argentina)' + (last.origen ? (' · ' + (last.origen === 'auto' ? 'automática' : 'manual') + '') : '');
     }
-    html += '<div style="color:#666;font-size:13px;margin-bottom:16px">' + updTxt + ' · ' + progTxt + '<br>📥 Último catálogo de costos subido: ' + (cat.updated ? ('<b>' + _fmtAR(cat.updated) + '</b> · ' + _stkNum(cat.costos) + ' precios') : 'todavía sin cargar') + '</div>';
+    const costTxt = (cat.costos > 0)
+      ? ('<b>' + _stkNum(cat.costos) + '</b> precios disponibles' + (cat.updated ? (' · último catálogo subido ' + _fmtAR(cat.updated)) : ' (tomados de las listas de costos del panel)'))
+      : 'todavía sin cargar';
+    html += '<div style="color:#666;font-size:13px;margin-bottom:16px">' + updTxt + ' · ' + progTxt + '<br>💲 Costos: ' + costTxt + '</div>';
 
     if (!last) {
       html += '<div class="empty" style="padding:30px;text-align:center;background:#f8f9fb;border-radius:12px"><p style="font-size:15px">Todavía no hay datos de stock.</p><p style="color:#666">Tocá <b>Actualizar ahora</b> para crear la base inicial, o esperá a la corrida automática de las ' + String(prog.hora ?? 17).padStart(2, '0') + ':' + String(prog.min ?? 30).padStart(2, '0') + ' hs.</p>';
@@ -5778,14 +5781,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
 
     // lista sin precio (para revisar)
     const sinList = [];
-    for (const x of (b.sinPrecioList || [])) sinList.push({ ...x, suc: 'BsAs' });
+    for (const x of (b.sinPrecioList || [])) sinList.push({ ...x, suc: 'Buenos Aires' });
     for (const x of (r.sinPrecioList || [])) sinList.push({ ...x, suc: 'Rufino' });
+    sinList.sort((a, b2) => (b2.cant || 0) - (a.cant || 0));   // mezcla ambas sucursales por cantidad (no queda solo BsAs)
     if (sinList.length) {
-      html += '<h3 style="color:#9a3412;margin:26px 0 8px">Ítems sin precio (' + _stkNum(sinList.length) + ') — para revisar</h3>';
+      const sinB = (b.sinPrecio || 0), sinR = (r.sinPrecio || 0);
+      html += '<h3 style="color:#9a3412;margin:26px 0 8px">Ítems sin precio (' + _stkNum(sinB + sinR) + ') — para revisar <span style="font-size:13px;font-weight:400;color:#888">· Buenos Aires: ' + _stkNum(sinB) + ' · Rufino: ' + _stkNum(sinR) + '</span></h3>';
       html += '<div style="color:#666;font-size:13px;margin-bottom:6px">Tienen stock pero su código+proveedor no está en el catálogo de costos. Revisá el código/proveedor o la lista del proveedor.</div>';
       html += '<div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:1px solid #eef0f4;border-radius:10px"><table style="width:100%;border-collapse:collapse;font-size:13px">';
       html += '<thead><tr style="background:#fff7ed;color:#9a3412;position:sticky;top:0"><th style="padding:7px 10px;text-align:left">Código</th><th style="padding:7px 10px;text-align:left">Proveedor</th><th style="padding:7px 10px;text-align:left">Sucursal</th><th style="padding:7px 10px;text-align:right">Cantidad</th></tr></thead><tbody>';
-      for (const x of sinList.slice(0, 400)) {
+      for (const x of sinList.slice(0, 800)) {
         html += '<tr style="border-top:1px solid #f4f5f7"><td style="padding:6px 10px;font-weight:600">' + escapeHtml(x.cod) + '</td><td style="padding:6px 10px">' + escapeHtml(x.prov || '—') + '</td><td style="padding:6px 10px;color:#666">' + x.suc + '</td><td style="padding:6px 10px;text-align:right">' + _stkNum(x.cant) + '</td></tr>';
       }
       html += '</tbody></table></div>';
