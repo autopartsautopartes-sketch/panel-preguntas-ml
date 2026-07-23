@@ -5823,7 +5823,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-22-v41-mensajes-sync-ml', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-23-v42-cuota-no-se-borra', features: ['cuota_conserva_conocida', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6836,12 +6836,21 @@ function simNet(costRow, price, sim, cfg) {
   //   1) sim.financing → si la API del simulador lo trae, se usa tal cual.
   //   2) tasa real de ML → lo que ML te cobró DE MÁS sobre la comisión en tus ventas reales de esa
   //      misma publicación (sale_fee de la orden). Es idéntico a lo que muestra el simulador.
-  //   3) cuotasPct configurable → último recurso si nunca vendió y la API no informó cuotas.
+  //   3) CUOTA CONOCIDA previa → si esta publicación YA tenía una tasa de cuota conocida (de una
+  //      enriquecida/venta anterior), la conservamos. ML SIGUE cobrando la cuota "con interés bajo"
+  //      aunque el simulador (listing_prices) informe 0; un 0 del simulador NO es prueba de que no
+  //      haya cuota. Sin esto, cada refinar de una publicación que no vendió en 90 días le borraba
+  //      la cuota (5%) y dejaba el precio ~5% barato. (Comprobado: MLA1137941947, "Pagás 5%").
+  //   4) cuotasPct configurable → último recurso si nunca tuvo cuota conocida ni vendió.
   const realRate = (costRow.realTakeRate != null && Number(costRow.realTakeRate) > 0) ? Number(costRow.realTakeRate) : null;
+  const prevPrice = Number(costRow.price) || 0;
+  const prevCuota = Number(costRow.simCuotas) || 0;
+  const prevCuotaPct = (prevCuota > 0 && prevPrice > 0) ? (prevCuota / prevPrice) : 0;   // tasa de cuota conocida
   let cuotas;
-  if (sim && sim.financing) cuotas = Number(sim.financing);
-  else if (realRate != null) cuotas = Math.max(0, p * realRate - cargoVender);
-  else cuotas = cfg.cuotasPct ? p * cfg.cuotasPct / 100 : 0;
+  if (sim && sim.financing) cuotas = Number(sim.financing);            // 1) simulador la informó
+  else if (realRate != null) cuotas = Math.max(0, p * realRate - cargoVender);   // 2) tasa REAL de ML (ventas 90d)
+  else if (prevCuotaPct > 0) cuotas = p * prevCuotaPct;                // 3) conservar la cuota conocida (no la borres)
+  else cuotas = cfg.cuotasPct ? p * cfg.cuotasPct / 100 : 0;           // 4) fallback configurable
   // Envío: 0 si lo paga el comprador (precio bajo el umbral de envío gratis); si no, estimación del _COMPLETO.
   const freeShip = cfg.freeShipThreshold != null ? cfg.freeShipThreshold : 33000;
   const envio = (p >= freeShip) ? Math.max(0, (Number(costRow.costShip) || cost) - cost) : 0;
