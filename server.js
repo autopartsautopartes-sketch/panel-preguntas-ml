@@ -2676,6 +2676,11 @@ route('GET', '/api/messages', async (req, res) => {
   const db = loadDB();
   const dismissedPacks = db.dismissed_msg_packs || {};
   let allMessages = [];
+  // SINCRONIZACIÓN CON ML: conversaciones YA ATENDIDAS (respondimos último o descartadas) que ML
+  // igual marca "sin leer" → las marcamos leídas en ML para que su contador coincida con el panel.
+  // REGLA AIRTIGHT: solo se marcan las atendidas; una que el comprador escribió último y no
+  // contestaste NUNCA se toca, así jamás se te escapa una que necesita respuesta.
+  const markReadJobs = [];
   const targets = accountFilter ? db.ml_accounts.filter(a => a.id === parseInt(accountFilter)) : db.ml_accounts;
   // Fetch accounts in parallel
   await Promise.all(targets.map(async (account) => {
@@ -2841,6 +2846,12 @@ route('GET', '/api/messages', async (req, res) => {
               isUnread = false; // treat as answered
             }
           }
+          // SYNC ML (airtight): SOLO si la conversación está ATENDIDA — respondimos último
+          // (lastMsg.from === 'seller') o está descartada — y ML igual la marca sin leer.
+          // Las que el comprador escribió último y NO están descartadas jamás entran acá.
+          if (hasMLUnread && (lastMsg.from === 'seller' || isDismissed)) {
+            markReadJobs.push({ packId: String(packId), sellerId: account.seller_id, token });
+          }
           if (!buyerFilter && !orderFilter) {
             if (statusFilter === 'unread' && (!isUnread || isDismissed)) return null;
             if (statusFilter === 'answered' && isUnread && !isDismissed) return null;
@@ -2863,6 +2874,25 @@ route('GET', '/api/messages', async (req, res) => {
       console.error(`Error messages ${account.name}:`, err.response?.data || err.message || err);
     }
   }));
+  // Marcamos en ML como leídas las conversaciones ya atendidas (en segundo plano, con 1 reintento).
+  // No bloquea la respuesta del panel. Dedupe por pack para no repetir llamadas.
+  if (markReadJobs.length) {
+    const seenJobs = new Set();
+    const jobs = markReadJobs.filter(j => { const k = j.sellerId + ':' + j.packId; if (seenJobs.has(k)) return false; seenJobs.add(k); return true; });
+    const markOne = async (j) => {
+      const url = `https://api.mercadolibre.com/messages/packs/${j.packId}/sellers/${j.sellerId}`;
+      const params = { tag: 'post_sale', limit: 30, mark_as_read: true };
+      try { await mlGet(url, j.token, params); }
+      catch (e) { try { await new Promise(r => setTimeout(r, 500)); await mlGet(url, j.token, params); } catch (e2) {} }
+    };
+    // en tandas de 5 para no golpear el rate limit; fire-and-forget (no bloquea la respuesta)
+    (async () => {
+      for (let i = 0; i < jobs.length; i += 5) {
+        await Promise.all(jobs.slice(i, i + 5).map(markOne));
+      }
+      console.log('[MESSAGES] marcadas leídas en ML (atendidas):', jobs.length);
+    })().catch(() => {});
+  }
   allMessages.sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
   sendJSON(res, 200, allMessages);
 });
@@ -2915,6 +2945,13 @@ route('POST', '/api/messages/reply', async (req, res) => {
       db.dismissed_msg_packs[String(packId)] = new Date().toISOString();
       saveDB(db);
     } catch (e) { console.log('[MSG REPLY] no se pudo auto-dismiss:', e.message || e); }
+    // Además la marcamos LEÍDA en ML (con 1 reintento) para que el contador de ML baje al instante.
+    (async () => {
+      const url = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${account.seller_id}`;
+      const params = { tag: 'post_sale', limit: 30, mark_as_read: true };
+      try { await mlGet(url, token, params); }
+      catch (e) { try { await new Promise(r => setTimeout(r, 500)); await mlGet(url, token, params); } catch (e2) {} }
+    })().catch(() => {});
     sendJSON(res, 200, { ok: true });
   } catch (err) {
     console.error('Error sending message:', err.response?.data || err.message || err);
@@ -5786,7 +5823,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-22-v40-stock-reset', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico'] });
+  sendJSON(res, 200, { version: '2026-07-22-v41-mensajes-sync-ml', features: ['anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
