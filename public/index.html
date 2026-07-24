@@ -5758,15 +5758,27 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       html += '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:#9a3412">⚠️ ' + _stkNum(sinP) + ' ítems con stock <b>no tienen precio</b> en el catálogo (no se cuentan en el valor). Ver la lista abajo.</div>';
     }
 
-    // movimientos
+    // ===== BUSCADOR POR CÓDIGO =====
+    html += '<div style="background:#fff;border:1px solid #eef0f4;border-radius:12px;padding:14px 16px;margin:18px 0">';
+    html += '<div style="font-weight:700;color:#2d3277;margin-bottom:8px">🔎 Buscar un código</div>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+    html += '<input id="stkBuscarCod" placeholder="Ej: 3477/10" onkeydown="if(event.key===\'Enter\')stockBuscarCodigo()" style="flex:1;min-width:220px;padding:9px 12px;border:1px solid #d6ddf6;border-radius:9px;font-size:14px">';
+    html += '<button onclick="stockBuscarCodigo()" style="background:#3483fa;color:#fff;border:none;padding:9px 18px;border-radius:9px;font-weight:600;cursor:pointer;font-size:14px">Buscar</button>';
+    html += '</div><div id="stkBuscarRes" style="margin-top:10px"></div></div>';
+
+    // ===== MOVIMIENTOS (con filtros: sucursal + rango de fechas; por defecto últimas 24hs) =====
     if (last.base) {
       html += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:12px 14px;margin-bottom:18px;font-size:14px;color:#1e40af">🆕 <b>Base inicial creada.</b> A partir de la próxima actualización se empiezan a registrar los movimientos (lo que se vendió y lo que se agregó) comparando contra este día.</div>';
     } else {
-      html += '<h3 style="color:#2d3277;margin:22px 0 8px">Movimientos ' + (last.comparadoCon ? ('(desde el ' + last.comparadoCon + ')') : '') + '</h3>';
-      html += '<div style="display:flex;gap:16px;flex-wrap:wrap">';
-      html += movBlock('Buenos Aires', last.movimientos.bsas);
-      html += movBlock('Rufino', last.movimientos.rufino);
+      html += '<h3 style="color:#2d3277;margin:22px 0 8px">Movimientos</h3>';
+      html += '<div style="background:#fff;border:1px solid #eef0f4;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">';
+      html += '<div><div style="font-size:12px;color:#666;margin-bottom:3px">Sucursal</div><select id="stkMovSuc" onchange="stockRenderMov()" style="padding:8px 10px;border:1px solid #d6ddf6;border-radius:8px;font-size:13px"><option value="todas">Todas (BsAs + Rufino)</option><option value="Buenos Aires">Buenos Aires</option><option value="Rufino">Rufino</option></select></div>';
+      html += '<div><div style="font-size:12px;color:#666;margin-bottom:3px">Desde</div><input type="date" id="stkMovDesde" style="padding:7px 10px;border:1px solid #d6ddf6;border-radius:8px;font-size:13px"></div>';
+      html += '<div><div style="font-size:12px;color:#666;margin-bottom:3px">Hasta</div><input type="date" id="stkMovHasta" style="padding:7px 10px;border:1px solid #d6ddf6;border-radius:8px;font-size:13px"></div>';
+      html += '<button onclick="stockFiltrarMov()" style="background:#3483fa;color:#fff;border:none;padding:9px 16px;border-radius:9px;font-weight:600;cursor:pointer;font-size:13px">Filtrar por fecha</button>';
+      html += '<button onclick="stockMov24h()" style="background:#eef1fb;color:#2d3277;border:1px solid #d6ddf6;padding:9px 16px;border-radius:9px;font-weight:600;cursor:pointer;font-size:13px">Últimas 24hs</button>';
       html += '</div>';
+      html += '<div id="stkMovRes"><div style="color:#999;font-size:13px;padding:10px">Cargando movimientos...</div></div>';
     }
 
     // histórico diario
@@ -5810,6 +5822,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
 
     html += '</div>';
     content.innerHTML = html;
+
+    // cargar movimientos por defecto (últimas 24hs) apenas se pinta la sección
+    if (last && !last.base) { try { stockMov24h(); } catch (e) {} }
 
     // gráfico (progressive enhancement — sólo si Chart está disponible)
     if (dias.length > 1 && typeof Chart !== 'undefined') {
@@ -5865,6 +5880,91 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!vend.length && !agr.length) h += '<div style="color:#999;font-size:13px">Sin movimientos.</div>';
     h += '</div>';
     return h;
+  }
+
+  // ===== STOCK: buscador por código + movimientos con filtros (sucursal / rango de fechas) =====
+  function _stkMovTabla(arr, tipo) {
+    const color = tipo === 'vend' ? '#dc2626' : '#16a34a';
+    const signo = tipo === 'vend' ? '-' : '+';
+    if (!arr.length) return '<div style="color:#999;font-size:13px;padding:6px">Sin movimientos.</div>';
+    let s = '<div style="overflow-x:auto;max-height:420px;overflow-y:auto;border:1px solid #eef0f4;border-radius:10px"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+    s += '<thead><tr style="background:#f8f9fb;color:#555;position:sticky;top:0"><th style="padding:7px 10px;text-align:left">Fecha</th><th style="padding:7px 10px;text-align:left">Sucursal</th><th style="padding:7px 10px;text-align:left">Código</th><th style="padding:7px 10px;text-align:left">Proveedor</th><th style="padding:7px 10px;text-align:right">Cant.</th><th style="padding:7px 10px;text-align:right">Antes→Ahora</th></tr></thead><tbody>';
+    for (const x of arr.slice(0, 1500)) {
+      s += '<tr style="border-top:1px solid #f4f5f7"><td style="padding:6px 10px;font-weight:600">' + x.date + '</td><td style="padding:6px 10px;color:#666">' + escapeHtml(x.sucursal) + '</td><td style="padding:6px 10px;font-weight:600">' + escapeHtml(x.cod) + '</td><td style="padding:6px 10px;color:#777">' + escapeHtml(x.prov || '') + '</td><td style="padding:6px 10px;text-align:right;color:' + color + ';font-weight:700">' + signo + _stkNum(x.cantidad) + '</td><td style="padding:6px 10px;text-align:right;color:#999">' + x.antes + '→' + x.ahora + '</td></tr>';
+    }
+    s += '</tbody></table></div>';
+    return s;
+  }
+  function stockRenderMov() {
+    const data = window._stockMovData; const cont = document.getElementById('stkMovRes');
+    if (!cont) return;
+    if (!data || data.error) { cont.innerHTML = '<div style="color:#c00;font-size:13px;padding:10px">' + ((data && data.error) || 'Sin datos.') + '</div>'; return; }
+    const suc = (document.getElementById('stkMovSuc') || {}).value || 'todas';
+    const filt = (arr) => suc === 'todas' ? arr : (arr || []).filter(x => x.sucursal === suc);
+    const vend = filt(data.vendidos || []); const agr = filt(data.agregados || []);
+    const totV = vend.reduce((s, x) => s + (x.cantidad || 0), 0);
+    const totA = agr.reduce((s, x) => s + (x.cantidad || 0), 0);
+    const rango = data.rango || {};
+    let h = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px">';
+    h += '<div style="flex:1;min-width:170px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:10px 14px"><div style="font-size:12px;color:#991b1b">🔻 Vendidas</div><div style="font-size:22px;font-weight:800;color:#dc2626">' + _stkNum(totV) + '</div><div style="font-size:12px;color:#999">' + vend.length + ' códigos</div></div>';
+    h += '<div style="flex:1;min-width:170px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 14px"><div style="font-size:12px;color:#166534">🔺 Agregadas</div><div style="font-size:22px;font-weight:800;color:#16a34a">' + _stkNum(totA) + '</div><div style="font-size:12px;color:#999">' + agr.length + ' códigos</div></div>';
+    h += '</div>';
+    const per = rango.por_defecto ? ('últimas 24hs' + (rango.hasta ? (' · ' + rango.hasta) : '')) : ('del ' + (rango.desde || '?') + ' al ' + (rango.hasta || '?'));
+    h += '<div style="font-size:12px;color:#888;margin-bottom:8px">Mostrando <b>' + per + '</b>' + (suc !== 'todas' ? (' · ' + suc) : ' · ambas sucursales') + '.</div>';
+    h += '<div style="font-size:13px;color:#dc2626;font-weight:700;margin:6px 0 4px">Vendidos</div>' + _stkMovTabla(vend, 'vend');
+    h += '<div style="font-size:13px;color:#16a34a;font-weight:700;margin:12px 0 4px">Agregados</div>' + _stkMovTabla(agr, 'agr');
+    cont.innerHTML = h;
+  }
+  async function stockMov24h() {
+    const cont = document.getElementById('stkMovRes'); if (cont) cont.innerHTML = '<div style="color:#999;font-size:13px;padding:10px">Cargando...</div>';
+    const dd = document.getElementById('stkMovDesde'); const hh = document.getElementById('stkMovHasta');
+    if (dd) dd.value = ''; if (hh) hh.value = '';
+    try { const r = await fetch('/api/stock/movimientos'); window._stockMovData = await r.json(); } catch (e) { if (cont) cont.innerHTML = '<div style="color:#c00">Error al cargar los movimientos.</div>'; return; }
+    stockRenderMov();
+  }
+  async function stockFiltrarMov() {
+    const dd = (document.getElementById('stkMovDesde') || {}).value || '';
+    const hh = (document.getElementById('stkMovHasta') || {}).value || '';
+    if (!dd && !hh) return stockMov24h();
+    const cont = document.getElementById('stkMovRes'); if (cont) cont.innerHTML = '<div style="color:#999;font-size:13px;padding:10px">Cargando...</div>';
+    const qs = [];
+    if (dd) qs.push('desde=' + encodeURIComponent(dd));
+    if (hh) qs.push('hasta=' + encodeURIComponent(hh));
+    try { const r = await fetch('/api/stock/movimientos?' + qs.join('&')); window._stockMovData = await r.json(); } catch (e) { if (cont) cont.innerHTML = '<div style="color:#c00">Error al cargar los movimientos.</div>'; return; }
+    stockRenderMov();
+  }
+  async function stockBuscarCodigo() {
+    const inp = document.getElementById('stkBuscarCod'); const res = document.getElementById('stkBuscarRes');
+    const cod = ((inp && inp.value) || '').trim();
+    if (!cod) { if (res) res.innerHTML = ''; return; }
+    if (res) res.innerHTML = '<div style="color:#999;font-size:13px;padding:6px">Buscando...</div>';
+    let d;
+    try { const r = await fetch('/api/stock/buscar?cod=' + encodeURIComponent(cod)); d = await r.json(); } catch (e) { if (res) res.innerHTML = '<div style="color:#c00">Error al buscar.</div>'; return; }
+    if (!res) return;
+    if (d.error) { res.innerHTML = '<div style="color:#c00;font-size:13px">' + escapeHtml(d.error) + '</div>'; return; }
+    if (!d.encontrado) { res.innerHTML = '<div style="color:#888;font-size:13px;padding:6px">No se encontró el código <b>' + escapeHtml(cod) + '</b> en el stock ni en los movimientos.</div>'; return; }
+    const sa = d.stock_actual || {}; const ing = d.ingreso || {};
+    let h = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">';
+    h += '<div style="padding:8px 14px;border-radius:9px;font-weight:700;font-size:14px;background:' + (sa.en_stock ? '#f0fdf4' : '#fef2f2') + ';color:' + (sa.en_stock ? '#16a34a' : '#dc2626') + ';border:1px solid ' + (sa.en_stock ? '#bbf7d0' : '#fecaca') + '">' + (sa.en_stock ? '✓ EN STOCK' : '✗ SIN STOCK') + '</div>';
+    h += '<div style="padding:8px 14px;border-radius:9px;background:#f8f9fb;font-size:13px">Buenos Aires: <b>' + _stkNum(sa.buenos_aires || 0) + '</b></div>';
+    h += '<div style="padding:8px 14px;border-radius:9px;background:#f8f9fb;font-size:13px">Rufino: <b>' + _stkNum(sa.rufino || 0) + '</b></div>';
+    h += '<div style="padding:8px 14px;border-radius:9px;background:#eef1fb;font-size:13px;color:#2d3277">Total: <b>' + _stkNum(sa.total || 0) + '</b></div>';
+    if ((d.proveedores || []).length) h += '<div style="padding:8px 14px;border-radius:9px;background:#f8f9fb;font-size:13px">Proveedor: <b>' + escapeHtml(d.proveedores.join(', ')) + '</b></div>';
+    h += '</div>';
+    h += '<div style="font-size:13px;color:#555;margin-bottom:8px">Primer ingreso — Buenos Aires: <b>' + (ing.buenos_aires || '—') + '</b> · Rufino: <b>' + (ing.rufino || '—') + '</b></div>';
+    const mv = d.movimientos || [];
+    if (!mv.length) { h += '<div style="color:#999;font-size:13px">Sin movimientos registrados para este código.</div>'; }
+    else {
+      h += '<div style="font-weight:700;color:#2d3277;font-size:13px;margin-bottom:4px">Historial de movimientos (ingresos / egresos)</div>';
+      h += '<div style="overflow-x:auto;max-height:320px;overflow-y:auto;border:1px solid #eef0f4;border-radius:10px"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+      h += '<thead><tr style="background:#f8f9fb;color:#555;position:sticky;top:0"><th style="padding:7px 10px;text-align:left">Fecha</th><th style="padding:7px 10px;text-align:left">Sucursal</th><th style="padding:7px 10px;text-align:left">Movimiento</th><th style="padding:7px 10px;text-align:right">Cant.</th><th style="padding:7px 10px;text-align:right">Antes→Ahora</th></tr></thead><tbody>';
+      for (const m of mv) {
+        const es = m.tipo === 'ingreso';
+        h += '<tr style="border-top:1px solid #f4f5f7"><td style="padding:6px 10px;font-weight:600">' + m.date + '</td><td style="padding:6px 10px;color:#666">' + escapeHtml(m.sucursal) + '</td><td style="padding:6px 10px;color:' + (es ? '#16a34a' : '#dc2626') + ';font-weight:700">' + (es ? '🔺 Ingreso' : '🔻 Egreso') + '</td><td style="padding:6px 10px;text-align:right;font-weight:700;color:' + (es ? '#16a34a' : '#dc2626') + '">' + (es ? '+' : '-') + _stkNum(m.cantidad) + '</td><td style="padding:6px 10px;text-align:right;color:#999">' + m.antes + '→' + m.ahora + '</td></tr>';
+      }
+      h += '</tbody></table></div>';
+    }
+    res.innerHTML = h;
   }
 
   function loadPromos() {
