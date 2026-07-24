@@ -5531,12 +5531,18 @@ route('POST', '/api/ads/costs/restore', async (req, res) => {
       const base = prev || { seller_id: account.seller_id, account_id: accountId, account_name: account.name };
       if (!prev) nuevos++;
       const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+      // BLINDAJE: un restore NUNCA baja a 0 una comisión/cuota que YA estaba cargada en el panel.
+      // Si el archivo de recuperación viene con 0 (p.ej. se generó antes de tener la cuota), se
+      // conserva el valor bueno que ya había. Así un restore desde un archivo incompleto no borra
+      // la cuota (fue la causa raíz del problema del 22/23).
+      const _inFee = num(it.sim_fee), _prevFee = num(base.simFee);
+      const _inCuota = num(it.sim_cuotas), _prevCuota = num(base.simCuotas);
       file.costs[id] = {
         ...base,
         price: it.price != null ? num(it.price) : (base.price || 0),
-        simFee: num(it.sim_fee),
+        simFee: (_inFee > 0 ? _inFee : (_prevFee > 0 ? _prevFee : _inFee)),
         simFixed: num(it.sim_fixed),
-        simCuotas: num(it.sim_cuotas),
+        simCuotas: (_inCuota > 0 ? _inCuota : (_prevCuota > 0 ? _prevCuota : _inCuota)),
         simImp: num(it.sim_imp),
         simEnvio: num(it.sim_envio),
         enrichAt: nowIso,
@@ -5823,7 +5829,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-23-v42-cuota-no-se-borra', features: ['cuota_conserva_conocida', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-24-v44-stock-buscador-filtros', features: ['cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -8807,6 +8813,102 @@ function registerStock(deps) {
     const s = readJson(snapPath(d), null);
     if (!s) return sendJSON(res, 404, { error: 'No hay snapshot para esa fecha' });
     sendJSON(res, 200, s);
+  });
+
+  // Fechas de snapshot disponibles (ascendente).
+  function allSnapDates() {
+    const ds = [];
+    try {
+      for (const fn of fs.readdirSync(DATA_DIR)) {
+        const m = fn.match(/^stock_snap_(\d{4}-\d{2}-\d{2})\.json$/);
+        if (m) ds.push(m[1]);
+      }
+    } catch (e) {}
+    ds.sort();
+    return ds;
+  }
+  const _snorm = v => String(v == null ? '' : v).trim().toUpperCase().replace(/\.0$/, '');
+
+  // BUSCADOR por código: estado actual (BsAs/Rufino), cuándo ingresó, y el historial de
+  // ingresos/egresos con fecha. Recorre los snapshots buscando las keys de ese código.
+  route('GET', '/api/stock/buscar', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    let cod = '';
+    try { cod = new URL(req.url, 'http://localhost').searchParams.get('cod') || ''; } catch (e) {}
+    const q = _snorm(cod);
+    if (!q) return sendJSON(res, 400, { error: 'Pasá ?cod=CODIGO' });
+    const dates = allSnapDates();
+    if (!dates.length) return sendJSON(res, 200, { cod, encontrado: false, msg: 'Todavía no hay datos de stock.' });
+    const provs = new Set();
+    const serie = [];   // por fecha: cantidad total del código en cada sucursal
+    for (const d of dates) {
+      const s = readJson(snapPath(d), null); if (!s) continue;
+      const row = { date: d, bsas: 0, rufino: 0 };
+      for (const suc of ['bsas', 'rufino']) {
+        const mp = s[suc] || {};
+        for (const key in mp) {
+          const i = key.indexOf('||'); const kc = i >= 0 ? key.slice(0, i) : key; const kp = i >= 0 ? key.slice(i + 2) : '';
+          if (_snorm(kc) === q) { row[suc] += (Number(mp[key]) || 0); if (kp) provs.add(kp); }
+        }
+      }
+      serie.push(row);
+    }
+    const ult = serie[serie.length - 1] || { bsas: 0, rufino: 0 };
+    const movimientos = [];
+    for (let i = 1; i < serie.length; i++) {
+      for (const suc of ['bsas', 'rufino']) {
+        const antes = serie[i - 1][suc], ahora = serie[i][suc];
+        if (ahora !== antes) movimientos.push({ date: serie[i].date, sucursal: suc === 'bsas' ? 'Buenos Aires' : 'Rufino', tipo: ahora > antes ? 'ingreso' : 'egreso', antes, ahora, cantidad: Math.abs(ahora - antes) });
+      }
+    }
+    const primera = { bsas: null, rufino: null };
+    for (const suc of ['bsas', 'rufino']) for (const row of serie) if (row[suc] > 0) { primera[suc] = row.date; break; }
+    movimientos.reverse();
+    sendJSON(res, 200, {
+      cod, encontrado: (ult.bsas > 0 || ult.rufino > 0 || movimientos.length > 0),
+      proveedores: [...provs].filter(Boolean),
+      stock_actual: { buenos_aires: ult.bsas, rufino: ult.rufino, total: ult.bsas + ult.rufino, en_stock: (ult.bsas + ult.rufino) > 0 },
+      ingreso: { buenos_aires: primera.bsas, rufino: primera.rufino },
+      movimientos,
+    });
+  });
+
+  // MOVIMIENTOS por RANGO de fechas (o por defecto: el último = últimas 24hs). Devuelve la lista
+  // completa de movimientos con FECHA por sucursal + totales de vendidas/agregadas.
+  route('GET', '/api/stock/movimientos', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    let desde = '', hasta = '';
+    try { const u = new URL(req.url, 'http://localhost').searchParams; desde = u.get('desde') || ''; hasta = u.get('hasta') || ''; } catch (e) {}
+    const costos = Object.assign({}, deriveStockCatalogFromCosts().map, loadCatalog().costos || {});
+    const dates = allSnapDates();
+    let pares = [];
+    const rango = /^\d{4}-\d{2}-\d{2}$/.test(desde) || /^\d{4}-\d{2}-\d{2}$/.test(hasta);
+    if (!rango) {
+      if (dates.length >= 2) pares = [[dates[dates.length - 2], dates[dates.length - 1]]];
+    } else {
+      const dLo = /^\d{4}-\d{2}-\d{2}$/.test(desde) ? desde : (dates[0] || '0000');
+      const dHi = /^\d{4}-\d{2}-\d{2}$/.test(hasta) ? hasta : (dates[dates.length - 1] || '9999');
+      const inRange = dates.filter(d => d >= dLo && d <= dHi);
+      for (const cur of inRange) { const idx = dates.indexOf(cur); if (idx > 0) pares.push([dates[idx - 1], cur]); }
+    }
+    const listaV = [], listaA = [];
+    for (const [pd, cd] of pares) {
+      const ps = readJson(snapPath(pd), null) || {}; const cs = readJson(snapPath(cd), null) || {};
+      for (const suc of ['bsas', 'rufino']) {
+        const mov = stockMovimientos(ps[suc] || {}, cs[suc] || {}, costos);
+        const sulbl = suc === 'bsas' ? 'Buenos Aires' : 'Rufino';
+        for (const v of mov.vendidos) listaV.push(Object.assign({}, v, { date: cd, sucursal: sulbl }));
+        for (const a of mov.agregados) listaA.push(Object.assign({}, a, { date: cd, sucursal: sulbl }));
+      }
+    }
+    listaV.sort((a, b) => b.date.localeCompare(a.date) || (b.cantidad - a.cantidad));
+    listaA.sort((a, b) => b.date.localeCompare(a.date) || (b.cantidad - a.cantidad));
+    sendJSON(res, 200, {
+      vendidos: listaV, agregados: listaA,
+      totales: { vendidas: listaV.reduce((s, r) => s + r.cantidad, 0), agregadas: listaA.reduce((s, r) => s + r.cantidad, 0), items_vendidos: listaV.length, items_agregados: listaA.length },
+      rango: { desde: pares.length ? pares[0][1] : null, hasta: pares.length ? pares[pares.length - 1][1] : null, dias: pares.length, por_defecto: !rango },
+      fechas_disponibles: dates,
+    });
   });
 
   startScheduler();
