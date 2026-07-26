@@ -1630,7 +1630,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                     ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicación #<span class="copyable" title="Copiar número de publicación">${escapeHtml(String(q.item_publication_id).replace('MLA',''))}</span></span>` : ''}
                     ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${skuFullHtml(q.item_sku)}</span>` : ''}
                     ${q.item_mpn ? `<span style="font-size:12px;color:#999">Código: ${q.item_mpn}</span>` : ''}
-                    ${q.item_brand ? `<span style="font-size:12px;color:#999">Marca: <b style="color:#555">${escapeHtml(q.item_brand)}</b></span>` : ''}
+                    ${q.item_brand ? `<span style="font-size:12px;color:#3730a3;background:#eef2ff;border:1px solid #c7d2fe;padding:2px 9px;border-radius:10px;font-weight:700">🏷️ Marca: ${escapeHtml(q.item_brand)}</span>` : ''}
                   </div>
                 </div>
               </div>
@@ -3125,7 +3125,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             itemsHtml += '<div class="sale-item-title"><a href="' + (item.permalink || ('https://articulo.mercadolibre.com.ar/' + String(item.id).replace(/^MLA/, 'MLA-'))) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
             itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
             itemsHtml += ' &middot; ' + item.quantity + ' unidad' + (item.quantity !== 1 ? 'es' : '');
-            if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku; if (item.brand) itemsHtml += ' &middot; Marca: ' + escapeHtml(item.brand);
+            if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku; if (item.brand) itemsHtml += ' <span style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:1px 8px;border-radius:9px;font-weight:700">🏷️ Marca: ' + escapeHtml(item.brand) + '</span>';
             itemsHtml += '</div></div></div>';
           }
           html += '<div class="sale-card">';
@@ -3187,7 +3187,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       itemsHtml += '<div class="sale-item-title"><a href="' + (item.permalink || ('https://articulo.mercadolibre.com.ar/' + String(item.id).replace(/^MLA/, 'MLA-'))) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
       itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
       itemsHtml += ' &middot; ' + item.quantity + ' unidad' + (item.quantity !== 1 ? 'es' : '');
-      if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku; if (item.brand) itemsHtml += ' &middot; Marca: ' + escapeHtml(item.brand);
+      if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku; if (item.brand) itemsHtml += ' <span style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:1px 8px;border-radius:9px;font-weight:700">🏷️ Marca: ' + escapeHtml(item.brand) + '</span>';
       itemsHtml += '</div></div></div>';
     }
     html += '<div class="sale-card">';
