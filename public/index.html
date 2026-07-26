@@ -714,6 +714,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } else if (targetSection === 'sales' && urlOrderId) {
       showSection('sales', true);
       loadSalesForOrder(urlOrderId, urlAccountId);
+    } else if (targetSection === 'sales' && urlBuyerId) {
+      showSection('sales', true);
+      loadSalesForBuyer(urlBuyerId, urlAccountId);
     } else if (targetSection === 'sales') {
       showSection('sales');
     } else {
@@ -1554,6 +1557,26 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // "sin responder" unos segundos (lag), y reaparecían: al re-responderlas daban error
   // "ya respondida". Las ocultamos de la lista apenas se responden.
   const answeredQuestionIds = new Set();
+  // Info del comprador en una pregunta: SOLO si compró en los últimos 3 meses (en esta cuenta o
+  // en otra asociada). Muestra el nombre de usuario (click para copiar), en qué cuenta compró, y
+  // un botón "Ver venta" que abre la sección Ventas filtrada por ese comprador en otra pestaña.
+  function _buyerInfoHtml(q) {
+    const bought = q.bought_in_accounts || [];
+    if (!bought.length) return '';
+    const bid = escapeHtml(String((q.from && q.from.id) || ''));
+    const nick = q.buyer_nickname ? escapeHtml(q.buyer_nickname) : null;
+    const own = q.account_name;
+    const boughtHere = bought.includes(own);
+    const otras = bought.filter(n => n !== own);
+    let h = '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+    if (nick) h += '<span style="font-size:13px;color:#333">👤 <span class="copyable" data-copy="' + nick + '" title="Click para copiar el usuario" style="font-weight:700">' + nick + '</span></span>';
+    if (boughtHere) h += '<span style="display:inline-block;background:#27ae60;color:white;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px">✔ Compró en esta cuenta</span>';
+    if (otras.length) h += '<span style="display:inline-block;background:#2e5496;color:white;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px" title="Cuentas asociadas donde compró (últimos 3 meses)">🔗 ' + (boughtHere ? 'También en' : 'Compró en') + ': ' + escapeHtml(otras.join(', ')) + '</span>';
+    h += '<a href="/?section=sales&buyer_id=' + bid + '" target="_blank" style="display:inline-block;background:#f0f7ff;color:#3483fa;border:1px solid #cfe2ff;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px;text-decoration:none">🧾 Ver venta</a>';
+    h += '</div>';
+    return h;
+  }
+
   async function loadQuestions(accountId = '') {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_questions) {
@@ -1607,10 +1630,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                     ${q.item_publication_id ? `<span style="font-size:12px;color:#999">Publicación #<span class="copyable" title="Copiar número de publicación">${escapeHtml(String(q.item_publication_id).replace('MLA',''))}</span></span>` : ''}
                     ${q.item_sku ? `<span style="font-size:12px;color:#999">SKU: ${skuFullHtml(q.item_sku)}</span>` : ''}
                     ${q.item_mpn ? `<span style="font-size:12px;color:#999">Código: ${q.item_mpn}</span>` : ''}
+                    ${q.item_brand ? `<span style="font-size:12px;color:#999">Marca: <b style="color:#555">${escapeHtml(q.item_brand)}</b></span>` : ''}
                   </div>
                 </div>
               </div>
-              ${q.buyer_has_purchased ? `<div style="margin-bottom:6px"><span style="display:inline-block;background:#27ae60;color:white;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px">✔ Este comprador ya te compró</span></div>` : ''}
+              ${_buyerInfoHtml(q)}
               <div class="card-question">${escapeHtml(q.text)}</div>
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
@@ -2321,7 +2345,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                   </div>
                 </div>
               </div>
-              ${q.buyer_has_purchased ? `<div style="margin-bottom:6px"><span style="display:inline-block;background:#27ae60;color:white;font-size:12px;font-weight:700;padding:3px 10px;border-radius:12px">✔ Este comprador ya te compró</span></div>` : ''}
+              ${_buyerInfoHtml(q)}
               <div class="card-question">${escapeHtml(q.text)}</div>
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
@@ -3098,10 +3122,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             itemsHtml += '<div class="sale-item">';
             itemsHtml += item.thumbnail ? '<img src="' + item.thumbnail + '" alt="" onerror="this.onerror=null;this.style.visibility=\'hidden\'">' : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>';
             itemsHtml += '<div class="sale-item-info">';
-            itemsHtml += '<div class="sale-item-title"><a href="https://articulo.mercadolibre.com.ar/' + encodeURIComponent(item.id) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
+            itemsHtml += '<div class="sale-item-title"><a href="' + (item.permalink || ('https://articulo.mercadolibre.com.ar/' + String(item.id).replace(/^MLA/, 'MLA-'))) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
             itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
             itemsHtml += ' &middot; ' + item.quantity + ' unidad' + (item.quantity !== 1 ? 'es' : '');
-            if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku;
+            if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku; if (item.brand) itemsHtml += ' &middot; Marca: ' + escapeHtml(item.brand);
             itemsHtml += '</div></div></div>';
           }
           html += '<div class="sale-card">';
@@ -3145,6 +3169,89 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       content.innerHTML = '<div class="empty"><p>Error al cargar venta</p></div>';
     }
   }
+
+  // Render de UNA tarjeta de venta (mismo formato que la vista por orden). Devuelve HTML.
+  function _saleCardHtml(sale) {
+    let html = '';
+    const statusLabel = STATUS_LABELS[sale.status] || sale.status;
+    const shippingLabel = sale.shipping_type === 'flex' ? 'FLEX' : sale.shipping_type === 'drop_off' ? 'PUNTO DESPACHO' : sale.shipping_type === 'agreement' ? 'ACORDAR' : String(sale.shipping_type || '').toUpperCase();
+    const dateStr = formatSaleDate(sale.date_created);
+    const saleOrderId = sale.pack_id ? sale.pack_id : sale.order_id;
+    const firstOrderId = sale.order_ids ? sale.order_ids[0] : sale.order_id;
+    const orderIdsJson = JSON.stringify(sale.order_ids || [sale.order_id]).replace(/"/g, '&quot;');
+    let itemsHtml = '';
+    for (const item of (sale.items || [])) {
+      itemsHtml += '<div class="sale-item">';
+      itemsHtml += item.thumbnail ? '<img src="' + item.thumbnail + '" alt="" onerror="this.onerror=null;this.style.visibility=\'hidden\'">' : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>';
+      itemsHtml += '<div class="sale-item-info">';
+      itemsHtml += '<div class="sale-item-title"><a href="' + (item.permalink || ('https://articulo.mercadolibre.com.ar/' + String(item.id).replace(/^MLA/, 'MLA-'))) + '" target="_blank" style="color:#3483fa;text-decoration:none">' + escapeHtml(item.title) + '</a></div>';
+      itemsHtml += '<div class="sale-item-meta">$ ' + Number(item.unit_price).toLocaleString('es-AR', {minimumFractionDigits:2});
+      itemsHtml += ' &middot; ' + item.quantity + ' unidad' + (item.quantity !== 1 ? 'es' : '');
+      if (item.sku) itemsHtml += ' &middot; SKU: ' + item.sku; if (item.brand) itemsHtml += ' &middot; Marca: ' + escapeHtml(item.brand);
+      itemsHtml += '</div></div></div>';
+    }
+    html += '<div class="sale-card">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
+    html += '<span class="card-account">' + escapeHtml(sale.account_name) + '</span>';
+    html += '<span style="font-size:13px;color:#333;font-weight:600">' + escapeHtml(sale.buyer_name) + '</span></div>';
+    html += '<div class="sale-header">';
+    html += '<span class="sale-status ' + sale.status + '">' + statusLabel + '</span>';
+    html += '<span class="order-id">#' + saleOrderId + '</span>';
+    html += '<span class="sale-date">' + dateStr + '</span>';
+    html += '<span class="shipping-badge ' + sale.shipping_type + '">' + shippingLabel + '</span></div>';
+    html += itemsHtml;
+    html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:12px;gap:12px;flex-wrap:wrap">';
+    html += '<div class="sale-actions" style="margin-top:0">';
+    if (sale.shipping_id) html += '<button class="btn-print" onclick="printLabel(' + sale.shipping_id + ', ' + sale.account_id + ')">&#128424; Imprimir etiqueta</button>';
+    html += '<a href="/?section=messages&order_id=' + firstOrderId + '&account_id=' + sale.account_id + '" target="_blank">&#128172; Mensajes</a>';
+    html += '<a href="/?section=questions&buyer_id=' + sale.buyer_id + '&account_id=' + sale.account_id + '" target="_blank">&#10067; Preguntas</a>';
+    html += '</div>';
+    html += '<div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ' + Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2}) + '</div></div>';
+    html += '<div class="sale-notes" id="sale-notes-' + firstOrderId + '" data-order-id="' + firstOrderId + '" data-account-id="' + sale.account_id + '" data-order-ids="' + orderIdsJson + '" style="margin-top:8px;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#f8f9fa;border-radius:6px;border:1px solid #eee;min-height:40px">';
+    html += '<div id="note-text-' + firstOrderId + '" style="flex:1;font-size:13px;color:#999;line-height:1.4">Cargando nota...</div>';
+    html += '<div style="display:flex;gap:4px;flex-shrink:0">';
+    html += '<button onclick="addEditNote(\'' + firstOrderId + '\')" title="Agregar/Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center">+</button>';
+    html += '<button onclick="editNote(\'' + firstOrderId + '\')" id="btn-edit-' + firstOrderId + '" title="Editar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center">&#9999;&#65039;</button>';
+    html += '<button onclick="deleteNote(\'' + firstOrderId + '\')" id="btn-del-' + firstOrderId + '" title="Eliminar nota" style="width:30px;height:30px;border:1px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;display:none;align-items:center;justify-content:center;color:#e74c3c">&#128465;&#65039;</button>';
+    html += '</div></div>';
+    html += '<div id="note-editor-' + firstOrderId + '" style="display:none;margin-top:4px">';
+    html += '<textarea id="note-input-' + firstOrderId + '" placeholder="Escribí tu nota..." style="width:100%;padding:8px 12px;border:1px solid #3483fa;border-radius:6px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;outline:none"></textarea>';
+    html += '<div style="display:flex;gap:8px;margin-top:6px">';
+    html += '<button onclick="saveNote(\'' + firstOrderId + '\')" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Guardar</button>';
+    html += '<button onclick="cancelNote(\'' + firstOrderId + '\')" style="padding:6px 16px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer;background:white">Cancelar</button>';
+    html += '</div></div>';
+    html += '</div>';
+    return html;
+  }
+
+  // Ventas de UN comprador (botón "Ver venta" del panel de Preguntas). Reusa el render por-orden.
+  async function loadSalesForBuyer(buyerId, accountId) {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando ventas del comprador...</p></div>';
+    try {
+      const params = new URLSearchParams();
+      if (buyerId) params.set('buyer_id', buyerId);
+      if (accountId) params.set('account_id', accountId);
+      params.set('limit', '50');
+      const res = await fetch('/api/sales?' + params.toString());
+      const sales = await res.json();
+      let html = '<h2 style="margin-bottom:6px;color:#2d3277">🧾 Ventas del comprador</h2>';
+      html += '<a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">&larr; Volver al panel</a>';
+      if (!Array.isArray(sales) || sales.length === 0) {
+        html += '<div class="empty"><p>No se encontraron ventas de este comprador' + (accountId ? ' en esta cuenta' : '') + '.</p></div>';
+      } else {
+        for (const sale of sales) html += _saleCardHtml(sale);
+      }
+      if (navToken !== myNav) return;
+      content.innerHTML = html;
+      fetchSalesNotes(sales);
+    } catch (e) {
+      if (navToken !== myNav) return;
+      content.innerHTML = '<div class="empty"><p>Error al cargar las ventas del comprador</p></div>';
+    }
+  }
+
   async function fetchSalesNotes(sales) {
     console.log('[NOTES] fetchSalesNotes called, sales count:', sales.length);
     // Process notes SEQUENTIALLY to avoid ML rate limiting (49 simultaneous = all fail)
