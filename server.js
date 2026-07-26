@@ -2474,6 +2474,12 @@ route('GET', '/callback', async (req, res) => {
 // Cache de "el comprador ya compró en esta cuenta" (evita consultar ML en cada refresco de 15s).
 const buyerBoughtCache = {}; // clave: accountId:buyerId -> { bought, ts }
 const BUYER_BOUGHT_TTL = 60 * 60 * 1000; // 1 hora
+// Cache: ¿compró en los ÚLTIMOS 3 MESES en cada cuenta? (para avisar en qué cuenta compró)
+const buyer3mCache = {};   // clave: accountId:buyerId -> { bought, ts }
+const BUYER_3M_TTL = 60 * 60 * 1000; // 1 hora
+// Cache del NOMBRE DE USUARIO (nickname) del comprador — no cambia seguido.
+const buyerNickCache = {}; // clave: buyerId -> { nick, ts }
+const BUYER_NICK_TTL = 24 * 60 * 60 * 1000; // 24 horas
 // Preguntas respondidas hace poco. ML puede seguir devolviéndolas como UNANSWERED unos
 // segundos después de responderlas (lag de su índice), así que reaparecían en la lista y,
 // al re-responderlas, ML tiraba error "ya respondida". Las ocultamos por un ratito.
@@ -2544,6 +2550,7 @@ route('GET', '/api/questions', async (req, res) => {
           if (!itemData) throw new Error('All methods failed');
           let sku = itemData.seller_custom_field || '';
           let mpn = '';
+          let brand = '';
           if (itemData.attributes) {
             if (!sku) {
               const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
@@ -2551,6 +2558,8 @@ route('GET', '/api/questions', async (req, res) => {
             }
             const mpnAttr = itemData.attributes.find(a => a.id === 'MPN');
             if (mpnAttr) mpn = mpnAttr.value_name || '';
+            const brandAttr = itemData.attributes.find(a => a.id === 'BRAND');
+            if (brandAttr) brand = brandAttr.value_name || '';
           }
           let listingType = '';
           const lt = itemData.listing_type_id || '';
@@ -2568,6 +2577,7 @@ route('GET', '/api/questions', async (req, res) => {
             currency: itemData.currency_id || 'ARS',
             sku: sku,
             mpn: mpn,
+            brand: brand,
             available_quantity: itemData.available_quantity || 0,
             listing_type: listingType,
             publication_id: itemData.id || itemId
@@ -2577,31 +2587,12 @@ route('GET', '/api/questions', async (req, res) => {
           itemDetails[itemId] = { title: 'Producto no disponible', thumbnail: '', permalink: '', price: 0, currency: 'ARS', sku: '', mpn: '', available_quantity: 0, listing_type: '', publication_id: itemId };
         }
       }
-      // ¿El comprador YA compró en esta cuenta? Se avisa en la pregunta. Con cache de 1h por comprador.
-      const purchasedBuyers = new Set();
-      const uniqueBuyers = [...new Set(questions.map(q => q.from?.id).filter(Boolean))];
-      const toQuery = [];
-      for (const bid of uniqueBuyers) {
-        const c = buyerBoughtCache[account.id + ':' + bid];
-        if (c && (Date.now() - c.ts) < BUYER_BOUGHT_TTL) { if (c.bought) purchasedBuyers.add(String(bid)); }
-        else toQuery.push(bid);
-      }
-      for (let i = 0; i < toQuery.length; i += 5) {
-        const batch = toQuery.slice(i, i + 5);
-        await Promise.allSettled(batch.map(async (bid) => {
-          try {
-            const od = await mlGet('https://api.mercadolibre.com/orders/search', token, { seller: account.seller_id, buyer: bid, sort: 'date_desc', limit: 10 });
-            const results = od.results || [];
-            const bought = results.some(o => o.status !== 'cancelled') || (results.length === 0 && od.paging && od.paging.total > 0);
-            buyerBoughtCache[account.id + ':' + bid] = { bought, ts: Date.now() };
-            if (bought) purchasedBuyers.add(String(bid));
-          } catch (e) {}
-        }));
-      }
+      // (El chequeo de compras de los ÚLTIMOS 3 MESES — en esta cuenta y en las asociadas —
+      //  se hace UNA sola vez por comprador DESPUÉS del loop. Ver bloque "ENRIQUECER" más abajo.)
       for (const q of questions) {
         allQuestions.push({
           ...q, account_name: account.name, account_id: account.id,
-          buyer_has_purchased: purchasedBuyers.has(String(q.from?.id || '')),
+          buyer_has_purchased: false,
           item_title: itemDetails[q.item_id]?.title || '',
           item_thumbnail: itemDetails[q.item_id]?.thumbnail || '',
           item_permalink: itemDetails[q.item_id]?.permalink || '',
@@ -2609,6 +2600,7 @@ route('GET', '/api/questions', async (req, res) => {
           item_currency: itemDetails[q.item_id]?.currency || 'ARS',
           item_sku: itemDetails[q.item_id]?.sku || '',
           item_mpn: itemDetails[q.item_id]?.mpn || '',
+          item_brand: itemDetails[q.item_id]?.brand || '',
           item_available_quantity: itemDetails[q.item_id]?.available_quantity || 0,
           item_listing_type: itemDetails[q.item_id]?.listing_type || '',
           item_publication_id: itemDetails[q.item_id]?.publication_id || ''
@@ -2618,6 +2610,56 @@ route('GET', '/api/questions', async (req, res) => {
       console.error(`Error questions ${account.name}:`, err.response?.data || err.message || err);
     }
   }
+  // ===== ENRIQUECER: nombre de usuario del comprador + en qué cuenta(s) compró en los ÚLTIMOS 3 MESES =====
+  // Solo si el comprador realizó una compra en los últimos 90 días (en esta cuenta o en otra asociada).
+  try {
+    const uniq = [...new Set(allQuestions.map(q => q.from && q.from.id).filter(Boolean).map(String))];
+    if (uniq.length) {
+      const desde = new Date(Date.now() - 90 * 86400000).toISOString();
+      const accTok = [];
+      for (const a of db.ml_accounts) { const t = await getValidToken(a); if (t) accTok.push({ a, t }); }
+      const boughtIn = {}; for (const bid of uniq) boughtIn[bid] = [];
+      // Compras por cuenta en los últimos 90 días (cache 1h). En lotes de 5 por cuenta.
+      for (const { a, t } of accTok) {
+        for (let i = 0; i < uniq.length; i += 5) {
+          await Promise.allSettled(uniq.slice(i, i + 5).map(async (bid) => {
+            const key = a.id + ':' + bid;
+            const c = buyer3mCache[key];
+            let bought;
+            if (c && (Date.now() - c.ts) < BUYER_3M_TTL) bought = c.bought;
+            else {
+              try {
+                const od = await mlGet('https://api.mercadolibre.com/orders/search', t, { seller: a.seller_id, buyer: bid, 'order.date_created.from': desde, sort: 'date_desc', limit: 10 });
+                const results = od.results || [];
+                bought = results.some(o => o.status !== 'cancelled') || (results.length === 0 && od.paging && od.paging.total > 0);
+              } catch (e) { bought = false; }
+              buyer3mCache[key] = { bought, ts: Date.now() };
+            }
+            if (bought) boughtIn[bid].push(a.name);
+          }));
+        }
+      }
+      // Nickname SOLO de los compradores que efectivamente compraron (cache 24h).
+      const conCompra = uniq.filter(bid => boughtIn[bid].length);
+      const tok0 = accTok[0] ? accTok[0].t : null;
+      const nick = {};
+      await Promise.allSettled(conCompra.map(async (bid) => {
+        const c = buyerNickCache[bid];
+        if (c && (Date.now() - c.ts) < BUYER_NICK_TTL) { nick[bid] = c.nick; return; }
+        try { const u = await mlGet('https://api.mercadolibre.com/users/' + bid, tok0); nick[bid] = (u && u.nickname) || null; }
+        catch (e) { nick[bid] = null; }
+        buyerNickCache[bid] = { nick: nick[bid], ts: Date.now() };
+      }));
+      for (const q of allQuestions) {
+        const bid = String((q.from && q.from.id) || '');
+        const lista = boughtIn[bid] || [];
+        q.bought_in_accounts = lista;                                  // cuentas donde compró (últimos 3 meses)
+        q.buyer_nickname = lista.length ? (nick[bid] || null) : null;  // nombre solo si compró
+        q.buyer_has_purchased = lista.includes(q.account_name);        // compró en ESTA cuenta
+      }
+    }
+  } catch (e) { console.error('[questions enrich]', e && (e.message || e)); }
+
   // De-duplicar por id (evita tarjetas repetidas de la misma pregunta) y ocultar las
   // respondidas hace poco cuando se pide la lista de "sin responder".
   const _nowTs = Date.now();
@@ -3427,6 +3469,7 @@ route('GET', '/api/sales', async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const accountFilter = url.searchParams.get('account_id');
   const orderIdFilter = url.searchParams.get('order_id');
+  const buyerFilterSales = url.searchParams.get('buyer_id');   // filtrar ventas por comprador (botón "Ver venta")
   const statusFilters = url.searchParams.get('status') ? url.searchParams.get('status').split(',') : [];
   const shippingFilters = url.searchParams.get('shipping') ? url.searchParams.get('shipping').split(',') : [];
   const dateFrom = url.searchParams.get('date_from');
@@ -3455,6 +3498,7 @@ route('GET', '/api/sales', async (req, res) => {
         // PAGINADO: traemos hasta wantLimit órdenes (de a 50, el máximo de ML por página), así
         // las viejas pendientes de despacho no quedan afuera. Corta al llegar al tope o al final.
         const baseParams = { seller: account.seller_id, sort: 'date_desc' };
+        if (buyerFilterSales) baseParams.buyer = buyerFilterSales;   // ventas de ESE comprador
         if (dateFrom) baseParams['order.date_created.from'] = dateFrom + 'T00:00:00.000-00:00';
         if (dateTo) baseParams['order.date_created.to'] = dateTo + 'T23:59:59.999-00:00';
         const collected = [];
@@ -3498,11 +3542,16 @@ route('GET', '/api/sales', async (req, res) => {
         const itemResults = await Promise.allSettled(newItemIds.map(async (itemId) => {
           const itemData = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token);
           let sku = itemData.seller_custom_field || '';
-          if (!sku && itemData.attributes) {
-            const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
-            if (skuAttr) sku = skuAttr.value_name || '';
+          let brand = '';
+          if (itemData.attributes) {
+            if (!sku) {
+              const skuAttr = itemData.attributes.find(a => a.id === 'SELLER_SKU');
+              if (skuAttr) sku = skuAttr.value_name || '';
+            }
+            const brandAttr = itemData.attributes.find(a => a.id === 'BRAND');
+            if (brandAttr) brand = brandAttr.value_name || '';
           }
-          return { id: itemId, thumbnail: imgProxy(itemData.thumbnail), sku };
+          return { id: itemId, thumbnail: imgProxy(itemData.thumbnail), sku, brand, permalink: itemData.permalink || '' };
         }));
         for (const r of itemResults) {
           if (r.status === 'fulfilled') itemCache[r.value.id] = r.value;
@@ -3536,7 +3585,8 @@ route('GET', '/api/sales', async (req, res) => {
           let sku = oi.item?.seller_sku || oi.item?.seller_custom_field || cached.sku || '';
           items.push({
             id: oi.item.id, title: oi.item.title || 'Producto', thumbnail: cached.thumbnail || '',
-            quantity: oi.quantity || 1, unit_price: oi.unit_price || 0, sku
+            quantity: oi.quantity || 1, unit_price: oi.unit_price || 0, sku,
+            permalink: cached.permalink || '', brand: cached.brand || ''
           });
         }
         rawOrders.push({
@@ -5829,7 +5879,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-24-v45-gestion-casilleros-compactos', features: ['cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-26-v48-marca-producto', features: ['cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
