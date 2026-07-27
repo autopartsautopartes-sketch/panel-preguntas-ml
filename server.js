@@ -1962,6 +1962,20 @@ route('POST', '/api/bulk-delete', async (req, res) => {
     }
     throw lastErr;
   }
+  // Extrae el detalle REAL del error de ML (incluye el array `cause`, no solo "Validation error").
+  function mlErrText(e) {
+    const d = e?.response?.data || {};
+    const base = d.message || d.error || e?.message || 'Error desconocido';
+    let causes = '';
+    if (Array.isArray(d.cause) && d.cause.length) {
+      causes = d.cause.map(c => (c && (c.message || c.code)) || '').filter(Boolean).join('; ');
+    }
+    return causes ? `${base} — ${causes}` : String(base);
+  }
+  async function getStatus(url) {
+    try { const it = await mlGet(`${url}?attributes=id,status`, token); return it?.status || ''; }
+    catch (e) { return ''; }
+  }
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
   res.write(JSON.stringify({ type: 'start', total: ids.length, account: account.name }) + '\n');
   console.log(`[DELETE] ${sess.username} solicitó ELIMINAR ${ids.length} publicaciones de ${account.name}`);
@@ -1969,29 +1983,61 @@ route('POST', '/api/bulk-delete', async (req, res) => {
   for (const itemId of ids) {
     const url = `https://api.mercadolibre.com/items/${itemId}`;
     try {
-      // 1) Consultar estado actual
-      let curStatus = '';
-      try {
-        const it = await mlGet(`${url}?attributes=id,status`, token);
-        curStatus = it?.status || '';
-      } catch (e) { /* si falla el GET, intentamos igual el flujo cerrar→borrar */ }
-      // 2) Cerrar si aún está activa/pausada (no se puede borrar directo una activa)
-      if (curStatus !== 'closed' && curStatus !== 'deleted') {
-        await mlPutRetry(url, { status: 'closed' });
-        await sleep(250);
+      // 1) Estado actual
+      let curStatus = await getStatus(url);
+      if (curStatus === 'deleted') {
+        okCount++;
+        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId }) + '\n');
+        await sleep(150); continue;
       }
-      // 3) Borrar definitivamente
+      // 2) Cerrar si aún está activa/pausada (ML NO permite borrar directo una activa/pausada).
+      if (curStatus !== 'closed') {
+        await mlPutRetry(url, { status: 'closed' });
+        // ESPERAR a que ML confirme el cierre antes de borrar. Sin esto, ML rechaza el borrado con
+        // "Validation error" porque el cierre todavía no se propagó (era el bug: solo 250ms de espera).
+        for (let k = 0; k < 8 && curStatus !== 'closed'; k++) {
+          await sleep(800);
+          curStatus = await getStatus(url);
+          if (curStatus === 'deleted') break;
+        }
+      }
+      // 3) Borrar definitivamente, reintentando: un "Validation error" suele ser que el cierre aún no
+      //    terminó de asentarse; esperamos y reintentamos unas veces antes de darlo por fallido.
       if (curStatus !== 'deleted') {
-        await mlPutRetry(url, { status: 'deleted' });
+        let deleted = false, lastErr = null;
+        for (let attempt = 0; attempt < 5 && !deleted; attempt++) {
+          try { await mlPut(url, { status: 'deleted' }, token); deleted = true; }
+          catch (e) {
+            lastErr = e;
+            const st = e?.response?.status;
+            if (st === 401) { const rf = await refreshToken(account); if (rf) token = rf; await sleep(500); continue; }
+            if (st === 429) { await sleep([6000, 15000, 30000, 40000][attempt] || 40000); continue; }
+            // Validation error u otro: reintentar tras confirmar/esperar el cierre.
+            await sleep(1800);
+            const s2 = await getStatus(url);
+            if (s2 === 'deleted') { deleted = true; break; }
+          }
+        }
+        if (!deleted) throw (lastErr || new Error('No se pudo borrar tras varios intentos'));
       }
       okCount++;
       res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId }) + '\n');
       console.log(`[DELETE] ✓ ${itemId} eliminado de ${account.name}`);
     } catch (e) {
-      errCount++;
-      const emsg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error desconocido';
-      res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, error: String(emsg) }) + '\n');
-      console.log(`[DELETE] ✗ ${itemId} — ${emsg}`);
+      const emsg = mlErrText(e);
+      // ML no siempre permite el BORRADO definitivo (típicamente en publicaciones con historial de
+      // ventas: ML las conserva y solo deja finalizarlas). Si igual quedó CERRADA, es un éxito parcial:
+      // la publicación ya no se muestra ni se puede comprar. Lo reportamos como "finalizada", no como error.
+      const finalStatus = await getStatus(url);
+      if (finalStatus === 'closed') {
+        okCount++;
+        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, finalized: true, note: 'Finalizada/cerrada (ML no permitió el borrado definitivo: ' + emsg + ')' }) + '\n');
+        console.log(`[DELETE] ~ ${itemId} finalizada (cerrada) — ML rechazó borrado: ${emsg}`);
+      } else {
+        errCount++;
+        res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, error: emsg }) + '\n');
+        console.log(`[DELETE] ✗ ${itemId} — ${emsg}`);
+      }
     }
     await sleep(300);
   }
@@ -5954,7 +6000,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-27-v49-eliminar-publicaciones', features: ['eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-27-v51-eliminar-robusto-finalizada', features: ['eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6961,10 +7007,17 @@ function simNet(costRow, price, sim, cfg) {
   const p = Number(price) || 0; if (p <= 0) return null;
   const cost = Number(costRow.cost) || 0;
   // COSTO SIEMPRE DEL SIMULADOR DE ML: "cargo por vender" = comisión + cargo fijo (listing_prices).
-  const cargoVender = sim ? (Number(sim.sale_fee) || 0) : 0;
+  // OJO: cuando ML ofrece cuotas, el sale_fee YA INCLUYE la financiación como un % extra sobre la
+  // comisión (percentage_fee = comisión_base + financing_add_on_fee). La SEPARAMOS: cargoVender queda
+  // solo comisión+cargo fijo y la financiación va a "cuotas" (regla 1). Así la columna cuota muestra su
+  // costo propio en vez de quedar escondido dentro de la comisión. Neutro para margen/precio:
+  // cargoVender + cuotas = sale_fee (lo que ML realmente cobra), idéntico al "Recibís" del simulador.
+  const _rawFee = sim ? (Number(sim.sale_fee) || 0) : 0;
+  const financingAmt = (sim && Number(sim.financing) > 0) ? (p * Number(sim.financing) / 100) : 0;  // $ de ofrecer cuotas
+  const cargoVender = Math.max(0, _rawFee - financingAmt);   // comisión + cargo fijo, SIN la financiación
   // COSTO DE CUOTAS: el simulador de ML lo incluye en "Recibís", pero la API (listing_prices) a veces
   // NO lo devuelve. Orden para completarlo, sin inventar nada, todo con datos de ML:
-  //   1) sim.financing → si la API del simulador lo trae, se usa tal cual.
+  //   1) financiación de ML → viene como % (financing_add_on_fee) DENTRO del sale_fee; la pasamos a $ (precio × %).
   //   2) tasa real de ML → lo que ML te cobró DE MÁS sobre la comisión en tus ventas reales de esa
   //      misma publicación (sale_fee de la orden). Es idéntico a lo que muestra el simulador.
   //   3) CUOTA CONOCIDA previa → si esta publicación YA tenía una tasa de cuota conocida (de una
@@ -6978,7 +7031,7 @@ function simNet(costRow, price, sim, cfg) {
   const prevCuota = Number(costRow.simCuotas) || 0;
   const prevCuotaPct = (prevCuota > 0 && prevPrice > 0) ? (prevCuota / prevPrice) : 0;   // tasa de cuota conocida
   let cuotas;
-  if (sim && sim.financing) cuotas = Number(sim.financing);            // 1) simulador la informó
+  if (financingAmt > 0) cuotas = financingAmt;                          // 1) financiación real de ML (separada del sale_fee)
   else if (realRate != null) cuotas = Math.max(0, p * realRate - cargoVender);   // 2) tasa REAL de ML (ventas 90d)
   else if (prevCuotaPct > 0) cuotas = p * prevCuotaPct;                // 3) conservar la cuota conocida (no la borres)
   else cuotas = cfg.cuotasPct ? p * cfg.cuotasPct / 100 : 0;           // 4) fallback configurable
@@ -7966,9 +8019,9 @@ function registerAds(deps) {
           if (nm) {
             // Guardamos los componentes del SIMULADOR (comisión+cargo fijo) + el costo de cuotas ya resuelto,
             // de modo que priceFactors/marginAtPrice (recompute con la factura actual) den el MISMO margen.
-            c.simFee = sim ? Number(sim.sale_fee) || 0 : (nm.cargoVender || 0);
+            c.simFee = Number(nm.cargoVender) || 0;   // comisión + cargo fijo, SIN la financiación (esa va en simCuotas)
             c.simFixed = sim ? Number(sim.fixed_fee) || 0 : 0;
-            c.simCuotas = nm.cuotas;   // cuotas del simulador (o completadas con la tasa real de ML)
+            c.simCuotas = nm.cuotas;   // cuotas: financiación de ML separada del sale_fee (o tasa real / cuota conocida)
             c.simEnvio = nm.envio; c.simImp = nm.impuestos; c.simRecibis = nm.recibis; c.simMargin = nm.marginPct;
           }
         }
