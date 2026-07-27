@@ -3761,6 +3761,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button onclick="nuevaBusqueda()" style="padding:9px 18px;background:#e67e22;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🔄 Nueva búsqueda</button>
               <button onclick="applySearchUpdate()" id="btnApplySearch" style="padding:9px 22px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">✅ Aplicar seleccionados</button>
+              <button onclick="openDeleteConfirm()" id="btnDeleteSearch" style="padding:9px 20px;background:#c0392b;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🗑️ Eliminar seleccionadas</button>
             </div>
           </div>
           <div style="overflow-x:auto;margin-bottom:14px">
@@ -4603,6 +4604,141 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       ${logContent ? '<div style="max-height:200px;overflow-y:auto;margin-top:8px;font-size:12px;border-top:1px solid #f0f0f0;padding-top:8px">' + logContent + '</div>' : ''}
     </div>`;
     btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados';
+  }
+  // ==================== ELIMINAR PUBLICACIONES (IRREVERSIBLE) ====================
+  function _selectedForDelete() {
+    const checkedBoxes = [...document.querySelectorAll('.searchCheck:checked')];
+    return checkedBoxes.map(cb => {
+      const idx = parseInt(cb.dataset.idx);
+      return searchResultsData[idx];
+    }).filter(r => r);
+  }
+  function openDeleteConfirm() {
+    const selected = _selectedForDelete();
+    if (!selected.length) return showToast('Seleccioná al menos una publicación para eliminar', 'error');
+    closeDeleteConfirm();
+    const rowsHtml = selected.map(r => `
+      <tr>
+        <td style="border-bottom:1px solid #f0d0d0;padding:6px 10px;font-size:12px;color:#c0392b;font-weight:600;white-space:nowrap">${escapeHtml(r.item_id)}</td>
+        <td style="border-bottom:1px solid #f0d0d0;padding:6px 10px;font-size:12px;color:#555;white-space:nowrap">${escapeHtml(r.account_name || '')}</td>
+        <td style="border-bottom:1px solid #f0d0d0;padding:6px 10px;font-size:12px;color:#333;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(r.title || '')}">${escapeHtml(r.title || '')}</td>
+      </tr>`).join('');
+    const overlay = document.createElement('div');
+    overlay.id = 'deleteConfirmOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+    overlay.innerHTML = `
+      <div style="background:#fff;border-radius:14px;max-width:720px;width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.35);overflow:hidden">
+        <div style="background:#c0392b;color:#fff;padding:16px 22px;display:flex;align-items:center;gap:10px">
+          <span style="font-size:26px">⚠️</span>
+          <div>
+            <div style="font-size:17px;font-weight:800">Eliminar publicaciones — acción irreversible</div>
+            <div style="font-size:12px;opacity:.9;margin-top:2px">Vas a eliminar <b>${selected.length}</b> publicación${selected.length !== 1 ? 'es' : ''} de MercadoLibre. No se pueden recuperar.</div>
+          </div>
+        </div>
+        <div style="padding:16px 22px;overflow-y:auto">
+          <div style="background:#fff4f4;border:1px solid #f3c6c6;border-radius:10px;padding:12px 14px;font-size:13px;color:#7a2020;margin-bottom:14px;line-height:1.5">
+            Estas publicaciones se <b>cerrarán y luego se borrarán definitivamente</b> de la cuenta en ML. Esta operación <b>no tiene vuelta atrás</b>. Revisá bien la lista antes de confirmar.
+          </div>
+          <div style="overflow:auto;max-height:34vh;border:1px solid #f0e0e0;border-radius:10px;margin-bottom:16px">
+            <table style="border-collapse:collapse;width:100%">
+              <tr style="background:#fbeaea;position:sticky;top:0">
+                <th style="text-align:left;padding:8px 10px;font-size:11px;color:#a03030;white-space:nowrap">item_id</th>
+                <th style="text-align:left;padding:8px 10px;font-size:11px;color:#a03030">Cuenta</th>
+                <th style="text-align:left;padding:8px 10px;font-size:11px;color:#a03030">Título</th>
+              </tr>
+              ${rowsHtml}
+            </table>
+          </div>
+          <label style="font-size:13px;color:#333;font-weight:600;display:block;margin-bottom:6px">Para confirmar, escribí <b style="color:#c0392b">ELIMINAR</b> en el recuadro:</label>
+          <input id="deleteConfirmInput" type="text" autocomplete="off" placeholder="ELIMINAR" oninput="_onDeleteConfirmInput()"
+            style="padding:11px 14px;border:2px solid #e0b4b4;border-radius:9px;font-size:15px;width:100%;box-sizing:border-box;letter-spacing:1px">
+          <div id="deleteProgress" style="margin-top:14px"></div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:10px;background:#fafafa">
+          <button onclick="closeDeleteConfirm()" id="btnDeleteCancel" style="padding:10px 20px;background:#eee;color:#333;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">Cancelar</button>
+          <button onclick="deleteSelectedListings()" id="btnDeleteConfirm" disabled
+            style="padding:10px 24px;background:#c0392b;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:not-allowed;font-size:14px;opacity:.5">🗑️ Eliminar definitivamente</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    setTimeout(() => document.getElementById('deleteConfirmInput')?.focus(), 50);
+  }
+  function _onDeleteConfirmInput() {
+    const val = (document.getElementById('deleteConfirmInput')?.value || '').trim().toUpperCase();
+    const btn = document.getElementById('btnDeleteConfirm');
+    if (!btn) return;
+    const ok = val === 'ELIMINAR';
+    btn.disabled = !ok;
+    btn.style.cursor = ok ? 'pointer' : 'not-allowed';
+    btn.style.opacity = ok ? '1' : '.5';
+  }
+  function closeDeleteConfirm() {
+    document.getElementById('deleteConfirmOverlay')?.remove();
+  }
+  async function deleteSelectedListings() {
+    const val = (document.getElementById('deleteConfirmInput')?.value || '').trim().toUpperCase();
+    if (val !== 'ELIMINAR') return;
+    const selected = _selectedForDelete();
+    if (!selected.length) { closeDeleteConfirm(); return; }
+    const confirmBtn = document.getElementById('btnDeleteConfirm');
+    const cancelBtn = document.getElementById('btnDeleteCancel');
+    const input = document.getElementById('deleteConfirmInput');
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.style.opacity = '.5'; confirmBtn.style.cursor = 'not-allowed'; confirmBtn.textContent = '⏳ Eliminando...'; }
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (input) input.disabled = true;
+    const prog = document.getElementById('deleteProgress');
+    if (prog) prog.innerHTML = `<div style="background:#f8f9fa;border-radius:8px;padding:10px 12px;font-size:12px;color:#666"><b>Eliminando ${selected.length} publicación${selected.length !== 1 ? 'es' : ''}…</b><div id="deleteLog" style="max-height:180px;overflow-y:auto;margin-top:8px"></div></div>`;
+    const dlog = document.getElementById('deleteLog');
+    // Agrupar por cuenta
+    const byAccount = {};
+    for (const r of selected) {
+      if (!byAccount[r.account_id]) byAccount[r.account_id] = { name: r.account_name, ids: [] };
+      byAccount[r.account_id].ids.push(r.item_id);
+    }
+    let totalOk = 0, totalErr = 0;
+    for (const [accId, group] of Object.entries(byAccount)) {
+      try {
+        const res = await fetch('/api/bulk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: parseInt(accId), item_ids: group.ids, confirm: true })
+        });
+        if (!res.ok) {
+          let errMsg = 'Error del servidor';
+          try { const d = await res.json(); errMsg = d.error || errMsg; } catch(_) {}
+          totalErr += group.ids.length;
+          if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ <b>${escapeHtml(group.name)}</b>: ${escapeHtml(errMsg)}</div>`;
+          continue;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line);
+              if (msg.type === 'result') {
+                if (msg.ok) { totalOk++; if (dlog) dlog.innerHTML += `<div style="color:#27ae60">🗑️ ${escapeHtml(msg.item_id)} eliminada</div>`; }
+                else { totalErr++; if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || 'Error')}</div>`; }
+                if (dlog) dlog.scrollTop = dlog.scrollHeight;
+              }
+            } catch(_) {}
+          }
+        }
+      } catch(e) {
+        totalErr += group.ids.length;
+        if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(group.name)}: ${escapeHtml(e.message)}</div>`;
+      }
+    }
+    if (prog) prog.innerHTML += `<div style="background:${totalErr ? '#fff8f8' : '#f0fff4'};border:1px solid ${totalErr ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:10px 12px;font-size:13px;margin-top:10px"><b>${totalErr ? '⚠️' : '✅'} ${totalOk} eliminada${totalOk !== 1 ? 's' : ''}${totalErr ? `, ${totalErr} con error` : ''}</b></div>`;
+    if (confirmBtn) { confirmBtn.style.display = 'none'; }
+    if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Cerrar'; cancelBtn.onclick = () => { closeDeleteConfirm(); searchListings(); }; }
+    showToast(`${totalOk} publicación${totalOk !== 1 ? 'es' : ''} eliminada${totalOk !== 1 ? 's' : ''}${totalErr ? `, ${totalErr} con error` : ''}`, totalErr ? 'error' : 'success');
   }
   async function downloadCurrentListings() {
     const accountId = document.getElementById('updateAccount')?.value;
