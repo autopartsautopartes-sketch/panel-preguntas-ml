@@ -3608,13 +3608,27 @@ route('GET', '/api/sales', async (req, res) => {
     try {
       let ordersData;
       if (orderIdFilter) {
-        // Fetch single order by ID
+        // Buscar por ID. OJO: el número que se ve en Ventas/Preparación puede ser un PACK_ID
+        // (orden multi-ítem), y ML NO lo acepta en /orders/{id}. Si el lookup directo falla,
+        // lo resolvemos como pack: /packs/{id} → order_ids reales → traemos esas órdenes.
+        let results = [];
         try {
           const singleOrder = await mlGet(`https://api.mercadolibre.com/orders/${orderIdFilter}`, token);
-          ordersData = { results: [singleOrder] };
-        } catch(e) {
-          ordersData = { results: [] };
+          if (singleOrder && singleOrder.id) results = [singleOrder];
+        } catch(e) { /* puede ser un pack_id, probamos abajo */ }
+        if (!results.length) {
+          try {
+            const pack = await mlGet(`https://api.mercadolibre.com/packs/${orderIdFilter}`, token);
+            const packOrderIds = (pack && Array.isArray(pack.orders)) ? pack.orders.map(o => o && o.id).filter(Boolean) : [];
+            if (packOrderIds.length) {
+              const fetched = await Promise.all(packOrderIds.map(oid =>
+                mlGet(`https://api.mercadolibre.com/orders/${oid}`, token).catch(() => null)
+              ));
+              results = fetched.filter(Boolean);
+            }
+          } catch(e) { /* esta cuenta no es la dueña del pack/orden */ }
         }
+        ordersData = { results };
       } else {
         // PAGINADO: traemos hasta wantLimit órdenes (de a 50, el máximo de ML por página), así
         // las viejas pendientes de despacho no quedan afuera. Corta al llegar al tope o al final.
@@ -6000,7 +6014,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-27-v51-eliminar-robusto-finalizada', features: ['eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-27-v52-pack-id-venta-y-busqueda-prep', features: ['ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
