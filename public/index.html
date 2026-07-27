@@ -4883,6 +4883,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let prepSalesDateFrom = '';
   let prepSalesDateTo = '';
   let prepSalesAccountFilter = '';
+  let prepSalesOrderQuery = '';
   async function loadSinPreparar() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
@@ -4894,6 +4895,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           </select>
           <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Desde <input type="date" id="prepDateFrom" value="${prepSalesDateFrom}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
           <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="prepDateTo" value="${prepSalesDateTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
+          <input type="text" id="prepOrderSearch" value="${escapeHtml(prepSalesOrderQuery)}" placeholder="🔍 N° de venta / orden" title="Buscar por número de venta (order_id o pack_id)" onkeydown="if(event.key==='Enter')applyPrepSalesFilters()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px;min-width:190px">
         </div>
         <h4>Estados</h4>
         <div class="filter-row">
@@ -4941,11 +4943,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       prepOrdersCache = prepOrders;
       const inPrepIds = new Set();
       for (const p of prepOrders) inPrepIds.add(String(p.order_id));
-      const pendingSales = allSales.filter(sale => {
+      let pendingSales = allSales.filter(sale => {
         if (sale.status === 'cancelled') return false; // Never show cancelled
         const key = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
         return !inPrepIds.has(key);
       });
+      // Filtro por número de venta: matchea order_id, pack_id o cualquiera de los order_ids del pack.
+      const oq = (prepSalesOrderQuery || '').trim();
+      if (oq) {
+        const oqd = oq.replace(/[^0-9]/g, '');
+        pendingSales = pendingSales.filter(sale => {
+          const nums = [sale.order_id, sale.pack_id, ...(sale.order_ids || [])].filter(v => v != null).map(String);
+          return nums.some(n => n === oq || (oqd && n.includes(oqd)));
+        });
+      }
       const listEl = document.getElementById('sinPreparar-list');
       if (!listEl) return;
       if (pendingSales.length === 0) {
@@ -5114,12 +5125,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (accSel) prepSalesAccountFilter = accSel.value;
     if (dateFromEl) prepSalesDateFrom = dateFromEl.value;
     if (dateToEl) prepSalesDateTo = dateToEl.value;
+    const orderEl = document.getElementById('prepOrderSearch');
+    if (orderEl) prepSalesOrderQuery = orderEl.value;
     loadSinPreparar();
   }
   function clearPrepSalesFilters() {
     prepSalesDateFrom = ''; prepSalesDateTo = '';
     prepSalesStatusFilters = []; prepSalesShippingFilters = [];
     prepSalesAccountFilter = '';
+    prepSalesOrderQuery = '';
     loadSinPreparar();
   }
   function selectPriority(btn, n) {
