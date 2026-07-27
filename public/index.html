@@ -4695,7 +4695,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (!byAccount[r.account_id]) byAccount[r.account_id] = { name: r.account_name, ids: [] };
       byAccount[r.account_id].ids.push(r.item_id);
     }
-    let totalOk = 0, totalErr = 0;
+    let totalOk = 0, totalErr = 0, totalFinal = 0;
     for (const [accId, group] of Object.entries(byAccount)) {
       try {
         const res = await fetch('/api/bulk-delete', {
@@ -4723,7 +4723,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             try {
               const msg = JSON.parse(line);
               if (msg.type === 'result') {
-                if (msg.ok) { totalOk++; if (dlog) dlog.innerHTML += `<div style="color:#27ae60">🗑️ ${escapeHtml(msg.item_id)} eliminada</div>`; }
+                if (msg.ok && msg.finalized) { totalFinal++; if (dlog) dlog.innerHTML += `<div style="color:#e67e22">🏁 ${escapeHtml(msg.item_id)} finalizada (cerrada — ML no permite borrado definitivo)</div>`; }
+                else if (msg.ok) { totalOk++; if (dlog) dlog.innerHTML += `<div style="color:#27ae60">🗑️ ${escapeHtml(msg.item_id)} eliminada</div>`; }
                 else { totalErr++; if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || 'Error')}</div>`; }
                 if (dlog) dlog.scrollTop = dlog.scrollHeight;
               }
@@ -4735,10 +4736,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(group.name)}: ${escapeHtml(e.message)}</div>`;
       }
     }
-    if (prog) prog.innerHTML += `<div style="background:${totalErr ? '#fff8f8' : '#f0fff4'};border:1px solid ${totalErr ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:10px 12px;font-size:13px;margin-top:10px"><b>${totalErr ? '⚠️' : '✅'} ${totalOk} eliminada${totalOk !== 1 ? 's' : ''}${totalErr ? `, ${totalErr} con error` : ''}</b></div>`;
+    const okTot = totalOk + totalFinal;
+    const parts = [];
+    if (totalOk) parts.push(`${totalOk} eliminada${totalOk !== 1 ? 's' : ''}`);
+    if (totalFinal) parts.push(`${totalFinal} finalizada${totalFinal !== 1 ? 's' : ''} (cerradas)`);
+    if (totalErr) parts.push(`${totalErr} con error`);
+    const resumen = parts.join(', ') || '0 procesadas';
+    if (prog) prog.innerHTML += `<div style="background:${totalErr ? '#fff8f8' : '#f0fff4'};border:1px solid ${totalErr ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:10px 12px;font-size:13px;margin-top:10px"><b>${totalErr ? '⚠️' : '✅'} ${resumen}</b>${totalFinal ? '<div style="color:#7a5230;font-size:12px;margin-top:5px">Las "finalizadas" ya no se muestran ni se pueden comprar. ML no las borra del todo porque tienen historial de ventas.</div>' : ''}</div>`;
     if (confirmBtn) { confirmBtn.style.display = 'none'; }
     if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Cerrar'; cancelBtn.onclick = () => { closeDeleteConfirm(); searchListings(); }; }
-    showToast(`${totalOk} publicación${totalOk !== 1 ? 'es' : ''} eliminada${totalOk !== 1 ? 's' : ''}${totalErr ? `, ${totalErr} con error` : ''}`, totalErr ? 'error' : 'success');
+    showToast(resumen, totalErr ? 'error' : 'success');
   }
   async function downloadCurrentListings() {
     const accountId = document.getElementById('updateAccount')?.value;
