@@ -1924,6 +1924,81 @@ route('POST', '/api/bulk-cancel', async (req, res) => {
   console.log(`[BG-BULK] Job ${job_id} cancelado por ${sess.username}`);
   return sendJSON(res, 200, { ok: true });
 });
+// POST /api/bulk-delete — ELIMINACIÓN de publicaciones (cerrar → borrar).
+// ACCIÓN IRREVERSIBLE: cada ítem se pone en status 'closed' y luego 'deleted' en ML.
+// Requiere confirmación explícita del cliente (flag confirm:true) además del modal en la UI.
+route('POST', '/api/bulk-delete', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const dbPerm = loadDB();
+  const userPerm = dbPerm.users.find(u => u.id === sess.userId);
+  const canBulk = sess.role === 'admin' || userPerm?.can_bulk_update === true;
+  if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { account_id, item_ids, confirm } = await parseBody(req);
+  if (confirm !== true) return sendJSON(res, 400, { error: 'Falta confirmación explícita de eliminación' });
+  if (!account_id || !Array.isArray(item_ids) || !item_ids.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  let token = await getValidToken(account);
+  if (!token) return sendJSON(res, 401, { error: 'Token inválido, reconectá la cuenta ML desde Configuración' });
+  const ids = [...new Set(item_ids.map(x => String(x || '').trim()).filter(Boolean))];
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  async function mlPutRetry(url, payload) {
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try { return await mlPut(url, payload, token); }
+      catch (e) {
+        lastErr = e;
+        const status = e?.response?.status;
+        if (status === 401) {
+          const refreshed = await refreshToken(account);
+          if (!refreshed) throw Object.assign(new Error('Token expirado, reconectá la cuenta ML'), { response: { status: 401 } });
+          token = refreshed; continue;
+        }
+        if (status === 429) { await sleep([8000, 20000, 40000][attempt] || 40000); continue; }
+        throw e;
+      }
+    }
+    throw lastErr;
+  }
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked', 'X-Accel-Buffering': 'no' });
+  res.write(JSON.stringify({ type: 'start', total: ids.length, account: account.name }) + '\n');
+  console.log(`[DELETE] ${sess.username} solicitó ELIMINAR ${ids.length} publicaciones de ${account.name}`);
+  let okCount = 0, errCount = 0;
+  for (const itemId of ids) {
+    const url = `https://api.mercadolibre.com/items/${itemId}`;
+    try {
+      // 1) Consultar estado actual
+      let curStatus = '';
+      try {
+        const it = await mlGet(`${url}?attributes=id,status`, token);
+        curStatus = it?.status || '';
+      } catch (e) { /* si falla el GET, intentamos igual el flujo cerrar→borrar */ }
+      // 2) Cerrar si aún está activa/pausada (no se puede borrar directo una activa)
+      if (curStatus !== 'closed' && curStatus !== 'deleted') {
+        await mlPutRetry(url, { status: 'closed' });
+        await sleep(250);
+      }
+      // 3) Borrar definitivamente
+      if (curStatus !== 'deleted') {
+        await mlPutRetry(url, { status: 'deleted' });
+      }
+      okCount++;
+      res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId }) + '\n');
+      console.log(`[DELETE] ✓ ${itemId} eliminado de ${account.name}`);
+    } catch (e) {
+      errCount++;
+      const emsg = e?.response?.data?.message || e?.response?.data?.error || e?.message || 'Error desconocido';
+      res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, error: String(emsg) }) + '\n');
+      console.log(`[DELETE] ✗ ${itemId} — ${emsg}`);
+    }
+    await sleep(300);
+  }
+  res.write(JSON.stringify({ type: 'done', ok: okCount, errors: errCount, total: ids.length }) + '\n');
+  res.end();
+  console.log(`[DELETE] Fin: ${okCount} eliminadas, ${errCount} con error (${account.name})`);
+});
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
 route('POST', '/api/search-listings-stream', async (req, res) => {
   const sess = requireAuth(req);
@@ -5879,7 +5954,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-26-v48-marca-producto', features: ['cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-27-v49-eliminar-publicaciones', features: ['eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
