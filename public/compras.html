@@ -37,6 +37,13 @@ window.addEventListener('DOMContentLoaded', function () {
   button.blue{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer}
   button.ghost{background:#f1f5f9;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer}
   button.mini{background:none;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer}
+  /* Botones genéricos que también funcionan en <a> y <label> */
+  .btnc{display:inline-flex;align-items:center;gap:7px;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;text-decoration:none;border:none;line-height:1}
+  .btnc.green{background:var(--green);color:#fff}
+  .btnc.blue{background:var(--blue);color:#fff}
+  .btnc.gray{background:#f1f5f9;color:var(--ink);border:1px solid var(--line)}
+  .btnc.red{background:#dc2626;color:#fff}
+  .btnc:disabled{opacity:.5;cursor:default}
   table{border-collapse:collapse;width:100%;font-size:13px}
   th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left}
   th{background:#f8fafc;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.02em;white-space:nowrap}
@@ -67,7 +74,7 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v60</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
@@ -177,10 +184,12 @@ function cuentaOptions(pid,sel){ var p=provById(pid); if(!p)return '<option valu
 
 // ============================ DASHBOARD ============================
 function viewDashboard(){
-  var totalGen=0, totalBruto=0, cards='';
+  var totalGen=0, totalBruto=0, cards='', ocultos=0;
   var provs = ST.proveedores.slice().sort(function(a,b){return saldoProveedor(b.id)-saldoProveedor(a.id);});
   provs.forEach(function(p){
-    var s=saldoProveedor(p.id); totalGen+=s;
+    var s=saldoProveedor(p.id);
+    if(Math.abs(s)<=0.01){ ocultos++; return; } // los que están en $0 no se muestran
+    totalGen+=s;
     var sB=saldoProveedorBruto(p.id); totalBruto+=sB;
     var pct=descuentoPct(p.id); var dTxt=descTexto(p.id);
     var ag=agingProveedor(p.id);
@@ -190,14 +199,14 @@ function viewDashboard(){
       + (pct>0?('<div style="text-align:right;margin-top:2px;font-size:12px;color:var(--green)">✓ el saldo grande ya incluye '+dTxt+' de descuento por pronto pago</div>'):'')
       + '<div style="margin-top:8px">'+cuentasHtml+'</div>'
       + (s>0.01?('<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;font-size:12px"><span class="tag">0-30d: '+money(ag.d0)+'</span><span class="tag" style="background:#fef3c7;color:#b45309">31-60d: '+money(ag.d30)+'</span><span class="tag" style="background:#fee2e2;color:#b91c1c">+60d: '+money(ag.d60)+'</span></div>'):'')
-      + '<div style="margin-top:10px"><button class="mini" onclick="goResumen(\''+p.id+'\')">📖 Ver resumen</button> <button class="mini" onclick="exportProveedor(\''+p.id+'\')">⬇ XLSX</button></div>'
+      + '<div style="margin-top:10px"><button class="mini" onclick="goResumen(\''+p.id+'\')">📖 Ver resumen</button> <button class="mini" onclick="exportProveedor(\''+p.id+'\')">⬇ XLSX</button>'+(IS_ADMIN?(' <button class="mini" style="color:#b91c1c;border-color:#fecaca" onclick="borrarProveedor(\''+p.id+'\',\''+esc(p.nombre).replace(/\x27/g,"")+'\')">🗑 Borrar resumen</button>'):'')+'</div>'
       + '</div>';
   });
   $('main').innerHTML =
     '<div class="kpi"><div class="box"><div class="lbl">Deuda total (todos los proveedores)</div><div class="val" style="color:'+(totalGen>0?'var(--red)':'var(--green)')+'">'+money(totalGen)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">deuda real (con descuentos aplicados)'+(Math.abs(totalBruto-totalGen)>0.01?(' · facturado: '+money(totalBruto)):'')+'</div></div>'
     + '<div class="box"><div class="lbl">Proveedores</div><div class="val">'+ST.proveedores.length+'</div></div>'
     + '<div class="box"><div class="lbl">Comprobantes / Pagos</div><div class="val">'+ST.comprobantes.length+' / '+ST.pagos.length+'</div></div></div>'
-    + '<div class="card"><h2>Deuda por proveedor</h2>'+(cards||'<div class="empty">Todavía no hay datos. Cargá proveedores y comprobantes.</div>')+'</div>'
+    + '<div class="card"><h2>Deuda por proveedor</h2>'+(cards||'<div class="empty">'+(ocultos>0?'Todos los proveedores están en $0.':'Todavía no hay datos. Cargá proveedores y comprobantes.')+'</div>')+(ocultos>0&&cards?('<div class="muted" style="font-size:12px;margin-top:10px">'+ocultos+' proveedor'+(ocultos>1?'es':'')+' en $0 (ocultos). Los ves en «Proveedores» o «Resumen de cuenta».</div>'):'')+'</div>'
     + (IS_ADMIN?('<div class="card" style="border:1px solid #fecaca;background:#fff8f8;margin-top:14px"><h2 style="color:#b91c1c">⚠️ Zona peligrosa</h2>'
         + '<p class="hint">Estas acciones borran datos de forma <b>irreversible</b>. Usalas solo para limpiar cargas de prueba.</p>'
         + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">'
@@ -219,6 +228,17 @@ async function resetCompras(scope){
     toast('Listo: se borraron '+r.borrados.comprobantes+' comprobantes y '+r.borrados.pagos+' pagos'+(esTodo?(' y '+r.borrados.proveedores+' proveedores'):''),'ok');
     await reload();
     showTab('dashboard');
+  }catch(e){ toast('Error al borrar: '+e,'err'); }
+}
+async function borrarProveedor(pid, nombre){
+  var msg='Vas a borrar TODAS las facturas, notas de crédito y pagos del proveedor "'+nombre+'". Su saldo queda en $0 (el proveedor y sus números de cliente se conservan). Esto NO se puede deshacer.';
+  if(!confirm(msg+'\n\n¿Continuar?')) return;
+  var t=prompt('Para confirmar, escribí BORRAR (en mayúsculas):');
+  if(t!=='BORRAR'){ toast('Cancelado — no se borró nada','warn'); return; }
+  try{
+    var r=await api('/api/compras/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'proveedor',proveedor_id:pid})});
+    toast('Listo: se borraron '+r.borrados.comprobantes+' comprobantes y '+r.borrados.pagos+' pagos de '+nombre,'ok');
+    await reload(); showTab('dashboard');
   }catch(e){ toast('Error al borrar: '+e,'err'); }
 }
 function goResumen(pid){ showTab('resumen'); setTimeout(function(){ var s=$('r_prov'); if(s){ s.value=pid; onResumenProv(); } },30); }
@@ -373,9 +393,12 @@ function exportProveedor(pid, cid){
 function viewMasiva(){
   $('main').innerHTML =
     '<div class="card"><h2>Carga masiva por Excel</h2>'
-    + '<p class="hint">1) Descargá la plantilla (viene con las flechitas/desplegables en Tipo y Medio, e instrucciones). 2) Completala. 3) Subila acá. Cada fila válida se carga automáticamente; las que tengan error te las marco.</p>'
-    + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0"><a class="blue" style="text-decoration:none" href="/api/compras/plantilla">⬇ Descargar plantilla</a>'
-    + '<label class="ghost" style="cursor:pointer;display:inline-block">⬆ Subir Excel completado<input type="file" accept=".xlsx,.xls" style="display:none" onchange="procesarMasiva(this.files[0])"></label></div>'
+    + '<p class="hint">1) Descargá la plantilla (viene con las flechitas/desplegables en Tipo y Medio, e instrucciones). 2) Completala. 3) Elegí el archivo, revisá la <b>vista previa</b> y recién ahí tocá <b>Subir</b>.</p>'
+    + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:14px 0">'
+    + '<a class="btnc blue" href="/api/compras/plantilla">⬇ Descargar plantilla</a>'
+    + '<label class="btnc green">📁 Elegir archivo Excel<input type="file" accept=".xlsx,.xls" style="display:none" onchange="previsualizarMasiva(this.files[0])"></label>'
+    + '</div>'
+    + '<div id="m_prev"></div>'
     + '<div id="m_out"></div></div>';
 }
 function _norm(s){ return String(s==null?'':s).trim(); }
@@ -386,28 +409,64 @@ function findCuenta(provName, numCli){
   var c=(p.cuentas||[]).find(function(x){return String(x.numero_cliente||'').trim()===nc;});
   if(!c) return null; return {pid:p.id,cid:c.id};
 }
-async function procesarMasiva(file){
+var _MASIVA=null;
+// PASO 1: leer el Excel y mostrar la vista previa (todavía NO carga nada).
+async function previsualizarMasiva(file){
   if(!file) return; if(!ensureXLSX())return;
-  var out=$('m_out'); out.innerHTML='<div class="spin"></div>';
+  _MASIVA=null; $('m_out').innerHTML='';
+  var prev=$('m_prev'); prev.innerHTML='<div class="spin"></div>';
   var buf=await file.arrayBuffer(); var wb=XLSX.read(new Uint8Array(buf),{type:'array'});
-  var okC=0,okP=0,errs=[];
-  // Facturas y NC
+  var comp=[], pago=[], errs=[];
   var shC=wb.Sheets['Facturas y NC']||wb.Sheets[wb.SheetNames[0]];
   if(shC){ var rows=XLSX.utils.sheet_to_json(shC,{header:1,defval:''}); for(var i=1;i<rows.length;i++){ var r=rows[i]; if(!r||!_norm(r[0])&&!_norm(r[3])&&!_norm(r[5]))continue; if(String(_norm(r[0])).indexOf('(ej)')===0)continue;
     var cu=findCuenta(r[0],r[1]); if(!cu){ errs.push('Factura fila '+(i+1)+': proveedor/N° cliente no encontrado ('+_norm(r[0])+' / '+_norm(r[1])+')'); continue; }
     var tipoRaw=_norm(r[2]).toLowerCase(); var tipo=tipoRaw.indexOf('cr')>=0?'nc':(tipoRaw.indexOf('fact')>=0?'factura':''); if(!tipo){ errs.push('Factura fila '+(i+1)+': Tipo inválido ("'+_norm(r[2])+'")'); continue; }
     var imp=Math.abs(Number(String(r[5]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0); if(!(imp>0)){ errs.push('Factura fila '+(i+1)+': importe inválido'); continue; }
-    try{ await api('/api/compras/comprobante',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proveedor_id:cu.pid,cuenta_id:cu.cid,tipo:tipo,numero:_norm(r[3]),fecha:_fechaCell(r[4]),importe:imp,notas:_norm(r[6])})}); okC++; }catch(e){ errs.push('Factura fila '+(i+1)+': '+e); }
+    comp.push({payload:{proveedor_id:cu.pid,cuenta_id:cu.cid,tipo:tipo,numero:_norm(r[3]),fecha:_fechaCell(r[4]),importe:imp,notas:_norm(r[6])}, disp:{prov:_norm(r[0]),ncli:_norm(r[1]),tipo:tipo==='nc'?'Nota de crédito':'Factura',num:_norm(r[3]),fecha:_fechaCell(r[4]),imp:imp}});
   }}
-  // Pagos
   var shP=wb.Sheets['Pagos'];
   if(shP){ var rp=XLSX.utils.sheet_to_json(shP,{header:1,defval:''}); for(var j=1;j<rp.length;j++){ var q=rp[j]; if(!q||!_norm(q[0])&&!_norm(q[2])&&!_norm(q[4]))continue; if(String(_norm(q[0])).indexOf('(ej)')===0)continue;
     var cu2=findCuenta(q[0],q[1]); if(!cu2){ errs.push('Pago fila '+(j+1)+': proveedor/N° cliente no encontrado'); continue; }
     var imp2=Math.abs(Number(String(q[4]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0); if(!(imp2>0)){ errs.push('Pago fila '+(j+1)+': importe inválido'); continue; }
-    try{ await api('/api/compras/pago',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proveedor_id:cu2.pid,cuenta_id:cu2.cid,numero:_norm(q[2]),fecha:_fechaCell(q[3]),importe:imp2,medio:_norm(q[5]),notas:_norm(q[6]),imputaciones:[]})}); okP++; }catch(e){ errs.push('Pago fila '+(j+1)+': '+e); }
+    pago.push({payload:{proveedor_id:cu2.pid,cuenta_id:cu2.cid,numero:_norm(q[2]),fecha:_fechaCell(q[3]),importe:imp2,medio:_norm(q[5]),notas:_norm(q[6]),imputaciones:[]}, disp:{prov:_norm(q[0]),ncli:_norm(q[1]),num:_norm(q[2]),fecha:_fechaCell(q[3]),imp:imp2,medio:_norm(q[5])}});
   }}
+  _MASIVA={comp:comp,pago:pago};
+  var totalFac=comp.reduce(function(a,x){return a+(x.disp.tipo==='Factura'?x.disp.imp:0);},0);
+  var totalNC=comp.reduce(function(a,x){return a+(x.disp.tipo==='Nota de crédito'?x.disp.imp:0);},0);
+  var totalPag=pago.reduce(function(a,x){return a+x.disp.imp;},0);
+  var MAX=30;
+  var cRows=comp.slice(0,MAX).map(function(x){return '<tr><td>'+esc(x.disp.prov)+'</td><td>'+esc(x.disp.ncli)+'</td><td>'+x.disp.tipo+'</td><td>'+esc(x.disp.num)+'</td><td>'+fmtF(x.disp.fecha)+'</td><td class="num">'+money(x.disp.imp)+'</td></tr>';}).join('');
+  var pRows=pago.slice(0,MAX).map(function(x){return '<tr><td>'+esc(x.disp.prov)+'</td><td>'+esc(x.disp.ncli)+'</td><td>'+esc(x.disp.num)+'</td><td>'+fmtF(x.disp.fecha)+'</td><td>'+esc(x.disp.medio)+'</td><td class="num">'+money(x.disp.imp)+'</td></tr>';}).join('');
+  var html='<div class="card" style="margin-top:12px">'
+    + '<h3 style="margin:0 0 6px">Vista previa</h3>'
+    + '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;margin-bottom:10px">'
+    + '<span class="tag">Facturas/NC a cargar: <b>'+comp.length+'</b></span>'
+    + '<span class="tag">Pagos a cargar: <b>'+pago.length+'</b></span>'
+    + '<span class="tag" style="background:#eef6ff">Total facturas: <b>'+money(totalFac)+'</b></span>'
+    + (totalNC>0?('<span class="tag" style="background:#f0fff4">Total NC: <b>'+money(totalNC)+'</b></span>'):'')
+    + (totalPag>0?('<span class="tag" style="background:#fff7ed">Total pagos: <b>'+money(totalPag)+'</b></span>'):'')
+    + (errs.length?('<span class="tag" style="background:#fee2e2;color:#b91c1c">Con error (se saltan): <b>'+errs.length+'</b></span>'):'')
+    + '</div>'
+    + (comp.length?('<div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table><thead><tr><th>Proveedor</th><th>N° cliente</th><th>Tipo</th><th>N° comprob.</th><th>Fecha</th><th class="num">Importe</th></tr></thead><tbody>'+cRows+'</tbody></table></div>'+(comp.length>MAX?('<div class="muted" style="font-size:11px;margin-top:4px">Mostrando '+MAX+' de '+comp.length+'. Se cargan todas.</div>'):'')):'')
+    + (pago.length?('<h4 style="margin:12px 0 4px">Pagos</h4><div style="overflow-x:auto;max-height:220px;overflow-y:auto"><table><thead><tr><th>Proveedor</th><th>N° cliente</th><th>Recibo</th><th>Fecha</th><th>Medio</th><th class="num">Importe</th></tr></thead><tbody>'+pRows+'</tbody></table></div>'+(pago.length>MAX?('<div class="muted" style="font-size:11px;margin-top:4px">Mostrando '+MAX+' de '+pago.length+'. Se cargan todos.</div>'):'')):'')
+    + (errs.length?('<details style="margin-top:10px"><summary style="cursor:pointer;color:#b91c1c;font-size:13px">Ver '+errs.length+' fila(s) con error (no se van a cargar)</summary><div style="max-height:180px;overflow:auto;margin-top:6px;font-size:12px;color:#b91c1c">'+errs.map(esc).join('<br>')+'</div></details>'):'')
+    + '<div style="margin-top:14px;display:flex;gap:12px;flex-wrap:wrap">'
+    + ((comp.length||pago.length)?('<button class="btnc green" id="m_subir" onclick="confirmarMasiva()">⬆ Subir '+(comp.length+pago.length)+' registro'+((comp.length+pago.length)>1?'s':'')+'</button>'):'<span class="muted">No hay filas válidas para cargar.</span>')
+    + '<button class="btnc gray" onclick="cancelarMasiva()">Cancelar</button>'
+    + '</div></div>';
+  prev.innerHTML=html;
+}
+function cancelarMasiva(){ _MASIVA=null; $('m_prev').innerHTML=''; $('m_out').innerHTML=''; }
+// PASO 2: confirmar → recién ahí se cargan al servidor.
+async function confirmarMasiva(){
+  if(!_MASIVA) return;
+  var btn=$('m_subir'); if(btn){ btn.disabled=true; btn.textContent='Subiendo…'; }
+  var okC=0,okP=0,errs=[];
+  for(var i=0;i<_MASIVA.comp.length;i++){ try{ await api('/api/compras/comprobante',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_MASIVA.comp[i].payload)}); okC++; }catch(e){ errs.push('Comprobante '+esc(_MASIVA.comp[i].disp.num)+': '+e); } }
+  for(var j=0;j<_MASIVA.pago.length;j++){ try{ await api('/api/compras/pago',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_MASIVA.pago[j].payload)}); okP++; }catch(e){ errs.push('Pago '+esc(_MASIVA.pago[j].disp.num)+': '+e); } }
+  _MASIVA=null; $('m_prev').innerHTML='';
   if(CAN_SALDOS) await reload();
-  out.innerHTML='<div class="card" style="margin-top:12px;background:'+(errs.length?'#fff8f8':'#f0fff4')+'"><b>'+(errs.length?'⚠️':'✅')+' Cargado: '+okC+' comprobantes y '+okP+' pagos'+(errs.length?(', '+errs.length+' con error'):'')+'</b>'+(errs.length?('<div style="max-height:200px;overflow:auto;margin-top:8px;font-size:12px;color:#b91c1c">'+errs.map(esc).join('<br>')+'</div>'):'')+'</div>';
+  $('m_out').innerHTML='<div class="card" style="margin-top:12px;background:'+(errs.length?'#fff8f8':'#f0fff4')+'"><b>'+(errs.length?'⚠️':'✅')+' Cargado: '+okC+' comprobantes y '+okP+' pagos'+(errs.length?(', '+errs.length+' con error'):'')+'</b>'+(errs.length?('<div style="max-height:200px;overflow:auto;margin-top:8px;font-size:12px;color:#b91c1c">'+errs.map(esc).join('<br>')+'</div>'):'')+'</div>';
 }
 function _fechaCell(v){ if(v==null||v==='')return ''; if(typeof v==='number'){ var dc=XLSX.SSF.parse_date_code(v); if(dc) return dc.y+'-'+String(dc.m).padStart(2,'0')+'-'+String(dc.d).padStart(2,'0'); } var s=String(v).trim(); var m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if(m) return m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0'); var m2=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/); if(m2){ var y=m2[3].length===2?('20'+m2[3]):m2[3]; return y+'-'+m2[2].padStart(2,'0')+'-'+m2[1].padStart(2,'0'); } return s.slice(0,10); }
 
