@@ -356,14 +356,14 @@ async function procesarMasiva(file){
   if(shC){ var rows=XLSX.utils.sheet_to_json(shC,{header:1,defval:''}); for(var i=1;i<rows.length;i++){ var r=rows[i]; if(!r||!_norm(r[0])&&!_norm(r[3])&&!_norm(r[5]))continue; if(String(_norm(r[0])).indexOf('(ej)')===0)continue;
     var cu=findCuenta(r[0],r[1]); if(!cu){ errs.push('Factura fila '+(i+1)+': proveedor/N° cliente no encontrado ('+_norm(r[0])+' / '+_norm(r[1])+')'); continue; }
     var tipoRaw=_norm(r[2]).toLowerCase(); var tipo=tipoRaw.indexOf('cr')>=0?'nc':(tipoRaw.indexOf('fact')>=0?'factura':''); if(!tipo){ errs.push('Factura fila '+(i+1)+': Tipo inválido ("'+_norm(r[2])+'")'); continue; }
-    var imp=Number(String(r[5]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0; if(!(imp>0)){ errs.push('Factura fila '+(i+1)+': importe inválido'); continue; }
+    var imp=Math.abs(Number(String(r[5]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0); if(!(imp>0)){ errs.push('Factura fila '+(i+1)+': importe inválido'); continue; }
     try{ await api('/api/compras/comprobante',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proveedor_id:cu.pid,cuenta_id:cu.cid,tipo:tipo,numero:_norm(r[3]),fecha:_fechaCell(r[4]),importe:imp,notas:_norm(r[6])})}); okC++; }catch(e){ errs.push('Factura fila '+(i+1)+': '+e); }
   }}
   // Pagos
   var shP=wb.Sheets['Pagos'];
   if(shP){ var rp=XLSX.utils.sheet_to_json(shP,{header:1,defval:''}); for(var j=1;j<rp.length;j++){ var q=rp[j]; if(!q||!_norm(q[0])&&!_norm(q[2])&&!_norm(q[4]))continue; if(String(_norm(q[0])).indexOf('(ej)')===0)continue;
     var cu2=findCuenta(q[0],q[1]); if(!cu2){ errs.push('Pago fila '+(j+1)+': proveedor/N° cliente no encontrado'); continue; }
-    var imp2=Number(String(q[4]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0; if(!(imp2>0)){ errs.push('Pago fila '+(j+1)+': importe inválido'); continue; }
+    var imp2=Math.abs(Number(String(q[4]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0); if(!(imp2>0)){ errs.push('Pago fila '+(j+1)+': importe inválido'); continue; }
     try{ await api('/api/compras/pago',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proveedor_id:cu2.pid,cuenta_id:cu2.cid,numero:_norm(q[2]),fecha:_fechaCell(q[3]),importe:imp2,medio:_norm(q[5]),notas:_norm(q[6]),imputaciones:[]})}); okP++; }catch(e){ errs.push('Pago fila '+(j+1)+': '+e); }
   }}
   if(CAN_SALDOS) await reload();
