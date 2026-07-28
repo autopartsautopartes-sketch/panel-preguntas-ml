@@ -500,7 +500,10 @@ route('GET', '/api/me', async (req, res) => {
     can_search_update: isAdmin || user?.can_search_update === true,
     can_bulk_update: isAdmin || user?.can_bulk_update === true,
     can_view_promos: isAdmin || user?.can_view_promos === true,
-    can_view_orders: isAdmin || user?.can_view_orders === true
+    can_view_orders: isAdmin || user?.can_view_orders === true,
+    // Compras (cuenta corriente proveedores): cargar comprobantes/pagos, y ver saldos/resúmenes.
+    can_compras_cargar: isAdmin || user?.can_compras_cargar === true || user?.can_compras_saldos === true,
+    can_compras_saldos: isAdmin || user?.can_compras_saldos === true
   });
 });
 // USERS
@@ -523,13 +526,15 @@ route('GET', '/api/users', async (req, res) => {
     can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
     can_view_promos: u.role === 'admin' || u.can_view_promos === true,
     can_view_orders: u.role === 'admin' || u.can_view_orders === true,
+    can_compras_cargar: u.role === 'admin' || u.can_compras_cargar === true || u.can_compras_saldos === true,
+    can_compras_saldos: u.role === 'admin' || u.can_compras_saldos === true,
     created_at: u.created_at
   })));
 });
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -546,6 +551,8 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_bulk_update !== undefined) user.can_bulk_update = !!can_bulk_update;
   if (can_view_promos !== undefined) user.can_view_promos = !!can_view_promos;
   if (can_view_orders !== undefined) user.can_view_orders = !!can_view_orders;
+  if (can_compras_cargar !== undefined) user.can_compras_cargar = !!can_compras_cargar;
+  if (can_compras_saldos !== undefined) user.can_compras_saldos = !!can_compras_saldos;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -6016,7 +6023,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-28-v56-family-name-titulo-corto', features: ['estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-28-v57-compras-cuenta-corriente', features: ['compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6070,6 +6077,244 @@ route('GET', '/api/debug-item', async (req, res) => {
   sendJSON(res, 200, out);
 });
 
+// ==================== COMPRAS · Cuenta corriente de proveedores ====================
+// Guarda en DATA_DIR/compras.json. Modelo: proveedores (con cuentas = números de cliente),
+// comprobantes (factura=Debe / nc=Haber) y pagos (Haber, imputados a facturas).
+const COMPRAS_PATH = path.join(DATA_DIR, 'compras.json');
+function loadCompras() {
+  try {
+    const d = JSON.parse(fs.readFileSync(COMPRAS_PATH, 'utf8'));
+    return { proveedores: d.proveedores || [], comprobantes: d.comprobantes || [], pagos: d.pagos || [] };
+  } catch (e) { return { proveedores: [], comprobantes: [], pagos: [] }; }
+}
+function saveCompras(d) { fs.writeFileSync(COMPRAS_PATH, JSON.stringify(d, null, 2)); }
+function _cprId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function _cprMoney(v) { const n = Math.round((Number(v) || 0) * 100) / 100; return isFinite(n) ? n : 0; }
+// Permisos: VER (saldos/resúmenes) = admin o can_compras_saldos.  CARGAR (facturas/NC/pagos) = admin o can_compras_cargar.
+function _comprasUser(req) { const s = requireAuth(req); if (!s) return null; const u = (loadDB().users || []).find(x => x.id === s.userId) || {}; return { sess: s, u }; }
+function comprasCanView(req, res) {
+  const c = _comprasUser(req);
+  if (!c || (c.sess.role !== 'admin' && !c.u.can_compras_saldos)) { sendJSON(res, 403, { error: 'No tenés permiso para ver saldos de Compras' }); return null; }
+  return c.sess;
+}
+function comprasCanLoad(req, res) {
+  const c = _comprasUser(req);
+  if (!c || (c.sess.role !== 'admin' && !c.u.can_compras_cargar && !c.u.can_compras_saldos)) { sendJSON(res, 403, { error: 'No tenés permiso para cargar en Compras' }); return null; }
+  return c.sess;
+}
+function comprasIsAdmin(req, res) {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') { sendJSON(res, 403, { error: 'Solo admin' }); return null; }
+  return s;
+}
+// Estado COMPLETO (comprobantes + pagos + proveedores) → solo quien puede ver saldos.
+route('GET', '/api/compras/state', async (req, res) => {
+  if (!comprasCanView(req, res)) return;
+  sendJSON(res, 200, loadCompras());
+});
+// Solo proveedores + cuentas (para los combos de carga) → cualquiera que pueda cargar. NO expone importes.
+route('GET', '/api/compras/proveedores', async (req, res) => {
+  if (!comprasCanLoad(req, res)) return;
+  const d = loadCompras();
+  sendJSON(res, 200, { proveedores: d.proveedores });
+});
+// Guarda TODA la lista de proveedores (son pocos). Cada uno con sus cuentas (números de cliente). Solo admin.
+route('POST', '/api/compras/proveedores', async (req, res) => {
+  if (!comprasIsAdmin(req, res)) return;
+  const body = await parseBody(req);
+  if (!Array.isArray(body.proveedores)) return sendJSON(res, 400, { error: 'proveedores inválido' });
+  const d = loadCompras();
+  d.proveedores = body.proveedores.map(p => ({
+    id: p.id || _cprId(),
+    nombre: String(p.nombre || '').trim(),
+    cuit: String(p.cuit || '').trim(),
+    notas: String(p.notas || '').trim(),
+    descuento_pct: Math.max(0, Math.min(100, Number(p.descuento_pct) || 0)), // % pronto pago → deuda real
+
+    cuentas: (Array.isArray(p.cuentas) ? p.cuentas : []).map(c => ({
+      id: c.id || _cprId(),
+      numero_cliente: String(c.numero_cliente || '').trim(),
+      alias: String(c.alias || '').trim()
+    }))
+  })).filter(p => p.nombre);
+  saveCompras(d);
+  sendJSON(res, 200, { ok: true, proveedores: d.proveedores });
+});
+// Alta/edición de un comprobante (factura o nota de crédito).
+route('POST', '/api/compras/comprobante', async (req, res) => {
+  if (!comprasCanLoad(req, res)) return;
+  const b = await parseBody(req);
+  if (!b.proveedor_id || !b.cuenta_id) return sendJSON(res, 400, { error: 'Elegí proveedor y número de cliente' });
+  if (!['factura', 'nc'].includes(b.tipo)) return sendJSON(res, 400, { error: 'Tipo inválido' });
+  const importe = _cprMoney(b.importe);
+  if (importe <= 0) return sendJSON(res, 400, { error: 'El importe tiene que ser mayor a 0' });
+  const d = loadCompras();
+  const rec = {
+    id: b.id || _cprId(), proveedor_id: b.proveedor_id, cuenta_id: b.cuenta_id,
+    tipo: b.tipo, numero: String(b.numero || '').trim(), fecha: String(b.fecha || '').slice(0, 10),
+    importe, notas: String(b.notas || '').trim(), created_at: b.created_at || new Date().toISOString()
+  };
+  const i = d.comprobantes.findIndex(x => x.id === rec.id);
+  if (i >= 0) d.comprobantes[i] = rec; else d.comprobantes.push(rec);
+  saveCompras(d);
+  sendJSON(res, 200, { ok: true, comprobante: rec });
+});
+route('POST', '/api/compras/comprobante-delete', async (req, res) => {
+  if (!comprasCanView(req, res)) return;
+  const b = await parseBody(req);
+  const d = loadCompras();
+  // al borrar una factura, sacamos las imputaciones de pagos que la referenciaban
+  d.pagos.forEach(p => { if (Array.isArray(p.imputaciones)) p.imputaciones = p.imputaciones.filter(im => im.comprobante_id !== b.id); });
+  d.comprobantes = d.comprobantes.filter(x => x.id !== b.id);
+  saveCompras(d);
+  sendJSON(res, 200, { ok: true });
+});
+// Alta/edición de un pago (recibo), con imputación a facturas.
+route('POST', '/api/compras/pago', async (req, res) => {
+  if (!comprasCanLoad(req, res)) return;
+  const b = await parseBody(req);
+  if (!b.proveedor_id || !b.cuenta_id) return sendJSON(res, 400, { error: 'Elegí proveedor y número de cliente' });
+  const importe = _cprMoney(b.importe);
+  if (importe <= 0) return sendJSON(res, 400, { error: 'El importe tiene que ser mayor a 0' });
+  const imputaciones = (Array.isArray(b.imputaciones) ? b.imputaciones : [])
+    .map(im => ({ comprobante_id: im.comprobante_id, monto: _cprMoney(im.monto) }))
+    .filter(im => im.comprobante_id && im.monto > 0);
+  const totalImp = imputaciones.reduce((s, im) => s + im.monto, 0);
+  if (totalImp > importe + 0.01) return sendJSON(res, 400, { error: 'La imputación supera el importe del pago' });
+  const d = loadCompras();
+  const rec = {
+    id: b.id || _cprId(), proveedor_id: b.proveedor_id, cuenta_id: b.cuenta_id,
+    numero: String(b.numero || '').trim(), fecha: String(b.fecha || '').slice(0, 10),
+    importe, medio: String(b.medio || '').trim(), notas: String(b.notas || '').trim(),
+    imputaciones, created_at: b.created_at || new Date().toISOString()
+  };
+  const i = d.pagos.findIndex(x => x.id === rec.id);
+  if (i >= 0) d.pagos[i] = rec; else d.pagos.push(rec);
+  saveCompras(d);
+  sendJSON(res, 200, { ok: true, pago: rec });
+});
+route('POST', '/api/compras/pago-delete', async (req, res) => {
+  if (!comprasCanView(req, res)) return;
+  const b = await parseBody(req);
+  const d = loadCompras();
+  d.pagos = d.pagos.filter(x => x.id !== b.id);
+  saveCompras(d);
+  sendJSON(res, 200, { ok: true });
+});
+// ---- Generador de xlsx en Node puro (con desplegables/dataValidation) para la plantilla de carga ----
+const _cprZlib = require('zlib');
+function _cprCrc32(buf) {
+  let t = _cprCrc32._t;
+  if (!t) { t = _cprCrc32._t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; } }
+  let crc = 0 ^ (-1);
+  for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ t[(crc ^ buf[i]) & 0xFF];
+  return (crc ^ (-1)) >>> 0;
+}
+function _cprZip(files) {
+  const chunks = [], central = []; let offset = 0;
+  for (const f of files) {
+    const nameBuf = Buffer.from(f.name, 'utf8'), comp = _cprZlib.deflateRawSync(f.data), crc = _cprCrc32(f.data);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(8, 8); lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(f.data.length, 22); lh.writeUInt16LE(nameBuf.length, 26);
+    chunks.push(lh, nameBuf, comp);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(8, 10);
+    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(f.data.length, 24);
+    ch.writeUInt16LE(nameBuf.length, 28); ch.writeUInt32LE(offset, 42);
+    central.push(ch, nameBuf);
+    offset += lh.length + nameBuf.length + comp.length;
+  }
+  const centralBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, centralBuf, eocd]);
+}
+function _cprXmlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function _cprColL(n) { let s = ''; n++; while (n) { let m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - m - 1) / 26; } return s; }
+function _cprSheetXml(sheet) {
+  let rows = '';
+  sheet.rows.forEach((r, ri) => {
+    let cells = '';
+    r.forEach((v, ci) => {
+      const ref = _cprColL(ci) + (ri + 1);
+      if (typeof v === 'number') cells += `<c r="${ref}"><v>${v}</v></c>`;
+      else cells += `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${_cprXmlEsc(v)}</t></is></c>`;
+    });
+    rows += `<row r="${ri + 1}">${cells}</row>`;
+  });
+  let dv = '';
+  if (sheet.validations && sheet.validations.length) {
+    dv = '<dataValidations count="' + sheet.validations.length + '">';
+    for (const val of sheet.validations) {
+      const range = _cprColL(val.col) + val.from + ':' + _cprColL(val.col) + val.to;
+      dv += `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${range}"><formula1>"${_cprXmlEsc(val.list.join(','))}"</formula1></dataValidation>`;
+    }
+    dv += '</dataValidations>';
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows}</sheetData>${dv}</worksheet>`;
+}
+function _cprBuildXlsx(sheets) {
+  const files = [];
+  files.push({ name: '[Content_Types].xml', data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheets.map((s, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`) });
+  files.push({ name: '_rels/.rels', data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`) });
+  files.push({ name: 'xl/workbook.xml', data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${_cprXmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`) });
+  files.push({ name: 'xl/_rels/workbook.xml.rels', data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((s, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}</Relationships>`) });
+  sheets.forEach((s, i) => files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: Buffer.from(_cprSheetXml(s)) }));
+  return _cprZip(files);
+}
+// Descarga la PLANTILLA de carga masiva (con desplegables en Tipo y Medio + hoja de instrucciones).
+route('GET', '/api/compras/plantilla', async (req, res) => {
+  if (!comprasCanLoad(req, res)) return;
+  const d = loadCompras();
+  const provLines = [];
+  for (const p of d.proveedores) {
+    if (!p.cuentas || !p.cuentas.length) provLines.push([p.nombre + '  (sin números de cliente cargados)']);
+    else for (const c of p.cuentas) provLines.push([p.nombre + '   —   N° cliente: ' + c.numero_cliente + (c.alias ? '  (' + c.alias + ')' : '')]);
+  }
+  const sheets = [
+    {
+      name: 'Facturas y NC',
+      rows: [
+        ['Proveedor', 'N° Cliente', 'Tipo', 'N° Comprobante', 'Fecha (AAAA-MM-DD)', 'Importe', 'Notas'],
+        ['(ej) CROMOSOL', '(ej) 12345', 'Factura', 'A-0001-00012345', '2026-07-28', 150000, 'ejemplo — borrá esta fila'],
+      ],
+      validations: [{ col: 2, list: ['Factura', 'Nota de credito'], from: 2, to: 1000 }]
+    },
+    {
+      name: 'Pagos',
+      rows: [
+        ['Proveedor', 'N° Cliente', 'N° Recibo', 'Fecha (AAAA-MM-DD)', 'Importe', 'Medio', 'Notas'],
+        ['(ej) CROMOSOL', '(ej) 12345', 'REC-001', '2026-07-28', 100000, 'Transferencia', 'ejemplo — borrá esta fila'],
+      ],
+      validations: [{ col: 5, list: ['Efectivo', 'Transferencia', 'Cheque', 'Deposito', 'Otro'], from: 2, to: 1000 }]
+    },
+    {
+      name: 'Instrucciones',
+      rows: [
+        ['INSTRUCCIONES — CARGA MASIVA DE COMPRAS'],
+        [''],
+        ['1) En la hoja "Facturas y NC" cargá una fila por comprobante. En "Tipo" usá la flechita (Factura o Nota de credito).'],
+        ['2) En la hoja "Pagos" cargá una fila por recibo. En "Medio" usá la flechita.'],
+        ['3) El Proveedor y el N° Cliente tienen que coincidir EXACTO con los de la lista de abajo (si no, esa fila se rechaza).'],
+        ['4) Fecha en formato AAAA-MM-DD (ej: 2026-07-28). Importe: solo números, sin símbolos.'],
+        ['5) Borrá las filas de ejemplo antes de subir. Podés dejar Notas vacío.'],
+        ['6) Los pagos se cargan sin imputar; después se aplican a las facturas desde el panel.'],
+        [''],
+        ['PROVEEDORES Y NÚMEROS DE CLIENTE DISPONIBLES:'],
+        ...(provLines.length ? provLines : [['(todavía no cargaste proveedores — hacelo desde el panel antes de la carga masiva)']]),
+      ]
+    }
+  ];
+  const buf = _cprBuildXlsx(sheets);
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': 'attachment; filename="plantilla_compras.xlsx"',
+    'Content-Length': buf.length
+  });
+  res.end(buf);
+});
 // ==================== MÓDULO ESTRATEGIA · MERCADO ADS (inline) ====================
 (function(){
 // ============================================================================
