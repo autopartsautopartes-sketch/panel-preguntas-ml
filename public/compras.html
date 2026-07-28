@@ -78,7 +78,7 @@ window.addEventListener('DOMContentLoaded', function () {
 <script>
 // ============================ estado & helpers ============================
 var ME = null, ST = { proveedores: [], comprobantes: [], pagos: [] }, TAB = '';
-var CAN_SALDOS = false, CAN_CARGAR = false;
+var CAN_SALDOS = false, CAN_CARGAR = false, IS_ADMIN = false;
 function $(id){return document.getElementById(id);}
 function money(n){ n = Number(n)||0; return '$ ' + n.toLocaleString('es-AR',{minimumFractionDigits:2, maximumFractionDigits:2}); }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -100,10 +100,26 @@ function saldoCuenta(pid,cid){
   return Math.round(s*100)/100;
 }
 function saldoProveedor(pid){ var p=provById(pid); if(!p) return 0; return (p.cuentas||[]).reduce(function(a,c){return a+saldoCuenta(pid,c.id);},0); }
-function descuentoPct(pid){ var p=provById(pid); return p?(Number(p.descuento_pct)||0):0; }
+// Saldo BRUTO = tal cual vino facturado, SIN el descuento por pronto pago (para verlo al lado del real).
+function saldoCuentaBruto(pid,cid){
+  var s=0;
+  ST.comprobantes.forEach(function(c){ if(c.proveedor_id===pid&&c.cuenta_id===cid){ s += c.tipo==='factura' ? (Number(c.importe)||0) : -(Number(c.importe)||0); } });
+  ST.pagos.forEach(function(p){ if(p.proveedor_id===pid&&p.cuenta_id===cid){ s -= (Number(p.importe)||0); } });
+  return Math.round(s*100)/100;
+}
+function saldoProveedorBruto(pid){ var p=provById(pid); if(!p) return 0; return (p.cuentas||[]).reduce(function(a,c){return a+saldoCuentaBruto(pid,c.id);},0); }
+function descPct1(pid){ var p=provById(pid); return p?(Number(p.descuento_pct)||0):0; }
+function descPct2(pid){ var p=provById(pid); return p?(Number(p.descuento_pct2)||0):0; }
+// Los dos descuentos se aplican EN CASCADA (uno sobre el resultado del otro), no sumados.
+// Ej: 4% y 10% → factor 0,96 × 0,90 = 0,864 (13,6% efectivo), no 14%.
+function factorDesc(pid){ return (1-descPct1(pid)/100)*(1-descPct2(pid)/100); }
+function descEfectivoPct(pid){ return Math.round((1-factorDesc(pid))*10000)/100; }
+function descuentoPct(pid){ return descEfectivoPct(pid); } // compat: % efectivo combinado
+// Texto tipo "4% + 10% (13,6% efectivo)" o "4%" si hay uno solo.
+function descTexto(pid){ var a=descPct1(pid),b=descPct2(pid); if(!a&&!b)return ''; if(a&&b) return a+'% + '+b+'% ('+descEfectivoPct(pid).toString().replace('.',',')+'% efectivo)'; return (a||b)+'%'; }
 function deudaReal(saldo,pct){ return Math.round(saldo*(1-(Number(pct)||0)/100)*100)/100; }
 // El descuento por pronto pago se aplica a la FACTURA (el debe ya va con el descuento = deuda real).
-function facturaNeta(c){ if(!c||c.tipo!=='factura') return 0; return Math.round((Number(c.importe)||0)*(1-descuentoPct(c.proveedor_id)/100)*100)/100; }
+function facturaNeta(c){ if(!c||c.tipo!=='factura') return 0; return Math.round((Number(c.importe)||0)*factorDesc(c.proveedor_id)*100)/100; }
 function fmtF(s){ if(!s) return ''; var m=String(s).match(/^(\d{4})-(\d{2})-(\d{2})/); return m?(m[3]+'-'+m[2]+'-'+m[1]):String(s); }
 function agingProveedor(pid){
   var pag=pagadoPorFactura(), b={d0:0,d30:0,d60:0}, now=new Date();
@@ -128,6 +144,7 @@ function facturaEstado(c){
   try{ ME = await api('/api/me'); }catch(e){ location.href='/'; return; }
   CAN_SALDOS = !!ME.can_compras_saldos;
   CAN_CARGAR = !!ME.can_compras_cargar || CAN_SALDOS;
+  IS_ADMIN = (ME.role === 'admin');
   if(!CAN_CARGAR){ $('main').innerHTML='<div class="card"><div class="empty">No tenés permiso para la sección Compras. Pedile a un administrador que te habilite.</div></div>'; $('nav').innerHTML=''; return; }
   $('who').textContent = ME.username + (CAN_SALDOS?' · admin/saldos':' · carga');
   await reload();
@@ -160,26 +177,49 @@ function cuentaOptions(pid,sel){ var p=provById(pid); if(!p)return '<option valu
 
 // ============================ DASHBOARD ============================
 function viewDashboard(){
-  var totalGen=0, cards='';
+  var totalGen=0, totalBruto=0, cards='';
   var provs = ST.proveedores.slice().sort(function(a,b){return saldoProveedor(b.id)-saldoProveedor(a.id);});
   provs.forEach(function(p){
     var s=saldoProveedor(p.id); totalGen+=s;
-    var pct=descuentoPct(p.id);
+    var sB=saldoProveedorBruto(p.id); totalBruto+=sB;
+    var pct=descuentoPct(p.id); var dTxt=descTexto(p.id);
     var ag=agingProveedor(p.id);
-    var cuentasHtml=(p.cuentas||[]).map(function(c){ var sc=saldoCuenta(p.id,c.id); return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span class="muted">N° '+esc(c.numero_cliente)+(c.alias?(' · '+esc(c.alias)):'')+'</span><b>'+money(sc)+'</b></div>';}).join('') || '<div class="muted" style="font-size:12px">Sin números de cliente</div>';
+    var cuentasHtml=(p.cuentas||[]).map(function(c){ var sc=saldoCuenta(p.id,c.id); var scB=saldoCuentaBruto(p.id,c.id); var brutoTxt=(pct>0&&Math.abs(scB-sc)>0.01)?('<span class="muted" style="font-size:11px;margin-left:8px">facturado '+money(scB)+'</span>'):''; return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span class="muted">N° '+esc(c.numero_cliente)+(c.alias?(' · '+esc(c.alias)):'')+'</span><span><b>'+money(sc)+'</b>'+brutoTxt+'</span></div>';}).join('') || '<div class="muted" style="font-size:12px">Sin números de cliente</div>';
     var col = s>0.01?'var(--red)':(s<-0.01?'var(--green)':'var(--ink)');
-    cards+='<div class="prov-card"><div class="prov-head"><div class="prov-name">'+esc(p.nombre)+'</div><div class="saldo-big" style="color:'+col+'">'+money(s)+(s>0.01?' <span class="pill deuda">debés</span>':(s<-0.01?' <span class="pill ok">a favor</span>':''))+'</div></div>'
-      + (pct>0?('<div style="text-align:right;margin-top:2px;font-size:12px;color:var(--green)">✓ ya incluye '+pct+'% de descuento por pronto pago</div>'):'')
+    cards+='<div class="prov-card"><div class="prov-head"><div class="prov-name">'+esc(p.nombre)+'</div><div style="text-align:right"><div class="saldo-big" style="color:'+col+'">'+money(s)+(s>0.01?' <span class="pill deuda">debés</span>':(s<-0.01?' <span class="pill ok">a favor</span>':''))+'</div>'+((pct>0&&Math.abs(sB-s)>0.01)?('<div class="muted" style="font-size:12px;margin-top:1px">facturado (sin descuento): '+money(sB)+'</div>'):'')+'</div></div>'
+      + (pct>0?('<div style="text-align:right;margin-top:2px;font-size:12px;color:var(--green)">✓ el saldo grande ya incluye '+dTxt+' de descuento por pronto pago</div>'):'')
       + '<div style="margin-top:8px">'+cuentasHtml+'</div>'
       + (s>0.01?('<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;font-size:12px"><span class="tag">0-30d: '+money(ag.d0)+'</span><span class="tag" style="background:#fef3c7;color:#b45309">31-60d: '+money(ag.d30)+'</span><span class="tag" style="background:#fee2e2;color:#b91c1c">+60d: '+money(ag.d60)+'</span></div>'):'')
       + '<div style="margin-top:10px"><button class="mini" onclick="goResumen(\''+p.id+'\')">📖 Ver resumen</button> <button class="mini" onclick="exportProveedor(\''+p.id+'\')">⬇ XLSX</button></div>'
       + '</div>';
   });
   $('main').innerHTML =
-    '<div class="kpi"><div class="box"><div class="lbl">Deuda total (todos los proveedores)</div><div class="val" style="color:'+(totalGen>0?'var(--red)':'var(--green)')+'">'+money(totalGen)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">deuda real (con descuentos aplicados)</div></div>'
+    '<div class="kpi"><div class="box"><div class="lbl">Deuda total (todos los proveedores)</div><div class="val" style="color:'+(totalGen>0?'var(--red)':'var(--green)')+'">'+money(totalGen)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">deuda real (con descuentos aplicados)'+(Math.abs(totalBruto-totalGen)>0.01?(' · facturado: '+money(totalBruto)):'')+'</div></div>'
     + '<div class="box"><div class="lbl">Proveedores</div><div class="val">'+ST.proveedores.length+'</div></div>'
     + '<div class="box"><div class="lbl">Comprobantes / Pagos</div><div class="val">'+ST.comprobantes.length+' / '+ST.pagos.length+'</div></div></div>'
-    + '<div class="card"><h2>Deuda por proveedor</h2>'+(cards||'<div class="empty">Todavía no hay datos. Cargá proveedores y comprobantes.</div>')+'</div>';
+    + '<div class="card"><h2>Deuda por proveedor</h2>'+(cards||'<div class="empty">Todavía no hay datos. Cargá proveedores y comprobantes.</div>')+'</div>'
+    + (IS_ADMIN?('<div class="card" style="border:1px solid #fecaca;background:#fff8f8;margin-top:14px"><h2 style="color:#b91c1c">⚠️ Zona peligrosa</h2>'
+        + '<p class="hint">Estas acciones borran datos de forma <b>irreversible</b>. Usalas solo para limpiar cargas de prueba.</p>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">'
+        + '<button class="mini" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca" onclick="resetCompras(\'movimientos\')">🧹 Borrar facturas, NC y pagos (dejar en 0)</button>'
+        + '<button class="mini" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca" onclick="resetCompras(\'todo\')">🗑️ Borrar TODO (también proveedores)</button>'
+        + '</div>'
+        + '<p class="hint" style="margin-top:8px">«Borrar facturas, NC y pagos» deja tus proveedores y números de cliente cargados, y pone todos los saldos en cero.</p></div>'):'');
+}
+async function resetCompras(scope){
+  var esTodo = (scope==='todo');
+  var msg = esTodo
+    ? 'Vas a borrar TODO: facturas, notas de crédito, pagos Y proveedores. Esto NO se puede deshacer.'
+    : 'Vas a borrar todas las facturas, notas de crédito y pagos (los saldos quedan en 0). Los proveedores y números de cliente se conservan. Esto NO se puede deshacer.';
+  if(!confirm(msg+'\n\n¿Continuar?')) return;
+  var t = prompt('Para confirmar, escribí BORRAR (en mayúsculas):');
+  if(t!=='BORRAR'){ toast('Cancelado — no se borró nada','warn'); return; }
+  try{
+    var r = await api('/api/compras/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:scope})});
+    toast('Listo: se borraron '+r.borrados.comprobantes+' comprobantes y '+r.borrados.pagos+' pagos'+(esTodo?(' y '+r.borrados.proveedores+' proveedores'):''),'ok');
+    await reload();
+    showTab('dashboard');
+  }catch(e){ toast('Error al borrar: '+e,'err'); }
 }
 function goResumen(pid){ showTab('resumen'); setTimeout(function(){ var s=$('r_prov'); if(s){ s.value=pid; onResumenProv(); } },30); }
 
@@ -297,8 +337,8 @@ function renderResumen(){
   mov.forEach(function(m){ saldo=Math.round((saldo+m.debe-m.haber)*100)/100; var row=Object.assign({},m,{saldo:saldo}); var okF=(!desde||m.fecha>=desde)&&(!hasta||m.fecha<=hasta)&&(!q||String(m.numero).toLowerCase().indexOf(q)>=0); if(okF) filtered.push(row); });
   var saldoFinal=cid?saldoCuenta(pid,cid):saldoProveedor(pid);
   var totDebe=0,totHaber=0; mov.forEach(function(m){totDebe+=m.debe;totHaber+=m.haber;});
-  var pctR=descuentoPct(pid);
-  out.innerHTML='<div class="kpi"><div class="box"><div class="lbl">Saldo actual (real)</div><div class="val" style="color:'+(saldoFinal>0?'var(--red)':'var(--green)')+'">'+money(saldoFinal)+'</div>'+(pctR>0?('<div style="font-size:11px;color:var(--green)">✓ con '+pctR+'% pronto pago aplicado</div>'):'')+'</div>'
+  var pctR=descuentoPct(pid); var dTxtR=descTexto(pid);
+  out.innerHTML='<div class="kpi"><div class="box"><div class="lbl">Saldo actual (real)</div><div class="val" style="color:'+(saldoFinal>0?'var(--red)':'var(--green)')+'">'+money(saldoFinal)+'</div>'+(pctR>0?('<div style="font-size:11px;color:var(--green)">✓ con '+dTxtR+' pronto pago aplicado</div>'):'')+'</div>'
     + '<div class="box"><div class="lbl">Total facturado (Debe)</div><div class="val">'+money(totDebe)+'</div></div>'
     + '<div class="box"><div class="lbl">NC + Pagos (Haber)</div><div class="val">'+money(totHaber)+'</div></div></div>'
     + '<div class="card"><h2>'+esc(provById(pid).nombre)+(cid?(' · N° '+esc(cuentaById(provById(pid),cid).numero_cliente)):' · todas las cuentas')+'</h2>'
@@ -383,14 +423,15 @@ function renderProvs(){
   box.innerHTML=_PV.map(function(p,pi){
     return '<div class="prov-card"><div class="row"><div style="flex:2"><label>Nombre del proveedor</label><input value="'+esc(p.nombre)+'" oninput="_PV['+pi+'].nombre=this.value"></div>'
       + '<div><label>CUIT (opcional)</label><input value="'+esc(p.cuit||'')+'" oninput="_PV['+pi+'].cuit=this.value"></div>'
-      + '<div style="max-width:170px"><label title="Descuento por pronto pago: se usa para mostrar la deuda real">Descuento pronto pago %</label><input type="number" min="0" max="100" step="0.1" value="'+(Number(p.descuento_pct)||0)+'" oninput="_PV['+pi+'].descuento_pct=this.value"></div>'
+      + '<div style="max-width:150px"><label title="1er descuento por pronto pago">Descuento 1 %</label><input type="number" min="0" max="100" step="0.1" value="'+(Number(p.descuento_pct)||0)+'" oninput="_PV['+pi+'].descuento_pct=this.value"></div>'
+      + '<div style="max-width:150px"><label title="2do descuento: se aplica en cascada sobre el resultado del 1ro (no se suman)">Descuento 2 % (opcional)</label><input type="number" min="0" max="100" step="0.1" value="'+(Number(p.descuento_pct2)||0)+'" oninput="_PV['+pi+'].descuento_pct2=this.value"></div>'
       + '<div style="flex:0;min-width:auto;align-self:flex-end"><button class="mini" onclick="delProv('+pi+')" title="Eliminar proveedor">🗑</button></div></div>'
       + '<h3>Números de cliente</h3>'
       + (p.cuentas||[]).map(function(c,ci){ return '<div class="imp-row"><input value="'+esc(c.numero_cliente)+'" placeholder="N° de cliente" style="max-width:180px" oninput="_PV['+pi+'].cuentas['+ci+'].numero_cliente=this.value"><input value="'+esc(c.alias||'')+'" placeholder="Alias (opcional)" style="max-width:200px" oninput="_PV['+pi+'].cuentas['+ci+'].alias=this.value"><button class="mini" onclick="delCta('+pi+','+ci+')">🗑</button></div>';}).join('')
       + '<div style="margin-top:8px"><button class="mini" onclick="addCta('+pi+')">+ Agregar número de cliente</button></div></div>';
   }).join('');
 }
-function addProv(){ _PV.push({nombre:'',cuit:'',notas:'',descuento_pct:0,cuentas:[{numero_cliente:'',alias:''}]}); renderProvs(); }
+function addProv(){ _PV.push({nombre:'',cuit:'',notas:'',descuento_pct:0,descuento_pct2:0,cuentas:[{numero_cliente:'',alias:''}]}); renderProvs(); }
 function delProv(i){ if(!confirm('¿Quitar este proveedor de la lista? (se aplica al guardar)'))return; _PV.splice(i,1); renderProvs(); }
 function addCta(pi){ _PV[pi].cuentas=_PV[pi].cuentas||[]; _PV[pi].cuentas.push({numero_cliente:'',alias:''}); renderProvs(); }
 function delCta(pi,ci){ _PV[pi].cuentas.splice(ci,1); renderProvs(); }
