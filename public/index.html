@@ -471,6 +471,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a href="/publicidad" target="_blank" id="nav-publicidad" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg><span>Estrategia</span>
       </a>
+      <a href="/compras.html" id="nav-compras" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M6 6h15l-1.5 9h-12z"/><path d="M6 6L5 3H3"/><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg><span>Compras</span>
+      </a>
       <div class="section-title">Configuración</div>
       <a onclick="showSection('accounts')" id="nav-accounts" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M4 9l1-4h14l1 4"/><path d="M4 9v10h16V9"/><path d="M9 19v-5h6v5"/></svg><span>Cuentas ML</span>
@@ -656,6 +659,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
           document.getElementById('nav-promos').style.display = '';
         }
+        if (currentUser.role === 'admin' || currentUser.can_compras_cargar || currentUser.can_compras_saldos) {
+          const nc = document.getElementById('nav-compras'); if (nc) nc.style.display = '';
+        }
         if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
           document.getElementById('nav-update').style.display = '';
           const mobUpd = document.getElementById('mob-update');
@@ -767,6 +773,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
           document.getElementById('nav-promos').style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_compras_cargar || currentUser.can_compras_saldos) {
+          const nc = document.getElementById('nav-compras'); if (nc) nc.style.display = '';
         }
         if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
           document.getElementById('nav-update').style.display = '';
@@ -953,7 +962,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               <span style="font-weight:800;color:#2d3277;font-size:15px">${escapeHtml(a.nickname || a.account_name)}</span>
             </div>
             ${ps ? `<div style="color:#00a650;font-weight:700;font-size:14px;margin-top:6px">${ps} ✔</div>` : `<div style="color:#666;font-size:13px;margin-top:6px">Nivel: ${lname}</div>`}
-            ${a.protected ? `<div style="color:#2f80ed;font-size:11px;margin-top:4px" title="Métricas en período de protección: se muestran los valores reales, aunque por ahora no afectan tu reputación">🛡 En protección${a.protection_end_date ? ' hasta ' + new Date(a.protection_end_date).toLocaleDateString('es-AR') : ''}</div>` : ''}
+            ${a.protected ? `<div style="color:#2f80ed;font-size:11px;margin-top:4px" title="Métricas en período de protección: se muestran los valores reales, aunque por ahora no afectan tu reputación">🛡 En protección${a.protection_end_date ? ' hasta ' + new Date(a.protection_end_date).toLocaleDateString('es-AR').replace(/\//g,'-') : ''}</div>` : ''}
             ${bar}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px">
               <div><div style="font-size:20px;font-weight:800;color:#2d3277">${a.operaciones != null ? Number(a.operaciones).toLocaleString('es-AR') : '—'}</div><div style="font-size:12px;color:#666">Operaciones</div></div>
@@ -3538,6 +3547,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Pedidos (armar y consultar pedidos de ventas)">
                   <input type="checkbox" ${u.can_view_orders || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_orders', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Pedidos
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Compras: puede CARGAR facturas, notas de crédito y pagos (sin ver saldos)">
+                  <input type="checkbox" ${u.can_compras_cargar || u.can_compras_saldos || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_compras_cargar', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Compras · cargar
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Compras: puede ver saldos, resúmenes y descargar (acceso completo)">
+                  <input type="checkbox" ${u.can_compras_saldos || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_compras_saldos', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Compras · ver saldos
                 </label>
               </div>
               <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;background:#f8f9fa;border-radius:8px">
@@ -6375,8 +6392,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         const status = p.status || p.state || '';
         const label = typeLabel[type] || escapeHtml(type || '—');
         const badge = statusBadge[String(status).toLowerCase()] || `<span style="color:#888">${escapeHtml(status || '')}</span>`;
-        const from = p.start_date ? new Date(p.start_date).toLocaleDateString('es-AR') : '—';
-        const to   = p.end_date   ? new Date(p.end_date).toLocaleDateString('es-AR')   : '—';
+        const from = p.start_date ? new Date(p.start_date).toLocaleDateString('es-AR').replace(/\//g,'-') : '—';
+        const to   = p.end_date   ? new Date(p.end_date).toLocaleDateString('es-AR').replace(/\//g,'-')   : '—';
         rows += `<tr>
           <td style="padding:8px 10px">${escapeHtml(name)}</td>
           <td style="padding:8px 10px">${label}</td>
@@ -6883,20 +6900,21 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (diff < 3600000) return `Hace ${Math.floor(diff / 60000)} min`;
     if (diff < 86400000) return `Hace ${Math.floor(diff / 3600000)} hs`;
     const day = d.getDate().toString().padStart(2,'0');
-    const mon = d.toLocaleDateString('es-AR',{month:'short'});
+    const mon = (d.getMonth()+1).toString().padStart(2,'0');
+    const yr = d.getFullYear();
     const h = d.getHours().toString().padStart(2,'0');
     const m = d.getMinutes().toString().padStart(2,'0');
-    return `${day} ${mon} ${h}:${m} hs`;
+    return `${day}-${mon}-${yr} ${h}:${m} hs`;
   }
   function formatDateTime(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
     const day = d.getDate().toString().padStart(2,'0');
     const mon = (d.getMonth()+1).toString().padStart(2,'0');
-    const yr = d.getFullYear().toString().slice(2);
+    const yr = d.getFullYear();
     const h = d.getHours().toString().padStart(2,'0');
     const m = d.getMinutes().toString().padStart(2,'0');
-    return `${day}/${mon}/${yr} ${h}:${m} hs`;
+    return `${day}-${mon}-${yr} ${h}:${m} hs`;
   }
   // Fecha/hora SIEMPRE en zona horaria Argentina (independiente del navegador o del servidor).
   function fmtAR(dateStr) {
@@ -6904,19 +6922,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return '';
     try {
-      const s = d.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-      return s.replace(',', '') + ' hs';
+      const s = d.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+      return s.replace(',', '').replace(/\//g, '-') + ' hs';
     } catch (e) { return formatDateTime(dateStr); }
   }
   function formatSaleDate(dateStr) {
     if (!dateStr) return '';
     const d = new Date(dateStr);
     const day = d.getDate().toString().padStart(2,'0');
-    const mon = d.toLocaleDateString('es-AR',{month:'short'});
+    const mon = (d.getMonth()+1).toString().padStart(2,'0');
     const yr = d.getFullYear();
     const h = d.getHours().toString().padStart(2,'0');
     const m = d.getMinutes().toString().padStart(2,'0');
-    return `${day} ${mon} ${yr} · ${h}:${m} hs`;
+    return `${day}-${mon}-${yr} · ${h}:${m} hs`;
   }
   function showToast(msg, type = 'success') {
     const toast = document.createElement('div');
