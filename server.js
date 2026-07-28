@@ -6023,7 +6023,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-28-v57-compras-cuenta-corriente', features: ['compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-28-v58-compras-plantilla-fecha-ddmmaaaa', features: ['compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6146,7 +6146,9 @@ route('POST', '/api/compras/comprobante', async (req, res) => {
   const b = await parseBody(req);
   if (!b.proveedor_id || !b.cuenta_id) return sendJSON(res, 400, { error: 'Elegí proveedor y número de cliente' });
   if (!['factura', 'nc'].includes(b.tipo)) return sendJSON(res, 400, { error: 'Tipo inválido' });
-  const importe = _cprMoney(b.importe);
+  // El signo NO define debe/haber (eso lo define el "tipo"): guardamos siempre el importe
+  // en positivo. Así se puede pegar directo desde exports donde las NC vienen en negativo.
+  const importe = Math.abs(_cprMoney(b.importe));
   if (importe <= 0) return sendJSON(res, 400, { error: 'El importe tiene que ser mayor a 0' });
   const d = loadCompras();
   const rec = {
@@ -6277,16 +6279,16 @@ route('GET', '/api/compras/plantilla', async (req, res) => {
     {
       name: 'Facturas y NC',
       rows: [
-        ['Proveedor', 'N° Cliente', 'Tipo', 'N° Comprobante', 'Fecha (AAAA-MM-DD)', 'Importe', 'Notas'],
-        ['(ej) CROMOSOL', '(ej) 12345', 'Factura', 'A-0001-00012345', '2026-07-28', 150000, 'ejemplo — borrá esta fila'],
+        ['Proveedor', 'N° Cliente', 'Tipo', 'N° Comprobante', 'Fecha (DD-MM-AAAA)', 'Importe', 'Notas'],
+        ['(ej) CROMOSOL', '(ej) 12345', 'Factura', 'A-0001-00012345', '28-07-2026', 150000, 'ejemplo — borrá esta fila'],
       ],
       validations: [{ col: 2, list: ['Factura', 'Nota de credito'], from: 2, to: 1000 }]
     },
     {
       name: 'Pagos',
       rows: [
-        ['Proveedor', 'N° Cliente', 'N° Recibo', 'Fecha (AAAA-MM-DD)', 'Importe', 'Medio', 'Notas'],
-        ['(ej) CROMOSOL', '(ej) 12345', 'REC-001', '2026-07-28', 100000, 'Transferencia', 'ejemplo — borrá esta fila'],
+        ['Proveedor', 'N° Cliente', 'N° Recibo', 'Fecha (DD-MM-AAAA)', 'Importe', 'Medio', 'Notas'],
+        ['(ej) CROMOSOL', '(ej) 12345', 'REC-001', '28-07-2026', 100000, 'Transferencia', 'ejemplo — borrá esta fila'],
       ],
       validations: [{ col: 5, list: ['Efectivo', 'Transferencia', 'Cheque', 'Deposito', 'Otro'], from: 2, to: 1000 }]
     },
@@ -6296,9 +6298,10 @@ route('GET', '/api/compras/plantilla', async (req, res) => {
         ['INSTRUCCIONES — CARGA MASIVA DE COMPRAS'],
         [''],
         ['1) En la hoja "Facturas y NC" cargá una fila por comprobante. En "Tipo" usá la flechita (Factura o Nota de credito).'],
+        ['   El importe va en POSITIVO: lo que resta o suma lo decide la columna "Tipo". La Nota de credito se descuenta sola. (Si pegás datos con la NC en negativo, igual se interpreta bien.)'],
         ['2) En la hoja "Pagos" cargá una fila por recibo. En "Medio" usá la flechita.'],
         ['3) El Proveedor y el N° Cliente tienen que coincidir EXACTO con los de la lista de abajo (si no, esa fila se rechaza).'],
-        ['4) Fecha en formato AAAA-MM-DD (ej: 2026-07-28). Importe: solo números, sin símbolos.'],
+        ['4) Fecha en formato DD-MM-AAAA (ej: 28-07-2026). También se acepta con barras: 28/07/2026. Importe: solo números, sin símbolos.'],
         ['5) Borrá las filas de ejemplo antes de subir. Podés dejar Notas vacío.'],
         ['6) Los pagos se cargan sin imputar; después se aplican a las facturas desde el panel.'],
         [''],
