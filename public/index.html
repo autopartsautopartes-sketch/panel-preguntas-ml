@@ -1228,6 +1228,52 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch (e) { showToast('Error de conexión', 'error'); if (box) box.innerHTML = ''; }
   }
   // ==================== DASHBOARD ====================
+  // Arma SOLO la parte superior del dashboard (KPIs + ventas del día + detalle por cuenta).
+  // Se reutiliza para el auto-refresh cada 30s sin rebuildear el gráfico de abajo.
+  function dashTopStatsInner(stats) {
+    const salesHTML = stats.can_view_dashboard ? `
+        <h3 style="margin:24px 0 12px;color:#2d3277">Ventas del día</h3>
+        <div class="stats">
+          <div class="stat-card"><div class="label">Ventas hoy</div><div class="value" style="color:#3483fa">${stats.sales_today}</div></div>
+          <div class="stat-card"><div class="label">Dinero transaccionado</div><div class="value" style="color:#27ae60;font-size:22px">$ ${Number(stats.revenue_today).toLocaleString('es-AR', {minimumFractionDigits:2})}</div></div>
+          <div class="stat-card"><div class="label">Unidades vendidas</div><div class="value" style="color:#f5a623">${stats.units_sold_today}</div></div>
+        </div>
+        ${(stats.sales_by_account && stats.sales_by_account.length > 0) ? `
+          <div style="margin-top:16px">
+            <h4 style="margin-bottom:8px;color:#666;font-size:13px">Detalle por cuenta</h4>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+              ${stats.sales_by_account.map(sa => `
+                <div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 14px;font-size:12px;min-width:180px">
+                  <div style="font-weight:700;color:#2d3277;margin-bottom:4px">${sa.name}</div>
+                  <div style="color:#666">${sa.sales} venta${sa.sales !== 1 ? 's' : ''} · ${sa.units} unid. · <span style="color:#27ae60;font-weight:600">$ ${Number(sa.revenue).toLocaleString('es-AR', {minimumFractionDigits:2})}</span></div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      ` : '';
+    return `
+        <div class="stats">
+          <div class="stat-card"><div class="label">Cuentas conectadas</div><div class="value">${stats.accounts}</div></div>
+          <div class="stat-card"><div class="label">Preguntas sin responder</div><div class="value" style="color:#e74c3c">${stats.unanswered}</div></div>
+          <div class="stat-card"><div class="label">Respondidas hoy</div><div class="value" style="color:#27ae60">${stats.answered_today}</div></div>
+          <div class="stat-card"><div class="label">Mensajes sin leer</div><div class="value" style="color:#3483fa">${stats.unread_messages}</div></div>
+        </div>
+        ${salesHTML}`;
+  }
+  // Refresco silencioso de la parte superior: solo si seguís en el Dashboard.
+  async function refreshDashboardTop() {
+    if (currentSection !== 'dashboard') return;
+    if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) return;
+    if (typeof isUserTyping === 'function' && isUserTyping()) return;
+    try {
+      const res = await fetch('/api/stats');
+      const stats = await res.json();
+      if (currentSection !== 'dashboard') return; // navegó mientras cargaba → no tocar nada
+      const el = document.getElementById('dashTopStats');
+      if (el) el.innerHTML = dashTopStatsInner(stats);
+    } catch (e) {}
+  }
   async function loadDashboard() {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) {
@@ -1251,60 +1297,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         msgBadge.textContent = stats.unread_messages;
         msgBadge.style.display = '';
       }
-      const salesHTML = stats.can_view_dashboard ? `
-        <h3 style="margin:24px 0 12px;color:#2d3277">Ventas del día</h3>
-        <div class="stats">
-          <div class="stat-card">
-            <div class="label">Ventas hoy</div>
-            <div class="value" style="color:#3483fa">${stats.sales_today}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Dinero transaccionado</div>
-            <div class="value" style="color:#27ae60;font-size:22px">$ ${Number(stats.revenue_today).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Unidades vendidas</div>
-            <div class="value" style="color:#f5a623">${stats.units_sold_today}</div>
-          </div>
-        </div>
-        ${(stats.sales_by_account && stats.sales_by_account.length > 0) ? `
-          <div style="margin-top:16px">
-            <h4 style="margin-bottom:8px;color:#666;font-size:13px">Detalle por cuenta</h4>
-            <div style="display:flex;flex-wrap:wrap;gap:8px">
-              ${stats.sales_by_account.map(sa => `
-                <div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 14px;font-size:12px;min-width:180px">
-                  <div style="font-weight:700;color:#2d3277;margin-bottom:4px">${sa.name}</div>
-                  <div style="color:#666">${sa.sales} venta${sa.sales !== 1 ? 's' : ''} · ${sa.units} unid. · <span style="color:#27ae60;font-weight:600">$ ${Number(sa.revenue).toLocaleString('es-AR', {minimumFractionDigits:2})}</span></div>
-                </div>
-              `).join('')}
-            </div>
-          </div>
-        ` : ''}
-      ` : '';
       const _isAdminDash = currentUser?.role === 'admin';
       document.getElementById('content').innerHTML = `
         <h2 style="margin-bottom:20px;color:#2d3277">Dashboard</h2>
         <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
         <div style="flex:1;min-width:320px">
-        <div class="stats">
-          <div class="stat-card">
-            <div class="label">Cuentas conectadas</div>
-            <div class="value">${stats.accounts}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Preguntas sin responder</div>
-            <div class="value" style="color:#e74c3c">${stats.unanswered}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Respondidas hoy</div>
-            <div class="value" style="color:#27ae60">${stats.answered_today}</div>
-          </div>
-          <div class="stat-card">
-            <div class="label">Mensajes sin leer</div>
-            <div class="value" style="color:#3483fa">${stats.unread_messages}</div>
-          </div>
-        </div>
-        ${salesHTML}
+        <div id="dashTopStats">${dashTopStatsInner(stats)}</div>
         <div id="dashChartSection" style="margin-top:24px;background:white;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
             <label style="font-size:12px;color:#64748b;font-weight:600;white-space:nowrap">Cuenta:</label>
@@ -7227,6 +7225,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (currentSection === 'questions') loadQuestions();
     if (currentSection === 'messages') loadMessages();
   }, 15000);
+  // Dashboard: refrescar SOLO la parte superior (KPIs + ventas del día) cada 30s,
+  // y únicamente si el usuario está parado en el Dashboard (no si navegó a otra sección).
+  setInterval(() => {
+    if (currentSection === 'dashboard') refreshDashboardTop();
+  }, 30000);
   // Stop prep auto-refresh when navigating away from prep section
   const _origShowSection = showSection;
   showSection = function(section, ...args) {
