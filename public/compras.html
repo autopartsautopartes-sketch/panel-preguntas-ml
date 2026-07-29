@@ -74,7 +74,7 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v63</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v64</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
@@ -274,9 +274,23 @@ async function saveComprobante(){
   try{ await api('/api/compras/comprobante',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); toast('Comprobante guardado','ok'); $('c_num').value='';$('c_imp').value='';$('c_notas').value=''; if(CAN_SALDOS) await reload(); renderComprobantes(); }
   catch(e){ toast(String(e),'err'); }
 }
+var _CARGAR_COMP=[];
+async function renderComprobantesCargar(){
+  var box=$('c_list'); if(!box) return;
+  var q=($('c_busca')&&$('c_busca').value||'').trim();
+  box.innerHTML='<div class="spin"></div>';
+  var data;
+  try{ data=await api('/api/compras/comprobantes-recientes'+(q?('?q='+encodeURIComponent(q)):'')); }catch(e){ box.innerHTML='<div class="hint">No se pudo cargar la lista.</div>'; return; }
+  var rows=data.comprobantes||[]; _CARGAR_COMP=rows;
+  if(!rows.length){ box.innerHTML='<div class="empty">Sin comprobantes'+(q?' para "'+esc(q)+'"':'')+'.</div>'; return; }
+  box.innerHTML='<p class="hint" style="margin-top:0">'+(q?('Resultados de la búsqueda (todas las fechas).'):('Últimos 20 comprobantes. Usá el buscador de arriba para encontrar cualquiera, sin importar la fecha.'))+'</p>'
+    + '<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Tipo</th><th>N° comprobante</th><th class="num">Importe</th><th>Cargado por</th><th></th></tr></thead><tbody>'
+    + rows.map(function(c){ return '<tr><td>'+fmtF(c.fecha)+'</td><td>'+esc(cuentaLabel(c.proveedor_id,c.cuenta_id))+'</td><td>'+(c.tipo==='factura'?'Factura':'<span class="muted">N. Crédito</span>')+'</td><td>'+esc(c.numero||'')+'</td><td class="num">'+(c.tipo==='factura'?'':'−')+money(c.importe)+'</td><td style="font-size:12px">'+origenTxt(c)+'</td><td><button class="mini" title="Editar" onclick="editComprobante(\''+c.id+'\')">✏️</button></td></tr>';}).join('')
+    + '</tbody></table></div>';
+}
 function renderComprobantes(){
   var box=$('c_list'); if(!box) return;
-  if(!CAN_SALDOS){ box.innerHTML='<div class="hint">Como usuario de carga no ves el listado ni los saldos. El comprobante se guarda correctamente.</div>'; return; }
+  if(!CAN_SALDOS){ return renderComprobantesCargar(); }
   var q=($('c_busca')&&$('c_busca').value||'').trim().toLowerCase();
   var rows=ST.comprobantes.slice().sort(function(a,b){return (b.fecha||'').localeCompare(a.fecha||'')|| (b.created_at||'').localeCompare(a.created_at||'');});
   if(q) rows=rows.filter(function(c){return String(c.numero||'').toLowerCase().indexOf(q)>=0;});
@@ -348,7 +362,7 @@ var _EDIT=null;
 function closeCprModal(){ _EDIT=null; $('cpr_modal').style.display='none'; }
 function _rowLabel(pid,cid){ return esc(cuentaLabel(pid,cid)); }
 function editComprobante(id){
-  var c=ST.comprobantes.find(function(x){return x.id===id;});
+  var c=ST.comprobantes.find(function(x){return x.id===id;}) || (_CARGAR_COMP||[]).find(function(x){return x.id===id;});
   if(!c){ toast('No se encontró el comprobante','err'); return; }
   _EDIT={kind:'comprobante',rec:c};
   $('cpr_m_title').textContent='Editar comprobante';
