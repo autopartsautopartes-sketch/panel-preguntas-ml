@@ -6023,7 +6023,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-28-v60-compras-masiva-previa-y-borrar-proveedor', features: ['compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-28-v61-compras-unir-proveedores-y-usuario-origen', features: ['compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6143,7 +6143,7 @@ route('POST', '/api/compras/proveedores', async (req, res) => {
 });
 // Alta/edición de un comprobante (factura o nota de crédito).
 route('POST', '/api/compras/comprobante', async (req, res) => {
-  if (!comprasCanLoad(req, res)) return;
+  const sess = comprasCanLoad(req, res); if (!sess) return;
   const b = await parseBody(req);
   if (!b.proveedor_id || !b.cuenta_id) return sendJSON(res, 400, { error: 'Elegí proveedor y número de cliente' });
   if (!['factura', 'nc'].includes(b.tipo)) return sendJSON(res, 400, { error: 'Tipo inválido' });
@@ -6152,10 +6152,16 @@ route('POST', '/api/compras/comprobante', async (req, res) => {
   const importe = Math.abs(_cprMoney(b.importe));
   if (importe <= 0) return sendJSON(res, 400, { error: 'El importe tiene que ser mayor a 0' });
   const d = loadCompras();
+  const prev = d.comprobantes.find(x => x.id === (b.id || ''));
+  const origen = ['manual', 'masiva', 'migracion'].includes(b.origen) ? b.origen : 'manual';
   const rec = {
     id: b.id || _cprId(), proveedor_id: b.proveedor_id, cuenta_id: b.cuenta_id,
     tipo: b.tipo, numero: String(b.numero || '').trim(), fecha: String(b.fecha || '').slice(0, 10),
-    importe, notas: String(b.notas || '').trim(), created_at: b.created_at || new Date().toISOString()
+    importe, notas: String(b.notas || '').trim(),
+    created_at: (prev && prev.created_at) || b.created_at || new Date().toISOString(),
+    // quién lo grabó (de la sesión, no del cliente) y cómo (manual / masiva). Se preserva al editar.
+    usuario: (prev && prev.usuario) || sess.username || '',
+    origen: (prev && prev.origen) || origen
   };
   const i = d.comprobantes.findIndex(x => x.id === rec.id);
   if (i >= 0) d.comprobantes[i] = rec; else d.comprobantes.push(rec);
@@ -6174,7 +6180,7 @@ route('POST', '/api/compras/comprobante-delete', async (req, res) => {
 });
 // Alta/edición de un pago (recibo), con imputación a facturas.
 route('POST', '/api/compras/pago', async (req, res) => {
-  if (!comprasCanLoad(req, res)) return;
+  const sess = comprasCanLoad(req, res); if (!sess) return;
   const b = await parseBody(req);
   if (!b.proveedor_id || !b.cuenta_id) return sendJSON(res, 400, { error: 'Elegí proveedor y número de cliente' });
   const importe = _cprMoney(b.importe);
@@ -6185,11 +6191,15 @@ route('POST', '/api/compras/pago', async (req, res) => {
   const totalImp = imputaciones.reduce((s, im) => s + im.monto, 0);
   if (totalImp > importe + 0.01) return sendJSON(res, 400, { error: 'La imputación supera el importe del pago' });
   const d = loadCompras();
+  const prev = d.pagos.find(x => x.id === (b.id || ''));
+  const origen = ['manual', 'masiva', 'migracion'].includes(b.origen) ? b.origen : 'manual';
   const rec = {
     id: b.id || _cprId(), proveedor_id: b.proveedor_id, cuenta_id: b.cuenta_id,
     numero: String(b.numero || '').trim(), fecha: String(b.fecha || '').slice(0, 10),
     importe, medio: String(b.medio || '').trim(), notas: String(b.notas || '').trim(),
-    imputaciones, created_at: b.created_at || new Date().toISOString()
+    imputaciones, created_at: (prev && prev.created_at) || b.created_at || new Date().toISOString(),
+    usuario: (prev && prev.usuario) || sess.username || '',
+    origen: (prev && prev.origen) || origen
   };
   const i = d.pagos.findIndex(x => x.id === rec.id);
   if (i >= 0) d.pagos[i] = rec; else d.pagos.push(rec);
@@ -6226,6 +6236,32 @@ route('POST', '/api/compras/reset', async (req, res) => {
   if (scope === 'todo') d.proveedores = [];
   saveCompras(d);
   sendJSON(res, 200, { ok: true, scope, borrados: antes });
+});
+// Unir varios proveedores en uno solo. Solo admin. Recibe target_id + source_ids[]:
+// mueve las cuentas de los source al target y REASIGNA sus comprobantes/pagos (conservando cuenta_id),
+// después borra los source. No se pierde ningún movimiento. Es el fix para proveedores duplicados.
+route('POST', '/api/compras/merge', async (req, res) => {
+  if (!comprasIsAdmin(req, res)) return;
+  const b = await parseBody(req);
+  const targetId = String(b.target_id || '');
+  const sourceIds = (Array.isArray(b.source_ids) ? b.source_ids : []).map(String).filter(x => x && x !== targetId);
+  const d = loadCompras();
+  const target = d.proveedores.find(p => p.id === targetId);
+  if (!target) return sendJSON(res, 400, { error: 'Proveedor destino no encontrado' });
+  if (!sourceIds.length) return sendJSON(res, 400, { error: 'No hay proveedores para unir' });
+  target.cuentas = Array.isArray(target.cuentas) ? target.cuentas : [];
+  let cuentasMovidas = 0, movsReasignados = 0, provsBorrados = 0;
+  sourceIds.forEach(sid => {
+    const src = d.proveedores.find(p => p.id === sid);
+    if (!src) return;
+    (src.cuentas || []).forEach(c => { target.cuentas.push(c); cuentasMovidas++; });
+    d.comprobantes.forEach(x => { if (x.proveedor_id === sid) { x.proveedor_id = targetId; movsReasignados++; } });
+    d.pagos.forEach(x => { if (x.proveedor_id === sid) { x.proveedor_id = targetId; movsReasignados++; } });
+    provsBorrados++;
+  });
+  d.proveedores = d.proveedores.filter(p => p.id === targetId || !sourceIds.includes(p.id));
+  saveCompras(d);
+  sendJSON(res, 200, { ok: true, resumen: { cuentas_movidas: cuentasMovidas, movimientos_reasignados: movsReasignados, proveedores_unidos: provsBorrados }, proveedores: d.proveedores });
 });
 // ---- Generador de xlsx en Node puro (con desplegables/dataValidation) para la plantilla de carga ----
 const _cprZlib = require('zlib');
