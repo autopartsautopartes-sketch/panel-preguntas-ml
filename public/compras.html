@@ -74,7 +74,7 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v61</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v63</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
@@ -82,6 +82,13 @@ window.addEventListener('DOMContentLoaded', function () {
 </header>
 <nav id="nav"></nav>
 <main id="main"><div class="spin"></div></main>
+<div id="cpr_modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h2 id="cpr_m_title" style="margin:0">Editar</h2><button class="mini" onclick="closeCprModal()">✕</button></div>
+    <div id="cpr_m_body"></div>
+    <div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end"><button class="btnc gray" onclick="closeCprModal()">Cancelar</button><button class="btnc green" onclick="saveCprEdit()">💾 Guardar cambios</button></div>
+  </div>
+</div>
 <script>
 // ============================ estado & helpers ============================
 var ME = null, ST = { proveedores: [], comprobantes: [], pagos: [] }, TAB = '';
@@ -276,7 +283,7 @@ function renderComprobantes(){
   rows=rows.slice(0,200);
   if(!rows.length){ box.innerHTML='<div class="empty">Sin comprobantes'+(q?' para "'+esc(q)+'"':'')+'.</div>'; return; }
   box.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Tipo</th><th>N° comprobante</th><th class="num">Importe</th><th>Estado</th><th>Cargado por</th><th></th></tr></thead><tbody>'
-    + rows.map(function(c){ var st=facturaEstado(c); return '<tr><td>'+fmtF(c.fecha)+'</td><td>'+esc(cuentaLabel(c.proveedor_id,c.cuenta_id))+'</td><td>'+(c.tipo==='factura'?'Factura':'<span class="muted">N. Crédito</span>')+'</td><td>'+esc(c.numero||'')+'</td><td class="num">'+(c.tipo==='factura'?'':'−')+money(c.importe)+'</td><td>'+(st?'<span class="pill '+st.cls+'">'+st.estado+'</span>':'—')+'</td><td style="font-size:12px">'+origenTxt(c)+'</td><td><button class="mini" onclick="delComprobante(\''+c.id+'\')">🗑</button></td></tr>';}).join('')
+    + rows.map(function(c){ var st=facturaEstado(c); return '<tr><td>'+fmtF(c.fecha)+'</td><td>'+esc(cuentaLabel(c.proveedor_id,c.cuenta_id))+'</td><td>'+(c.tipo==='factura'?'Factura':'<span class="muted">N. Crédito</span>')+'</td><td>'+esc(c.numero||'')+'</td><td class="num">'+(c.tipo==='factura'?'':'−')+money(c.importe)+'</td><td>'+(st?'<span class="pill '+st.cls+'">'+st.estado+'</span>':'—')+'</td><td style="font-size:12px">'+origenTxt(c)+'</td><td><button class="mini" title="Editar" onclick="editComprobante(\''+c.id+'\')">✏️</button> <button class="mini" onclick="delComprobante(\''+c.id+'\')">🗑</button></td></tr>';}).join('')
     + '</tbody></table></div>';
 }
 async function delComprobante(id){ if(!confirm('¿Borrar este comprobante? También se quitan las imputaciones de pagos asociadas.'))return; try{ await api('/api/compras/comprobante-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}); await reload(); renderComprobantes(); toast('Borrado','ok'); }catch(e){ toast(String(e),'err'); } }
@@ -306,13 +313,17 @@ function renderImput(){
   var pag=pagadoPorFactura();
   var facturas=ST.comprobantes.filter(function(c){return c.proveedor_id===pid&&c.cuenta_id===cid&&c.tipo==='factura'&&(facturaNeta(c)-(pag[c.id]||0))>0.01;})
     .sort(function(a,b){return (a.fecha||'').localeCompare(b.fecha||'');});
-  if(!facturas.length){ box.innerHTML='<div class="hint">Esta cuenta no tiene facturas pendientes. El pago quedará a cuenta (saldo a favor).</div>'; return; }
-  box.innerHTML='<h3>Aplicar el pago a facturas</h3><div style="border:1px solid var(--line);border-radius:10px;padding:8px 12px">'
-    + facturas.map(function(f){ var pend=facturaNeta(f)-(pag[f.id]||0); return '<div class="imp-row"><label style="margin:0;flex:1;min-width:160px;color:var(--ink);font-weight:600">'+esc(f.numero||'(sin número)')+' <span class="muted" style="font-weight:400">· '+fmtF(f.fecha)+' · pend. '+money(pend)+'</span></label><input type="number" min="0" step="0.01" class="imp-in" data-fid="'+f.id+'" data-pend="'+pend+'" placeholder="0.00" style="max-width:130px" oninput="sumImput()"></div>';}).join('')
-    + '</div><div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap"><button class="ghost" onclick="autoImput()">Auto-aplicar (de la más vieja)</button><div id="p_impsum" class="hint" style="margin:0;align-self:center"></div></div>';
+  if(!facturas.length){ box.innerHTML='<div class="hint">Esta cuenta no tiene facturas pendientes. El pago quedará a cuenta (adelanto / saldo a favor).</div>'; return; }
+  box.innerHTML='<h3>Aplicar el pago a facturas</h3><p class="hint" style="margin-top:0">Tildá la factura para pagarla completa, o escribí un importe menor para un pago parcial / adelanto por redondeo. Lo que no imputes queda a cuenta.</p><div style="border:1px solid var(--line);border-radius:10px;padding:8px 12px">'
+    + facturas.map(function(f){ var pend=Math.round((facturaNeta(f)-(pag[f.id]||0))*100)/100; var parcial=(pag[f.id]||0)>0.01; return '<div class="imp-row"><input type="checkbox" class="imp-chk" data-fid="'+f.id+'" onchange="chkImput(this)" title="Pagar completa" style="width:18px;height:18px;flex:0 0 auto;cursor:pointer"><label style="margin:0;flex:1;min-width:160px;color:var(--ink);font-weight:600">'+esc(f.numero||'(sin número)')+' <span class="muted" style="font-weight:400">· '+fmtF(f.fecha)+' · pend. '+money(pend)+(parcial?' <span class="pill parcial">parcial</span>':'')+'</span></label><input type="number" min="0" step="0.01" class="imp-in" data-fid="'+f.id+'" data-pend="'+pend+'" placeholder="0.00" style="max-width:130px" oninput="onImpInput(this)"></div>';}).join('')
+    + '</div><div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap"><button class="ghost" onclick="autoImput()">Auto-aplicar (de la más vieja)</button><button class="ghost" onclick="marcarTodas()">Tildar todas</button><button class="ghost" onclick="limpiarImput()">Limpiar</button><div id="p_impsum" class="hint" style="margin:0;align-self:center"></div></div>';
   sumImput();
 }
-function autoImput(){ var imp=Number($('p_imp').value)||0; var rest=imp; [].forEach.call(document.querySelectorAll('.imp-in'),function(inp){ var pend=Number(inp.dataset.pend)||0; var use=Math.min(pend,rest); use=Math.round(use*100)/100; inp.value=use>0?use:''; rest=Math.round((rest-use)*100)/100; }); sumImput(); }
+function chkImput(cb){ var inp=document.querySelector('.imp-in[data-fid="'+cb.dataset.fid+'"]'); if(inp){ inp.value = cb.checked ? (Number(inp.dataset.pend)||0) : ''; } sumImput(); }
+function onImpInput(inp){ var cb=document.querySelector('.imp-chk[data-fid="'+inp.dataset.fid+'"]'); if(cb){ var v=Number(inp.value)||0, pend=Number(inp.dataset.pend)||0; cb.checked=(v>=pend-0.01&&v>0); } sumImput(); }
+function marcarTodas(){ [].forEach.call(document.querySelectorAll('.imp-chk'),function(cb){ cb.checked=true; chkImput(cb); }); }
+function limpiarImput(){ [].forEach.call(document.querySelectorAll('.imp-chk'),function(cb){ cb.checked=false; }); [].forEach.call(document.querySelectorAll('.imp-in'),function(i){ i.value=''; }); sumImput(); }
+function autoImput(){ var imp=Number($('p_imp').value)||0; var rest=imp; [].forEach.call(document.querySelectorAll('.imp-in'),function(inp){ var pend=Number(inp.dataset.pend)||0; var use=Math.min(pend,rest); use=Math.round(use*100)/100; inp.value=use>0?use:''; var cb=document.querySelector('.imp-chk[data-fid="'+inp.dataset.fid+'"]'); if(cb) cb.checked=(use>=pend-0.01&&use>0); rest=Math.round((rest-use)*100)/100; }); sumImput(); }
 function sumImput(){ var t=0; [].forEach.call(document.querySelectorAll('.imp-in'),function(i){t+=Number(i.value)||0;}); var imp=Number($('p_imp').value)||0; var el=$('p_impsum'); if(el){ var afav=imp-t; el.innerHTML='Imputado: <b>'+money(t)+'</b> de '+money(imp)+(afav>0.01?(' · quedan '+money(afav)+' a cuenta'):'')+(t>imp+0.01?' <span style="color:var(--red)">⚠ supera el pago</span>':''); } }
 async function savePago(){
   var body={ proveedor_id:$('p_prov').value, cuenta_id:$('p_cta').value, numero:$('p_num').value, fecha:$('p_fecha').value, importe:$('p_imp').value, medio:$('p_medio').value, notas:$('p_notas').value, imputaciones:[] };
@@ -327,10 +338,69 @@ function renderPagos(){
   var rows=ST.pagos.slice().sort(function(a,b){return (b.fecha||'').localeCompare(a.fecha||'');}).slice(0,150);
   if(!rows.length){ box.innerHTML='<div class="empty">Sin pagos.</div>'; return; }
   box.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Recibo</th><th>Medio</th><th class="num">Importe</th><th>Imputado</th><th>Cargado por</th><th></th></tr></thead><tbody>'
-    + rows.map(function(p){ var imp=(p.imputaciones||[]).reduce(function(a,i){return a+(Number(i.monto)||0);},0); return '<tr><td>'+fmtF(p.fecha)+'</td><td>'+esc(cuentaLabel(p.proveedor_id,p.cuenta_id))+'</td><td>'+esc(p.numero||'')+'</td><td>'+esc(p.medio||'')+'</td><td class="num">'+money(p.importe)+'</td><td>'+money(imp)+((p.importe-imp)>0.01?' <span class="tag" style="background:#fef3c7;color:#b45309">a cuenta</span>':'')+'</td><td style="font-size:12px">'+origenTxt(p)+'</td><td><button class="mini" onclick="delPago(\''+p.id+'\')">🗑</button></td></tr>';}).join('')
+    + rows.map(function(p){ var imp=(p.imputaciones||[]).reduce(function(a,i){return a+(Number(i.monto)||0);},0); return '<tr><td>'+fmtF(p.fecha)+'</td><td>'+esc(cuentaLabel(p.proveedor_id,p.cuenta_id))+'</td><td>'+esc(p.numero||'')+'</td><td>'+esc(p.medio||'')+'</td><td class="num">'+money(p.importe)+'</td><td>'+money(imp)+((p.importe-imp)>0.01?' <span class="tag" style="background:#fef3c7;color:#b45309">a cuenta</span>':'')+'</td><td style="font-size:12px">'+origenTxt(p)+'</td><td><button class="mini" title="Editar" onclick="editPago(\''+p.id+'\')">✏️</button> <button class="mini" onclick="delPago(\''+p.id+'\')">🗑</button></td></tr>';}).join('')
     + '</tbody></table></div>';
 }
 async function delPago(id){ if(!confirm('¿Borrar este pago?'))return; try{ await api('/api/compras/pago-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}); await reload(); renderPagos(); renderImput(); toast('Borrado','ok'); }catch(e){ toast(String(e),'err'); } }
+
+// ============================ EDITAR COMPROBANTE / PAGO ============================
+var _EDIT=null;
+function closeCprModal(){ _EDIT=null; $('cpr_modal').style.display='none'; }
+function _rowLabel(pid,cid){ return esc(cuentaLabel(pid,cid)); }
+function editComprobante(id){
+  var c=ST.comprobantes.find(function(x){return x.id===id;});
+  if(!c){ toast('No se encontró el comprobante','err'); return; }
+  _EDIT={kind:'comprobante',rec:c};
+  $('cpr_m_title').textContent='Editar comprobante';
+  $('cpr_m_body').innerHTML=
+    '<div class="hint" style="margin-top:0">'+_rowLabel(c.proveedor_id,c.cuenta_id)+'</div>'
+    + '<div class="row"><div><label>Tipo</label><select id="cm_tipo"><option value="factura"'+(c.tipo==='factura'?' selected':'')+'>Factura (Debe)</option><option value="nc"'+(c.tipo==='nc'?' selected':'')+'>Nota de crédito (Haber)</option></select></div>'
+    + '<div><label>N° de comprobante</label><input id="cm_num" value="'+esc(c.numero||'')+'"></div></div>'
+    + '<div class="row" style="margin-top:10px"><div><label>Fecha</label><input id="cm_fecha" type="date" value="'+esc((c.fecha||'').slice(0,10))+'"></div>'
+    + '<div><label>Importe</label><input id="cm_imp" type="number" min="0" step="0.01" value="'+(Number(c.importe)||0)+'"></div></div>'
+    + '<div style="margin-top:10px"><label>Notas</label><input id="cm_notas" value="'+esc(c.notas||'')+'"></div>'
+    + (descuentoPct(c.proveedor_id)>0?('<div class="hint" style="margin-top:8px">Ojo: el importe va en bruto (como lo facturó el proveedor). El '+descTexto(c.proveedor_id)+' de descuento se aplica solo para el saldo.</div>'):'');
+  $('cpr_modal').style.display='flex';
+}
+function editPago(id){
+  var p=ST.pagos.find(function(x){return x.id===id;});
+  if(!p){ toast('No se encontró el pago','err'); return; }
+  _EDIT={kind:'pago',rec:p};
+  var medios=['Efectivo','Transferencia','Cheque','Deposito','Otro'];
+  $('cpr_m_title').textContent='Editar pago';
+  var impd=(p.imputaciones||[]).reduce(function(a,i){return a+(Number(i.monto)||0);},0);
+  $('cpr_m_body').innerHTML=
+    '<div class="hint" style="margin-top:0">'+_rowLabel(p.proveedor_id,p.cuenta_id)+'</div>'
+    + '<div class="row"><div><label>N° de recibo</label><input id="cm_num" value="'+esc(p.numero||'')+'"></div>'
+    + '<div><label>Medio</label><select id="cm_medio">'+medios.map(function(m){return '<option'+(String(p.medio||'')===m?' selected':'')+'>'+m+'</option>';}).join('')+'</select></div></div>'
+    + '<div class="row" style="margin-top:10px"><div><label>Fecha</label><input id="cm_fecha" type="date" value="'+esc((p.fecha||'').slice(0,10))+'"></div>'
+    + '<div><label>Importe</label><input id="cm_imp" type="number" min="0" step="0.01" value="'+(Number(p.importe)||0)+'"></div></div>'
+    + '<div style="margin-top:10px"><label>Notas</label><input id="cm_notas" value="'+esc(p.notas||'')+'"></div>'
+    + (impd>0.01?('<div class="hint" style="margin-top:8px">Este pago tiene '+money(impd)+' imputado a facturas (se conserva). Si bajás el importe por debajo de eso, se rechaza.</div>'):'');
+  $('cpr_modal').style.display='flex';
+}
+async function saveCprEdit(){
+  if(!_EDIT) return;
+  var imp=Number($('cm_imp').value)||0;
+  if(!(imp>0)){ toast('Ingresá un importe válido','err'); return; }
+  var r=_EDIT.rec, body;
+  if(_EDIT.kind==='comprobante'){
+    body={ id:r.id, proveedor_id:r.proveedor_id, cuenta_id:r.cuenta_id, tipo:$('cm_tipo').value, numero:$('cm_num').value, fecha:$('cm_fecha').value, importe:imp, notas:$('cm_notas').value };
+  } else {
+    body={ id:r.id, proveedor_id:r.proveedor_id, cuenta_id:r.cuenta_id, numero:$('cm_num').value, fecha:$('cm_fecha').value, importe:imp, medio:$('cm_medio').value, notas:$('cm_notas').value, imputaciones:(r.imputaciones||[]) };
+  }
+  var url=_EDIT.kind==='comprobante'?'/api/compras/comprobante':'/api/compras/pago';
+  try{
+    await api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    closeCprModal();
+    await reload();
+    if(TAB==='cargar') renderComprobantes();
+    else if(TAB==='pagos'){ renderPagos(); renderImput(); }
+    else if(TAB==='resumen') renderResumen();
+    else if(TAB==='dashboard') viewDashboard();
+    toast('Cambios guardados','ok');
+  }catch(e){ toast('Error al guardar: '+e,'err'); }
+}
 
 // ============================ RESUMEN DE CUENTA ============================
 function viewResumen(){
@@ -339,6 +409,7 @@ function viewResumen(){
     + '<div style="min-width:180px"><label>N° de cliente</label><select id="r_cta" onchange="renderResumen()"><option value="">— Todos —</option></select></div>'
     + '<div style="min-width:120px"><label>Desde</label><input id="r_desde" type="date" onchange="renderResumen()"></div>'
     + '<div style="min-width:120px"><label>Hasta</label><input id="r_hasta" type="date" onchange="renderResumen()"></div>'
+    + '<div style="min-width:170px"><label>Estado de pago</label><select id="r_estado" onchange="renderResumen()"><option value="todas">Todas</option><option value="pend">Pendientes de pago</option><option value="parcial">Solo parciales</option><option value="pagada">Solo pagadas</option></select></div>'
     + '<div style="min-width:180px"><label>Buscar N° comprobante</label><input id="r_busca" oninput="renderResumen()" placeholder="🔍"></div>'
     + '<div><button class="blue" onclick="exportResumen()">⬇ Descargar XLSX</button></div></div></div>'
     + '<div id="r_out"></div>';
@@ -346,26 +417,44 @@ function viewResumen(){
 function onResumenProv(){ $('r_cta').innerHTML='<option value="">— Todos los números —</option>'+cuentaOptions($('r_prov').value).replace('<option value="">— N° cliente —</option>',''); renderResumen(); }
 function movimientos(pid,cid){
   var arr=[];
-  ST.comprobantes.forEach(function(c){ if(c.proveedor_id===pid&&(!cid||c.cuenta_id===cid)){ arr.push({fecha:c.fecha||'',cuenta_id:c.cuenta_id,tipo:c.tipo==='factura'?'Factura':'Nota de crédito',numero:c.numero||'',debe:c.tipo==='factura'?facturaNeta(c):0,haber:c.tipo==='nc'?(Number(c.importe)||0):0,orden:c.created_at||''}); } });
-  ST.pagos.forEach(function(p){ if(p.proveedor_id===pid&&(!cid||p.cuenta_id===cid)){ arr.push({fecha:p.fecha||'',cuenta_id:p.cuenta_id,tipo:'Pago '+(p.medio?('('+p.medio+')'):''),numero:p.numero||'',debe:0,haber:Number(p.importe)||0,orden:p.created_at||''}); } });
+  ST.comprobantes.forEach(function(c){ if(c.proveedor_id===pid&&(!cid||c.cuenta_id===cid)){ arr.push({id:c.id,kind:'comprobante',fecha:c.fecha||'',cuenta_id:c.cuenta_id,tipo:c.tipo==='factura'?'Factura':'Nota de crédito',numero:c.numero||'',debe:c.tipo==='factura'?facturaNeta(c):0,haber:c.tipo==='nc'?(Number(c.importe)||0):0,orden:c.created_at||''}); } });
+  ST.pagos.forEach(function(p){ if(p.proveedor_id===pid&&(!cid||p.cuenta_id===cid)){ arr.push({id:p.id,kind:'pago',fecha:p.fecha||'',cuenta_id:p.cuenta_id,tipo:'Pago '+(p.medio?('('+p.medio+')'):''),numero:p.numero||'',debe:0,haber:Number(p.importe)||0,orden:p.created_at||''}); } });
   arr.sort(function(a,b){ return (a.fecha||'').localeCompare(b.fecha||'') || (a.orden||'').localeCompare(b.orden||''); });
   return arr;
 }
 function renderResumen(){
   var out=$('r_out'); if(!out)return; var pid=$('r_prov').value; if(!pid){ out.innerHTML='<div class="card"><div class="empty">Elegí un proveedor para ver el resumen.</div></div>'; return; }
   var cid=$('r_cta').value, desde=$('r_desde').value, hasta=$('r_hasta').value, q=($('r_busca').value||'').trim().toLowerCase();
+  var estadoF=($('r_estado')&&$('r_estado').value)||'todas';
   var mov=movimientos(pid,cid);
   var saldo=0, filtered=[];
-  mov.forEach(function(m){ saldo=Math.round((saldo+m.debe-m.haber)*100)/100; var row=Object.assign({},m,{saldo:saldo}); var okF=(!desde||m.fecha>=desde)&&(!hasta||m.fecha<=hasta)&&(!q||String(m.numero).toLowerCase().indexOf(q)>=0); if(okF) filtered.push(row); });
+  mov.forEach(function(m){
+    saldo=Math.round((saldo+m.debe-m.haber)*100)/100;
+    var est=null;
+    if(m.kind==='comprobante'&&m.tipo==='Factura'){ var c=ST.comprobantes.find(function(x){return x.id===m.id;}); est=c?facturaEstado(c):null; }
+    var row=Object.assign({},m,{saldo:saldo,est:est});
+    var okF=(!desde||m.fecha>=desde)&&(!hasta||m.fecha<=hasta)&&(!q||String(m.numero).toLowerCase().indexOf(q)>=0);
+    var okE=true;
+    if(estadoF!=='todas'){
+      if(!est) okE=false;                                   // el filtro de pago aplica solo a facturas
+      else if(estadoF==='pend') okE=(est.pend>0.01);        // pendientes de pago (sin pagar o parciales)
+      else if(estadoF==='parcial') okE=(est.estado==='Parcial');
+      else if(estadoF==='pagada') okE=(est.estado==='Pagada');
+    }
+    if(okF&&okE) filtered.push(row);
+  });
   var saldoFinal=cid?saldoCuenta(pid,cid):saldoProveedor(pid);
   var totDebe=0,totHaber=0; mov.forEach(function(m){totDebe+=m.debe;totHaber+=m.haber;});
+  // total pendiente de pago (facturas con saldo sin pagar) para la cuenta/proveedor filtrado
+  var pag=pagadoPorFactura(), totPend=0;
+  ST.comprobantes.forEach(function(c){ if(c.proveedor_id===pid&&(!cid||c.cuenta_id===cid)&&c.tipo==='factura'){ var pd=facturaNeta(c)-(pag[c.id]||0); if(pd>0.01) totPend+=pd; } });
   var pctR=descuentoPct(pid); var dTxtR=descTexto(pid);
   out.innerHTML='<div class="kpi"><div class="box"><div class="lbl">Saldo actual (real)</div><div class="val" style="color:'+(saldoFinal>0?'var(--red)':'var(--green)')+'">'+money(saldoFinal)+'</div>'+(pctR>0?('<div style="font-size:11px;color:var(--green)">✓ con '+dTxtR+' pronto pago aplicado</div>'):'')+'</div>'
     + '<div class="box"><div class="lbl">Total facturado (Debe)</div><div class="val">'+money(totDebe)+'</div></div>'
-    + '<div class="box"><div class="lbl">NC + Pagos (Haber)</div><div class="val">'+money(totHaber)+'</div></div></div>'
-    + '<div class="card"><h2>'+esc(provById(pid).nombre)+(cid?(' · N° '+esc(cuentaById(provById(pid),cid).numero_cliente)):' · todas las cuentas')+'</h2>'
-    + '<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th>'+(cid?'':'<th>N° cliente</th>')+'<th>Comprobante</th><th>N°</th><th class="num">Debe</th><th class="num">Haber</th><th class="num">Saldo</th></tr></thead><tbody>'
-    + (filtered.length?filtered.map(function(m){var pr=provById(pid);var cc=cuentaById(pr,m.cuenta_id);return '<tr><td>'+fmtF(m.fecha)+'</td>'+(cid?'':'<td>'+esc(cc?cc.numero_cliente:'')+'</td>')+'<td>'+esc(m.tipo)+'</td><td>'+esc(m.numero)+'</td><td class="num">'+(m.debe?money(m.debe):'')+'</td><td class="num">'+(m.haber?money(m.haber):'')+'</td><td class="num"><b>'+money(m.saldo)+'</b></td></tr>';}).join(''):'<tr><td colspan="'+(cid?6:7)+'" class="empty">Sin movimientos con esos filtros.</td></tr>')
+    + '<div class="box"><div class="lbl">Pendiente de pago</div><div class="val" style="color:'+(totPend>0.01?'var(--red)':'var(--green)')+'">'+money(totPend)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">facturas sin saldar</div></div></div>'
+    + '<div class="card"><h2>'+esc(provById(pid).nombre)+(cid?(' · N° '+esc(cuentaById(provById(pid),cid).numero_cliente)):' · todas las cuentas')+(estadoF!=='todas'?(' <span class="muted" style="font-size:13px;font-weight:400">· filtro: '+(estadoF==='pend'?'pendientes de pago':(estadoF==='parcial'?'parciales':'pagadas'))+'</span>'):'')+'</h2>'
+    + '<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th>'+(cid?'':'<th>N° cliente</th>')+'<th>Comprobante</th><th>N°</th><th class="num">Debe</th><th class="num">Haber</th><th>Estado pago</th><th class="num">Saldo</th><th></th></tr></thead><tbody>'
+    + (filtered.length?filtered.map(function(m){var pr=provById(pid);var cc=cuentaById(pr,m.cuenta_id);var estHtml=m.est?('<span class="pill '+m.est.cls+'">'+m.est.estado+'</span>'+(m.est.pend>0.01?(' <span class="muted" style="font-size:11px">falta '+money(m.est.pend)+'</span>'):'')):'';return '<tr><td>'+fmtF(m.fecha)+'</td>'+(cid?'':'<td>'+esc(cc?cc.numero_cliente:'')+'</td>')+'<td>'+esc(m.tipo)+'</td><td>'+esc(m.numero)+'</td><td class="num">'+(m.debe?money(m.debe):'')+'</td><td class="num">'+(m.haber?money(m.haber):'')+'</td><td>'+estHtml+'</td><td class="num"><b>'+money(m.saldo)+'</b></td><td><button class="mini" title="Editar" onclick="'+(m.kind==='pago'?('editPago(\''+m.id+'\')'):('editComprobante(\''+m.id+'\')'))+'">✏️</button></td></tr>';}).join(''):'<tr><td colspan="'+(cid?8:9)+'" class="empty">Sin movimientos con esos filtros.</td></tr>')
     + '</tbody></table></div></div>';
 }
 
