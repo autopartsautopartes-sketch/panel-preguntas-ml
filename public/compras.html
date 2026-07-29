@@ -74,7 +74,7 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v60</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v61</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
@@ -128,6 +128,8 @@ function deudaReal(saldo,pct){ return Math.round(saldo*(1-(Number(pct)||0)/100)*
 // El descuento por pronto pago se aplica a la FACTURA (el debe ya va con el descuento = deuda real).
 function facturaNeta(c){ if(!c||c.tipo!=='factura') return 0; return Math.round((Number(c.importe)||0)*factorDesc(c.proveedor_id)*100)/100; }
 function fmtF(s){ if(!s) return ''; var m=String(s).match(/^(\d{4})-(\d{2})-(\d{2})/); return m?(m[3]+'-'+m[2]+'-'+m[1]):String(s); }
+// Quién cargó el comprobante/pago y cómo. Los cargados antes de esta función no tienen dato → "histórico".
+function origenTxt(x){ var u=(x&&x.usuario)?esc(x.usuario):''; var o=x&&x.origen; var oLbl=o==='masiva'?'carga masiva':(o==='migracion'?'migración':(o==='manual'?'manual':'')); if(!u&&!oLbl) return '<span class="muted">histórico</span>'; return (u||'—')+(oLbl?(' <span class="muted">· '+oLbl+'</span>'):''); }
 function agingProveedor(pid){
   var pag=pagadoPorFactura(), b={d0:0,d30:0,d60:0}, now=new Date();
   ST.comprobantes.forEach(function(c){
@@ -273,8 +275,8 @@ function renderComprobantes(){
   if(q) rows=rows.filter(function(c){return String(c.numero||'').toLowerCase().indexOf(q)>=0;});
   rows=rows.slice(0,200);
   if(!rows.length){ box.innerHTML='<div class="empty">Sin comprobantes'+(q?' para "'+esc(q)+'"':'')+'.</div>'; return; }
-  box.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Tipo</th><th>N° comprobante</th><th class="num">Importe</th><th>Estado</th><th></th></tr></thead><tbody>'
-    + rows.map(function(c){ var st=facturaEstado(c); return '<tr><td>'+fmtF(c.fecha)+'</td><td>'+esc(cuentaLabel(c.proveedor_id,c.cuenta_id))+'</td><td>'+(c.tipo==='factura'?'Factura':'<span class="muted">N. Crédito</span>')+'</td><td>'+esc(c.numero||'')+'</td><td class="num">'+(c.tipo==='factura'?'':'−')+money(c.importe)+'</td><td>'+(st?'<span class="pill '+st.cls+'">'+st.estado+'</span>':'—')+'</td><td><button class="mini" onclick="delComprobante(\''+c.id+'\')">🗑</button></td></tr>';}).join('')
+  box.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Tipo</th><th>N° comprobante</th><th class="num">Importe</th><th>Estado</th><th>Cargado por</th><th></th></tr></thead><tbody>'
+    + rows.map(function(c){ var st=facturaEstado(c); return '<tr><td>'+fmtF(c.fecha)+'</td><td>'+esc(cuentaLabel(c.proveedor_id,c.cuenta_id))+'</td><td>'+(c.tipo==='factura'?'Factura':'<span class="muted">N. Crédito</span>')+'</td><td>'+esc(c.numero||'')+'</td><td class="num">'+(c.tipo==='factura'?'':'−')+money(c.importe)+'</td><td>'+(st?'<span class="pill '+st.cls+'">'+st.estado+'</span>':'—')+'</td><td style="font-size:12px">'+origenTxt(c)+'</td><td><button class="mini" onclick="delComprobante(\''+c.id+'\')">🗑</button></td></tr>';}).join('')
     + '</tbody></table></div>';
 }
 async function delComprobante(id){ if(!confirm('¿Borrar este comprobante? También se quitan las imputaciones de pagos asociadas.'))return; try{ await api('/api/compras/comprobante-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}); await reload(); renderComprobantes(); toast('Borrado','ok'); }catch(e){ toast(String(e),'err'); } }
@@ -324,8 +326,8 @@ function renderPagos(){
   var box=$('p_list'); if(!box)return;
   var rows=ST.pagos.slice().sort(function(a,b){return (b.fecha||'').localeCompare(a.fecha||'');}).slice(0,150);
   if(!rows.length){ box.innerHTML='<div class="empty">Sin pagos.</div>'; return; }
-  box.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Recibo</th><th>Medio</th><th class="num">Importe</th><th>Imputado</th><th></th></tr></thead><tbody>'
-    + rows.map(function(p){ var imp=(p.imputaciones||[]).reduce(function(a,i){return a+(Number(i.monto)||0);},0); return '<tr><td>'+fmtF(p.fecha)+'</td><td>'+esc(cuentaLabel(p.proveedor_id,p.cuenta_id))+'</td><td>'+esc(p.numero||'')+'</td><td>'+esc(p.medio||'')+'</td><td class="num">'+money(p.importe)+'</td><td>'+money(imp)+((p.importe-imp)>0.01?' <span class="tag" style="background:#fef3c7;color:#b45309">a cuenta</span>':'')+'</td><td><button class="mini" onclick="delPago(\''+p.id+'\')">🗑</button></td></tr>';}).join('')
+  box.innerHTML='<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Recibo</th><th>Medio</th><th class="num">Importe</th><th>Imputado</th><th>Cargado por</th><th></th></tr></thead><tbody>'
+    + rows.map(function(p){ var imp=(p.imputaciones||[]).reduce(function(a,i){return a+(Number(i.monto)||0);},0); return '<tr><td>'+fmtF(p.fecha)+'</td><td>'+esc(cuentaLabel(p.proveedor_id,p.cuenta_id))+'</td><td>'+esc(p.numero||'')+'</td><td>'+esc(p.medio||'')+'</td><td class="num">'+money(p.importe)+'</td><td>'+money(imp)+((p.importe-imp)>0.01?' <span class="tag" style="background:#fef3c7;color:#b45309">a cuenta</span>':'')+'</td><td style="font-size:12px">'+origenTxt(p)+'</td><td><button class="mini" onclick="delPago(\''+p.id+'\')">🗑</button></td></tr>';}).join('')
     + '</tbody></table></div>';
 }
 async function delPago(id){ if(!confirm('¿Borrar este pago?'))return; try{ await api('/api/compras/pago-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}); await reload(); renderPagos(); renderImput(); toast('Borrado','ok'); }catch(e){ toast(String(e),'err'); } }
@@ -422,13 +424,13 @@ async function previsualizarMasiva(file){
     var cu=findCuenta(r[0],r[1]); if(!cu){ errs.push('Factura fila '+(i+1)+': proveedor/N° cliente no encontrado ('+_norm(r[0])+' / '+_norm(r[1])+')'); continue; }
     var tipoRaw=_norm(r[2]).toLowerCase(); var tipo=tipoRaw.indexOf('cr')>=0?'nc':(tipoRaw.indexOf('fact')>=0?'factura':''); if(!tipo){ errs.push('Factura fila '+(i+1)+': Tipo inválido ("'+_norm(r[2])+'")'); continue; }
     var imp=Math.abs(Number(String(r[5]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0); if(!(imp>0)){ errs.push('Factura fila '+(i+1)+': importe inválido'); continue; }
-    comp.push({payload:{proveedor_id:cu.pid,cuenta_id:cu.cid,tipo:tipo,numero:_norm(r[3]),fecha:_fechaCell(r[4]),importe:imp,notas:_norm(r[6])}, disp:{prov:_norm(r[0]),ncli:_norm(r[1]),tipo:tipo==='nc'?'Nota de crédito':'Factura',num:_norm(r[3]),fecha:_fechaCell(r[4]),imp:imp}});
+    comp.push({payload:{proveedor_id:cu.pid,cuenta_id:cu.cid,tipo:tipo,numero:_norm(r[3]),fecha:_fechaCell(r[4]),importe:imp,notas:_norm(r[6]),origen:'masiva'}, disp:{prov:_norm(r[0]),ncli:_norm(r[1]),tipo:tipo==='nc'?'Nota de crédito':'Factura',num:_norm(r[3]),fecha:_fechaCell(r[4]),imp:imp}});
   }}
   var shP=wb.Sheets['Pagos'];
   if(shP){ var rp=XLSX.utils.sheet_to_json(shP,{header:1,defval:''}); for(var j=1;j<rp.length;j++){ var q=rp[j]; if(!q||!_norm(q[0])&&!_norm(q[2])&&!_norm(q[4]))continue; if(String(_norm(q[0])).indexOf('(ej)')===0)continue;
     var cu2=findCuenta(q[0],q[1]); if(!cu2){ errs.push('Pago fila '+(j+1)+': proveedor/N° cliente no encontrado'); continue; }
     var imp2=Math.abs(Number(String(q[4]).replace(/[^0-9.,-]/g,'').replace(',','.'))||0); if(!(imp2>0)){ errs.push('Pago fila '+(j+1)+': importe inválido'); continue; }
-    pago.push({payload:{proveedor_id:cu2.pid,cuenta_id:cu2.cid,numero:_norm(q[2]),fecha:_fechaCell(q[3]),importe:imp2,medio:_norm(q[5]),notas:_norm(q[6]),imputaciones:[]}, disp:{prov:_norm(q[0]),ncli:_norm(q[1]),num:_norm(q[2]),fecha:_fechaCell(q[3]),imp:imp2,medio:_norm(q[5])}});
+    pago.push({payload:{proveedor_id:cu2.pid,cuenta_id:cu2.cid,numero:_norm(q[2]),fecha:_fechaCell(q[3]),importe:imp2,medio:_norm(q[5]),notas:_norm(q[6]),imputaciones:[],origen:'masiva'}, disp:{prov:_norm(q[0]),ncli:_norm(q[1]),num:_norm(q[2]),fecha:_fechaCell(q[3]),imp:imp2,medio:_norm(q[5])}});
   }}
   _MASIVA={comp:comp,pago:pago};
   var totalFac=comp.reduce(function(a,x){return a+(x.disp.tipo==='Factura'?x.disp.imp:0);},0);
@@ -472,9 +474,39 @@ function _fechaCell(v){ if(v==null||v==='')return ''; if(typeof v==='number'){ v
 
 // ============================ PROVEEDORES ============================
 function viewProveedores(){
-  $('main').innerHTML='<div class="card"><h2>Proveedores y números de cliente</h2><p class="hint">Cada proveedor puede tener uno o varios números de cliente. Cada número lleva su propia cuenta corriente.</p><div id="pv_list"></div><div style="margin-top:12px"><button class="blue" onclick="addProv()">+ Agregar proveedor</button> <button class="primary" onclick="saveProvs()">💾 Guardar cambios</button></div></div>';
+  $('main').innerHTML='<div id="pv_dups"></div><div class="card"><h2>Proveedores y números de cliente</h2><p class="hint">Cada proveedor puede tener uno o varios números de cliente. Cada número lleva su propia cuenta corriente. Para un proveedor con varias cuentas, cargá UN proveedor y agregale varios números de cliente adentro.</p><div id="pv_list"></div><div style="margin-top:12px"><button class="blue" onclick="addProv()">+ Agregar proveedor</button> <button class="primary" onclick="saveProvs()">💾 Guardar cambios</button></div></div>';
   window._PV = JSON.parse(JSON.stringify(ST.proveedores));
+  renderDuplicados();
   renderProvs();
+}
+// Detecta proveedores repetidos por nombre y ofrece unirlos en uno (conservando cuentas y movimientos).
+function renderDuplicados(){
+  var box=$('pv_dups'); if(!box) return;
+  if(!IS_ADMIN){ box.innerHTML=''; return; }
+  var groups={};
+  ST.proveedores.forEach(function(p){ var k=String(p.nombre||'').trim().toLowerCase(); if(!k)return; (groups[k]=groups[k]||[]).push(p); });
+  var dups=Object.keys(groups).filter(function(k){return groups[k].length>1;});
+  if(!dups.length){ box.innerHTML=''; return; }
+  box.innerHTML='<div class="card" style="border:1px solid #fde68a;background:#fffbeb;margin-bottom:14px"><h2 style="color:#b45309">🔀 Proveedores duplicados detectados</h2>'
+    + '<p class="hint">Tenés varios proveedores con el mismo nombre. Lo ideal es UN solo proveedor con todas sus cuentas adentro. Al unirlos, las cuentas y TODAS las facturas/pagos se conservan (no se pierde nada); solo se juntan bajo un mismo proveedor.</p>'
+    + dups.map(function(k){ var g=groups[k]; var totCtas=g.reduce(function(a,p){return a+((p.cuentas||[]).length);},0);
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid #fde68a"><div><b>'+esc(g[0].nombre)+'</b> <span class="muted">— '+g.length+' proveedores, '+totCtas+' cuenta(s) en total</span></div>'
+        + '<button class="btnc" style="background:#b45309;color:#fff;padding:8px 14px;font-size:13px" onclick="unirProveedores(\''+encodeURIComponent(g[0].nombre)+'\')">🔀 Unir en uno solo</button></div>';}).join('')
+    + '</div>';
+}
+async function unirProveedores(nombreEnc){
+  var nombre=decodeURIComponent(nombreEnc);
+  var g=ST.proveedores.filter(function(p){return String(p.nombre||'').trim().toLowerCase()===nombre.trim().toLowerCase();});
+  if(g.length<2){ toast('No hay duplicados para unir','warn'); return; }
+  var target=g[0].id, sources=g.slice(1).map(function(p){return p.id;});
+  var totCtas=g.reduce(function(a,p){return a+((p.cuentas||[]).length);},0);
+  if(!confirm('Se van a unir '+g.length+' proveedores "'+nombre+'" en uno solo, con '+totCtas+' cuentas.\n\nTodas las facturas y pagos se conservan y quedan bajo ese único proveedor. Si tenés cambios sin guardar en la lista de abajo, se descartan.\n\n¿Continuar?')) return;
+  try{
+    var r=await api('/api/compras/merge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_id:target,source_ids:sources})});
+    toast('Unidos: '+r.resumen.proveedores_unidos+' proveedores, '+r.resumen.cuentas_movidas+' cuentas movidas, '+r.resumen.movimientos_reasignados+' movimientos conservados','ok');
+    await reload();
+    viewProveedores();
+  }catch(e){ toast('Error al unir: '+e,'err'); }
 }
 function renderProvs(){
   var box=$('pv_list'); if(!box)return;
