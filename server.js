@@ -6023,7 +6023,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-28-v61-compras-unir-proveedores-y-usuario-origen', features: ['compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-28-v64-compras-cargar-ultimos20-y-buscar', features: ['compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6177,6 +6177,22 @@ route('POST', '/api/compras/comprobante-delete', async (req, res) => {
   d.comprobantes = d.comprobantes.filter(x => x.id !== b.id);
   saveCompras(d);
   sendJSON(res, 200, { ok: true });
+});
+// Lista acotada de comprobantes para usuarios de CARGA (que no ven saldos/state completo):
+// sin búsqueda → los últimos 20 por fecha; con ?q= → todos los que coincidan por N° (sin límite de fecha).
+route('GET', '/api/compras/comprobantes-recientes', async (req, res) => {
+  if (!comprasCanLoad(req, res)) return;
+  let q = '';
+  try { q = (new URL(req.url, 'http://localhost').searchParams.get('q') || '').trim().toLowerCase(); } catch (e) { q = ''; }
+  const d = loadCompras();
+  const orden = (a, b) => (String(b.fecha || '')).localeCompare(String(a.fecha || '')) || (String(b.created_at || '')).localeCompare(String(a.created_at || ''));
+  let rows;
+  if (q) {
+    rows = d.comprobantes.filter(c => String(c.numero || '').toLowerCase().includes(q)).sort(orden).slice(0, 200);
+  } else {
+    rows = d.comprobantes.slice().sort(orden).slice(0, 20);
+  }
+  sendJSON(res, 200, { comprobantes: rows, buscando: !!q });
 });
 // Alta/edición de un pago (recibo), con imputación a facturas.
 route('POST', '/api/compras/pago', async (req, res) => {
