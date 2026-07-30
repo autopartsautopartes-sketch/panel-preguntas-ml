@@ -433,9 +433,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a class="active" onclick="showSection('dashboard')" id="nav-dashboard">
         <svg class="nvic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Dashboard</span>
       </a>
-      <a onclick="showSection('cotizador')" id="nav-cotizador">
-        <svg class="nvic" viewBox="0 0 24 24"><path d="M20.5 11.3L12 2.8H3v9l8.5 8.5a1.4 1.4 0 0 0 2 0l7-7a1.4 1.4 0 0 0 0-2z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg><span>Cotizador</span>
-      </a>
       <a onclick="showSection('questions')" id="nav-questions">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .8-1 1.7"/></svg><span>Preguntas</span>
         <span class="badge" id="badge-unanswered" style="display:none">0</span>
@@ -483,6 +480,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       </a>
       <a onclick="showSection('users')" id="nav-users" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M4 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M16 6a3 3 0 0 1 0 6"/><path d="M20 20c0-2.5-1.5-4-3.5-4.5"/></svg><span>Usuarios</span>
+      </a>
+      <a onclick="showSection('cotizador')" id="nav-cotizador" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M20.5 11.3L12 2.8H3v9l8.5 8.5a1.4 1.4 0 0 0 2 0l7-7a1.4 1.4 0 0 0 0-2z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg><span>Cotizador</span>
       </a>
     </nav>
     <div class="content" id="content">
@@ -647,6 +647,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         document.getElementById('currentUser').textContent = currentUser.username;
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
+          document.getElementById('nav-cotizador').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
@@ -762,6 +763,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         document.getElementById('currentUser').textContent = currentUser.username;
         if (currentUser.role === 'admin') {
           document.getElementById('nav-users').style.display = '';
+          document.getElementById('nav-cotizador').style.display = '';
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
@@ -912,53 +914,77 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
   }
   // ==================== COTIZADOR ====================
-  function loadCotizador() {
-    const isAdm = currentUser && currentUser.role === 'admin';
-    const content = document.getElementById('content');
-    content.innerHTML =
-      '<h2 style="margin-bottom:6px;color:#2d3277">Cotizador</h2>'
-      + '<p style="color:#666;font-size:13px;margin-bottom:18px">Ingresá el código del producto y elegí si es Mercado Envío. Te devuelve el <b>precio de venta sugerido</b>, con el margen y los costos que fija el administrador. El costo sale de las listas de proveedor (se actualiza una vez al día).</p>'
-      + '<div style="background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:640px">'
-      + '  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">'
-      + '    <div style="flex:1;min-width:180px"><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Código</label><input id="cot_cod" placeholder="ej. 01/026/367" style="width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none" onkeydown="if(event.key===\'Enter\')doCotizar()"></div>'
+  // Buscador de cotización (código → precio de venta). Va ARRIBA del panel de Preguntas y lo usan
+  // todos los usuarios. La configuración de costos/parámetros vive aparte, en Configuración (solo admin).
+  function cotizadorSearchHTML() {
+    return ''
+      + '<details class="cotbox" style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+      + '<summary style="cursor:pointer;list-style:none;padding:12px 16px;font-weight:700;color:#2d3277;display:flex;align-items:center;gap:8px">🔎 Cotizar un producto<span style="font-weight:400;font-size:12px;color:#888">— precio de venta por código</span></summary>'
+      + '<div style="padding:2px 16px 16px">'
+      + '  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">'
+      + '    <div style="flex:1;min-width:160px"><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Código</label><input id="cot_cod" placeholder="ej. 01/026/367" style="width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none" onkeydown="if(event.key===\'Enter\')doCotizar()"></div>'
       + '    <div><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Mercado Envío</label><select id="cot_me" style="padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;background:#fff"><option value="1">Sí</option><option value="0">No</option></select></div>'
       + '    <button onclick="doCotizar()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 22px;font-size:15px;font-weight:700;cursor:pointer">Cotizar</button>'
       + '  </div>'
-      + '  <div id="cot_result" style="margin-top:18px"></div>'
+      + '  <div id="cot_result" style="margin-top:14px"></div>'
+      + '</div></details>';
+  }
+  // Sección "Cotizador" del menú Configuración: SOLO parámetros de costos (solo admin).
+  function loadCotizador() {
+    const isAdm = currentUser && currentUser.role === 'admin';
+    const content = document.getElementById('content');
+    if (!isAdm) { content.innerHTML = '<div class="empty"><p>No tenés permiso para ver esta sección.</p></div>'; return; }
+    content.innerHTML =
+      '<h2 style="margin-bottom:6px;color:#2d3277">Cotizador — parámetros de costos</h2>'
+      + '<p style="color:#666;font-size:13px;margin-bottom:18px">Estos valores los fija solo el administrador e impactan en las cotizaciones de <b>todos</b> los usuarios. La tabla de costos por código la manda el automático una vez al día desde las listas de proveedor. Para <b>cotizar</b> un producto, usá el buscador 🔎 que aparece arriba del panel de <b>Preguntas</b>.</p>'
+      + '<div style="background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:640px;border:1px solid #fde68a">'
+      + '<h3 style="margin:0 0 4px;color:#b45309;font-size:15px">⚙️ Parámetros (solo admin)</h3>'
+      + '<p style="color:#888;font-size:12px;margin:0 0 14px">Estos valores los ve y edita solo el admin, e impactan en las cotizaciones de todos.</p>'
+      + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">'
+      + _cotF('com_pct', 'Comisión %') + _cotF('margen_pct', 'Margen objetivo %')
+      + _cotF('ret_pct', 'Retenciones %') + _cotF('factura_pct', 'Factura %')
+      + _cotF('envio_monto', 'Costo de envío $ (ME)') + _cotF('envio_piso', 'Piso para cobrar envío $')
+      + _cotF('fijo_monto', 'Costo fijo $') + _cotF('fijo_limite', 'Costo fijo: se cobra si el precio < $')
       + '</div>'
-      + (isAdm ? (
-        '<div style="background:#fff;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:640px;margin-top:18px;border:1px solid #fde68a">'
-        + '<h3 style="margin:0 0 4px;color:#b45309;font-size:15px">⚙️ Parámetros (solo admin)</h3>'
-        + '<p style="color:#888;font-size:12px;margin:0 0 14px">Estos valores los ve y edita solo el admin, e impactan en las cotizaciones de todos.</p>'
-        + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">'
-        + _cotF('com_pct', 'Comisión %') + _cotF('margen_pct', 'Margen objetivo %')
-        + _cotF('ret_pct', 'Retenciones %') + _cotF('factura_pct', 'Factura %')
-        + _cotF('envio_monto', 'Costo de envío $ (ME)') + _cotF('envio_piso', 'Piso para cobrar envío $')
-        + _cotF('fijo_monto', 'Costo fijo $') + _cotF('fijo_limite', 'Costo fijo: se cobra si el precio < $')
-        + '</div>'
-        + '<div style="margin-top:14px;display:flex;align-items:center;gap:14px"><button onclick="saveCotConfig()" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-weight:700;cursor:pointer">💾 Guardar parámetros</button><span id="cot_cfg_msg" style="font-size:13px"></span></div>'
-        + '<div id="cot_cfg_info" style="margin-top:10px;font-size:12px;color:#888"></div>'
-        + '</div>'
-      ) : '');
-    if (isAdm) loadCotConfig();
+      + '<div style="margin-top:14px;display:flex;align-items:center;gap:14px"><button onclick="saveCotConfig()" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-weight:700;cursor:pointer">💾 Guardar parámetros</button><span id="cot_cfg_msg" style="font-size:13px"></span></div>'
+      + '<div id="cot_cfg_info" style="margin-top:10px;font-size:12px;color:#888"></div>'
+      + '</div>';
+    loadCotConfig();
   }
   function _cotF(id, label) {
     return '<div><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:3px">' + label + '</label><input id="cotc_' + id + '" type="number" min="0" step="0.01" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:14px"></div>';
   }
-  async function doCotizar() {
+  async function doCotizar(prov) {
     const cod = (document.getElementById('cot_cod').value || '').trim();
     const me = document.getElementById('cot_me').value;
     const box = document.getElementById('cot_result');
     if (!cod) { box.innerHTML = '<div style="color:#e74c3c;font-size:14px">Ingresá un código.</div>'; return; }
     box.innerHTML = '<div style="color:#888;font-size:14px">Cotizando…</div>';
     try {
-      const r = await fetch('/api/cotizador?codigo=' + encodeURIComponent(cod) + '&me=' + me, { credentials: 'same-origin' });
+      let url = '/api/cotizador?codigo=' + encodeURIComponent(cod) + '&me=' + me;
+      if (prov) url += '&prov=' + encodeURIComponent(prov);
+      const r = await fetch(url, { credentials: 'same-origin' });
       const d = await r.json();
       if (!d.encontrado) { box.innerHTML = '<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">El código <b>' + _esc(cod) + '</b> no está en las listas de proveedor. Revisá que esté bien escrito.</div>'; return; }
       if (d.precio == null) { box.innerHTML = '<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">No se puede cotizar: el margen objetivo + los costos superan el 100%. Revisá los parámetros.</div>'; return; }
       const stockBadge = d.stock
         ? '<span style="background:#dcfce7;color:#15803d;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✓ Proveedor: en stock</span>'
         : '<span style="background:#fee2e2;color:#b91c1c;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✕ Proveedor: sin stock</span>';
+      // Selector de proveedor: cuando el mismo código está en varias listas, se puede elegir de cuál cotizar.
+      let provHtml = '';
+      const ops = d.opciones || [];
+      if (d.multi && ops.length > 1) {
+        const optTags = ops.map(o => {
+          const pr = (o.precio != null) ? ('$ ' + Number(o.precio).toLocaleString('es-AR')) : 'sin precio';
+          const label = (o.proveedor || '—') + (o.marca ? ' · ' + o.marca : '') + ' — ' + pr + (o.stock ? ' ✓' : ' ✕');
+          const selAttr = (o.proveedor === d.proveedor) ? ' selected' : '';
+          return '<option value="' + _esc(o.proveedor) + '"' + selAttr + '>' + _esc(label) + '</option>';
+        }).join('');
+        provHtml = '<div style="margin-top:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 12px">'
+          + '<label style="display:block;font-size:12px;font-weight:700;color:#b45309;margin-bottom:5px">Este código está en ' + ops.length + ' proveedores — elegí de cuál cotizar</label>'
+          + '<select onchange="doCotizar(this.value)" style="width:100%;max-width:420px;padding:9px 11px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fff">' + optTags + '</select>'
+          + '</div>';
+      }
       // Cartelito de stock FÍSICO propio por sucursal (lo ven todos).
       let sucHtml = '';
       const sucs = d.sucursales || [];
@@ -968,11 +994,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       } else {
         sucHtml = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:13px;color:#64748b">📦 Sin stock físico propio (Buenos Aires / Rufino)</div>';
       }
+      const provLabel = d.proveedor ? ('<div style="font-size:12px;color:#666;margin-top:3px">Proveedor: <b>' + _esc(d.proveedor) + '</b>' + (d.marca ? ' · ' + _esc(d.marca) : '') + '</div>') : '';
       let html =
         '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;background:#f0f7ff;border-radius:10px;padding:18px">'
-        + '<div><div style="font-size:12px;color:#666;font-weight:600">PRECIO DE VENTA</div><div style="font-size:32px;font-weight:800;color:#2d3277">$ ' + Number(d.precio).toLocaleString('es-AR') + '</div></div>'
+        + '<div><div style="font-size:12px;color:#666;font-weight:600">PRECIO DE VENTA</div><div style="font-size:32px;font-weight:800;color:#2d3277">$ ' + Number(d.precio).toLocaleString('es-AR') + '</div>' + provLabel + '</div>'
         + '<div>' + stockBadge + '</div>'
         + '</div>'
+        + provHtml
         + '<div style="margin-top:10px">' + sucHtml + '</div>';
       // Desglose: SOLO lo manda el server si sos admin.
       if (d.detalle) {
@@ -1717,7 +1745,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         });
       }
       let html = `
-        <h2 style="margin-bottom:20px;color:#2d3277">Preguntas</h2>
+        <h2 style="margin-bottom:14px;color:#2d3277">Preguntas</h2>
+        ${cotizadorSearchHTML()}
         <div class="filters">
           <button class="${questionStatus === 'UNANSWERED' ? 'active' : ''}" onclick="questionStatus='UNANSWERED';loadQuestions()">Sin responder</button>
           <button class="${questionStatus === 'ANSWERED' ? 'active' : ''}" onclick="questionStatus='ANSWERED';loadQuestions()">Respondidas</button>
