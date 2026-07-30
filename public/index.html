@@ -916,18 +916,30 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // ==================== COTIZADOR ====================
   // Buscador de cotización (código → precio de venta). Va ARRIBA del panel de Preguntas y lo usan
   // todos los usuarios. La configuración de costos/parámetros vive aparte, en Configuración (solo admin).
+  // El estado se guarda acá para que NO se borre cuando la vista de Preguntas se auto-refresca
+  // (cada 15s) ni al responder una pregunta. Solo se limpia con "Nueva búsqueda".
+  var _cotState = { open: false, cod: '', me: '1', result: '' };
   function cotizadorSearchHTML() {
+    const st = _cotState;
+    const meSel = v => (st.me === v ? ' selected' : '');
+    // Cuadro SIEMPRE visible (no plegable): no hay que abrirlo cada vez. Conserva su estado.
     return ''
-      + '<details class="cotbox" style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
-      + '<summary style="cursor:pointer;list-style:none;padding:12px 16px;font-weight:700;color:#2d3277;display:flex;align-items:center;gap:8px">🔎 Cotizar un producto<span style="font-weight:400;font-size:12px;color:#888">— precio de venta por código</span></summary>'
-      + '<div style="padding:2px 16px 16px">'
+      + '<div class="cotbox" style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:14px 16px 16px">'
+      + '  <div style="font-weight:700;color:#2d3277;display:flex;align-items:center;gap:8px;margin-bottom:10px">🔎 Cotizar un producto<span style="font-weight:400;font-size:12px;color:#888">— precio de venta por código</span></div>'
       + '  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">'
-      + '    <div style="flex:1;min-width:160px"><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Código</label><input id="cot_cod" placeholder="ej. 01/026/367" style="width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none" onkeydown="if(event.key===\'Enter\')doCotizar()"></div>'
-      + '    <div><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Mercado Envío</label><select id="cot_me" style="padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;background:#fff"><option value="1">Sí</option><option value="0">No</option></select></div>'
+      + '    <div style="flex:1;min-width:160px"><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Código</label><input id="cot_cod" value="' + _esc(st.cod) + '" placeholder="ej. 01/026/367" style="width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none" onkeydown="if(event.key===\'Enter\')doCotizar()"></div>'
+      + '    <div><label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px">Mercado Envío</label><select id="cot_me" style="padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:15px;background:#fff"><option value="1"' + meSel('1') + '>Sí</option><option value="0"' + meSel('0') + '>No</option></select></div>'
       + '    <button onclick="doCotizar()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 22px;font-size:15px;font-weight:700;cursor:pointer">Cotizar</button>'
+      + '    <button onclick="cotizarNueva()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 16px;font-size:14px;font-weight:600;cursor:pointer">🧹 Nueva búsqueda</button>'
       + '  </div>'
-      + '  <div id="cot_result" style="margin-top:14px"></div>'
-      + '</div></details>';
+      + '  <div id="cot_result" style="margin-top:14px">' + (st.result || '') + '</div>'
+      + '</div>';
+  }
+  // Limpia el cotizador para empezar de cero (única forma de borrar el resultado).
+  function cotizarNueva() {
+    _cotState.cod = ''; _cotState.result = ''; _cotState.open = true;
+    const i = document.getElementById('cot_cod'); if (i) { i.value = ''; i.focus(); }
+    const b = document.getElementById('cot_result'); if (b) b.innerHTML = '';
   }
   // Sección "Cotizador" del menú Configuración: SOLO parámetros de costos (solo admin).
   function loadCotizador() {
@@ -959,14 +971,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const me = document.getElementById('cot_me').value;
     const box = document.getElementById('cot_result');
     if (!cod) { box.innerHTML = '<div style="color:#e74c3c;font-size:14px">Ingresá un código.</div>'; return; }
+    // Guardamos el estado para que el cotizador NO se borre cuando Preguntas se auto-refresca.
+    _cotState.open = true; _cotState.cod = cod; _cotState.me = me;
+    const done = h => { box.innerHTML = h; _cotState.result = h; };
     box.innerHTML = '<div style="color:#888;font-size:14px">Cotizando…</div>';
     try {
       let url = '/api/cotizador?codigo=' + encodeURIComponent(cod) + '&me=' + me;
       if (prov) url += '&prov=' + encodeURIComponent(prov);
       const r = await fetch(url, { credentials: 'same-origin' });
       const d = await r.json();
-      if (!d.encontrado) { box.innerHTML = '<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">El código <b>' + _esc(cod) + '</b> no está en las listas de proveedor. Revisá que esté bien escrito.</div>'; return; }
-      if (d.precio == null) { box.innerHTML = '<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">No se puede cotizar: el margen objetivo + los costos superan el 100%. Revisá los parámetros.</div>'; return; }
+      if (!d.encontrado) { done('<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">El código <b>' + _esc(cod) + '</b> no está en las listas de proveedor. Revisá que esté bien escrito.</div>'); return; }
+      if (d.precio == null) { done('<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">No se puede cotizar: el margen objetivo + los costos superan el 100%. Revisá los parámetros.</div>'); return; }
       const stockBadge = d.stock
         ? '<span style="background:#dcfce7;color:#15803d;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✓ Proveedor: en stock</span>'
         : '<span style="background:#fee2e2;color:#b91c1c;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✕ Proveedor: sin stock</span>';
@@ -1019,8 +1034,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           + '<tr style="border-top:2px solid #eee"><td style="padding:7px 8px;font-weight:700;color:#15803d">Ganancia</td><td style="padding:7px 8px;text-align:right;font-weight:800;color:#15803d">' + m(t.ganancia) + ' <span style="color:#888;font-weight:600">(' + (t.margen_pct != null ? t.margen_pct : '—') + '%)</span></td></tr>'
           + '</table></div>';
       }
-      box.innerHTML = html;
-    } catch (e) { box.innerHTML = '<div style="color:#e74c3c;font-size:14px">Error al cotizar. Reintentá.</div>'; }
+      done(html);
+    } catch (e) { done('<div style="color:#e74c3c;font-size:14px">Error al cotizar. Reintentá.</div>'); }
   }
   function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   async function loadCotConfig() {
