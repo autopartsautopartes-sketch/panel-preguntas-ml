@@ -957,13 +957,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (!d.encontrado) { box.innerHTML = '<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">El código <b>' + _esc(cod) + '</b> no está en las listas de proveedor. Revisá que esté bien escrito.</div>'; return; }
       if (d.precio == null) { box.innerHTML = '<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:14px;color:#b91c1c;font-size:14px">No se puede cotizar: el margen objetivo + los costos superan el 100%. Revisá los parámetros.</div>'; return; }
       const stockBadge = d.stock
-        ? '<span style="background:#dcfce7;color:#15803d;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✓ En stock</span>'
-        : '<span style="background:#fee2e2;color:#b91c1c;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✕ Sin stock</span>';
+        ? '<span style="background:#dcfce7;color:#15803d;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✓ Proveedor: en stock</span>'
+        : '<span style="background:#fee2e2;color:#b91c1c;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:700">✕ Proveedor: sin stock</span>';
+      // Cartelito de stock FÍSICO propio por sucursal (lo ven todos).
+      let sucHtml = '';
+      const sucs = d.sucursales || [];
+      if (sucs.length) {
+        sucHtml = '<div style="background:#eefdf3;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;font-size:13px;color:#15803d;font-weight:600">📦 Tenés físico en: '
+          + sucs.map(x => _esc(x.nombre) + ' (' + Number(x.cant).toLocaleString('es-AR') + ')').join(' · ') + '</div>';
+      } else {
+        sucHtml = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;font-size:13px;color:#64748b">📦 Sin stock físico propio (Buenos Aires / Rufino)</div>';
+      }
       let html =
         '<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;background:#f0f7ff;border-radius:10px;padding:18px">'
         + '<div><div style="font-size:12px;color:#666;font-weight:600">PRECIO DE VENTA</div><div style="font-size:32px;font-weight:800;color:#2d3277">$ ' + Number(d.precio).toLocaleString('es-AR') + '</div></div>'
         + '<div>' + stockBadge + '</div>'
-        + '</div>';
+        + '</div>'
+        + '<div style="margin-top:10px">' + sucHtml + '</div>';
       // Desglose: SOLO lo manda el server si sos admin.
       if (d.detalle) {
         const t = d.detalle, m = v => '$ ' + Number(v || 0).toLocaleString('es-AR');
