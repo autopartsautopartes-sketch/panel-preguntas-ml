@@ -6023,7 +6023,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-30-v67-gestion-costo-vivo-sin-costo', features: ['gestion_costo_vivo_o_sin_costo', 'compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-30-v69-cotizador-desglose-admin', features: ['cotizador_precio_venta_desglose_admin', 'gestion_costo_vivo_o_sin_costo', 'compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
@@ -6514,6 +6514,120 @@ function getAdsConfig(loadDB) {
     autoPause: process.env.ADS_AUTO_PAUSE === 'true' || c.autoPause === true,
   };
 }
+
+// ==================== COTIZADOR (precio de venta rápido para productos no publicados) ====================
+// Parámetros FIJOS globales que fija SOLO el admin e impactan a todos. La tabla código→(costo,stock)
+// la manda el automático UNA VEZ AL DÍA (corrida de stock), desde las listas de proveedor actuales.
+function getCotizadorConfig(loadDB) {
+  const c = (loadDB().ads_config || {}).cotizador || {};
+  return {
+    com_pct: Number(c.com_pct ?? 13),        // comisión %
+    fijo_monto: Number(c.fijo_monto ?? 0),   // costo fijo $ (por unidad)
+    fijo_limite: Number(c.fijo_limite ?? 0), // se cobra el fijo si el PRECIO queda por DEBAJO de este límite (0 = desactivado)
+    ret_pct: Number(c.ret_pct ?? 0),         // retenciones %
+    envio_monto: Number(c.envio_monto ?? 0), // costo de envío ML $
+    envio_piso: Number(c.envio_piso ?? 33000), // se suma el envío si es ME y el precio supera este piso
+    factura_pct: Number(c.factura_pct ?? 5), // factura %
+    margen_pct: Number(c.margen_pct ?? 15),  // margen objetivo %
+  };
+}
+function cotizadorCostosPath() { return _pathCosts.join(DATA_DIR, 'cotizador_costos.json'); }
+function loadCotizadorCostos() { try { return JSON.parse(_fsCosts.readFileSync(cotizadorCostosPath(), 'utf8')) || { updated: null, codigos: {} }; } catch (e) { return { updated: null, codigos: {} }; } }
+function saveCotizadorCostos(obj) { try { _fsCosts.writeFileSync(cotizadorCostosPath(), JSON.stringify(obj)); } catch (e) {} }
+function _cotNormCod(v) { return String(v == null ? '' : v).trim().toUpperCase(); }
+// Precio de venta que llega al margen objetivo. Suma envío si es ME y el precio supera el piso;
+// suma el costo fijo si el precio queda por debajo del límite. Devuelve {precio, envio, fijo} o null.
+function _cotizarBase(cost, me, cfg) {
+  const com = (cfg.com_pct || 0) / 100, ret = (cfg.ret_pct || 0) / 100, fac = (cfg.factura_pct || 0) / 100, marg = (cfg.margen_pct || 0) / 100;
+  const K = 1 - com - ret - fac - marg;
+  if (!(K > 0) || !(cost > 0)) return null;                 // margen+costos ≥ 100% (inalcanzable) o sin costo
+  const piso = Number(cfg.envio_piso) || 0, envioMonto = Number(cfg.envio_monto) || 0;
+  const fijoMonto = Number(cfg.fijo_monto) || 0, fijoLimite = Number(cfg.fijo_limite) || 0;
+  // 1) Envío (ME): sumar envío si el precio supera el piso. Es monótono → converge sin oscilar.
+  let envio = 0;
+  for (let i = 0; i < 6; i++) {
+    const P = (cost + envio) / K;
+    const e = (me && P >= piso) ? envioMonto : 0;
+    if (e === envio) break;
+    envio = e;
+  }
+  // 2) Costo fijo: se decide sobre el precio SIN el fijo (evita oscilar en el borde); margen-seguro.
+  const Pbase = (cost + envio) / K;
+  const fijo = (fijoLimite > 0 && Pbase < fijoLimite) ? fijoMonto : 0;
+  return { precio: Math.round((cost + envio + fijo) / K), envio, fijo };
+}
+function cotizarPrecio(cost, me, cfg) { const d = _cotizarBase(cost, me, cfg); return d ? d.precio : null; }
+// Desglose completo (solo para admin): cada componente al precio calculado.
+function cotizarDetalle(cost, me, cfg) {
+  const d = _cotizarBase(cost, me, cfg); if (!d) return null;
+  const P = d.precio;
+  const comision = Math.round(P * (cfg.com_pct || 0) / 100);
+  const retenciones = Math.round(P * (cfg.ret_pct || 0) / 100);
+  const factura = Math.round(P * (cfg.factura_pct || 0) / 100);
+  const costo = Math.round(cost);
+  const ganancia = Math.round(P - comision - retenciones - factura - d.envio - d.fijo - costo);
+  return { precio: P, costo, comision, retenciones, factura, envio: Math.round(d.envio), fijo: Math.round(d.fijo), ganancia, margen_pct: P > 0 ? Math.round(ganancia / P * 1000) / 10 : null, margen_objetivo: Number(cfg.margen_pct) || 0 };
+}
+// Config: leer/editar los parámetros. SOLO admin.
+route('GET', '/api/cotizador/config', async (req, res) => {
+  const s = requireAuth(req); if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const store = loadCotizadorCostos();
+  sendJSON(res, 200, { config: getCotizadorConfig(loadDB), costos_updated: store.updated, codigos_count: store.codigos ? Object.keys(store.codigos).length : 0 });
+});
+route('POST', '/api/cotizador/config', async (req, res) => {
+  const s = requireAuth(req); if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const b = await parseBody(req);
+  const db = loadDB(); db.ads_config = db.ads_config || {};
+  const cur = db.ads_config.cotizador || {};
+  const pct = (v, d) => (v != null && v !== '') ? Math.max(0, Math.min(100, Number(v) || 0)) : (cur[d] != null ? cur[d] : undefined);
+  const nn = (v, d) => (v != null && v !== '') ? Math.max(0, Number(v) || 0) : (cur[d] != null ? cur[d] : undefined);
+  db.ads_config.cotizador = {
+    com_pct: pct(b.com_pct, 'com_pct') ?? 13,
+    fijo_monto: nn(b.fijo_monto, 'fijo_monto') ?? 0,
+    fijo_limite: nn(b.fijo_limite, 'fijo_limite') ?? 0,
+    ret_pct: pct(b.ret_pct, 'ret_pct') ?? 0,
+    envio_monto: nn(b.envio_monto, 'envio_monto') ?? 0,
+    envio_piso: nn(b.envio_piso, 'envio_piso') ?? 33000,
+    factura_pct: pct(b.factura_pct, 'factura_pct') ?? 5,
+    margen_pct: pct(b.margen_pct, 'margen_pct') ?? 15,
+  };
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, config: db.ads_config.cotizador });
+});
+// El AUTOMÁTICO manda la tabla diaria código→(costo, stock) desde las listas de proveedor. REEMPLAZA todo
+// (así nunca queda una lista vieja: cada envío pisa la anterior). Auth: token de API o admin.
+route('POST', '/api/cotizador/costos', async (req, res) => {
+  const s = requireAuth(req);
+  if (!checkApiToken(req) && !(s && s.role === 'admin')) return sendJSON(res, 403, { error: 'admin o token de API' });
+  const b = await parseBody(req);
+  const src = b.codigos || b.items || {};
+  const codigos = {}; let n = 0;
+  const toStock = v => (v === true || v === 1 || String(v).toLowerCase() === 'si' || String(v).toLowerCase() === 'sí' || String(v).toLowerCase() === 'true');
+  if (Array.isArray(src)) {
+    for (const a of src) { const k = _cotNormCod(a[0]); if (!k) continue; codigos[k] = { cost: Number(a[1]) || 0, stock: toStock(a[2]), marca: a[3] || '' }; n++; }
+  } else {
+    for (const k0 of Object.keys(src)) { const k = _cotNormCod(k0); if (!k) continue; const v = src[k0] || {}; codigos[k] = { cost: Number(v.cost) || 0, stock: toStock(v.stock), marca: v.marca || '' }; n++; }
+  }
+  saveCotizadorCostos({ updated: new Date().toISOString(), codigos });
+  sendJSON(res, 200, { ok: true, codigos: n });
+});
+// Cotizar: cualquier usuario logueado. Devuelve SOLO el precio de venta + si está en stock.
+route('GET', '/api/cotizador', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  const u = new URL(req.url, 'http://x');
+  const cod = _cotNormCod(u.searchParams.get('codigo') || '');
+  const me = u.searchParams.get('me') === '1' || u.searchParams.get('me') === 'true';
+  if (!cod) return sendJSON(res, 400, { error: 'Ingresá un código' });
+  const store = loadCotizadorCostos();
+  const rec = (store.codigos || {})[cod];
+  if (!rec || !(Number(rec.cost) > 0)) return sendJSON(res, 200, { encontrado: false, codigo: cod, updated: store.updated });
+  const cfg = getCotizadorConfig(loadDB);
+  const precio = cotizarPrecio(Number(rec.cost), me, cfg);
+  const out = { encontrado: true, codigo: cod, precio, stock: !!rec.stock, me, updated: store.updated };
+  // El desglose de precio SOLO lo ve el admin; los usuarios comunes ven únicamente el precio de venta.
+  if (s.role === 'admin') out.detalle = cotizarDetalle(Number(rec.cost), me, cfg);
+  sendJSON(res, 200, out);
+});
 
 // ---------------------------------------------------------------------------
 // TABLA DE COSTOS por item_id (MLA). Se llena importando tu Excel procesado.
