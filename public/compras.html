@@ -74,13 +74,14 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v64</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v65</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
   </div>
 </header>
 <nav id="nav"></nav>
+<div id="ultimaCarga" style="text-align:center;font-size:12px;color:var(--mut);padding:4px 16px 2px"></div>
 <main id="main"><div class="spin"></div></main>
 <div id="cpr_modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;padding:16px">
   <div style="background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
@@ -171,6 +172,18 @@ function facturaEstado(c){
 async function reload(){
   if(CAN_SALDOS){ ST = await api('/api/compras/state'); }
   else { var d = await api('/api/compras/proveedores'); ST = { proveedores:d.proveedores||[], comprobantes:[], pagos:[] }; }
+  renderUltimaCarga();
+}
+function fmtDT(iso){ if(!iso) return ''; try{ var d=new Date(iso); if(isNaN(d))return ''; var pz=function(n){return String(n).padStart(2,'0');}; return pz(d.getDate())+'-'+pz(d.getMonth()+1)+'-'+d.getFullYear()+' '+pz(d.getHours())+':'+pz(d.getMinutes())+' hs'; }catch(e){ return ''; } }
+function renderUltimaCarga(){
+  var el=$('ultimaCarga'); if(!el) return;
+  var pool=[].concat(ST.comprobantes||[], ST.pagos||[]);
+  if(!pool.length && window._CARGAR_COMP && _CARGAR_COMP.length) pool=_CARGAR_COMP;
+  var best=null;
+  pool.forEach(function(x){ if(x&&x.created_at){ if(!best||String(x.created_at)>String(best.created_at)) best=x; } });
+  if(!best||!best.created_at){ el.innerHTML=''; return; }
+  var u=best.usuario?esc(best.usuario):'—'; var o=best.origen==='masiva'?' <span class="muted">(carga masiva)</span>':'';
+  el.innerHTML='🕒 Última carga: <b>'+fmtDT(best.created_at)+'</b> · por <b>'+u+'</b>'+o;
 }
 function buildNav(){
   var tabs=[];
@@ -281,7 +294,7 @@ async function renderComprobantesCargar(){
   box.innerHTML='<div class="spin"></div>';
   var data;
   try{ data=await api('/api/compras/comprobantes-recientes'+(q?('?q='+encodeURIComponent(q)):'')); }catch(e){ box.innerHTML='<div class="hint">No se pudo cargar la lista.</div>'; return; }
-  var rows=data.comprobantes||[]; _CARGAR_COMP=rows;
+  var rows=data.comprobantes||[]; _CARGAR_COMP=rows; renderUltimaCarga();
   if(!rows.length){ box.innerHTML='<div class="empty">Sin comprobantes'+(q?' para "'+esc(q)+'"':'')+'.</div>'; return; }
   box.innerHTML='<p class="hint" style="margin-top:0">'+(q?('Resultados de la búsqueda (todas las fechas).'):('Últimos 20 comprobantes. Usá el buscador de arriba para encontrar cualquiera, sin importar la fecha.'))+'</p>'
     + '<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Proveedor · N° cliente</th><th>Tipo</th><th>N° comprobante</th><th class="num">Importe</th><th>Cargado por</th><th></th></tr></thead><tbody>'
