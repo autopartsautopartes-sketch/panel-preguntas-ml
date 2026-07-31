@@ -437,22 +437,50 @@ route('GET', '/img', async (req, res) => {
 // dependa de un CDN externo (que puede caerse o ser bloqueado por el navegador/ad-blocker del usuario).
 // El server las baja UNA vez del CDN y las cachea en memoria.
 const _vendorCache = {};
-async function serveVendor(res, key, url) {
-  try {
-    if (!_vendorCache[key]) {
+// Varias fuentes por librería: si un CDN se cae o el navegador/red lo bloquea, probamos el siguiente.
+const _vendorSources = {
+  xlsx: ['https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+         'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+         'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'],
+  chart: ['https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js',
+          'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
+          'https://unpkg.com/chart.js@4.4.1/dist/chart.umd.min.js'],
+};
+function _vendorDiskPath(key) { try { return require('path').join(DATA_DIR, 'vendor_' + key + '.js'); } catch (e) { return null; } }
+// Devuelve la librería desde: 1) memoria, 2) disco (si ya se bajó antes — sobrevive reinicios/deploys),
+// 3) CDNs con fallback. Al bajarla la persiste en disco para no depender más del CDN en runtime.
+async function _getVendor(key) {
+  if (_vendorCache[key]) return _vendorCache[key];
+  try { const p = _vendorDiskPath(key); if (p) { const b = fs.readFileSync(p); if (b && b.length > 1000) { _vendorCache[key] = b; return b; } } } catch (e) {}
+  let lastErr = 'sin fuentes';
+  for (const url of (_vendorSources[key] || [])) {
+    try {
       const r = await fetch(url);
-      if (!r.ok) throw new Error('cdn ' + r.status);
-      _vendorCache[key] = Buffer.from(await r.arrayBuffer());
-    }
+      if (!r.ok) { lastErr = 'cdn ' + r.status; continue; }
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length < 1000) { lastErr = 'respuesta vacía'; continue; }
+      _vendorCache[key] = buf;
+      try { const p = _vendorDiskPath(key); if (p) fs.writeFileSync(p, buf); } catch (e) {}
+      return buf;
+    } catch (e) { lastErr = (e && e.message) || 'error de red'; }
+  }
+  throw new Error(lastErr);
+}
+async function serveVendor(res, key) {
+  try {
+    const buf = await _getVendor(key);
     res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=604800' });
-    res.end(_vendorCache[key]);
+    res.end(buf);
   } catch (e) {
     res.writeHead(502, { 'Content-Type': 'application/javascript' });
     res.end('/* no se pudo cargar la librería: ' + (e.message || 'error') + ' */');
   }
 }
-route('GET', '/vendor/xlsx.js', async (req, res) => serveVendor(res, 'xlsx', 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'));
-route('GET', '/vendor/chart.js', async (req, res) => serveVendor(res, 'chart', 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'));
+route('GET', '/vendor/xlsx.js', async (req, res) => serveVendor(res, 'xlsx'));
+route('GET', '/vendor/chart.js', async (req, res) => serveVendor(res, 'chart'));
+// Pre-carga best-effort al arrancar: deja las librerías cacheadas (memoria + disco) antes del primer
+// pedido del usuario, para que un reinicio/deploy no deje el panel sin la librería de Excel.
+setTimeout(() => { _getVendor('xlsx').catch(() => {}); _getVendor('chart').catch(() => {}); }, 3000);
 route('POST', '/api/login', async (req, res) => {
   const ip = getClientIp(req);
   const rl = checkLoginRateLimit(ip);
@@ -6044,7 +6072,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-31-v75-verify-failclosed-precio', features: ['gestion_split_stock_dropship', 'gestion_costo_vivo_o_sin_costo', 'compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-31-v76-vendor-xlsx-robusto', features: ['gestion_split_stock_dropship', 'gestion_costo_vivo_o_sin_costo', 'compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
