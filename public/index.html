@@ -11,7 +11,7 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='104' fill='%23b91c1c'/><path d='M70 306 C70 294 80 286 96 285 L172 279 C196 250 230 231 274 231 L322 231 C362 233 398 252 422 283 L446 288 C458 291 454 300 450 306 L450 320 C450 331 442 338 430 338 L92 338 C78 338 70 330 70 318 Z' fill='%23ffffff'/><path d='M198 268 C216 246 242 232 272 231 L300 231 L300 268 Z' fill='%23dc2626'/><path d='M316 231 C352 233 382 250 404 272 L316 272 Z' fill='%23dc2626'/><circle cx='172' cy='344' r='52' fill='%23111827'/><circle cx='172' cy='344' r='21' fill='%23ffffff'/><circle cx='388' cy='344' r='52' fill='%23111827'/><circle cx='388' cy='344' r='21' fill='%23ffffff'/></svg>">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="/vendor/chart.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -4027,7 +4027,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   async function loadXLSX() {
     if (window.XLSX) return true;
+    // PRIMERO desde nuestro propio dominio (/vendor/xlsx.js): el panel baja la librería del CDN
+    // del lado del SERVER y la sirve same-origin. Así funciona aunque el navegador o la red del
+    // usuario bloqueen los CDN externos (ad-blocker, escudo de privacidad, firewall). Los CDN
+    // quedan solo de respaldo.
     const cdns = [
+      '/vendor/xlsx.js',
       'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
       'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
       'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'
@@ -6774,7 +6779,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.src = '/vendor/xlsx.js';
         s.onload = resolve; s.onerror = reject;
         document.head.appendChild(s);
       });
@@ -6901,7 +6906,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.src = '/vendor/xlsx.js';
         s.onload = resolve; s.onerror = reject;
         document.head.appendChild(s);
       });
@@ -6996,7 +7001,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!rows?.length) return;
     if (!window.XLSX) await new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.src = '/vendor/xlsx.js';
       s.onload = resolve; s.onerror = reject;
       document.head.appendChild(s);
     });
