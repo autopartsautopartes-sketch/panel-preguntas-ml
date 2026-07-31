@@ -1156,25 +1156,41 @@ async function runBulkJob(jobId, items, account, initialToken) {
     }
     // Lee el precio actual del item en ML y confirma si quedo aplicado (piso a entero).
     // Devuelve true si coincide o si no se pudo leer (para no bloquear por un error de lectura).
+    // Verifica que ML haya aplicado de verdad el precio objetivo. Reintenta ante 429/red (igual
+    // que el PUT) y es FAIL-CLOSED: si no puede CONFIRMAR el precio, devuelve false → el ítem NO
+    // se cuenta como aplicado; se trata como bloqueo de promo y se reintenta (saca promo + re-PUT).
+    // Antes el catch devolvía true ("asumir aplicado"), lo que bajo 429 marcaba miles de ítems como
+    // OK sin haberse aplicado e inflaba el conteo de "aplicadas".
     async function verifyPriceApplied(itemId, target, isVar) {
-      try {
-        const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, { attributes: 'price,variations' });
-        const tgt = Math.floor(Number(target));
-        if (!isFinite(tgt)) return true;
-        // Ítems con variaciones: el precio vive dentro de cada variante, no en la raíz.
-        // Consideramos aplicado si TODAS las variantes con precio legible coinciden con el objetivo.
-        if (isVar && Array.isArray(it.variations) && it.variations.length) {
-          const prices = it.variations.map(v => Number(v.price)).filter(p => isFinite(p));
-          if (!prices.length) {
-            const rp = Number(it.price);
-            return !isFinite(rp) || Math.floor(rp) === tgt;
+      const tgt = Math.floor(Number(target));
+      if (!isFinite(tgt)) return true; // sin objetivo válido no hay nada que verificar
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const waitGlobal = globalCooldownUntil - Date.now();
+        if (waitGlobal > 0) await sleep(waitGlobal);
+        try {
+          const it = await mlGet(`https://api.mercadolibre.com/items/${itemId}`, token, { attributes: 'price,variations' });
+          // Ítems con variaciones: el precio vive dentro de cada variante, no en la raíz.
+          // Consideramos aplicado si TODAS las variantes con precio legible coinciden con el objetivo.
+          if (isVar && Array.isArray(it.variations) && it.variations.length) {
+            const prices = it.variations.map(v => Number(v.price)).filter(p => isFinite(p));
+            if (!prices.length) { const rp = Number(it.price); return isFinite(rp) ? Math.floor(rp) === tgt : false; }
+            return prices.every(p => Math.floor(p) === tgt);
           }
-          return prices.every(p => Math.floor(p) === tgt);
+          const curP = Number(it && it.price);
+          return isFinite(curP) ? Math.floor(curP) === tgt : false;
+        } catch (e) {
+          const status = e && e.response && e.response.status;
+          const msg = String(status || (e && e.message) || e || '').toLowerCase();
+          if (status === 429 || msg.includes('429') || msg.includes('fetch')) {
+            const wait = [3000, 7000, 12000][attempt] || 12000;
+            mark429(wait);        // participa del throttle adaptativo (baja workers + cooldown)
+            await sleep(wait);
+            continue;             // reintenta la lectura de verificación
+          }
+          return false;           // no se pudo confirmar por otra causa → NO darlo por aplicado
         }
-        const curP = Number(it && it.price);
-        if (!isFinite(curP)) return true;
-        return Math.floor(curP) === tgt;
-      } catch (e) { return true; }
+      }
+      return false;               // agotó los reintentos sin poder confirmar
     }
     // Intenta actualizar y, si hubo cambio de precio, VERIFICA que ML lo haya aplicado de verdad.
     // Si ML devolvio OK pero el precio no cambio (falla silenciosa por promocion), lo marcamos
@@ -6028,7 +6044,7 @@ route('GET', '/api/debug-promo', async (req, res) => {
 });
 // Marcador de version: para confirmar que este deploy quedo live (sin auth, inofensivo)
 route('GET', '/api/version', async (req, res) => {
-  sendJSON(res, 200, { version: '2026-07-30-v74-cotizador-multiprov-auth', features: ['gestion_split_stock_dropship', 'gestion_costo_vivo_o_sin_costo', 'compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
+  sendJSON(res, 200, { version: '2026-07-31-v75-verify-failclosed-precio', features: ['gestion_split_stock_dropship', 'gestion_costo_vivo_o_sin_costo', 'compras_cargar_ultimos20_y_buscar', 'compras_unir_proveedores_merge', 'compras_usuario_y_origen_por_comprobante', 'compras_masiva_vista_previa', 'compras_reset_por_proveedor', 'compras_ocultar_saldo_cero', 'compras_doble_descuento_cascada', 'compras_reset_admin_doble_confirm', 'compras_saldo_real_y_facturado', 'compras_nc_signo_tolerante', 'compras_plantilla_fecha_ddmmaaaa', 'compras_cuenta_corriente', 'compras_permisos_carga_saldos', 'compras_plantilla_desplegables', 'estado_titulo_corto_family_name', 'gestion_export_resumen_y_detalle_separados', 'ventas_resuelve_pack_id', 'prep_buscar_por_numero_venta', 'eliminar_robusto_causa_ml_y_finalizada', 'cuota_financiacion_separada_del_salefee', 'eliminar_publicaciones_confirm', 'cuota_conserva_conocida', 'restore_blinda_cuota', 'stock_buscar_codigo', 'stock_movimientos_rango', 'gestion_casilleros_compactos', 'preguntas_nombre_comprador', 'preguntas_compra_3meses_cuentas', 'preguntas_ver_venta', 'ventas_link_permalink', 'marca_producto_preguntas_ventas', 'anto_deposito', 'catalogo_gtin', 'prep_stats_admin', 'promo_proactive_remove', 'conflict_409_retry', 'promo_serialize_per_campaign', 'debug_var_update', 'freeship_attrs_fallback', 'vendor_libs_gestion', 'verify_price_all_paths', 'freeship_upfront', 'msg_reply_auto_dismiss', 'questions_no_reappear', 'questions_dedupe', 'gestion_hoy_ayer_cuenta_sincosto', 'gestion_sincosto_incluye_cero', 'dashboard_reputacion_col', 'dashboard_custom_range', 'mobile_more_menu', 'logo_support', 'static_404_assets', 'rediseno_claro_v2', 'copiar_codigos', 'gestion_copiar', 'reputacion_orden_gravedad', 'descubrir_publicaciones_nuevas', 'auto_enriquecer_nuevas', 'catalogo_solo_precio', 'stock_panel', 'stock_descarga_xlsx', 'gestion_costo_cero_fix', 'costos_auto_push', 'panel_last_upload_ar', 'stock_costos_derivados', 'blindaje_enriquecimiento', 'stock_codigos_fecha', 'stock_reset_historico', 'mensajes_marcar_leido_ml'] });
 });
 // DEBUG: inspecciona la estructura de un item y (opcional) prueba un cambio de SKU, devolviendo la respuesta CRUDA de ML
 route('GET', '/api/debug-item', async (req, res) => {
