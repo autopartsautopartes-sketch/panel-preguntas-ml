@@ -1613,7 +1613,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }).catch(() => {});
       if (typeof Chart !== 'undefined') loadDashboardChart();
       else { const l = document.getElementById('dashChartLoader'); if(l) l.textContent = 'Chart.js no disponible'; }
-      loadDashboardGanancia(true);
+      setTimeout(() => loadDashboardGanancia(true), 1500);
     } catch (e) {
       if (navToken !== myNav) return;
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar el dashboard</p></div>';
