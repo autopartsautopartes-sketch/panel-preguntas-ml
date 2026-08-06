@@ -8127,31 +8127,56 @@ function registerAds(deps) {
   // ======================= DASHBOARD · GANANCIA DEL DÍA =======================
   // Alimenta las tarjetas "Ganancia real" + "Margen %" y las "últimas 3 ventas" del Dashboard.
   // Usa el MISMO cálculo que Gestión (gestionComputeDay 'all' → GANANCIA_REAL), así los números
-  // coinciden con la solapa Gestión. Cachea el resultado 2 min: como el Dashboard se auto-refresca,
-  // evitamos re-pegarle a ML en cada carga. loadCostsFile ya está cacheado, así que esto no bloquea.
-  let _dashGanCache = null;   // { date, ts, payload }
+  // coinciden con la solapa Gestión.
+  //
+  // IMPORTANTE (estabilidad): gestionComputeDay('all') es PESADO (trae ventas + envíos + impuestos
+  // reales de las 6 cuentas a ML). NUNCA lo corremos dentro de la request: si lo hiciéramos en cada
+  // carga del Dashboard, competiría con la búsqueda de Gestión (que es igual de pesada) y la haría
+  // fallar ("Error: undefined" = la request se cae por saturación). En su lugar:
+  //   • La request responde AL INSTANTE desde el cache (nunca espera a ML).
+  //   • El recálculo corre EN SEGUNDO PLANO, single-flight y como mucho 1 vez cada 15 min, y solo
+  //     mientras alguien está mirando el Dashboard (lo dispara la propia request).
+  // Así el Dashboard muestra la ganancia sin agregar carga que tire abajo a Gestión.
+  let _dashGanCache = null;        // { date, ts, payload }
+  let _dashGanRefreshing = false;  // single-flight del recálculo de fondo
+  let _dashGanLastRefresh = 0;
+  const _DASHGAN_TTL = 15 * 60 * 1000;   // refresco de fondo: máximo 1 cada 15 min
+  function _dashGanTodayAR() {
+    const arg = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    return `${arg.getUTCFullYear()}-${String(arg.getUTCMonth() + 1).padStart(2, '0')}-${String(arg.getUTCDate()).padStart(2, '0')}`;
+  }
+  function _dashGanRefreshBg(date, force) {
+    if (_dashGanRefreshing) return;   // ya hay uno corriendo (single-flight): no encimamos cálculos
+    // force = el Dashboard detectó un MOVIMIENTO en ventas (nueva o cancelada) → recalculamos ya.
+    // Sin force, solo refrescamos si pasaron 15 min (red de seguridad para cambios de costo, etc.).
+    if (!force && _dashGanCache && _dashGanCache.date === date && (Date.now() - _dashGanLastRefresh) < _DASHGAN_TTL) return;
+    _dashGanRefreshing = true;
+    Promise.resolve().then(async () => {
+      try {
+        const { sales, totals } = await gestionComputeDay(date, 'all');
+        const ultimas = (sales || []).slice()
+          .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+          .slice(0, 3)
+          .map(s => ({ date: s.date, account: s.account_name || '', title: s.title || '', price: s.revenue || 0, marginPct: s.known ? s.marginPct : null, known: !!s.known }));
+        _dashGanCache = { date, ts: Date.now(), payload: { ganancia: totals.ganancia || 0, margin: (totals.margin != null ? totals.margin : null), conocidas: totals.conocidas || 0, sin_costo: totals.sinCosto || 0, ultimas } };
+        _dashGanLastRefresh = Date.now();
+      } catch (e) { /* dejamos el cache anterior; se reintenta en la próxima carga */ }
+      finally { _dashGanRefreshing = false; }
+    });
+  }
   route('GET', '/api/dashboard-ganancia', async (req, res) => {
     const sess = requireAuth(req);
     if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
     const _db = loadDB(); const _u = (_db.users || []).find(u => u.id === sess.userId);
     if (!(_u && (_u.role === 'admin' || _u.can_view_dashboard))) return sendJSON(res, 403, { error: 'Sin permiso' });
-    // Día de HOY en hora Argentina (UTC-3).
-    const arg = new Date(Date.now() - 3 * 60 * 60 * 1000);
-    const date = `${arg.getUTCFullYear()}-${String(arg.getUTCMonth() + 1).padStart(2, '0')}-${String(arg.getUTCDate()).padStart(2, '0')}`;
-    if (_dashGanCache && _dashGanCache.date === date && (Date.now() - _dashGanCache.ts) < 120000) return sendJSON(res, 200, _dashGanCache.payload);
-    try {
-      const { sales, totals } = await gestionComputeDay(date, 'all');
-      const ultimas = (sales || []).slice()
-        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-        .slice(0, 3)
-        .map(s => ({ date: s.date, account: s.account_name || '', title: s.title || '', price: s.revenue || 0, marginPct: s.known ? s.marginPct : null, known: !!s.known }));
-      const payload = { ganancia: totals.ganancia || 0, margin: (totals.margin != null ? totals.margin : null), conocidas: totals.conocidas || 0, sin_costo: totals.sinCosto || 0, ultimas };
-      _dashGanCache = { date, ts: Date.now(), payload };
-      sendJSON(res, 200, payload);
-    } catch (e) {
-      if (_dashGanCache && _dashGanCache.date === date) return sendJSON(res, 200, _dashGanCache.payload);
-      sendJSON(res, 500, { error: String((e && e.message) || e) });
-    }
+    const date = _dashGanTodayAR();
+    if (_dashGanCache && _dashGanCache.date !== date) _dashGanCache = null;   // cambió el día
+    let force = false;
+    try { force = new URL(req.url, 'http://x').searchParams.get('force') === '1'; } catch (e) {}
+    _dashGanRefreshBg(date, force);   // dispara el recálculo de fondo (no bloquea la request)
+    if (_dashGanCache && _dashGanCache.date === date) return sendJSON(res, 200, _dashGanCache.payload);
+    // Todavía no hay número: el front sigue mostrando "…" y vuelve a preguntar.
+    return sendJSON(res, 200, { pending: true, ganancia: null, margin: null, conocidas: 0, sin_costo: 0, ultimas: [] });
   });
 
   // GUARDAR día: congela las ventas del día elegido. Re-guardar el MISMO día sobreescribe.
