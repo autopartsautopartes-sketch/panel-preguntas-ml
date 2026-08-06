@@ -1396,59 +1396,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch (e) { showToast('Error de conexión', 'error'); if (box) box.innerHTML = ''; }
   }
   // ==================== DASHBOARD ====================
-  // ---- GANANCIA REAL DEL DÍA (dashboard) — se calcula aparte de /api/stats por ser más pesado ----
-  let _dashGan = null, _dashGanAt = 0, _dashGanLoading = false;
-  function _fmtMoneyAR(n) { return '$ ' + Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-  function _dashGanValHTML() {
-    if (!_dashGan) return '<span style="color:#999">…</span>';
-    const g = Number(_dashGan.ganancia) || 0;
-    return `<span style="color:${g < 0 ? '#e74c3c' : '#27ae60'}">${_fmtMoneyAR(g)}</span>`;
-  }
-  function _dashMargenValHTML() {
-    if (!_dashGan) return '<span style="color:#999">…</span>';
-    if (_dashGan.margin == null) return '<span style="color:#999">s/d</span>';
-    const m = Math.round(_dashGan.margin * 10) / 10;
-    return `<span style="color:${m < 0 ? '#e74c3c' : '#8e44ad'}">${m.toLocaleString('es-AR')}%</span>`;
-  }
-  function _dashUltimasHTML() {
-    if (!_dashGan) return '<h4 style="margin-bottom:8px;color:#666;font-size:13px">Últimas 3 ventas</h4><div style="color:#999;font-size:12px">Calculando…</div>';
-    const u = _dashGan.ultimas || [];
-    if (!u.length) return '<h4 style="margin-bottom:8px;color:#666;font-size:13px">Últimas 3 ventas</h4><div style="color:#999;font-size:12px">Sin ventas hoy.</div>';
-    const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const fmtFecha = (iso) => { try { return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
-    return '<h4 style="margin-bottom:8px;color:#666;font-size:13px">Últimas 3 ventas</h4>' +
-      '<div style="display:flex;flex-direction:column;gap:8px">' +
-      u.map(v => {
-        const pct = (v.marginPct == null)
-          ? '<span style="color:#999;font-weight:600">S/C</span>'
-          : `<span style="color:${v.marginPct < 0 ? '#e74c3c' : '#8e44ad'};font-weight:600">${(Math.round(v.marginPct * 10) / 10).toLocaleString('es-AR')}%</span>`;
-        return `<div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 14px;font-size:12px">
-          <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-            <span style="font-weight:700;color:#2d3277">${esc(v.account)}</span>
-            <span style="color:#999">${fmtFecha(v.date)}</span>
-          </div>
-          <div style="color:#444;margin:2px 0">${esc(v.title)}</div>
-          <div style="color:#666">Precio: <span style="color:#27ae60;font-weight:600">${_fmtMoneyAR(v.price)}</span> · Margen: ${pct}</div>
-        </div>`;
-      }).join('') + '</div>';
-  }
-  function applyDashGan() {
-    const gv = document.getElementById('dashGanVal'); if (gv) gv.innerHTML = _dashGanValHTML();
-    const mv = document.getElementById('dashMargenVal'); if (mv) mv.innerHTML = _dashMargenValHTML();
-    const ul = document.getElementById('dashUltimas'); if (ul) ul.innerHTML = _dashUltimasHTML();
-  }
-  async function loadDashboardGanancia(force) {
-    if (currentSection !== 'dashboard') return;
-    if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) return;
-    if (!force && _dashGan && (Date.now() - _dashGanAt) < 180000) { applyDashGan(); return; } // throttle 3 min
-    if (_dashGanLoading) return;
-    _dashGanLoading = true;
-    try {
-      const res = await fetch('/api/dashboard-ganancia');
-      if (res.ok) { _dashGan = await res.json(); _dashGanAt = Date.now(); }
-    } catch (e) {}
-    finally { _dashGanLoading = false; if (currentSection === 'dashboard') applyDashGan(); }
-  }
   // Arma SOLO la parte superior del dashboard (KPIs + ventas del día + detalle por cuenta).
   // Se reutiliza para el auto-refresh cada 30s sin rebuildear el gráfico de abajo.
   function dashTopStatsInner(stats) {
@@ -1458,8 +1405,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <div class="stat-card"><div class="label">Ventas hoy</div><div class="value" style="color:#3483fa">${stats.sales_today}</div></div>
           <div class="stat-card"><div class="label">Dinero transaccionado</div><div class="value" style="color:#27ae60;font-size:22px">$ ${Number(stats.revenue_today).toLocaleString('es-AR', {minimumFractionDigits:2})}</div></div>
           <div class="stat-card"><div class="label">Unidades vendidas</div><div class="value" style="color:#f5a623">${stats.units_sold_today}</div></div>
-          <div class="stat-card"><div class="label">Ganancia real</div><div class="value" id="dashGanVal" style="font-size:22px">${_dashGanValHTML()}</div></div>
-          <div class="stat-card"><div class="label">Margen %</div><div class="value" id="dashMargenVal" style="color:#8e44ad">${_dashMargenValHTML()}</div></div>
         </div>
         ${(stats.sales_by_account && stats.sales_by_account.length > 0) ? `
           <div style="margin-top:16px">
@@ -1474,7 +1419,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             </div>
           </div>
         ` : ''}
-        <div id="dashUltimas" style="margin-top:16px">${_dashUltimasHTML()}</div>
       ` : '';
     return `
         <div class="stats">
@@ -1496,8 +1440,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (currentSection !== 'dashboard') return; // navegó mientras cargaba → no tocar nada
       const el = document.getElementById('dashTopStats');
       if (el) el.innerHTML = dashTopStatsInner(stats);
-      applyDashGan();
-      loadDashboardGanancia(false);
     } catch (e) {}
   }
   async function loadDashboard() {
@@ -1613,7 +1555,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }).catch(() => {});
       if (typeof Chart !== 'undefined') loadDashboardChart();
       else { const l = document.getElementById('dashChartLoader'); if(l) l.textContent = 'Chart.js no disponible'; }
-      setTimeout(() => loadDashboardGanancia(true), 1500);
     } catch (e) {
       if (navToken !== myNav) return;
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar el dashboard</p></div>';
