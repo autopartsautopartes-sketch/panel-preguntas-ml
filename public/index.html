@@ -1397,7 +1397,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   // ==================== DASHBOARD ====================
   // ---- GANANCIA REAL DEL DÍA (dashboard) — se calcula aparte de /api/stats por ser más pesado ----
-  let _dashGan = null, _dashGanAt = 0, _dashGanLoading = false;
+  let _dashGan = null, _dashGanAt = 0, _dashGanLoading = false, _lastSalesSig = null;
   function _fmtMoneyAR(n) { return '$ ' + Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function _dashGanValHTML() {
     if (!_dashGan) return '<span style="color:#999">…</span>';
@@ -1437,15 +1437,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const mv = document.getElementById('dashMargenVal'); if (mv) mv.innerHTML = _dashMargenValHTML();
     const ul = document.getElementById('dashUltimas'); if (ul) ul.innerHTML = _dashUltimasHTML();
   }
+  // force=true → le pedimos al server que RECALCULE ya (lo usamos cuando detectamos un movimiento
+  // en ventas). Sin force, es una lectura barata del último valor cacheado. Se llama cada 30s junto
+  // con el refresco del Dashboard, así que en cuanto el cálculo de fondo termina, el próximo tick lo trae.
   async function loadDashboardGanancia(force) {
     if (currentSection !== 'dashboard') return;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_dashboard) return;
-    if (!force && _dashGan && (Date.now() - _dashGanAt) < 180000) { applyDashGan(); return; } // throttle 3 min
     if (_dashGanLoading) return;
     _dashGanLoading = true;
     try {
-      const res = await fetch('/api/dashboard-ganancia');
-      if (res.ok) { _dashGan = await res.json(); _dashGanAt = Date.now(); }
+      const res = await fetch('/api/dashboard-ganancia' + (force ? '?force=1' : ''));
+      if (res.ok) { const j = await res.json(); if (j && !j.pending && j.ganancia != null) { _dashGan = j; _dashGanAt = Date.now(); } }
+      // Si viene "pending" (el server está recalculando), NO lo guardamos: dejamos "…" y el próximo refresco lo trae.
     } catch (e) {}
     finally { _dashGanLoading = false; if (currentSection === 'dashboard') applyDashGan(); }
   }
@@ -1497,7 +1500,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const el = document.getElementById('dashTopStats');
       if (el) el.innerHTML = dashTopStatsInner(stats);
       applyDashGan();
-      loadDashboardGanancia(false);
+      // ¿Hubo un MOVIMIENTO en las ventas de hoy (nueva venta o cancelación)? La firma junta
+      // cantidad de ventas + monto transaccionado + unidades. Si cambió respecto al refresco anterior,
+      // recalculamos la ganancia YA (force); si no, solo traemos el último valor listo.
+      const sig = `${stats.sales_today}|${Math.round(stats.revenue_today || 0)}|${stats.units_sold_today}`;
+      const changed = (_lastSalesSig !== null && sig !== _lastSalesSig);
+      _lastSalesSig = sig;
+      loadDashboardGanancia(changed);
     } catch (e) {}
   }
   async function loadDashboard() {
