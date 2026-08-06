@@ -310,6 +310,14 @@ async function mlGet(url, token, params = {}, extraHeaders = {}) {
   if (!res.ok) throw { response: { data, status: res.status } };
   return data;
 }
+// CIRCUIT-BREAKER para el LISTADO GET /messages/packs (ML rompió ese endpoint: "message with id:
+// packs does not exist"). Cuando falla, dejamos de llamarlo 30 min para no inundar ML ni sumar latencia.
+// NO afecta /messages/packs/{id}/sellers/... (esos andan y se usan para leer/responder).
+let _packsListNextTry = 0;
+const PACKS_LIST_COOLDOWN_MS = 30 * 60 * 1000;
+function packsListAllowed() { return Date.now() >= _packsListNextTry; }
+function packsListFailed() { _packsListNextTry = Date.now() + PACKS_LIST_COOLDOWN_MS; }
+function packsListOk() { _packsListNextTry = 0; }
 async function mlPut(url, body, token) {
   const res = await fetch(url, {
     method: 'PUT',
@@ -2950,7 +2958,7 @@ route('GET', '/api/messages', async (req, res) => {
       // ===== Traer TODOS los packs con mensajes pendientes (no solo los de las últimas 50 órdenes).
       // ML: GET /messages/packs?role=seller&tag=post_sale devuelve los packs con mensajes sin leer sin
       // importar qué tan vieja es la orden. Resolvemos su orden para no perder conversaciones antiguas.
-      if (!orderFilter && !buyerFilter) {
+      if (!orderFilter && !buyerFilter && packsListAllowed()) {
         try {
           // Paginamos para traer TODOS los packs pendientes (no solo la primera página).
           const pendPacks = [];
@@ -2991,7 +2999,9 @@ route('GET', '/api/messages', async (req, res) => {
             seenPacks.add(opk);
             uniqueOrders.push(synth);
           }
+          packsListOk();
         } catch (e) {
+          packsListFailed();
           console.log(`[MESSAGES] No se pudo obtener pendientes para ${account.name}:`, e.response?.data?.message || e.message || '');
         }
       }
@@ -4045,25 +4055,30 @@ route('GET', '/api/stats', async (req, res) => {
   const now = new Date();
   const argNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
   const todayStart = new Date(Date.UTC(argNow.getUTCFullYear(), argNow.getUTCMonth(), argNow.getUTCDate(), 3, 0, 0)).toISOString();
-  for (const account of db.ml_accounts) {
-    const token = await getValidToken(account);
-    if (!token) continue;
+  // PARALELO + AISLADO: antes las 6 cuentas se consultaban en FILA (lento) y, si una fallaba al
+  // refrescar el token, `getValidToken` tiraba una excepción NO atrapada que volteaba TODA la
+  // respuesta (por eso /api/stats daba ERR y el Dashboard no cargaba). Ahora cada cuenta corre en su
+  // propio try aislado y todas en paralelo → rápido y a prueba de fallas (siempre responde 200).
+  const _sba = new Array(db.ml_accounts.length);
+  await Promise.all(db.ml_accounts.map(async (account, _idx) => {
+    let token;
+    try { token = await getValidToken(account); } catch (e) { return; }
+    if (!token) return;
     try {
       const u = await mlGet('https://api.mercadolibre.com/questions/search', token, { seller_id: account.seller_id, status: 'UNANSWERED', limit: 0 });
       totalUnanswered += u.total || 0;
-      // Only today's answered questions
       const a = await mlGet('https://api.mercadolibre.com/questions/search', token, { seller_id: account.seller_id, status: 'ANSWERED', limit: 50 });
       const todayAnswered = (a.questions || []).filter(q => q.date_created && q.date_created >= todayStart).length;
       totalAnsweredToday += todayAnswered;
     } catch (e) {}
-    // Count unread messages
-    try {
-      const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
-        seller: account.seller_id, tag: 'unread', limit: 0
-      });
-      totalUnreadMessages += msgData.paging?.total || 0;
-    } catch (e) {}
-    // Fetch today's sales if user has dashboard permission
+    // Mensajes sin leer: con circuit-breaker (si ML rompió /messages/packs, no lo martillamos).
+    if (packsListAllowed()) {
+      try {
+        const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, { seller: account.seller_id, tag: 'unread', limit: 0 });
+        totalUnreadMessages += msgData.paging?.total || 0;
+        packsListOk();
+      } catch (e) { packsListFailed(); }
+    }
     if (user?.view_dashboard !== false) {
       let accountSales = 0, accountRevenue = 0, accountUnits = 0;
       try {
@@ -4085,9 +4100,10 @@ route('GET', '/api/stats', async (req, res) => {
       } catch (e) {
         console.error(`Error fetching sales for ${account.name}:`, e.response?.data || e.message || e);
       }
-      salesByAccount.push({ name: account.name, sales: accountSales, revenue: accountRevenue, units: accountUnits });
+      _sba[_idx] = { name: account.name, sales: accountSales, revenue: accountRevenue, units: accountUnits };
     }
-  }
+  }));
+  for (const x of _sba) { if (x) salesByAccount.push(x); }
   sendJSON(res, 200, {
     accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered_today: totalAnsweredToday,
     unread_messages: totalUnreadMessages,
@@ -8917,19 +8933,49 @@ function registerAds(deps) {
     bustStrat();   // nueva importación → invalidar la foto cacheada
     sendJSON(res, 200, { ok: true, imported: n, total: Object.keys(table).length, enriquecimiento_protegido: _repuestos, account: accName });
   });
-  route('GET', '/api/ads/costs', async (req, res) => {
-    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
-    const f = loadCostsFile();
-    const table = f.costs || {};
-    const by = countByAccount(table);
-    // Fecha del ÚLTIMO archivo subido por cuenta (del propio archivo de esa cuenta).
+  // === FIX GESTIÓN: /api/ads/costs leía y fusionaba TODOS los costos (152k) de forma SINCRÓNICA en
+  // cada carga (~5s). La pantalla de Gestión cortaba el pedido antes → mostraba "sin costos" aunque
+  // los datos estuvieran. Ahora ese conteo se calcula en 2º plano cediendo el hilo y se cachea; el
+  // endpoint responde al instante. Mismos datos y misma lógica, solo que no bloquea. ===
+  let _adsCostsCache = null, _adsCostsAt = 0, _adsCostsBusy = false;
+  const ADS_COSTS_TTL_MS = 5 * 60 * 1000;
+  async function _computeAdsCostsYield() {
+    const _y = () => new Promise(r => setImmediate(r));
+    const merged = {}; let updated = null;
+    const readMerge = (fp) => { try { const f = JSON.parse(_fsCosts.readFileSync(fp, 'utf8')); if (f && f.costs) { Object.assign(merged, f.costs); if (f.updated && (!updated || f.updated > updated)) updated = f.updated; } } catch (e) {} };
+    readMerge(costsFilePath()); await _y();
+    try {
+      for (const fn of _fsCosts.readdirSync(DATA_DIR)) {
+        if (!/^ads_costs_.+\.json$/.test(fn)) continue;
+        readMerge(_pathCosts.join(DATA_DIR, fn));
+        await _y();
+      }
+    } catch (e) {}
+    const by = countByAccount(merged);
     try {
       const accs = loadDB().ml_accounts || [];
-      const upById = {};
-      for (const a of accs) { try { upById[a.id] = (loadAccountCosts(a.seller_id).updated) || null; } catch (e) {} }
-      for (const b of by) { b.updated = (b.account_id != null) ? (upById[b.account_id] || null) : null; }
+      for (const a of accs) {
+        let up = null; try { up = loadAccountCosts(a.seller_id).updated || null; } catch (e) {}
+        for (const b of by) { if (b.account_id === a.id) b.updated = up; }
+        await _y();
+      }
     } catch (e) {}
-    sendJSON(res, 200, { total: Object.keys(table).length, updated: f.updated || null, by_account: by, persistent: DATA_DIR !== __dirname });
+    return { total: Object.keys(merged).length, updated: updated || null, by_account: by, persistent: DATA_DIR !== __dirname };
+  }
+  function _refreshAdsCostsBg() {
+    if (_adsCostsBusy) return;
+    _adsCostsBusy = true;
+    _computeAdsCostsYield()
+      .then(pl => { _adsCostsCache = pl; _adsCostsAt = Date.now(); })
+      .catch(() => {})
+      .finally(() => { _adsCostsBusy = false; });
+  }
+  try { _refreshAdsCostsBg(); } catch (e) {}   // prewarm al arrancar
+  route('GET', '/api/ads/costs', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    if (!_adsCostsCache || (Date.now() - _adsCostsAt) > ADS_COSTS_TTL_MS) _refreshAdsCostsBg();
+    const payload = _adsCostsCache || { total: 0, updated: null, by_account: [], persistent: DATA_DIR !== __dirname, calculando: true };
+    sendJSON(res, 200, payload);
   });
   // Conteo de productos por cuenta (para los casilleros del panel).
   function countByAccount(table) {
