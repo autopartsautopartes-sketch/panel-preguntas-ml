@@ -1415,7 +1415,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const u = _dashGan.ultimas || [];
     if (!u.length) return '<h4 style="margin-bottom:8px;color:#666;font-size:13px">Últimas 3 ventas</h4><div style="color:#999;font-size:12px">Sin ventas hoy.</div>';
     const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const fmtFecha = (iso) => { try { return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+    const fmtFecha = (iso) => { try { return new Date(iso).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
     return '<h4 style="margin-bottom:8px;color:#666;font-size:13px">Últimas 3 ventas</h4>' +
       '<div style="display:flex;flex-direction:column;gap:8px">' +
       u.map(v => {
@@ -1507,6 +1507,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const changed = (_lastSalesSig !== null && sig !== _lastSalesSig);
       _lastSalesSig = sig;
       loadDashboardGanancia(changed);
+      // Reputación: se actualiza junto con el resto cada 30s. Se auto-protege (si no está el panel, sale solo).
+      loadDashReputation(navToken);
     } catch (e) {}
   }
   async function loadDashboard() {
