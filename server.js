@@ -8097,55 +8097,6 @@ function registerAds(deps) {
     return { sales: allRows, totals: T };
   }
 
-  // DASHBOARD · GANANCIA REAL DEL DÍA (misma lógica que Gestión, vía gestionComputeDay).
-  // Alimenta los tiles "Ganancia real" / "Margen %" y las últimas 3 ventas del Dashboard.
-  // Se sirve por separado de /api/stats porque el cálculo (comisión/envío/impuesto reales
-  // + costo del catálogo) es más pesado. Cacheamos el resultado del día ~2 min para NO
-  // recalcularlo en cada refresco del dashboard (protege al servicio de la ráfaga).
-  let _dashGanCache = null; // { date, ts, payload }
-  route('GET', '/api/dashboard-ganancia', async (req, res) => {
-    const sess = requireAuth(req);
-    if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-    const _db = loadDB();
-    const _u = (_db.users || []).find(u => u.id === sess.userId);
-    if (!(_u && (_u.role === 'admin' || _u.can_view_dashboard))) return sendJSON(res, 403, { error: 'Sin permiso' });
-    // Fecha de HOY en Argentina (UTC-3), formato YYYY-MM-DD (mismo criterio que /api/stats).
-    const arg = new Date(Date.now() - 3 * 60 * 60 * 1000);
-    const date = `${arg.getUTCFullYear()}-${String(arg.getUTCMonth() + 1).padStart(2, '0')}-${String(arg.getUTCDate()).padStart(2, '0')}`;
-    // Cache: si ya lo calculamos hace menos de 2 min para el MISMO día, devolvemos lo cacheado.
-    if (_dashGanCache && _dashGanCache.date === date && (Date.now() - _dashGanCache.ts) < 120000) {
-      return sendJSON(res, 200, _dashGanCache.payload);
-    }
-    try {
-      const { sales, totals } = await gestionComputeDay(date, 'all');
-      const ultimas = (sales || [])
-        .slice()
-        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-        .slice(0, 3)
-        .map(s => ({
-          date: s.date,
-          account: s.account_name || '',
-          title: s.title || '',
-          price: s.revenue || 0,
-          marginPct: s.known ? s.marginPct : null,
-          known: !!s.known
-        }));
-      const payload = {
-        ganancia: totals.ganancia || 0,
-        margin: (totals.margin != null ? totals.margin : null),
-        conocidas: totals.conocidas || 0,
-        sin_costo: totals.sinCosto || 0,
-        ultimas
-      };
-      _dashGanCache = { date, ts: Date.now(), payload };
-      sendJSON(res, 200, payload);
-    } catch (e) {
-      // Si tenemos un cálculo previo del mismo día, lo devolvemos antes que un error.
-      if (_dashGanCache && _dashGanCache.date === date) return sendJSON(res, 200, _dashGanCache.payload);
-      sendJSON(res, 500, { error: (e && e.response && e.response.data) || String((e && e.message) || e) });
-    }
-  });
-
   // GUARDAR día: congela las ventas del día elegido. Re-guardar el MISMO día sobreescribe.
   route('POST', '/api/gestion/save-day', async (req, res) => {
     const sess = isAdmin(req);
