@@ -310,15 +310,6 @@ async function mlGet(url, token, params = {}, extraHeaders = {}) {
   if (!res.ok) throw { response: { data, status: res.status } };
   return data;
 }
-// CIRCUIT-BREAKER para el LISTADO GET /messages/packs (ML rompio ese endpoint: devuelve
-// "The message with id: packs does not exist"). Cuando falla, dejamos de llamarlo un rato para
-// NO inundar ML ni quemar CPU/limite de tasa. Se reintenta solo cada ~30 min por si ML lo restaura.
-// NO afecta a /messages/packs/{id}/sellers/... (esos andan y se usan para leer/responder).
-let _packsListNextTry = 0;
-const PACKS_LIST_COOLDOWN_MS = 30 * 60 * 1000;
-function packsListAllowed() { return Date.now() >= _packsListNextTry; }
-function packsListFailed() { _packsListNextTry = Date.now() + PACKS_LIST_COOLDOWN_MS; }
-function packsListOk() { _packsListNextTry = 0; }
 async function mlPut(url, body, token) {
   const res = await fetch(url, {
     method: 'PUT',
@@ -2959,7 +2950,7 @@ route('GET', '/api/messages', async (req, res) => {
       // ===== Traer TODOS los packs con mensajes pendientes (no solo los de las últimas 50 órdenes).
       // ML: GET /messages/packs?role=seller&tag=post_sale devuelve los packs con mensajes sin leer sin
       // importar qué tan vieja es la orden. Resolvemos su orden para no perder conversaciones antiguas.
-      if (!orderFilter && !buyerFilter && packsListAllowed()) {
+      if (!orderFilter && !buyerFilter) {
         try {
           // Paginamos para traer TODOS los packs pendientes (no solo la primera página).
           const pendPacks = [];
@@ -3000,9 +2991,7 @@ route('GET', '/api/messages', async (req, res) => {
             seenPacks.add(opk);
             uniqueOrders.push(synth);
           }
-          packsListOk();
         } catch (e) {
-          packsListFailed();
           console.log(`[MESSAGES] No se pudo obtener pendientes para ${account.name}:`, e.response?.data?.message || e.message || '');
         }
       }
@@ -4067,16 +4056,13 @@ route('GET', '/api/stats', async (req, res) => {
       const todayAnswered = (a.questions || []).filter(q => q.date_created && q.date_created >= todayStart).length;
       totalAnsweredToday += todayAnswered;
     } catch (e) {}
-    // Count unread messages (circuit-breaker: si ML rompio /messages/packs, no lo martillamos)
-    if (packsListAllowed()) {
-      try {
-        const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
-          seller: account.seller_id, tag: 'unread', limit: 0
-        });
-        totalUnreadMessages += msgData.paging?.total || 0;
-        packsListOk();
-      } catch (e) { packsListFailed(); }
-    }
+    // Count unread messages
+    try {
+      const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
+        seller: account.seller_id, tag: 'unread', limit: 0
+      });
+      totalUnreadMessages += msgData.paging?.total || 0;
+    } catch (e) {}
     // Fetch today's sales if user has dashboard permission
     if (user?.view_dashboard !== false) {
       let accountSales = 0, accountRevenue = 0, accountUnits = 0;
@@ -9343,6 +9329,51 @@ function registerStock(deps) {
     } catch (e) {}
     return { map, files, used };
   }
+  // === FIX STOCK: antes /api/stock/data calculaba el bloque 'catalogo' (leer + fusionar TODO el
+  // catálogo de costos) SINCRÓNICO en cada carga. Con los datos ya grandes, eso CONGELA el event loop
+  // ~2s → se caía Stock y arrastraba Dashboard/Prep. Ahora se calcula en 2º plano, cediendo el hilo
+  // con setImmediate, y se cachea. La request nunca hace ese trabajo pesado inline. ===
+  let _catBlock = null, _catBlockAt = 0, _catBlockBusy = false;
+  const CAT_BLOCK_TTL_MS = 5 * 60 * 1000;
+  const _catYield = () => new Promise(r => setImmediate(r));
+  async function _computeCatBlockYield() {
+    const cat = loadCatalog();
+    await _catYield();
+    const map = {}; let used = 0;
+    try {
+      for (const fn of fs.readdirSync(DATA_DIR)) {
+        if (!/^ads_costs_.*\.json$/.test(fn)) continue;
+        let f; try { f = JSON.parse(fs.readFileSync(path.join(DATA_DIR, fn), 'utf8')); } catch (e) { continue; }
+        const costs = (f && f.costs) || {};
+        let n = 0;
+        for (const id in costs) {
+          const c = costs[id];
+          if (!c) continue;
+          const costo = Number(c.cost);
+          if (!(costo > 0)) continue;
+          const prov = stockNormProv(c.proveedor);
+          if (!prov || prov === 'COMBOS') continue;
+          const cod = stockNormCode(c.sku);
+          if (!cod || cod.indexOf('+') >= 0) continue;
+          const key = cod + '||' + prov;
+          if (map[key] === undefined) { map[key] = costo; used++; }
+          if ((++n % 3000) === 0) await _catYield();
+        }
+        await _catYield();
+      }
+    } catch (e) {}
+    const costos = Object.assign({}, map, cat.costos || {});
+    return { updated: cat.updated, costos: Object.keys(costos).length, empujados: Object.keys(cat.costos || {}).length, derivados: used };
+  }
+  function _refreshCatBlockBg() {
+    if (_catBlockBusy) return;
+    _catBlockBusy = true;
+    _computeCatBlockYield()
+      .then(b => { _catBlock = b; _catBlockAt = Date.now(); })
+      .catch(() => {})
+      .finally(() => { _catBlockBusy = false; });
+  }
+  try { _refreshCatBlockBg(); } catch (e) {}   // prewarm al arrancar
 
   async function downloadDriveXlsx(fileId) {
     if (process.env.STOCK_LOCAL_FILE) {
@@ -9524,13 +9555,14 @@ function registerStock(deps) {
     if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
     const last = readJson(lastPath(), null);
     const daily = readJson(dailyPath(), { dias: [] });
-    const cat = loadCatalog();
-    const derived = deriveStockCatalogFromCosts();
-    const efectivos = Object.keys(Object.assign({}, derived.map, cat.costos || {})).length;
     const { date, hour, min } = arParts();
+    // Catálogo: cacheado + refresco en 2º plano (NUNCA bloquea el server). Si aún no se calculó,
+    // devolvemos un placeholder y disparamos el cálculo; en la próxima carga ya está el número real.
+    if (!_catBlock || (Date.now() - _catBlockAt) > CAT_BLOCK_TTL_MS) _refreshCatBlockBg();
+    const catalogo = _catBlock || { updated: null, costos: 0, empujados: 0, derivados: 0, calculando: true };
     sendJSON(res, 200, {
       last, dias: daily.dias || [],
-      catalogo: { updated: cat.updated, costos: efectivos, empujados: Object.keys(cat.costos || {}).length, derivados: derived.used },
+      catalogo,
       ahora_ar: { date, hour, min },
       programado: { hora: RUN_HOUR, min: RUN_MIN, corrio_hoy: loadDB().stock_auto_run_ar === date },
       file_id: STOCK_FILE_ID,
