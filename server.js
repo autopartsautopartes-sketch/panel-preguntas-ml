@@ -310,6 +310,15 @@ async function mlGet(url, token, params = {}, extraHeaders = {}) {
   if (!res.ok) throw { response: { data, status: res.status } };
   return data;
 }
+// CIRCUIT-BREAKER para el LISTADO GET /messages/packs (ML rompio ese endpoint: devuelve
+// "The message with id: packs does not exist"). Cuando falla, dejamos de llamarlo un rato para
+// NO inundar ML ni quemar CPU/limite de tasa. Se reintenta solo cada ~30 min por si ML lo restaura.
+// NO afecta a /messages/packs/{id}/sellers/... (esos andan y se usan para leer/responder).
+let _packsListNextTry = 0;
+const PACKS_LIST_COOLDOWN_MS = 30 * 60 * 1000;
+function packsListAllowed() { return Date.now() >= _packsListNextTry; }
+function packsListFailed() { _packsListNextTry = Date.now() + PACKS_LIST_COOLDOWN_MS; }
+function packsListOk() { _packsListNextTry = 0; }
 async function mlPut(url, body, token) {
   const res = await fetch(url, {
     method: 'PUT',
@@ -2950,7 +2959,7 @@ route('GET', '/api/messages', async (req, res) => {
       // ===== Traer TODOS los packs con mensajes pendientes (no solo los de las últimas 50 órdenes).
       // ML: GET /messages/packs?role=seller&tag=post_sale devuelve los packs con mensajes sin leer sin
       // importar qué tan vieja es la orden. Resolvemos su orden para no perder conversaciones antiguas.
-      if (!orderFilter && !buyerFilter) {
+      if (!orderFilter && !buyerFilter && packsListAllowed()) {
         try {
           // Paginamos para traer TODOS los packs pendientes (no solo la primera página).
           const pendPacks = [];
@@ -2991,7 +3000,9 @@ route('GET', '/api/messages', async (req, res) => {
             seenPacks.add(opk);
             uniqueOrders.push(synth);
           }
+          packsListOk();
         } catch (e) {
+          packsListFailed();
           console.log(`[MESSAGES] No se pudo obtener pendientes para ${account.name}:`, e.response?.data?.message || e.message || '');
         }
       }
@@ -4056,13 +4067,16 @@ route('GET', '/api/stats', async (req, res) => {
       const todayAnswered = (a.questions || []).filter(q => q.date_created && q.date_created >= todayStart).length;
       totalAnsweredToday += todayAnswered;
     } catch (e) {}
-    // Count unread messages
-    try {
-      const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
-        seller: account.seller_id, tag: 'unread', limit: 0
-      });
-      totalUnreadMessages += msgData.paging?.total || 0;
-    } catch (e) {}
+    // Count unread messages (circuit-breaker: si ML rompio /messages/packs, no lo martillamos)
+    if (packsListAllowed()) {
+      try {
+        const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, {
+          seller: account.seller_id, tag: 'unread', limit: 0
+        });
+        totalUnreadMessages += msgData.paging?.total || 0;
+        packsListOk();
+      } catch (e) { packsListFailed(); }
+    }
     // Fetch today's sales if user has dashboard permission
     if (user?.view_dashboard !== false) {
       let accountSales = 0, accountRevenue = 0, accountUnits = 0;
