@@ -6775,7 +6775,7 @@ function costsFilePath() { return _pathCosts.join(DATA_DIR, 'ads_costs.json'); }
 // UN ARCHIVO POR CUENTA: importar/enriquecer una cuenta escribe SOLO su archivo (rápido y sin pisar a las demás).
 function accountCostsPath(sellerId) { return _pathCosts.join(DATA_DIR, 'ads_costs_' + String(sellerId) + '.json'); }
 function loadAccountCosts(sellerId) { try { return JSON.parse(_fsCosts.readFileSync(accountCostsPath(sellerId), 'utf8')) || { costs: {} }; } catch (e) { return { costs: {} }; } }
-function saveAccountCosts(sellerId, obj) { _fsCosts.writeFileSync(accountCostsPath(sellerId), JSON.stringify(obj)); }
+function saveAccountCosts(sellerId, obj) { _fsCosts.writeFileSync(accountCostsPath(sellerId), JSON.stringify(obj)); try { _invalidateCostsCache(); } catch (e) {} }
 // ---------------------------------------------------------------------------
 // DESCUBRIMIENTO DE PUBLICACIONES NUEVAS (Gatillo 1)
 // Marca de tiempo del último escaneo de ML por cuenta. Es SOLO un reloj (no guarda
@@ -6821,7 +6821,17 @@ async function discoverNewItems(account, table) {
   return { skipped: false, added, scanned: found.size, pages };
 }
 // Lectura combinada: junta el legacy + todos los archivos por cuenta en una sola tabla { costs, updated }.
+// CACHE (60s): leer+parsear los ~152k costos es pesado (bloquea el event-loop). Como NINGÚN
+// consumidor muta la tabla devuelta (solo la leen; las escrituras van por saveAccountCosts/
+// saveCostsFile a archivos por-cuenta), podemos reusar el resultado. Cualquier escritura invalida
+// el cache al instante, así que nunca se sirve algo desactualizado tras un cambio de costos.
+let _costsFileCache = null;   // { costs, updated, ts }
+const _COSTS_FILE_TTL = 60 * 1000;
+function _invalidateCostsCache() { _costsFileCache = null; }
 function loadCostsFile() {
+  if (_costsFileCache && (Date.now() - _costsFileCache.ts) < _COSTS_FILE_TTL) {
+    return { costs: _costsFileCache.costs, updated: _costsFileCache.updated };
+  }
   const merged = {}; let updated = null;
   try { const f = JSON.parse(_fsCosts.readFileSync(costsFilePath(), 'utf8')); if (f && f.costs) { Object.assign(merged, f.costs); if (f.updated && (!updated || f.updated > updated)) updated = f.updated; } } catch (e) {}
   try {
@@ -6830,9 +6840,10 @@ function loadCostsFile() {
       try { const f = JSON.parse(_fsCosts.readFileSync(_pathCosts.join(DATA_DIR, fn), 'utf8')); if (f && f.costs) { Object.assign(merged, f.costs); if (f.updated && (!updated || f.updated > updated)) updated = f.updated; } } catch (e) {}
     }
   } catch (e) {}
+  _costsFileCache = { costs: merged, updated, ts: Date.now() };
   return { costs: merged, updated };
 }
-function saveCostsFile(obj) { _fsCosts.writeFileSync(costsFilePath(), JSON.stringify(obj)); }   // legacy (compat)
+function saveCostsFile(obj) { _fsCosts.writeFileSync(costsFilePath(), JSON.stringify(obj)); _invalidateCostsCache(); }   // legacy (compat)
 
 // ---------------------------------------------------------------------------
 // LEDGER HISTORICO DE VENTAS: congela el costo/margen al momento de cada venta.
@@ -8112,6 +8123,36 @@ function registerAds(deps) {
     T.margin = T.factConocida > 0 ? (T.ganancia / T.factConocida) * 100 : null;
     return { sales: allRows, totals: T };
   }
+
+  // ======================= DASHBOARD · GANANCIA DEL DÍA =======================
+  // Alimenta las tarjetas "Ganancia real" + "Margen %" y las "últimas 3 ventas" del Dashboard.
+  // Usa el MISMO cálculo que Gestión (gestionComputeDay 'all' → GANANCIA_REAL), así los números
+  // coinciden con la solapa Gestión. Cachea el resultado 2 min: como el Dashboard se auto-refresca,
+  // evitamos re-pegarle a ML en cada carga. loadCostsFile ya está cacheado, así que esto no bloquea.
+  let _dashGanCache = null;   // { date, ts, payload }
+  route('GET', '/api/dashboard-ganancia', async (req, res) => {
+    const sess = requireAuth(req);
+    if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+    const _db = loadDB(); const _u = (_db.users || []).find(u => u.id === sess.userId);
+    if (!(_u && (_u.role === 'admin' || _u.can_view_dashboard))) return sendJSON(res, 403, { error: 'Sin permiso' });
+    // Día de HOY en hora Argentina (UTC-3).
+    const arg = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const date = `${arg.getUTCFullYear()}-${String(arg.getUTCMonth() + 1).padStart(2, '0')}-${String(arg.getUTCDate()).padStart(2, '0')}`;
+    if (_dashGanCache && _dashGanCache.date === date && (Date.now() - _dashGanCache.ts) < 120000) return sendJSON(res, 200, _dashGanCache.payload);
+    try {
+      const { sales, totals } = await gestionComputeDay(date, 'all');
+      const ultimas = (sales || []).slice()
+        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+        .slice(0, 3)
+        .map(s => ({ date: s.date, account: s.account_name || '', title: s.title || '', price: s.revenue || 0, marginPct: s.known ? s.marginPct : null, known: !!s.known }));
+      const payload = { ganancia: totals.ganancia || 0, margin: (totals.margin != null ? totals.margin : null), conocidas: totals.conocidas || 0, sin_costo: totals.sinCosto || 0, ultimas };
+      _dashGanCache = { date, ts: Date.now(), payload };
+      sendJSON(res, 200, payload);
+    } catch (e) {
+      if (_dashGanCache && _dashGanCache.date === date) return sendJSON(res, 200, _dashGanCache.payload);
+      sendJSON(res, 500, { error: String((e && e.message) || e) });
+    }
+  });
 
   // GUARDAR día: congela las ventas del día elegido. Re-guardar el MISMO día sobreescribe.
   route('POST', '/api/gestion/save-day', async (req, res) => {
