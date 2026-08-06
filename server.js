@@ -7109,7 +7109,8 @@ function makeEngine(deps) {
       }
       return {
         order_id: o.id, pack_id: o.pack_id || o.id,   // pack_id = "Venta #" que ML muestra en el detalle (el que copia el usuario)
-        date: argDate(o.date_created),   // fecha en hora argentina (consistente con el Dashboard)
+        date: argDate(o.date_created),   // fecha en hora argentina (YYYY-MM-DD, consistente con el Dashboard)
+        datetime: o.date_created,        // timestamp completo (con hora) — para mostrar fecha+hora real en "últimas ventas"
         shipment_id: o.shipping && o.shipping.id,
         payment_ids: (o.payments || []).map(p => p.id).filter(Boolean),   // pagos de MP (para traer la retención/impuesto real)
         status: o.status, tags: o.tags || [], tax_real: taxReal, installments,
@@ -7465,7 +7466,7 @@ async function analyzeVentas(engine, account, cfg, costs, from, to, hist) {
       const _g = stockFlag ? grp.stock : grp.drop;
       _g.ventas++; _g.fact += (r.revenue || 0); _g.queda += (r.queda || 0); _g.unidades += qty;
       if (r.known) { _g.ganancia += r.net; _g.factConoc += (r.revenue || 0); }
-      rows.push({ order_id: o.order_id, pack_id: (frozen && frozen.pack_id) || o.pack_id || o.order_id, date: o.date, item_id: it.item_id, title: it.title, status, stock: stockFlag, frozen: !!frozen, qty, sku, proveedor, cuotas, flex, pack, bono, net_sin_flex, cost_stock, ...r });
+      rows.push({ order_id: o.order_id, pack_id: (frozen && frozen.pack_id) || o.pack_id || o.order_id, date: o.date, datetime: o.datetime, item_id: it.item_id, title: it.title, status, stock: stockFlag, frozen: !!frozen, qty, sku, proveedor, cuotas, flex, pack, bono, net_sin_flex, cost_stock, ...r });
     }
   }
   return {
@@ -8154,10 +8155,11 @@ function registerAds(deps) {
     Promise.resolve().then(async () => {
       try {
         const { sales, totals } = await gestionComputeDay(date, 'all');
+        const _ts = s => new Date(s.datetime || s.date || 0).getTime() || 0;   // ordena por hora REAL de la venta
         const ultimas = (sales || []).slice()
-          .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+          .sort((a, b) => _ts(b) - _ts(a))
           .slice(0, 3)
-          .map(s => ({ date: s.date, account: s.account_name || '', title: s.title || '', price: s.revenue || 0, marginPct: s.known ? s.marginPct : null, known: !!s.known }));
+          .map(s => ({ date: s.datetime || s.date, account: s.account_name || '', title: s.title || '', price: s.revenue || 0, marginPct: s.known ? s.marginPct : null, known: !!s.known }));
         _dashGanCache = { date, ts: Date.now(), payload: { ganancia: totals.ganancia || 0, margin: (totals.margin != null ? totals.margin : null), conocidas: totals.conocidas || 0, sin_costo: totals.sinCosto || 0, ultimas } };
         _dashGanLastRefresh = Date.now();
       } catch (e) { /* dejamos el cache anterior; se reintenta en la próxima carga */ }
