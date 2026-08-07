@@ -2104,6 +2104,124 @@ route('POST', '/api/bulk-delete', async (req, res) => {
   res.end();
   console.log(`[DELETE] Fin: ${okCount} eliminadas, ${errCount} con error (${account.name})`);
 });
+// POST /api/drive-listado-update — escribe código/proveedor en LISTADOS_TODOS (Drive) para uno o varios MLA.
+// El panel NO escribe en Drive directo: le manda las ediciones al "puente" (Apps Script) que edita el archivo
+// quirúrgicamente (columna G=código, H=proveedor, y borra las equivalencias I-L de esa fila) y hace backup antes.
+// La URL y la clave del puente van por variable de entorno (NO se escriben en el código).
+route('POST', '/api/drive-listado-update', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
+  const dbPerm = loadDB();
+  const userPerm = dbPerm.users.find(u => u.id === sess.userId);
+  const canBulk = sess.role === 'admin' || userPerm?.can_bulk_update === true;
+  if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const rawEdits = Array.isArray(body.edits) ? body.edits : [];
+  // Sanitizamos: MLA válido + al menos código o proveedor. Si ambos vacíos, se ignora la fila.
+  const edits = rawEdits.map(e => ({
+    mla: String((e && e.mla) || '').trim(),
+    codigo: String((e && e.codigo) || '').trim(),
+    proveedor: String((e && e.proveedor) || '').trim(),
+  })).filter(e => /^MLA\d+$/i.test(e.mla) && (e.codigo !== '' || e.proveedor !== ''));
+  if (!edits.length) return sendJSON(res, 400, { error: 'No hay ediciones válidas (falta MLA o código/proveedor).' });
+  const PURL = process.env.LISTADO_PUENTE_URL;
+  const PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
+  try {
+    const r = await fetch(PURL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clave: PKEY, op: 'editListado', edits }),
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON', raw: String(text).slice(0, 300) }; }
+    if (!r.ok || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente respondió HTTP ' + r.status), detail: data });
+    return sendJSON(res, 200, { ok: true, updated: Number(data.updated) || 0, not_found: Array.isArray(data.not_found) ? data.not_found : [] });
+  } catch (e) {
+    return sendJSON(res, 502, { error: 'No se pudo contactar el puente de Drive: ' + String((e && e.message) || e) });
+  }
+});
+// Mapa cuenta (nombre en ML) -> hoja del listado en Drive (confirmado con el usuario).
+const LISTADO_SHEET_BY_ACCOUNT = {
+  'MARA_PRATO_8': 'MARA',
+  'REPUESTOSEXPRESS_1': 'EXPRESS',
+  'AUTOCHAPAUTOPARTES07': 'MARCOS',
+  'RUIZDARIO20220906163653': 'DARIO',
+  'AUTOPARTESARG': 'ANTO',
+  'SAEZJORGE34': 'JORGE',
+};
+function _hojaDeCuenta(name) {
+  if (!name) return null;
+  return LISTADO_SHEET_BY_ACCOUNT[name] || LISTADO_SHEET_BY_ACCOUNT[String(name).trim()] || null;
+}
+// GET /api/drive-listado-lookup?mla=MLA... — trae de ML los datos para armar la fila del listado
+// (cuenta/hoja destino, flex, local_pick_up, envío, título corto y largo). NO escribe nada.
+route('GET', '/api/drive-listado-lookup', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const mla = String(new URL(req.url, 'http://x').searchParams.get('mla') || '').trim().toUpperCase();
+  if (!/^MLA\d+$/.test(mla)) return sendJSON(res, 400, { error: 'MLA inválido (formato MLA123...)' });
+  // Token de cualquier cuenta válida (el ítem público se lee igual; el token evita límites).
+  let token = null;
+  for (const a of (db.ml_accounts || [])) { try { token = await getValidToken(a); if (token) break; } catch (e) {} }
+  let item;
+  try { item = await mlGet('https://api.mercadolibre.com/items/' + mla, token, {}); }
+  catch (e) { return sendJSON(res, 502, { error: 'No se pudo leer el ítem en ML: ' + ((e && e.response && e.response.data && e.response.data.message) || (e && e.message) || e) }); }
+  const sellerId = String(item.seller_id || '');
+  const account = (db.ml_accounts || []).find(a => String(a.seller_id) === sellerId);
+  if (!account) return sendJSON(res, 404, { error: 'El MLA no pertenece a ninguna de tus cuentas (vendedor ' + sellerId + ').' });
+  const sheet = _hojaDeCuenta(account.name);
+  if (!sheet) return sendJSON(res, 500, { error: 'No tengo mapeada la hoja del listado para la cuenta ' + account.name });
+  const sh = item.shipping || {};
+  const flex = (sh.logistic_type === 'self_service') ? 'yes' : 'not_available';
+  const local_pick_up = sh.local_pick_up ? 'yes' : 'no';
+  const shipping = (sh.mode === 'me2' || sh.mode === 'me1') ? 'MERCADO ENVIO' : 'NO ENVIO';
+  const titulo_largo = item.title || '';
+  const titulo_corto = item.family_name || item.title || '';
+  return sendJSON(res, 200, { ok: true, mla, account_name: account.name, sheet, flex, local_pick_up, shipping, titulo_corto, titulo_largo });
+});
+// POST /api/drive-listado-create — agrega una fila nueva al final de la hoja de la cuenta en LISTADOS_TODOS.
+route('POST', '/api/drive-listado-create', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const b = await parseBody(req);
+  const mla = String((b && b.mla) || '').trim().toUpperCase();
+  const sheet = String((b && b.sheet) || '').trim();
+  if (!/^MLA\d+$/.test(mla)) return sendJSON(res, 400, { error: 'MLA inválido' });
+  if (!sheet) return sendJSON(res, 400, { error: 'Falta la hoja destino' });
+  const row = {
+    item_id: mla,
+    flex: String((b && b.flex) || ''),
+    local_pick_up: String((b && b.local_pick_up) || ''),
+    shipping: String((b && b.shipping) || ''),
+    titulo_corto: String((b && b.titulo_corto) || ''),
+    titulo_largo: String((b && b.titulo_largo) || ''),
+    codigo: String((b && b.codigo) || ''),
+    proveedor: String((b && b.proveedor) || ''),
+  };
+  const PURL = process.env.LISTADO_PUENTE_URL;
+  const PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
+  try {
+    const r = await fetch(PURL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clave: PKEY, op: 'addRow', sheet, row }),
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON', raw: String(text).slice(0, 300) }; }
+    if (!r.ok || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || ('Puente respondió HTTP ' + r.status), already: !!(data && data.already), detail: data });
+    return sendJSON(res, 200, { ok: true, sheet: data.sheet || sheet, row: data.row || null });
+  } catch (e) {
+    return sendJSON(res, 502, { error: 'No se pudo contactar el puente de Drive: ' + String((e && e.message) || e) });
+  }
+});
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
 route('POST', '/api/search-listings-stream', async (req, res) => {
   const sess = requireAuth(req);
