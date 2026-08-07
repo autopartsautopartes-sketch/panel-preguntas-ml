@@ -2164,15 +2164,28 @@ route('GET', '/api/drive-listado-lookup', async (req, res) => {
   if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
   const mla = String(new URL(req.url, 'http://x').searchParams.get('mla') || '').trim().toUpperCase();
   if (!/^MLA\d+$/.test(mla)) return sendJSON(res, 400, { error: 'MLA inválido (formato MLA123...)' });
-  // Token de cualquier cuenta válida (el ítem público se lee igual; el token evita límites).
-  let token = null;
-  for (const a of (db.ml_accounts || [])) { try { token = await getValidToken(a); if (token) break; } catch (e) {} }
-  let item;
-  try { item = await mlGet('https://api.mercadolibre.com/items/' + mla, token, {}); }
-  catch (e) { return sendJSON(res, 502, { error: 'No se pudo leer el ítem en ML: ' + ((e && e.response && e.response.data && e.response.data.message) || (e && e.message) || e) }); }
-  const sellerId = String(item.seller_id || '');
-  const account = (db.ml_accounts || []).find(a => String(a.seller_id) === sellerId);
-  if (!account) return sendJSON(res, 404, { error: 'El MLA no pertenece a ninguna de tus cuentas (vendedor ' + sellerId + ').' });
+  // ML solo deja leer el detalle de un ítem con el TOKEN DE LA CUENTA QUE LO PUBLICÓ
+  // (con otro token responde 403 "forbidden"). Por eso probamos con cada cuenta hasta que una lo lea:
+  // esa cuenta es la dueña → esa es la hoja destino.
+  let item = null, account = null, lastErr = null;
+  for (const a of (db.ml_accounts || [])) {
+    let token;
+    try { token = await getValidToken(a); } catch (e) { continue; }
+    if (!token) continue;
+    try {
+      const it = await mlGet('https://api.mercadolibre.com/items/' + mla, token, {});
+      if (it && it.id) {
+        item = it;
+        account = (db.ml_accounts || []).find(x => String(x.seller_id) === String(it.seller_id)) || a;
+        break;
+      }
+    } catch (e) { lastErr = e; }   // 403/404 con esta cuenta → probamos la siguiente
+  }
+  if (!item) {
+    const msg = (lastErr && lastErr.response && lastErr.response.data && lastErr.response.data.message) || (lastErr && lastErr.message) || 'sin detalle';
+    return sendJSON(res, 502, { error: 'No pude leer el ítem en ML con ninguna de tus cuentas (' + msg + '). ¿El MLA es de una de tus cuentas?' });
+  }
+  if (!account) return sendJSON(res, 404, { error: 'El MLA no pertenece a ninguna de tus cuentas (vendedor ' + String(item.seller_id || '') + ').' });
   const sheet = _hojaDeCuenta(account.name);
   if (!sheet) return sendJSON(res, 500, { error: 'No tengo mapeada la hoja del listado para la cuenta ' + account.name });
   const sh = item.shipping || {};
