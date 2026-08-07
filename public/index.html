@@ -4014,7 +4014,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             <p style="font-size:12px;color:#888;margin:0">✏️ Editá stock, precio o SKU en cada fila. Las celdas vacías se ignoran.</p>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button onclick="nuevaBusqueda()" style="padding:9px 18px;background:#e67e22;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🔄 Nueva búsqueda</button>
-              <button onclick="applySearchUpdate()" id="btnApplySearch" style="padding:9px 22px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">✅ Aplicar seleccionados</button>
+              <select id="applyDestino" title="Elegí a dónde aplicar los cambios" style="padding:9px 12px;border:1px solid #cce0ff;border-radius:8px;font-size:13px;cursor:pointer;background:#fff;font-weight:600;color:#2d3277">
+                <option value="">— Elegí destino —</option>
+                <option value="ml">Solo Mercado Libre</option>
+                <option value="drive">Solo Drive (código/prov.)</option>
+                <option value="ambos">Ambos (ML + Drive)</option>
+              </select>
+              <button onclick="applySelected()" id="btnApplySearch" style="padding:9px 22px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">✅ Aplicar a seleccionados</button>
               <button onclick="openDeleteConfirm()" id="btnDeleteSearch" style="padding:9px 20px;background:#c0392b;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🗑️ Eliminar seleccionadas</button>
             </div>
           </div>
@@ -4024,6 +4030,21 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <div id="searchUpdateLog" style="margin-top:12px"></div>
         </div>
       </div>
+      ${canBulk ? `
+      <!-- CREAR EN DRIVE: agregar una publicación al listado (hoja de su cuenta) -->
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+        <h3 style="font-size:15px;color:#333;margin-bottom:4px">➕ Crear en Drive (agregar al listado)</h3>
+        <p style="font-size:12px;color:#888;margin-bottom:14px">Escribí el MLA de una publicación que todavía no está en el listado, traé sus datos y agregala al final de la hoja de su cuenta.</p>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:12px;color:#666;font-weight:600">Item ID (MLA)</label>
+            <input id="createMla" type="text" placeholder="Ej: MLA834640084" onkeydown="if(event.key==='Enter')lookupCreateDrive()" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:200px">
+          </div>
+          <button onclick="lookupCreateDrive()" id="btnLookupCreate" style="padding:9px 20px;background:#3483fa;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🔍 Buscar</button>
+        </div>
+        <div id="createDriveForm" style="display:none;margin-top:12px"></div>
+        <div id="createDriveLog" style="margin-top:10px"></div>
+      </div>` : ''}
       ${canBulk ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:12px">4. Subí tu archivo de actualizaciones</h3>
@@ -4673,7 +4694,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (log) log.innerHTML = '';
     if (!data.length) {
       section.style.display = 'block';
-      table.innerHTML = '<tr><td colspan="9" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
+      table.innerHTML = '<tr><td colspan="11" style="padding:16px;color:#888;text-align:center">No se encontraron publicaciones</td></tr>';
       return;
     }
     const inpStyle = 'padding:5px 7px;border:1px solid #cce0ff;border-radius:5px;font-size:12px;box-sizing:border-box;background:#fff';
@@ -4701,6 +4722,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <td style="border:1px solid #ddd;padding:6px 8px">
         <input type="text" id="bulk-sku" placeholder="SKU" style="${inpStyle};width:110px">
       </td>
+      <td style="border:1px solid #ddd;padding:6px 8px">
+        <input type="text" id="bulk-codigo" placeholder="Código" style="${inpStyle};width:110px">
+      </td>
+      <td style="border:1px solid #ddd;padding:6px 8px">
+        <select id="bulk-proveedor" style="${selStyle};width:120px">
+          <option value="">— sin cambio —</option>
+          <option value="CROMOSOL">CROMOSOL</option>
+          <option value="OTERO">OTERO</option>
+          <option value="DM">DM</option>
+          <option value="BBA">BBA</option>
+          <option value="COMBOS">COMBOS</option>
+        </select>
+      </td>
     </tr>
     <tr style="background:#f0f4ff">
       <th style="border:1px solid #ddd;padding:8px 10px;text-align:center">
@@ -4714,6 +4748,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Stock</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">Precio</th>
       <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#27ae60">SKU</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#8e44ad">Código</th>
+      <th style="border:1px solid #ddd;padding:8px 10px;white-space:nowrap;font-size:12px;color:#8e44ad">Proveedor</th>
     </tr>`;
     data.forEach((r, i) => {
       const activeOpt = r.status === 'active' ? 'selected' : '';
@@ -4743,6 +4779,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <td style="border:1px solid #ddd;padding:6px 8px">
           <input type="text" value="${escapeHtml(r.seller_sku || '')}" class="si-sku" data-idx="${i}" style="${inpStyle};width:110px">
         </td>
+        <td style="border:1px solid #ddd;padding:6px 8px">
+          <input type="text" value="" placeholder="—" class="si-codigo" data-idx="${i}" style="${inpStyle};width:110px">
+        </td>
+        <td style="border:1px solid #ddd;padding:6px 8px">
+          <select class="si-proveedor" data-idx="${i}" style="${selStyle};width:120px">
+            <option value="">— sin cambio —</option>
+            <option value="CROMOSOL">CROMOSOL</option>
+            <option value="OTERO">OTERO</option>
+            <option value="DM">DM</option>
+            <option value="BBA">BBA</option>
+            <option value="COMBOS">COMBOS</option>
+          </select>
+        </td>
       </tr>`;
     });
     table.innerHTML = html;
@@ -4755,6 +4804,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const bulkStock  = document.getElementById('bulk-stock').value;
     const bulkPrice  = document.getElementById('bulk-price').value;
     const bulkSku    = document.getElementById('bulk-sku').value;
+    const bulkCodigo = document.getElementById('bulk-codigo')?.value || '';
+    const bulkProv   = document.getElementById('bulk-proveedor')?.value || '';
     document.querySelectorAll('.searchCheck').forEach(cb => {
       const idx = cb.dataset.idx;
       if (bulkStatus) {
@@ -4773,11 +4824,64 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         const inp = document.querySelector(`.si-sku[data-idx="${idx}"]`);
         if (inp) inp.value = bulkSku;
       }
+      if (bulkCodigo !== '') {
+        const inp = document.querySelector(`.si-codigo[data-idx="${idx}"]`);
+        if (inp) inp.value = bulkCodigo;
+      }
+      if (bulkProv !== '') {
+        const sel = document.querySelector(`.si-proveedor[data-idx="${idx}"]`);
+        if (sel) sel.value = bulkProv;
+      }
     });
     showToast('Valores aplicados a todas las filas', 'success');
   }
   function toggleAllSearch(checked) {
     document.querySelectorAll('.searchCheck').forEach(cb => cb.checked = checked);
+  }
+  // Despacha según el destino elegido. SIN default: si no eligió, no hace nada (seguridad).
+  async function applySelected() {
+    const destino = document.getElementById('applyDestino')?.value || '';
+    if (!destino) return showToast('Elegí un destino (Mercado Libre, Drive o ambos) antes de aplicar', 'error');
+    if (destino === 'ml') return applySearchUpdate();
+    if (destino === 'drive') return applyDriveUpdate();
+    if (destino === 'ambos') { await applySearchUpdate(); await applyDriveUpdate(); return; }
+  }
+  // Escribe código/proveedor en LISTADOS_TODOS (Drive) para las filas seleccionadas, vía el puente.
+  // No toca ML. Escribe columna G=código, H=proveedor y borra las equivalencias I-L de esa fila.
+  async function applyDriveUpdate() {
+    const checkedBoxes = [...document.querySelectorAll('.searchCheck:checked')];
+    if (!checkedBoxes.length) return showToast('Seleccioná al menos una publicación', 'error');
+    const edits = checkedBoxes.map(cb => {
+      const idx = parseInt(cb.dataset.idx);
+      const r = searchResultsData[idx];
+      const codigo = document.querySelector(`.si-codigo[data-idx="${idx}"]`)?.value.trim() || '';
+      const proveedor = document.querySelector(`.si-proveedor[data-idx="${idx}"]`)?.value.trim() || '';
+      return { mla: r?.item_id, codigo, proveedor };
+    }).filter(e => e.mla && (e.codigo !== '' || e.proveedor !== ''));
+    if (!edits.length) return showToast('Completá Código y/o Proveedor en las filas seleccionadas', 'error');
+    const btn = document.getElementById('btnApplySearch');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Actualizando Drive…'; }
+    const log = document.getElementById('searchUpdateLog');
+    try {
+      const res = await fetch('/api/drive-listado-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ edits })
+      });
+      const d = await res.json().catch(() => ({}));
+      if (log) {
+        if (!res.ok || d.ok === false) {
+          log.insertAdjacentHTML('beforeend', `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;margin-top:8px;font-size:13px">❌ <b>Drive:</b> ${escapeHtml(d.error || ('HTTP ' + res.status))}</div>`);
+        } else {
+          const nf = d.not_found || [];
+          log.insertAdjacentHTML('beforeend', `<div style="background:${nf.length ? '#fff8f8' : '#f0fff4'};border:1px solid ${nf.length ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:12px;margin-top:8px;font-size:13px"><b>${nf.length ? '⚠️' : '✅'} Drive: ${d.updated || 0} fila(s) actualizada(s)${nf.length ? ` · ${nf.length} MLA no encontrado(s) en el listado: ${nf.map(escapeHtml).join(', ')}` : ''}</b></div>`);
+        }
+      }
+    } catch (e) {
+      if (log) log.insertAdjacentHTML('beforeend', `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;margin-top:8px;font-size:13px">❌ <b>Drive:</b> ${escapeHtml(e.message)}</div>`);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados'; }
+    }
   }
   async function applySearchUpdate() {
     const checkedBoxes = [...document.querySelectorAll('.searchCheck:checked')];
@@ -4863,6 +4967,89 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       ${logContent ? '<div style="max-height:200px;overflow-y:auto;margin-top:8px;font-size:12px;border-top:1px solid #f0f0f0;padding-top:8px">' + logContent + '</div>' : ''}
     </div>`;
     btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados';
+  }
+  // ==================== CREAR EN DRIVE (agregar fila al listado) ====================
+  // Paso 1: buscar el MLA en ML y traer los datos para armar la fila del listado.
+  async function lookupCreateDrive() {
+    const mla = (document.getElementById('createMla')?.value || '').trim().toUpperCase();
+    const form = document.getElementById('createDriveForm');
+    const log = document.getElementById('createDriveLog');
+    if (log) log.innerHTML = '';
+    if (!/^MLA\d+$/.test(mla)) { showToast('Escribí un MLA válido (empieza con MLA)', 'error'); return; }
+    const btn = document.getElementById('btnLookupCreate');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando…'; }
+    try {
+      const res = await fetch('/api/drive-listado-lookup?mla=' + encodeURIComponent(mla));
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.ok === false) {
+        if (form) form.style.display = 'none';
+        if (log) log.innerHTML = `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;font-size:13px">❌ ${escapeHtml(d.error || ('HTTP ' + res.status))}</div>`;
+        return;
+      }
+      renderCreateDriveForm(d);
+    } catch (e) { showToast('Error: ' + e.message, 'error'); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar'; } }
+  }
+  function renderCreateDriveForm(d) {
+    window._createDrive = d;
+    const flexOpts = ['yes', 'not_available'];
+    const lpuOpts = ['yes', 'no'];
+    const shipOpts = ['MERCADO ENVIO', 'NO ENVIO'];
+    const provOpts = ['', 'CROMOSOL', 'OTERO', 'DM', 'BBA', 'COMBOS'];
+    const sel = (id, opts, val) => `<select id="${id}" style="padding:8px 10px;border:1px solid #cce0ff;border-radius:6px;font-size:13px;background:#fff;width:100%;box-sizing:border-box">${opts.map(o => `<option value="${o}" ${o === val ? 'selected' : ''}>${o === '' ? '— elegí —' : o}</option>`).join('')}</select>`;
+    const ro = (v) => (v && String(v).trim()) ? escapeHtml(v) : '<span style="color:#bbb">—</span>';
+    const lbl = 'font-size:11px;color:#888;font-weight:600;display:block;margin-bottom:3px';
+    const form = document.getElementById('createDriveForm');
+    form.style.display = 'block';
+    form.innerHTML = `
+      <div style="background:#f8fbff;border:1px solid #dceafe;border-radius:10px;padding:16px">
+        <div style="font-size:12px;color:#2471a3;margin-bottom:12px">Cuenta: <b>${escapeHtml(d.account_name)}</b> &rarr; hoja <b>${escapeHtml(d.sheet)}</b></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">
+          <div><label style="${lbl}">A · Item ID</label><div style="font-weight:700;color:#3483fa;font-size:13px">${escapeHtml(d.mla)}</div></div>
+          <div><label style="${lbl}">B · Flex</label>${sel('cd-flex', flexOpts, d.flex)}</div>
+          <div><label style="${lbl}">C · Local pick up</label>${sel('cd-lpu', lpuOpts, d.local_pick_up)}</div>
+          <div><label style="${lbl}">D · Envío</label>${sel('cd-ship', shipOpts, d.shipping)}</div>
+          <div style="grid-column:1/-1"><label style="${lbl}">E · Título corto (solo lectura)</label><div style="font-size:13px;color:#444">${ro(d.titulo_corto)}</div></div>
+          <div style="grid-column:1/-1"><label style="${lbl}">F · Título largo (solo lectura)</label><div style="font-size:13px;color:#444">${ro(d.titulo_largo)}</div></div>
+          <div><label style="${lbl}">G · Código</label><input id="cd-codigo" type="text" placeholder="Código" style="padding:8px 10px;border:1px solid #cce0ff;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box"></div>
+          <div><label style="${lbl}">H · Proveedor</label>${sel('cd-prov', provOpts, '')}</div>
+        </div>
+        <div style="margin-top:14px;text-align:right">
+          <button onclick="createDriveRow()" id="btnCreateDrive" style="padding:10px 24px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">➕ Crear</button>
+        </div>
+      </div>`;
+  }
+  // Paso 2: crear la fila (se agrega al final de la hoja de la cuenta en LISTADOS_TODOS).
+  async function createDriveRow() {
+    const d = window._createDrive; if (!d) return;
+    const payload = {
+      mla: d.mla, sheet: d.sheet,
+      flex: document.getElementById('cd-flex')?.value || '',
+      local_pick_up: document.getElementById('cd-lpu')?.value || '',
+      shipping: document.getElementById('cd-ship')?.value || '',
+      titulo_corto: d.titulo_corto || '',
+      titulo_largo: d.titulo_largo || '',
+      codigo: (document.getElementById('cd-codigo')?.value || '').trim(),
+      proveedor: document.getElementById('cd-prov')?.value || '',
+    };
+    const btn = document.getElementById('btnCreateDrive');
+    const log = document.getElementById('createDriveLog');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Creando…'; }
+    try {
+      const res = await fetch('/api/drive-listado-create', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r.ok === false) {
+        if (log) log.innerHTML = `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;font-size:13px">${r.already ? '⚠️' : '❌'} ${escapeHtml(r.error || ('HTTP ' + res.status))}</div>`;
+      } else {
+        if (log) log.innerHTML = `<div style="background:#f0fff4;border:1px solid #c3e6cb;border-radius:8px;padding:12px;font-size:13px">✅ Fila agregada a la hoja <b>${escapeHtml(r.sheet || d.sheet)}</b>${r.row ? (' (fila ' + r.row + ')') : ''}.</div>`;
+        const form = document.getElementById('createDriveForm'); if (form) form.style.display = 'none';
+        const inp = document.getElementById('createMla'); if (inp) inp.value = '';
+        window._createDrive = null;
+      }
+    } catch (e) { if (log) log.innerHTML = `<div style="color:#e74c3c;font-size:12px">❌ ${escapeHtml(e.message)}</div>`; }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '➕ Crear'; } }
   }
   // ==================== ELIMINAR PUBLICACIONES (IRREVERSIBLE) ====================
   function _selectedForDelete() {
