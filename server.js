@@ -2157,10 +2157,16 @@ async function _postPuente(url, payload, timeoutMs) {
   const to = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, timeoutMs || 120000);
   try {
     // redirect por defecto = 'follow' → sigue el 302 de Apps Script hasta el JSON.
-    // User-Agent explícito (Google a veces responde HTML si no viene) + timeout para no colgarse.
+    // Headers "de navegador": si el pedido NO parece un browser, googleusercontent devuelve una
+    // página HTML (con JavaScript) en vez del JSON. Con User-Agent de Chrome + Accept JSON, sirve el JSON.
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (AutochapPanel)' },
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'es-AR,es;q=0.9',
+      },
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });
