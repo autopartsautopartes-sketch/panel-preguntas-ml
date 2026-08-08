@@ -2128,14 +2128,9 @@ route('POST', '/api/drive-listado-update', async (req, res) => {
   const PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
-    const r = await fetch(PURL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clave: PKEY, op: 'editListado', edits }),
-    });
-    const text = await r.text();
-    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON', raw: String(text).slice(0, 300) }; }
-    if (!r.ok || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente respondió HTTP ' + r.status), detail: data });
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'editListado', edits });
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220), raw: String(text).slice(0, 300) }; }
+    if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), detail: data });
     return sendJSON(res, 200, { ok: true, updated: Number(data.updated) || 0, not_found: Array.isArray(data.not_found) ? data.not_found : [] });
   } catch (e) {
     return sendJSON(res, 502, { error: 'No se pudo contactar el puente de Drive: ' + String((e && e.message) || e) });
@@ -2153,6 +2148,25 @@ const LISTADO_SHEET_BY_ACCOUNT = {
 function _hojaDeCuenta(name) {
   if (!name) return null;
   return LISTADO_SHEET_BY_ACCOUNT[name] || LISTADO_SHEET_BY_ACCOUNT[String(name).trim()] || null;
+}
+// POST al puente (Apps Script) SIGUIENDO el redirect a mano. Apps Script responde con un 302 hacia
+// script.googleusercontent.com; el fetch del server a veces NO lo sigue y devuelve el HTML del
+// redirect (por eso daba "no devolvió JSON"). Acá lo seguimos con GET hasta obtener el cuerpo real.
+async function _postPuente(url, payload, timeoutMs) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, timeoutMs || 120000);
+  try {
+    // redirect por defecto = 'follow' → sigue el 302 de Apps Script hasta el JSON.
+    // User-Agent explícito (Google a veces responde HTML si no viene) + timeout para no colgarse.
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (AutochapPanel)' },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const text = await r.text();
+    return { status: r.status, text };
+  } finally { clearTimeout(to); }
 }
 // GET /api/drive-listado-lookup?mla=MLA... — trae de ML los datos para armar la fila del listado
 // (cuenta/hoja destino, flex, local_pick_up, envío, título corto y largo). NO escribe nada.
@@ -2222,14 +2236,9 @@ route('POST', '/api/drive-listado-create', async (req, res) => {
   const PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
-    const r = await fetch(PURL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clave: PKEY, op: 'addRow', sheet, row }),
-    });
-    const text = await r.text();
-    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON', raw: String(text).slice(0, 300) }; }
-    if (!r.ok || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || ('Puente respondió HTTP ' + r.status), already: !!(data && data.already), detail: data });
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'addRow', sheet, row });
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220), raw: String(text).slice(0, 300) }; }
+    if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), already: !!(data && data.already), detail: data });
     return sendJSON(res, 200, { ok: true, sheet: data.sheet || sheet, row: data.row || null });
   } catch (e) {
     return sendJSON(res, 502, { error: 'No se pudo contactar el puente de Drive: ' + String((e && e.message) || e) });
