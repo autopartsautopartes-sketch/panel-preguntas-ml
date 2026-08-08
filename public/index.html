@@ -4798,6 +4798,32 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     section.style.display = 'block';
     section.scrollIntoView({ behavior: 'smooth' });
     showToast(`${data.length} publicación${data.length !== 1 ? 'es' : ''} encontrada${data.length !== 1 ? 's' : ''}`, 'success');
+    fillDriveCodigos(data);   // trae código/proveedor actuales de la Planilla y precarga esos campos
+  }
+  // Trae de la Planilla (Drive) el código y proveedor ACTUALES de cada MLA de los resultados y los precarga
+  // en las columnas Código/Proveedor (fondo verdecito = valor que ya existe en la Planilla).
+  async function fillDriveCodigos(data) {
+    try {
+      const mlas = (data || []).map(r => r && r.item_id).filter(x => /^MLA\d+$/i.test(String(x)));
+      if (!mlas.length) return;
+      const res = await fetch('/api/drive-listado-codigos', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mlas })
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!d || !d.ok || !d.map) return;
+      data.forEach((r, i) => {
+        const info = d.map[String(r.item_id).toUpperCase()];
+        if (!info) return;
+        const ci = document.querySelector(`.si-codigo[data-idx="${i}"]`);
+        if (ci && info.codigo != null && String(info.codigo) !== '') { ci.value = info.codigo; ci.style.background = '#f0fff4'; ci.title = 'Código actual en la Planilla'; }
+        const pi = document.querySelector(`.si-proveedor[data-idx="${i}"]`);
+        if (pi && info.proveedor != null && String(info.proveedor) !== '') {
+          const val = String(info.proveedor);
+          if (![...pi.options].some(o => o.value === val)) { const o = document.createElement('option'); o.value = val; o.textContent = val; pi.appendChild(o); }
+          pi.value = val; pi.style.background = '#f0fff4'; pi.title = 'Proveedor actual en la Planilla';
+        }
+      });
+    } catch (e) { /* si falla, los campos quedan vacíos como antes */ }
   }
   function applyBulkFill() {
     const bulkStatus = document.getElementById('bulk-status').value;
@@ -4989,6 +5015,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         return;
       }
       renderCreateDriveForm(d);
+      // ¿ya está en el listado? -> leyenda roja + deshabilitar "Crear" (para no duplicar)
+      try {
+        const cres = await fetch('/api/drive-listado-codigos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mlas: [mla] }) });
+        const cd = await cres.json().catch(() => ({}));
+        const info = cd && cd.map && cd.map[mla];
+        if (info) {
+          const hoja = info.sheet ? ' (hoja ' + escapeHtml(info.sheet) + ')' : '';
+          if (form) form.insertAdjacentHTML('afterbegin',
+            `<div style="background:#c0392b;color:#fff;border-radius:8px;padding:12px 14px;font-size:14px;font-weight:800;margin-bottom:12px;display:flex;align-items:center;gap:8px">⛔ El producto ya está en el listado${hoja}</div>`);
+          const cb = document.getElementById('btnCreateDrive');
+          if (cb) { cb.disabled = true; cb.style.opacity = '0.5'; cb.style.cursor = 'not-allowed'; cb.style.background = '#999'; cb.textContent = 'Ya está en el listado'; }
+        }
+      } catch (e) { /* si el chequeo falla, no bloquea la creación */ }
     } catch (e) { showToast('Error: ' + e.message, 'error'); }
     finally { if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar'; } }
   }
@@ -5044,7 +5083,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       });
       const r = await res.json().catch(() => ({}));
       if (!res.ok || r.ok === false) {
-        if (log) log.innerHTML = `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;font-size:13px">${r.already ? '⚠️' : '❌'} ${escapeHtml(r.error || ('HTTP ' + res.status))}</div>`;
+        if (log) log.innerHTML = r.already
+          ? `<div style="background:#c0392b;color:#fff;border-radius:8px;padding:12px 14px;font-size:14px;font-weight:800">⛔ El producto ya está en el listado</div>`
+          : `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;font-size:13px">❌ ${escapeHtml(r.error || ('HTTP ' + res.status))}</div>`;
       } else {
         if (log) log.innerHTML = `<div style="background:#f0fff4;border:1px solid #c3e6cb;border-radius:8px;padding:12px;font-size:13px">✅ Fila agregada a la hoja <b>${escapeHtml(r.sheet || d.sheet)}</b>${r.row ? (' (fila ' + r.row + ')') : ''}.</div>`;
         const form = document.getElementById('createDriveForm'); if (form) form.style.display = 'none';
