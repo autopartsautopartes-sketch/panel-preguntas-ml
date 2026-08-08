@@ -2569,14 +2569,15 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
         res.write(JSON.stringify({type:'progress', scanned:totalScanned, found:sent, account:account.name, status:'buscando...'})+'\n');
         const allIds = new Set();
         for (const status of statuses) {
-          // Para cada palabra obtener IDs y luego intersectar (AND entre palabras)
-          const wordSets = await Promise.all(searchWords.map(w => fastWordSearch(account.seller_id, token, w, status)));
+          // Para cada palabra obtener IDs. ML limita cada búsqueda a ~1000 resultados, así que intersectar
+          // TODAS las palabras pierde ítems (si una palabra común como "faro" tiene miles, el ítem puede
+          // quedar fuera del tope). Usamos el conjunto MÁS CHICO (la palabra más distintiva, que sí entra
+          // completa) como candidatos; details() aplica titleOk (TODAS las palabras) → resultado exacto.
+          const wordSets = (await Promise.all(searchWords.map(w => fastWordSearch(account.seller_id, token, w, status)))).filter(s => s.size > 0);
           if (!wordSets.length) continue;
-          let intersection = wordSets[0];
-          for (let i = 1; i < wordSets.length; i++) {
-            intersection = new Set([...intersection].filter(id => wordSets[i].has(id)));
-          }
-          intersection.forEach(id => allIds.add(id));
+          let base = wordSets[0];
+          for (const s of wordSets) if (s.size < base.size) base = s;
+          base.forEach(id => allIds.add(id));
         }
         totalScanned += allIds.size;
         for (const r of await details(account, token, [...allIds])) emit(r);
@@ -2739,14 +2740,14 @@ route('POST', '/api/search-listings', async (req, res) => {
     }
     const allIds = new Set();
     for (const status of statuses) {
-      // Buscar cada palabra en paralelo y luego intersectar (AND entre todas)
-      const wordSets = await Promise.all(searchTitleWords.map(w => fastWordIds(account.seller_id, w, status)));
+      // ML limita cada búsqueda a ~1000 resultados; intersectar TODAS las palabras pierde ítems cuando una
+      // palabra común (ej. "faro") tiene miles. Usamos el conjunto MÁS CHICO (palabra distintiva, completa)
+      // como candidatos; fetchDetailsAndPush aplica titleMatches (TODAS las palabras) → resultado exacto.
+      const wordSets = (await Promise.all(searchTitleWords.map(w => fastWordIds(account.seller_id, w, status)))).filter(s => s.size > 0);
       if (!wordSets.length) continue;
-      let intersection = wordSets[0];
-      for (let i = 1; i < wordSets.length; i++) {
-        intersection = new Set([...intersection].filter(id => wordSets[i].has(id)));
-      }
-      intersection.forEach(id => allIds.add(id));
+      let base = wordSets[0];
+      for (const s of wordSets) if (s.size < base.size) base = s;
+      base.forEach(id => allIds.add(id));
     }
     if (allIds.size > 0) {
       await fetchDetailsAndPush(account, token, [...allIds]);
