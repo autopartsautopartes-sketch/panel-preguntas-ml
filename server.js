@@ -2198,12 +2198,16 @@ async function _post(payload){
     let data; try{data=JSON.parse(text);}catch(e){ throw new Error('El puente no devolvió JSON (HTTP '+r.status+'). Respuesta: '+String(text).replace(/\s+/g,' ').trim().slice(0,220)); }
     if(!r.ok||data.ok===false) throw new Error((data&&data.error)||('El puente respondió HTTP '+r.status));
     return data;
+  } catch(err){
+    const cau = err && err.cause ? (' | causa: '+String((err.cause&&err.cause.message)||err.cause)) : '';
+    throw new Error(String((err&&err.message)||err)+cau);
   } finally { clearTimeout(to); }
 }
 async function _getBytes(){
   const parts=[]; let offset=0, total=0;
   for(let i=0;i<64;i++){
-    const d=await _post({clave:PKEY,op:'getBytes',offset:offset,len:CHUNK});
+    let d; try{ d=await _post({clave:PKEY,op:'getBytes',offset:offset,len:CHUNK}); }
+    catch(e){ throw new Error('getBytes(offset '+offset+'): '+((e&&e.message)||e)); }
     total=Number(d.total)||0;
     parts.push(Buffer.from(String(d.b64||''),'base64'));
     offset+=Number(d.len)||0;
@@ -2211,7 +2215,25 @@ async function _getBytes(){
   }
   return Buffer.concat(parts);
 }
-async function _putBytes(buf){ return _post({clave:PKEY,op:'putBytes',b64:buf.toString('base64')}); }
+// Subida en tramos CHICOS + commit del lado del puente. El POST de ~11 MB de una sola vez lo rechaza
+// Apps Script (por eso fallaba "fetch failed" sin registrar putBytes). PUT_CH es múltiplo de 3 para que
+// el base64 de cada tramo (menos el último) no lleve padding y se puedan concatenar tal cual en el puente.
+const PUT_CH = 3145728; // 3 MB
+async function _putBytes(buf){
+  let init; try{ init=await _post({clave:PKEY,op:'putInit'}); }
+  catch(e){ throw new Error('putInit: '+((e&&e.message)||e)); }
+  const fid=init.folderId;
+  if(!fid) throw new Error('putInit no devolvió folderId');
+  let idx=0;
+  for(let off=0; off<buf.length; off+=PUT_CH){
+    const slice=buf.slice(off, Math.min(buf.length, off+PUT_CH));
+    try{ await _post({clave:PKEY,op:'putChunk',folderId:fid,idx:idx,b64:slice.toString('base64')}); }
+    catch(e){ throw new Error('putChunk('+idx+'): '+((e&&e.message)||e)); }
+    idx++;
+  }
+  try{ return await _post({clave:PKEY,op:'putCommit',folderId:fid}); }
+  catch(e){ throw new Error('putCommit: '+((e&&e.message)||e)); }
+}
 async function _main(task){
   const buf=await _getBytes();
   if(task.op==='editListado'){
