@@ -2432,6 +2432,29 @@ route('POST', '/api/drive-listado-create', async (req, res) => {
     return sendJSON(res, 502, { error: 'No se pudo crear en Drive: ' + String((e && e.message) || e) });
   }
 });
+// POST /api/drive-listado-codigos — devuelve, para una lista de MLAs, su código y proveedor ACTUALES
+// en la Planilla (LISTADOS_TODOS). Sirve para precargar esos campos al buscar. Solo lectura.
+route('POST', '/api/drive-listado-codigos', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && (u.can_bulk_update === true || u.can_search_update === true)))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const b = await parseBody(req);
+  const mlas = (Array.isArray(b.mlas) ? b.mlas : []).map(m => String(m || '').trim()).filter(m => /^MLA\d+$/i.test(m));
+  if (!mlas.length) return sendJSON(res, 200, { ok: true, map: {} });
+  const PURL = process.env.LISTADO_PUENTE_URL;
+  const PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 200, { ok: true, map: {} }); // sin puente configurado: no precarga, no rompe
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'getCodigos', mlas });
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false }; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 200, { ok: true, map: {} });
+    return sendJSON(res, 200, { ok: true, map: (data && data.map) || {} });
+  } catch (e) {
+    return sendJSON(res, 200, { ok: true, map: {} }); // ante cualquier error, no precarga (no rompe la búsqueda)
+  }
+});
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
 route('POST', '/api/search-listings-stream', async (req, res) => {
   const sess = requireAuth(req);
