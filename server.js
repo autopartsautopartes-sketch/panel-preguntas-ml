@@ -2540,7 +2540,13 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
     if (hasTitle) {
       // Búsqueda rápida por índice ML: por cada palabra usa ?q=word, luego intersecta los ID sets (AND).
       // Evita escanear TODO el catálogo con search_type:scan — reduce llamadas de ~120 a ~6-10.
+      // IMPORTANTE: para consultar el índice de ML usamos SOLO las palabras "distintivas" (con letras y 3+
+      // caracteres). Los tokens cortos/numéricos como "23" y "25" (que salen de "23/25") ML no los indexa
+      // por separado y romperían la intersección (AND) devolviendo 0. El filtro final (titleOk) igual exige
+      // TODAS las palabras (incluidos los números) sobre el título real, así el resultado sigue siendo exacto.
       const statuses = ['active','paused'];
+      const _qWords = words.filter(w => w.length >= 3 && /[a-z]/.test(w));
+      const searchWords = _qWords.length ? _qWords : words;
       let totalScanned = 0;
       async function fastWordSearch(sellerId, token, word, status) {
         const ids = new Set();
@@ -2564,7 +2570,7 @@ route('POST', '/api/search-listings-stream', async (req, res) => {
         const allIds = new Set();
         for (const status of statuses) {
           // Para cada palabra obtener IDs y luego intersectar (AND entre palabras)
-          const wordSets = await Promise.all(words.map(w => fastWordSearch(account.seller_id, token, w, status)));
+          const wordSets = await Promise.all(searchWords.map(w => fastWordSearch(account.seller_id, token, w, status)));
           if (!wordSets.length) continue;
           let intersection = wordSets[0];
           for (let i = 1; i < wordSets.length; i++) {
@@ -2614,6 +2620,9 @@ route('POST', '/api/search-listings', async (req, res) => {
       .trim();
   }
   const titleWords = normText(titleRaw).split(' ').filter(w => w.length >= 2);
+  // Para el índice de ML usamos solo palabras distintivas (con letras, 3+). Los tokens numéricos cortos
+  // ("23","25" de "23/25") no los indexa ML y romperían la intersección. titleMatches igual exige TODAS.
+  const searchTitleWords = (function(){ var q = titleWords.filter(function(w){ return w.length >= 3 && /[a-z]/.test(w); }); return q.length ? q : titleWords; })();
   const hasTitleFilter = titleWords.length > 0;
   function titleMatches(t) {
     if (!hasTitleFilter) return true;
@@ -2731,7 +2740,7 @@ route('POST', '/api/search-listings', async (req, res) => {
     const allIds = new Set();
     for (const status of statuses) {
       // Buscar cada palabra en paralelo y luego intersectar (AND entre todas)
-      const wordSets = await Promise.all(titleWords.map(w => fastWordIds(account.seller_id, w, status)));
+      const wordSets = await Promise.all(searchTitleWords.map(w => fastWordIds(account.seller_id, w, status)));
       if (!wordSets.length) continue;
       let intersection = wordSets[0];
       for (let i = 1; i < wordSets.length; i++) {
