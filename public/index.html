@@ -4862,6 +4862,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const btn = document.getElementById('btnApplySearch');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Actualizando Drive…'; }
     const log = document.getElementById('searchUpdateLog');
+    if (log) log.insertAdjacentHTML('beforeend', '<div id="drivePending" style="background:#f8f9fa;border-radius:8px;padding:10px;margin-top:8px;font-size:12px;color:#666">⏳ Guardando en Drive… puede tardar ~20-30s (baja el archivo, lo edita y lo vuelve a subir). No cierres la página.</div>');
     try {
       const res = await fetch('/api/drive-listado-update', {
         method: 'POST',
@@ -4880,6 +4881,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch (e) {
       if (log) log.insertAdjacentHTML('beforeend', `<div style="background:#fff8f8;border:1px solid #f8d7da;border-radius:8px;padding:12px;margin-top:8px;font-size:13px">❌ <b>Drive:</b> ${escapeHtml(e.message)}</div>`);
     } finally {
+      document.getElementById('drivePending')?.remove();
       if (btn) { btn.disabled = false; btn.textContent = '✅ Aplicar a seleccionados'; }
     }
   }
@@ -5035,6 +5037,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const btn = document.getElementById('btnCreateDrive');
     const log = document.getElementById('createDriveLog');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Creando…'; }
+    if (log) log.innerHTML = '<div style="background:#f8f9fa;border-radius:8px;padding:10px;font-size:12px;color:#666">⏳ Creando en Drive… puede tardar ~20-30s. No cierres la página.</div>';
     try {
       const res = await fetch('/api/drive-listado-create', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
