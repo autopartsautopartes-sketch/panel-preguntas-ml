@@ -2276,7 +2276,7 @@ async function _runDriveWorker(task) {
     try {
       child = fork(workerPath, [], { env: Object.assign({}, process.env, { XLSX_PATH: xlsxPath, PURL: PURL, PKEY: PKEY }), stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     } catch (e) { return reject(new Error('No pude iniciar el proceso de edición: ' + ((e && e.message) || e))); }
-    const to = setTimeout(() => { if (settled) return; settled = true; try { child.kill('SIGKILL'); } catch (e) {} reject(new Error('La operación en Drive tardó demasiado (timeout).')); }, 150000);
+    const to = setTimeout(() => { if (settled) return; settled = true; try { child.kill('SIGKILL'); } catch (e) {} reject(new Error('La operación en Drive tardó demasiado (timeout).')); }, 300000);
     let stderr = '';
     if (child.stderr) child.stderr.on('data', d => { if (stderr.length < 3000) stderr += String(d); });
     child.on('message', (msg) => { if (settled) return; settled = true; clearTimeout(to); try { child.kill(); } catch (e) {} resolve(msg); });
@@ -2309,8 +2309,10 @@ route('POST', '/api/drive-listado-update', async (req, res) => {
   const PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
-    const data = await _runDriveWorker({ op: 'editListado', edits });
-    if (!data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || 'Error editando en Drive', detail: data });
+    // La edición es directa sobre la Planilla de Google (rápida): le mandamos las ediciones al puente.
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'editListado', edits });
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220) }; }
+    if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), detail: data });
     return sendJSON(res, 200, { ok: true, updated: Number(data.updated) || 0, not_found: Array.isArray(data.not_found) ? data.not_found : [] });
   } catch (e) {
     return sendJSON(res, 502, { error: 'No se pudo editar en Drive: ' + String((e && e.message) || e) });
@@ -2422,8 +2424,9 @@ route('POST', '/api/drive-listado-create', async (req, res) => {
   const PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
-    const data = await _runDriveWorker({ op: 'addRow', sheet, row });
-    if (!data || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || 'Error creando en Drive', already: !!(data && data.already), detail: data });
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'addRow', sheet, row });
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220) }; }
+    if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), already: !!(data && data.already), detail: data });
     return sendJSON(res, 200, { ok: true, sheet: data.sheet || sheet, row: data.row || null });
   } catch (e) {
     return sendJSON(res, 502, { error: 'No se pudo crear en Drive: ' + String((e && e.message) || e) });
