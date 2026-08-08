@@ -4803,13 +4803,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // Trae de la Planilla (Drive) el código y proveedor ACTUALES de cada MLA de los resultados y los precarga
   // en las columnas Código/Proveedor (fondo verdecito = valor que ya existe en la Planilla).
   async function fillDriveCodigos(data) {
+    // indicador de carga en las columnas Código/Proveedor (lee la Planilla, puede tardar unos segundos)
+    const marks = [];
+    (data || []).forEach((r, i) => {
+      const ci = document.querySelector(`.si-codigo[data-idx="${i}"]`);
+      if (ci) { ci.placeholder = '⏳…'; ci.style.background = '#fffdf0'; marks.push(ci); }
+      const pi = document.querySelector(`.si-proveedor[data-idx="${i}"]`);
+      if (pi) { pi.style.background = '#fffdf0'; marks.push(pi); }
+    });
+    const clearMarks = () => marks.forEach(el => { if (el.style.background === 'rgb(255, 253, 240)') el.style.background = '#fff'; if (el.placeholder === '⏳…') el.placeholder = '—'; });
     try {
       const mlas = (data || []).map(r => r && r.item_id).filter(x => /^MLA\d+$/i.test(String(x)));
-      if (!mlas.length) return;
+      if (!mlas.length) { clearMarks(); return; }
       const res = await fetch('/api/drive-listado-codigos', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mlas })
       });
       const d = await res.json().catch(() => ({}));
+      clearMarks();
       if (!d || !d.ok || !d.map) return;
       data.forEach((r, i) => {
         const info = d.map[String(r.item_id).toUpperCase()];
@@ -4823,7 +4833,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           pi.value = val; pi.style.background = '#f0fff4'; pi.title = 'Proveedor actual en la Planilla';
         }
       });
-    } catch (e) { /* si falla, los campos quedan vacíos como antes */ }
+    } catch (e) { clearMarks(); /* si falla, los campos quedan vacíos como antes */ }
   }
   function applyBulkFill() {
     const bulkStatus = document.getElementById('bulk-status').value;
