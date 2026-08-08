@@ -2104,9 +2104,168 @@ route('POST', '/api/bulk-delete', async (req, res) => {
   res.end();
   console.log(`[DELETE] Fin: ${okCount} eliminadas, ${errCount} con error (${account.name})`);
 });
+// ===================== DRIVE LISTADO — bytes crudos + edición en Node (fuera del event-loop) =====================
+// IMPORTANTE (por qué cambió): el puente de Apps Script NO puede parsear LISTADOS_TODOS.xlsx (~8 MB): al
+// convertirlo a Planilla o leer su XML se queda SIN MEMORIA y termina en "Error" (por eso fallaba). Ahora el
+// puente solo LEE/ESCRIBE bytes (igual que el puente de "salidas", que sube archivos a Drive todos los días sin
+// problemas). La edición fina (buscar el MLA, poner G=código / H=proveedor, borrar equivalencias I-L, o agregar
+// una fila) la hace SheetJS acá en el panel, dentro de un PROCESO HIJO de corta vida: así el parseo de 8 MB no
+// bloquea el event-loop (no congela el panel) ni infla su memoria. SheetJS se toma del vendor ya cacheado
+// (vendor_xlsx.js), así que NO hace falta agregar dependencias ni tocar package.json.
+const DRIVE_WORKER_SRC = String.raw`
+'use strict';
+const XLSX = require(process.env.XLSX_PATH);
+const PURL = process.env.PURL, PKEY = process.env.PKEY;
+const CHUNK = 3670016; // 3.5 MB por tramo de descarga (base64 ~4.7 MB, holgado bajo cualquier límite)
+function _norm(s){ s=String(s==null?'':s).toLowerCase();
+  s=s.replace(/[áàä]/g,'a').replace(/[éèë]/g,'e').replace(/[íìï]/g,'i').replace(/[óòö]/g,'o').replace(/[úùü]/g,'u');
+  return s.replace(/\s+/g,' ').trim(); }
+function _cols(ws){
+  const rng=XLSX.utils.decode_range(ws['!ref']||'A1');
+  const map={itemId:0,codigo:6,proveedor:7,equis:[8,9,10,11]};
+  const eq=[]; let fi=null,fc=null,fp=null;
+  for(let c=rng.s.c;c<=rng.e.c;c++){
+    const cell=ws[XLSX.utils.encode_cell({r:0,c:c})];
+    const h=_norm(cell&&cell.v);
+    if(h.indexOf('item_id')>=0||h.indexOf('itemid')>=0) fi=c;
+    else if(h==='codigo') fc=c;
+    else if(h==='proveedor') fp=c;
+    else if(h==='codigo 2'||h==='codigo 3'||h==='codigo2'||h==='codigo3') eq.push(c);
+    else if(h==='proveedor 2'||h==='proveedor 3'||h==='proveedor2'||h==='proveedor3') eq.push(c);
+  }
+  if(fi!=null)map.itemId=fi; if(fc!=null)map.codigo=fc; if(fp!=null)map.proveedor=fp;
+  if(eq.length)map.equis=eq;
+  return map;
+}
+function _setText(ws,r,c,v){ ws[XLSX.utils.encode_cell({r:r,c:c})]={t:'s',v:String(v)}; }
+function _clear(ws,r,c){ delete ws[XLSX.utils.encode_cell({r:r,c:c})]; }
+function editListado(buf,edits){
+  const wb=XLSX.read(buf,{type:'buffer'});
+  let updated=0; const notFound=[];
+  for(const ed of edits){
+    const mlaU=String(ed.mla||'').trim().toUpperCase();
+    const codigo=String(ed.codigo==null?'':ed.codigo);
+    const proveedor=String(ed.proveedor==null?'':ed.proveedor);
+    const names=(ed.sheet&&wb.Sheets[ed.sheet])?[ed.sheet]:wb.SheetNames;
+    let hit=false;
+    for(const nm of names){
+      const ws=wb.Sheets[nm]; if(!ws||!ws['!ref'])continue;
+      const cols=_cols(ws); const rng=XLSX.utils.decode_range(ws['!ref']);
+      for(let r=rng.s.r+1;r<=rng.e.r;r++){
+        const a=ws[XLSX.utils.encode_cell({r:r,c:cols.itemId})];
+        if(a&&String(a.v).trim().toUpperCase()===mlaU){
+          if(codigo!=='')_setText(ws,r,cols.codigo,codigo);
+          if(proveedor!=='')_setText(ws,r,cols.proveedor,proveedor);
+          for(const ec of cols.equis)_clear(ws,r,ec);
+          hit=true; updated++; break;
+        }
+      }
+      if(hit)break;
+    }
+    if(!hit)notFound.push(ed.mla);
+  }
+  const out=updated>0?Buffer.from(XLSX.write(wb,{type:'buffer',bookType:'xlsx'})):null;
+  return {out:out,updated:updated,notFound:notFound};
+}
+function addRow(buf,sheet,row){
+  const wb=XLSX.read(buf,{type:'buffer'});
+  const ws=wb.Sheets[sheet];
+  if(!ws) return {error:'No encontré la hoja "'+sheet+'" en el archivo de Drive'};
+  const cols=_cols(ws); const rng=XLSX.utils.decode_range(ws['!ref']||'A1');
+  const mlaU=String(row.item_id||'').trim().toUpperCase();
+  for(let r=rng.s.r+1;r<=rng.e.r;r++){
+    const a=ws[XLSX.utils.encode_cell({r:r,c:cols.itemId})];
+    if(a&&String(a.v).trim().toUpperCase()===mlaU) return {already:true,error:'El MLA ya está en la hoja '+sheet};
+  }
+  const nr=rng.e.r+1;
+  const fields=[[cols.itemId,row.item_id],[1,row.flex],[2,row.local_pick_up],[3,row.shipping],
+    [4,row.titulo_corto],[5,row.titulo_largo],[cols.codigo,row.codigo],[cols.proveedor,row.proveedor]];
+  for(const f of fields){ const c=f[0]; const v=String(f[1]==null?'':f[1]); if(v==='')continue; _setText(ws,nr,c,v); }
+  rng.e.r=nr; ws['!ref']=XLSX.utils.encode_range(rng);
+  const out=Buffer.from(XLSX.write(wb,{type:'buffer',bookType:'xlsx'}));
+  return {out:out,added:1,sheet:sheet,row:nr+1};
+}
+async function _post(payload){
+  const ctrl=new AbortController();
+  const to=setTimeout(function(){try{ctrl.abort();}catch(e){}},120000);
+  try{
+    const r=await fetch(PURL,{method:'POST',headers:{
+      'Content-Type':'application/json',
+      'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept':'application/json, text/plain, */*','Accept-Language':'es-AR,es;q=0.9'},
+      body:JSON.stringify(payload),signal:ctrl.signal});
+    const text=await r.text();
+    let data; try{data=JSON.parse(text);}catch(e){ throw new Error('El puente no devolvió JSON (HTTP '+r.status+'). Respuesta: '+String(text).replace(/\s+/g,' ').trim().slice(0,220)); }
+    if(!r.ok||data.ok===false) throw new Error((data&&data.error)||('El puente respondió HTTP '+r.status));
+    return data;
+  } finally { clearTimeout(to); }
+}
+async function _getBytes(){
+  const parts=[]; let offset=0, total=0;
+  for(let i=0;i<64;i++){
+    const d=await _post({clave:PKEY,op:'getBytes',offset:offset,len:CHUNK});
+    total=Number(d.total)||0;
+    parts.push(Buffer.from(String(d.b64||''),'base64'));
+    offset+=Number(d.len)||0;
+    if(d.eof||!d.len||offset>=total) break;
+  }
+  return Buffer.concat(parts);
+}
+async function _putBytes(buf){ return _post({clave:PKEY,op:'putBytes',b64:buf.toString('base64')}); }
+async function _main(task){
+  const buf=await _getBytes();
+  if(task.op==='editListado'){
+    const r=editListado(buf,task.edits||[]);
+    if(r.updated>0) await _putBytes(r.out);
+    return {ok:true,updated:r.updated,not_found:r.notFound};
+  }
+  if(task.op==='addRow'){
+    const r=addRow(buf,task.sheet,task.row||{});
+    if(r.error) return {ok:false,error:r.error,already:!!r.already};
+    await _putBytes(r.out);
+    return {ok:true,added:r.added,sheet:r.sheet,row:r.row};
+  }
+  return {ok:false,error:'op desconocida'};
+}
+process.on('message',function(task){
+  _main(task).then(function(res){ try{process.send(res);}catch(e){} process.exit(0); })
+    .catch(function(e){ try{process.send({ok:false,error:String((e&&e.message)||e)});}catch(_){} process.exit(0); });
+});
+`;
+let _driveWorkerReady = null;
+async function _ensureDriveWorkerFile() {
+  const p = path.join(DATA_DIR, '.drive_listado_worker.js');
+  try { fs.writeFileSync(p, DRIVE_WORKER_SRC); } catch (e) { throw new Error('No pude preparar el worker de Drive: ' + ((e && e.message) || e)); }
+  return p;
+}
+// Corre la operación de Drive en un PROCESO HIJO efímero (no bloquea el panel). Devuelve el objeto resultado.
+async function _runDriveWorker(task) {
+  const PURL = process.env.LISTADO_PUENTE_URL;
+  const PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) throw new Error('Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).');
+  await _getVendor('xlsx');                     // asegura vendor_xlsx.js en disco (SheetJS)
+  const xlsxPath = _vendorDiskPath('xlsx');
+  if (!xlsxPath || !fs.existsSync(xlsxPath)) throw new Error('No pude preparar la librería xlsx (vendor).');
+  const workerPath = await _ensureDriveWorkerFile();
+  const { fork } = require('child_process');
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let child;
+    try {
+      child = fork(workerPath, [], { env: Object.assign({}, process.env, { XLSX_PATH: xlsxPath, PURL: PURL, PKEY: PKEY }), stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    } catch (e) { return reject(new Error('No pude iniciar el proceso de edición: ' + ((e && e.message) || e))); }
+    const to = setTimeout(() => { if (settled) return; settled = true; try { child.kill('SIGKILL'); } catch (e) {} reject(new Error('La operación en Drive tardó demasiado (timeout).')); }, 150000);
+    let stderr = '';
+    if (child.stderr) child.stderr.on('data', d => { if (stderr.length < 3000) stderr += String(d); });
+    child.on('message', (msg) => { if (settled) return; settled = true; clearTimeout(to); try { child.kill(); } catch (e) {} resolve(msg); });
+    child.on('error', (e) => { if (settled) return; settled = true; clearTimeout(to); reject(new Error('Fallo el proceso de edición: ' + ((e && e.message) || e))); });
+    child.on('exit', (code) => { if (settled) return; settled = true; clearTimeout(to); reject(new Error('El proceso de edición terminó sin respuesta' + (stderr ? (': ' + stderr.replace(/\s+/g, ' ').trim().slice(0, 300)) : (' (código ' + code + ')')))); });
+    try { child.send(task); } catch (e) { if (!settled) { settled = true; clearTimeout(to); reject(new Error('No pude enviar la tarea al proceso de edición: ' + ((e && e.message) || e))); } }
+  });
+}
 // POST /api/drive-listado-update — escribe código/proveedor en LISTADOS_TODOS (Drive) para uno o varios MLA.
-// El panel NO escribe en Drive directo: le manda las ediciones al "puente" (Apps Script) que edita el archivo
-// quirúrgicamente (columna G=código, H=proveedor, y borra las equivalencias I-L de esa fila) y hace backup antes.
+// El panel NO escribe en Drive directo: baja los bytes por el puente, edita con SheetJS en un proceso hijo
+// (columna G=código, H=proveedor, y borra las equivalencias I-L de esa fila) y vuelve a subir los bytes.
 // La URL y la clave del puente van por variable de entorno (NO se escriben en el código).
 route('POST', '/api/drive-listado-update', async (req, res) => {
   const sess = requireAuth(req);
@@ -2128,12 +2287,11 @@ route('POST', '/api/drive-listado-update', async (req, res) => {
   const PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
-    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'editListado', edits });
-    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220), raw: String(text).slice(0, 300) }; }
-    if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), detail: data });
+    const data = await _runDriveWorker({ op: 'editListado', edits });
+    if (!data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || 'Error editando en Drive', detail: data });
     return sendJSON(res, 200, { ok: true, updated: Number(data.updated) || 0, not_found: Array.isArray(data.not_found) ? data.not_found : [] });
   } catch (e) {
-    return sendJSON(res, 502, { error: 'No se pudo contactar el puente de Drive: ' + String((e && e.message) || e) });
+    return sendJSON(res, 502, { error: 'No se pudo editar en Drive: ' + String((e && e.message) || e) });
   }
 });
 // Mapa cuenta (nombre en ML) -> hoja del listado en Drive (confirmado con el usuario).
@@ -2242,12 +2400,11 @@ route('POST', '/api/drive-listado-create', async (req, res) => {
   const PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
-    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'addRow', sheet, row });
-    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220), raw: String(text).slice(0, 300) }; }
-    if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), already: !!(data && data.already), detail: data });
+    const data = await _runDriveWorker({ op: 'addRow', sheet, row });
+    if (!data || data.ok === false) return sendJSON(res, (data && data.already) ? 409 : 502, { error: (data && data.error) || 'Error creando en Drive', already: !!(data && data.already), detail: data });
     return sendJSON(res, 200, { ok: true, sheet: data.sheet || sheet, row: data.row || null });
   } catch (e) {
-    return sendJSON(res, 502, { error: 'No se pudo contactar el puente de Drive: ' + String((e && e.message) || e) });
+    return sendJSON(res, 502, { error: 'No se pudo crear en Drive: ' + String((e && e.message) || e) });
   }
 });
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
