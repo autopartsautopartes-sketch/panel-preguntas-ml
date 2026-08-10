@@ -2362,8 +2362,7 @@ route('GET', '/api/drive-listado-lookup', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
-  const u = db.users.find(x => x.id === sess.userId);
-  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  // "Crear en Drive" habilitado para TODOS los usuarios logueados (no requiere permiso especial).
   const mla = String(new URL(req.url, 'http://x').searchParams.get('mla') || '').trim().toUpperCase();
   if (!/^MLA\d+$/.test(mla)) return sendJSON(res, 400, { error: 'MLA inválido (formato MLA123...)' });
   // ML solo deja leer el detalle de un ítem con el TOKEN DE LA CUENTA QUE LO PUBLICÓ
@@ -2396,7 +2395,11 @@ route('GET', '/api/drive-listado-lookup', async (req, res) => {
   const shipping = (sh.mode === 'me2' || sh.mode === 'me1') ? 'MERCADO ENVIO' : 'NO ENVIO';
   const titulo_largo = item.title || '';
   const titulo_corto = item.family_name || item.title || '';
-  return sendJSON(res, 200, { ok: true, mla, account_name: account.name, sheet, flex, local_pick_up, shipping, titulo_corto, titulo_largo });
+  // SKU que tiene la publicación en ML (para que se vea en "Crear en Drive"). Solo lectura/informativo.
+  const sku = item.seller_custom_field
+    || (Array.isArray(item.attributes) ? ((item.attributes.find(a => a.id === 'SELLER_SKU') || {}).value_name || '') : '')
+    || '';
+  return sendJSON(res, 200, { ok: true, mla, account_name: account.name, sheet, flex, local_pick_up, shipping, titulo_corto, titulo_largo, sku });
 });
 // POST /api/drive-listado-create — agrega una fila nueva al final de la hoja de la cuenta en LISTADOS_TODOS.
 route('POST', '/api/drive-listado-create', async (req, res) => {
@@ -2404,7 +2407,7 @@ route('POST', '/api/drive-listado-create', async (req, res) => {
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const db = loadDB();
   const u = db.users.find(x => x.id === sess.userId);
-  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  // "Crear en Drive" habilitado para TODOS los usuarios logueados (no requiere permiso especial).
   const b = await parseBody(req);
   const mla = String((b && b.mla) || '').trim().toUpperCase();
   const sheet = String((b && b.sheet) || '').trim();
@@ -2454,6 +2457,101 @@ route('POST', '/api/drive-listado-codigos', async (req, res) => {
   } catch (e) {
     return sendJSON(res, 200, { ok: true, map: {} }); // ante cualquier error, no precarga (no rompe la búsqueda)
   }
+});
+// ============================ VACÍOS (por título) ============================
+// Proxies del puente + página-herramienta /vacios para: actualizar código/proveedor y ELIMINAR
+// publicaciones haciendo coincidencia por TÍTULO (todas las cuentas). El puente resuelve título->MLAs.
+// POST /api/drive-listado-lookup-titulos — (SOLO LECTURA) título(s) normalizados -> MLAs del listado.
+route('POST', '/api/drive-listado-lookup-titulos', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const b = await parseBody(req);
+  const titulos = (Array.isArray(b.titulos) ? b.titulos : []).map(t => String(t || '')).filter(Boolean);
+  if (!titulos.length) return sendJSON(res, 200, { ok: true, result: {} });
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente (LISTADO_PUENTE_URL/CLAVE).' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'lookupByTitulos', titulos }, 300000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '): ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 200) }; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente HTTP ' + status), detail: data });
+    return sendJSON(res, 200, { ok: true, result: (data && data.result) || {} });
+  } catch (e) { return sendJSON(res, 502, { error: 'lookup falló: ' + String((e && e.message) || e) }); }
+});
+// POST /api/drive-listado-deleterows — borra del listado (Planilla) las filas de esos MLAs.
+route('POST', '/api/drive-listado-deleterows', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const b = await parseBody(req);
+  const mlas = (Array.isArray(b.mlas) ? b.mlas : []).map(m => String(m || '').trim()).filter(m => /^MLA\d+$/i.test(m));
+  if (!mlas.length) return sendJSON(res, 400, { error: 'Sin MLAs válidos' });
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente (LISTADO_PUENTE_URL/CLAVE).' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'deleteRows', mlas }, 300000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '): ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 200) }; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente HTTP ' + status), detail: data });
+    return sendJSON(res, 200, { ok: true, deleted: Number(data.deleted) || 0, not_found: Array.isArray(data.not_found) ? data.not_found : [] });
+  } catch (e) { return sendJSON(res, 502, { error: 'deleterows falló: ' + String((e && e.message) || e) }); }
+});
+// POST /api/drive-listado-sync — exporta la Planilla al .xlsx que lee el automatizador.
+route('POST', '/api/drive-listado-sync', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente (LISTADO_PUENTE_URL/CLAVE).' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'sync' }, 300000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'HTTP ' + status }; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente HTTP ' + status) });
+    return sendJSON(res, 200, { ok: true });
+  } catch (e) { return sendJSON(res, 502, { error: 'sync falló: ' + String((e && e.message) || e) }); }
+});
+// GET /api/vacios-accounts — mapa hoja del listado -> cuenta ML (id/nombre) para el borrado por cuenta.
+route('GET', '/api/listado-cuentas', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const out = [];
+  for (const accName in LISTADO_SHEET_BY_ACCOUNT) {
+    const sheet = LISTADO_SHEET_BY_ACCOUNT[accName];
+    const acc = (db.ml_accounts || []).find(a => a.name === accName);
+    out.push({ sheet, account_name: accName, account_id: acc ? acc.id : null });
+  }
+  return sendJSON(res, 200, { ok: true, accounts: out });
+});
+// (la herramienta de Cambios masivos ahora vive integrada en el panel, sección Actualizar)
+
+
+// POST /api/drive-listado-buscar-titulo — (SOLO LECTURA) busca en el listado por título (CONTIENE).
+route('POST', '/api/drive-listado-buscar-titulo', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  const u = db.users.find(x => x.id === sess.userId);
+  if (!(sess.role === 'admin' || (u && u.can_bulk_update === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  const b = await parseBody(req);
+  const q = String(b.q || '').trim();
+  if (q.length < 3) return sendJSON(res, 400, { error: 'Escribí al menos 3 letras' });
+  const limit = Math.min(1000, Math.max(1, parseInt(b.limit) || 500));
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente (LISTADO_PUENTE_URL/CLAVE).' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'searchByTitulo', q, limit }, 300000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '): ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 200) }; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente HTTP ' + status) });
+    return sendJSON(res, 200, { ok: true, rows: (data && data.rows) || [], truncated: !!(data && data.truncated) });
+  } catch (e) { return sendJSON(res, 502, { error: 'buscar falló: ' + String((e && e.message) || e) }); }
 });
 // SEARCH LISTINGS STREAM — búsqueda progresiva/paginada para título/SKU/item_id
 route('POST', '/api/search-listings-stream', async (req, res) => {
