@@ -666,7 +666,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_compras_cargar || currentUser.can_compras_saldos) {
           const nc = document.getElementById('nav-compras'); if (nc) nc.style.display = '';
         }
-        if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
+        if (true) { // "Actualizar" visible para TODOS (Crear en Drive disponible para todos los usuarios)
           document.getElementById('nav-update').style.display = '';
           const mobUpd = document.getElementById('mob-update');
           if (mobUpd) mobUpd.style.display = '';
@@ -782,7 +782,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_compras_cargar || currentUser.can_compras_saldos) {
           const nc = document.getElementById('nav-compras'); if (nc) nc.style.display = '';
         }
-        if (currentUser.role === 'admin' || currentUser.can_search_update || currentUser.can_bulk_update) {
+        if (true) { // "Actualizar" visible para TODOS (Crear en Drive disponible para todos los usuarios)
           document.getElementById('nav-update').style.display = '';
           const mobUpd2 = document.getElementById('mob-update');
           if (mobUpd2) mobUpd2.style.display = '';
@@ -3940,10 +3940,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const isAdmin = currentUser?.role === 'admin';
     const canSearch = isAdmin || currentUser?.can_search_update;
     const canBulk = isAdmin || currentUser?.can_bulk_update;
-    if (!canSearch && !canBulk) {
-      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para esta sección.</p></div>';
-      return;
-    }
+    // Todos los usuarios logueados pueden entrar: los que no tienen permisos ven SOLO "Crear en Drive".
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
       ${canBulk ? `
@@ -3984,7 +3981,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <p style="font-size:12px;color:#888">💡 Las celdas vacías se ignoran — solo se actualizan los campos que completaste.</p>
       </div>` : ''}
       <!-- BUSCADOR POR SKU / TÍTULO -->
-      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+      <div id="cardBuscarEditar" style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:4px">🔍 Buscar y editar publicaciones</h3>
         <p style="font-size:12px;color:#888;margin-bottom:14px">Buscá por Item ID, SKU y/o título. En título, busca publicaciones que contengan todas las palabras.</p>
         <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:12px">
@@ -4030,8 +4027,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <div id="searchUpdateLog" style="margin-top:12px"></div>
         </div>
       </div>
-      ${canBulk ? `
-      <!-- CREAR EN DRIVE: agregar una publicación al listado (hoja de su cuenta) -->
+      ${true ? `
+      <!-- CREAR EN DRIVE: agregar una publicación al listado (hoja de su cuenta) — disponible para TODOS -->
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:4px">➕ Crear en Drive (agregar al listado)</h3>
         <p style="font-size:12px;color:#888;margin-bottom:14px">Escribí el MLA de una publicación que todavía no está en el listado, traé sus datos y agregala al final de la hoja de su cuenta.</p>
@@ -4074,7 +4071,52 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           </div>
         </div>
       </div>` : ''}
+      ${isAdmin ? `
+      <!-- CAMBIOS MASIVOS (solo admin): actualizar códigos / eliminar por título -->
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);border:2px solid #eef2ff">
+        <h3 style="font-size:15px;color:#2d3277;margin-bottom:4px">🔧 Cambios masivos — actualizar códigos / eliminar por título</h3>
+        <p style="font-size:12px;color:#888;margin-bottom:14px">Busca el título en <b>todas las cuentas</b> y aplica en todas las filas iguales. Al cambiar el código en Drive, borra las equivalencias de esa fila (igual que "Buscar y editar"). Solo administrador.</p>
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <button id="cmTabManualBtn" onclick="cmTab('manual')" style="padding:8px 16px;border:1px solid #3483fa;background:#3483fa;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">Buscar y editar a mano</button>
+          <button id="cmTabImportBtn" onclick="cmTab('import')" style="padding:8px 16px;border:1px solid #3483fa;background:#fff;color:#3483fa;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">Importar archivo</button>
+        </div>
+        <div id="cmManual">
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:12px;color:#666;font-weight:600">Título (o parte)</label>
+              <input id="cmSearch" type="text" placeholder="Ej: Faro Trasero Ranger" onkeydown="if(event.key==='Enter')cmBuscar()" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;width:340px">
+            </div>
+            <button onclick="cmBuscar()" id="cmBtnBuscar" style="padding:9px 20px;background:#3483fa;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🔍 Buscar</button>
+          </div>
+          <div id="cmResults"></div>
+          <div id="cmManualActions" style="display:none;gap:8px;flex-wrap:wrap;margin-top:12px">
+            <button onclick="cmGuardarCambios()" style="padding:9px 20px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">💾 Guardar códigos/proveedores (Drive)</button>
+            <button onclick="cmEliminarSeleccionadas()" style="padding:9px 20px;background:#c0392b;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🗑️ Eliminar seleccionadas (ML + Drive)</button>
+          </div>
+        </div>
+        <div id="cmImport" style="display:none">
+          <p style="font-size:12px;color:#666;margin-bottom:10px">Excel/CSV con 3 columnas: <b>A: TÍTULO</b>, <b>B: CÓDIGO</b>, <b>C: PROVEEDOR</b>. Para <b>Eliminar</b> se usa solo la columna A.</p>
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:12px;color:#666;font-weight:600">Acción</label>
+              <select id="cmAccion" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
+                <option value="cambiar">Cambiar código / proveedor</option>
+                <option value="eliminar">Eliminar (ML + Drive)</option>
+              </select>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <label style="font-size:12px;color:#666;font-weight:600">Archivo (.xlsx, .xls, .csv)</label>
+              <input id="cmFile" type="file" accept=".xlsx,.xls,.csv" onchange="cmArchivo(this.files[0])" style="font-size:13px">
+            </div>
+          </div>
+          <div id="cmImportInfo" style="font-size:13px;color:#666;margin-bottom:8px"></div>
+          <button id="cmImportApply" onclick="cmAnalizarImport()" style="display:none;padding:10px 22px;background:#2d3277;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">🔎 Analizar y aplicar</button>
+        </div>
+        <div id="cmLog" style="display:none;margin-top:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;max-height:280px;overflow:auto"></div>
+      </div>` : ''}
     `;
+    // Usuarios sin permiso (ni buscar ni masiva): ocultar "Buscar y editar" — solo ven "Crear en Drive".
+    if (!canSearch && !canBulk) { const _cbe = document.getElementById('cardBuscarEditar'); if (_cbe) _cbe.style.display = 'none'; }
     // Load SheetJS lazily
     await loadXLSX();
     // Si hay un job en progreso (browser cerrado y reabierto), retomar el polling
@@ -4116,6 +4158,199 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       } catch(e) {}
     }
   }
+  // ================= CAMBIOS MASIVOS (solo admin) =================
+  var cmGroups = [];     // manual: [{titulo, norm, codigo, proveedor, mlas:[{mla,sheet}]}]
+  var cmCuentas = null;  // [{sheet, account_id, account_name}]
+  var cmImport = null;   // import: { items:[{titulo,codigo,proveedor,norm}] }
+  function cmNorm(s){ s=String(s==null?'':s).toLowerCase(); try{ s=s.normalize('NFD').replace(new RegExp('[\\u0300-\\u036f]','g'),''); }catch(e){} return s.replace(/\s+/g,' ').trim(); }
+  function cmEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function cmLog(msg){ var d=document.getElementById('cmLog'); if(!d) return; d.style.display='block'; var t=new Date().toISOString().slice(11,19); d.textContent += (d.textContent?'\n':'') + '['+t+'] '+msg; d.scrollTop=d.scrollHeight; }
+  function cmTab(which){
+    var isImp = which==='import';
+    document.getElementById('cmManual').style.display = isImp?'none':'block';
+    document.getElementById('cmImport').style.display = isImp?'block':'none';
+    var mb=document.getElementById('cmTabManualBtn'), ib=document.getElementById('cmTabImportBtn');
+    mb.style.background = isImp?'#fff':'#3483fa'; mb.style.color = isImp?'#3483fa':'#fff';
+    ib.style.background = isImp?'#3483fa':'#fff'; ib.style.color = isImp?'#fff':'#3483fa';
+  }
+  async function cmApiGet(u){ var r=await fetch(u,{credentials:'same-origin'}); var t=await r.text(); var d; try{d=JSON.parse(t);}catch(e){d=null;} return {status:r.status,data:d}; }
+  async function cmApiPost(u,b){ var r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(b)}); var t=await r.text(); var d; try{d=JSON.parse(t);}catch(e){d={ok:false,error:'respuesta no-JSON ('+r.status+')'};} return {status:r.status,data:d}; }
+  async function cmLoadCuentas(){ if(cmCuentas) return cmCuentas; var r=await cmApiGet('/api/listado-cuentas'); cmCuentas=(r.data && r.data.accounts)||[]; return cmCuentas; }
+  function cmCuentaDeHoja(sheet){ for(var i=0;i<(cmCuentas||[]).length;i++){ if(cmCuentas[i].sheet===sheet) return cmCuentas[i]; } return null; }
+
+  async function cmBuscar(){
+    var q=(document.getElementById('cmSearch').value||'').trim();
+    if(q.length<3){ alert('Escribí al menos 3 letras'); return; }
+    var btn=document.getElementById('cmBtnBuscar'); btn.disabled=true; btn.textContent='⏳ Buscando…';
+    document.getElementById('cmResults').innerHTML='<p style="color:#888;font-size:13px">Buscando en todas las cuentas… (puede tardar unos segundos)</p>';
+    try{
+      await cmLoadCuentas();
+      var r=await cmApiPost('/api/drive-listado-buscar-titulo',{q:q,limit:500});
+      if(r.status<200||r.status>=300||!r.data||r.data.ok===false){ throw new Error((r.data&&r.data.error)||('HTTP '+r.status)); }
+      var rows=r.data.rows||[];
+      var map={};
+      rows.forEach(function(x){
+        var n=cmNorm(x.titulo);
+        if(!map[n]) map[n]={titulo:x.titulo, norm:n, mlas:[], cods:{}, provs:{}};
+        map[n].mlas.push({mla:x.mla, sheet:x.sheet});
+        map[n].cods[String(x.codigo||'')]=1; map[n].provs[String(x.proveedor||'')]=1;
+      });
+      cmGroups=Object.keys(map).map(function(n){ var g=map[n]; var ck=Object.keys(g.cods), pk=Object.keys(g.provs); g.codigo=(ck.length===1?ck[0]:''); g.proveedor=(pk.length===1?pk[0]:''); return g; });
+      cmRenderResults(!!r.data.truncated);
+    }catch(e){ document.getElementById('cmResults').innerHTML='<p style="color:#c0392b;font-size:13px">Error: '+cmEsc(e.message||e)+'</p>'; document.getElementById('cmManualActions').style.display='none'; }
+    finally{ btn.disabled=false; btn.textContent='🔍 Buscar'; }
+  }
+  function cmRenderResults(truncated){
+    var g=cmGroups;
+    if(!g.length){ document.getElementById('cmResults').innerHTML='<p style="color:#888;font-size:13px">No se encontraron títulos.</p>'; document.getElementById('cmManualActions').style.display='none'; return; }
+    var h='';
+    if(truncated) h+='<p style="color:#9a6700;font-size:12px">Muchos resultados: se muestran los primeros 500. Afiná el texto si falta alguno.</p>';
+    h+='<div style="overflow:auto;max-height:360px;border:1px solid #eee;border-radius:8px"><table style="border-collapse:collapse;font-size:12px;width:100%">';
+    h+='<tr style="background:#f0f4ff;position:sticky;top:0"><th style="border:1px solid #ddd;padding:6px">🗑️</th><th style="border:1px solid #ddd;padding:6px;text-align:left">Título</th><th style="border:1px solid #ddd;padding:6px">Public.</th><th style="border:1px solid #ddd;padding:6px">Código</th><th style="border:1px solid #ddd;padding:6px">Proveedor</th></tr>';
+    g.forEach(function(gr,i){
+      var cuentas={}; gr.mlas.forEach(function(m){cuentas[m.sheet]=(cuentas[m.sheet]||0)+1;});
+      var ctxt=Object.keys(cuentas).map(function(s){return s+' ('+cuentas[s]+')';}).join(', ');
+      h+='<tr>';
+      h+='<td style="border:1px solid #ddd;padding:6px;text-align:center"><input type="checkbox" id="cm_del_'+i+'"></td>';
+      h+='<td style="border:1px solid #ddd;padding:6px">'+cmEsc(gr.titulo)+'<div style="color:#888;font-size:11px">'+cmEsc(ctxt)+'</div></td>';
+      h+='<td style="border:1px solid #ddd;padding:6px;text-align:center">'+gr.mlas.length+'</td>';
+      h+='<td style="border:1px solid #ddd;padding:6px"><input id="cm_cod_'+i+'" type="text" value="'+cmEsc(gr.codigo)+'" style="width:110px;padding:5px;border:1px solid #cce0ff;border-radius:6px;font-size:12px"></td>';
+      h+='<td style="border:1px solid #ddd;padding:6px"><input id="cm_prov_'+i+'" type="text" value="'+cmEsc(gr.proveedor)+'" style="width:110px;padding:5px;border:1px solid #cce0ff;border-radius:6px;font-size:12px"></td>';
+      h+='</tr>';
+    });
+    h+='</table></div>';
+    document.getElementById('cmResults').innerHTML=h;
+    document.getElementById('cmManualActions').style.display='flex';
+  }
+  async function cmGuardarCambios(){
+    var edits=[];
+    cmGroups.forEach(function(gr,i){
+      var cod=(document.getElementById('cm_cod_'+i).value||'').trim();
+      var prov=(document.getElementById('cm_prov_'+i).value||'').trim();
+      if((cod && cod!==gr.codigo) || (prov && prov!==gr.proveedor)){ gr.mlas.forEach(function(m){ edits.push({mla:m.mla, codigo:cod, proveedor:prov, sheet:m.sheet}); }); }
+    });
+    if(!edits.length){ alert('No hay cambios para guardar (completá o cambiá código/proveedor).'); return; }
+    if(!confirm('Vas a actualizar '+edits.length+' publicaciones en el listado de Drive. ¿Seguir?')) return;
+    cmLog('== ACTUALIZAR '+edits.length+' publicaciones ==');
+    try{ var res=await cmApplyCambios(edits); cmLog('Listo: '+res.updated+' actualizadas'+(res.nf?(', '+res.nf+' no encontradas'):'')); alert('Actualizado: '+res.updated+' publicaciones.'); }
+    catch(e){ cmLog('ERROR: '+(e.message||e)); alert('Error: '+(e.message||e)); }
+  }
+  async function cmEliminarSeleccionadas(){
+    var sel=[]; cmGroups.forEach(function(gr,i){ if(document.getElementById('cm_del_'+i).checked) sel.push(gr); });
+    if(!sel.length){ alert('Tildá al menos un título para eliminar.'); return; }
+    var items=[]; sel.forEach(function(gr){ gr.mlas.forEach(function(m){ items.push({mla:m.mla, sheet:m.sheet}); }); });
+    if(!confirm('ELIMINAR (irreversible en ML) '+items.length+' publicaciones de '+sel.length+' títulos, y quitarlas del listado. ¿Confirmás?')) return;
+    await cmLoadCuentas();
+    cmLog('== ELIMINAR '+items.length+' publicaciones ==');
+    try{ var res=await cmApplyDeletes(items); cmLog('Terminado: '+(res.ok+res.fin)+' fuera de ML, '+res.err+' con error, '+res.drive+' filas quitadas del listado.'); alert('Eliminación terminada: '+(res.ok+res.fin)+' fuera de ML.'); }
+    catch(e){ cmLog('ERROR: '+(e.message||e)); alert('Error: '+(e.message||e)); }
+  }
+  async function cmArchivo(file){
+    if(!file) return;
+    var info=document.getElementById('cmImportInfo'); info.textContent='Leyendo archivo…';
+    try{
+      var ok=await loadXLSX(); if(!ok||!window.XLSX) throw new Error('No pude cargar el lector de Excel');
+      var buf=await file.arrayBuffer();
+      var wb=XLSX.read(buf,{type:'array'});
+      var ws=wb.Sheets[wb.SheetNames[0]];
+      var aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      var start=0; if(aoa.length && cmNorm(aoa[0][0])==='titulo') start=1;
+      var items=[], seen={};
+      for(var r=start;r<aoa.length;r++){
+        var row=aoa[r]||[]; var tit=String(row[0]==null?'':row[0]).trim(); if(!tit) continue;
+        var n=cmNorm(tit); if(seen[n]) continue; seen[n]=1;
+        items.push({titulo:tit, norm:n, codigo:String(row[1]==null?'':row[1]).trim(), proveedor:String(row[2]==null?'':row[2]).trim()});
+      }
+      cmImport={ items:items };
+      info.innerHTML='Archivo leído: <b>'+items.length+'</b> títulos únicos.';
+      document.getElementById('cmImportApply').style.display='inline-block';
+    }catch(e){ info.innerHTML='<span style="color:#c0392b">Error leyendo el archivo: '+cmEsc(e.message||e)+'</span>'; document.getElementById('cmImportApply').style.display='none'; }
+  }
+  async function cmAnalizarImport(){
+    if(!cmImport||!cmImport.items.length){ alert('Primero elegí un archivo.'); return; }
+    var accion=document.getElementById('cmAccion').value;
+    var btn=document.getElementById('cmImportApply'); btn.disabled=true; btn.textContent='⏳ Analizando…';
+    try{
+      await cmLoadCuentas();
+      var titulos=cmImport.items.map(function(x){return x.norm;});
+      cmLog('== IMPORTAR ('+accion+'): '+titulos.length+' títulos — buscando en el listado… ==');
+      var lk=await cmApiPost('/api/drive-listado-lookup-titulos',{titulos:titulos});
+      if(lk.status<200||lk.status>=300||!lk.data||lk.data.ok===false){ throw new Error((lk.data&&lk.data.error)||('HTTP '+lk.status)); }
+      var LK=lk.data.result||{};
+      function matches(n){ var e=LK[n]; if(!e) return []; var all=(e.f||[]).concat(e.e||[]); var seen={},out=[]; all.forEach(function(m){ if(!seen[m.mla]){seen[m.mla]=1;out.push(m);} }); return out; }
+      var zero=0, pubs=0, edits=[], items=[];
+      cmImport.items.forEach(function(it){
+        var ms=matches(it.norm);
+        if(!ms.length){ zero++; return; }
+        pubs+=ms.length;
+        if(accion==='cambiar'){ ms.forEach(function(m){ edits.push({mla:m.mla, codigo:it.codigo, proveedor:it.proveedor, sheet:m.sheet}); }); }
+        else { ms.forEach(function(m){ items.push({mla:m.mla, sheet:m.sheet}); }); }
+      });
+      var found=cmImport.items.length-zero;
+      var resumen = (accion==='cambiar')
+        ? ('CAMBIAR código/proveedor en '+pubs+' publicaciones (de '+found+' títulos encontrados). '+zero+' títulos no se encontraron.')
+        : ('ELIMINAR '+pubs+' publicaciones (de '+found+' títulos), en ML y en el listado. '+zero+' títulos no se encontraron. ESTO ES IRREVERSIBLE EN ML.');
+      cmLog(resumen);
+      if(!confirm(resumen+'\n\n¿Confirmás?')){ cmLog('Cancelado por el usuario.'); return; }
+      if(accion==='cambiar'){ var r1=await cmApplyCambios(edits); cmLog('Listo: '+r1.updated+' actualizadas'+(r1.nf?(', '+r1.nf+' no encontradas'):'')); alert('Actualizado: '+r1.updated+' publicaciones.'); }
+      else { var r2=await cmApplyDeletes(items); cmLog('Terminado: '+(r2.ok+r2.fin)+' fuera de ML, '+r2.err+' con error, '+r2.drive+' filas quitadas.'); alert('Eliminación terminada: '+(r2.ok+r2.fin)+' fuera de ML.'); }
+    }catch(e){ cmLog('ERROR: '+(e.message||e)); alert('Error: '+(e.message||e)); }
+    finally{ btn.disabled=false; btn.textContent='🔎 Analizar y aplicar'; }
+  }
+  async function cmApplyCambios(edits){
+    var CH=120, updated=0, nf=0;
+    for(var i=0;i<edits.length;i+=CH){
+      var chunk=edits.slice(i,i+CH);
+      var r=await cmApiPost('/api/drive-listado-update',{edits:chunk});
+      if(r.status<200||r.status>=300||!r.data||r.data.ok===false) throw new Error((r.data&&r.data.error)||('HTTP '+r.status));
+      updated+=Number(r.data.updated)||0; nf+=((r.data.not_found)||[]).length;
+      cmLog('  actualizadas '+updated+'/'+edits.length);
+    }
+    cmLog('Sincronizando .xlsx del automatizador…'); await cmApiPost('/api/drive-listado-sync',{});
+    return {updated:updated, nf:nf};
+  }
+  async function cmBulkDeleteAccount(accountId, ids, onItem){
+    var r=await fetch('/api/bulk-delete',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({account_id:accountId,item_ids:ids,confirm:true})});
+    if(!r.ok && r.status!==200){ var tx=await r.text(); throw new Error('bulk-delete HTTP '+r.status+': '+tx.slice(0,140)); }
+    var reader=r.body.getReader(), dec=new TextDecoder(), buf='';
+    var res={ok:0,fin:0,err:0,removed:[]};
+    while(true){ var ch=await reader.read(); if(ch.done) break; buf+=dec.decode(ch.value,{stream:true}); var lines=buf.split('\n'); buf=lines.pop();
+      for(var i=0;i<lines.length;i++){ var ln=lines[i].trim(); if(!ln) continue; var ev; try{ev=JSON.parse(ln);}catch(e){continue;}
+        if(ev.type==='result'){ if(ev.ok){ if(ev.finalized) res.fin++; else res.ok++; res.removed.push(ev.item_id);} else res.err++; if(onItem)onItem(ev); } } }
+    return res;
+  }
+  async function cmApplyDeletes(items){
+    var bySheet={}; items.forEach(function(x){ (bySheet[x.sheet]||(bySheet[x.sheet]=[])).push(x.mla); });
+    var totOk=0,totFin=0,totErr=0,removedAll=[];
+    var sheets=Object.keys(bySheet).sort();
+    for(var si=0; si<sheets.length; si++){
+      var sh=sheets[si]; var acc=cmCuentaDeHoja(sh); var ids=Array.from(new Set(bySheet[sh]));
+      if(!acc || acc.account_id==null){ cmLog('  '+sh+': sin cuenta ML mapeada — se saltea ('+ids.length+')'); continue; }
+      cmLog('  Cuenta '+sh+' (#'+acc.account_id+'): eliminando '+ids.length+'…');
+      var CH=25;
+      for(var i=0;i<ids.length;i+=CH){
+        var part=ids.slice(i,i+CH);
+        var rr=await cmBulkDeleteAccount(acc.account_id, part, function(ev){ if(!ev.ok) cmLog('    ✗ '+ev.item_id+': '+(ev.error||'error')); });
+        totOk+=rr.ok; totFin+=rr.fin; totErr+=rr.err; removedAll=removedAll.concat(rr.removed);
+        cmLog('    '+sh+': borradas '+rr.ok+', finalizadas '+rr.fin+', error '+rr.err);
+      }
+    }
+    removedAll=Array.from(new Set(removedAll));
+    var drive=0;
+    if(removedAll.length){
+      cmLog('Quitando '+removedAll.length+' filas del listado (Drive)…');
+      var CH2=400;
+      for(var j=0;j<removedAll.length;j+=CH2){
+        var pj=removedAll.slice(j,j+CH2);
+        var dr=await cmApiPost('/api/drive-listado-deleterows',{mlas:pj});
+        if(dr.status<200||dr.status>=300||!dr.data||dr.data.ok===false) throw new Error((dr.data&&dr.data.error)||('deleterows HTTP '+dr.status));
+        drive+=Number(dr.data.deleted)||0;
+      }
+      cmLog('Sincronizando .xlsx del automatizador…'); await cmApiPost('/api/drive-listado-sync',{});
+    }
+    return {ok:totOk, fin:totFin, err:totErr, drive:drive};
+  }
+
   async function loadXLSX() {
     if (window.XLSX) return true;
     // PRIMERO desde nuestro propio dominio (/vendor/xlsx.js): el panel baja la librería del CDN
@@ -5057,6 +5292,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <div style="font-size:12px;color:#2471a3;margin-bottom:12px">Cuenta: <b>${escapeHtml(d.account_name)}</b> &rarr; hoja <b>${escapeHtml(d.sheet)}</b></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">
           <div><label style="${lbl}">A · Item ID</label><div style="font-weight:700;color:#3483fa;font-size:13px">${escapeHtml(d.mla)}</div></div>
+          <div><label style="${lbl}">SKU en ML (solo lectura)</label><div style="font-size:13px;color:#444;font-weight:600">${ro(d.sku)}</div></div>
           <div><label style="${lbl}">B · Flex</label>${sel('cd-flex', flexOpts, d.flex)}</div>
           <div><label style="${lbl}">C · Local pick up</label>${sel('cd-lpu', lpuOpts, d.local_pick_up)}</div>
           <div><label style="${lbl}">D · Envío</label>${sel('cd-ship', shipOpts, d.shipping)}</div>
