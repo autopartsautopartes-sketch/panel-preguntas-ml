@@ -2047,7 +2047,7 @@ route('POST', '/api/bulk-delete', async (req, res) => {
       let curStatus = await getStatus(url);
       if (curStatus === 'deleted') {
         okCount++;
-        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId }) + '\n');
+        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, final_status: 'deleted' }) + '\n');
         await sleep(150); continue;
       }
       // 2) OBJETIVO = dejar la publicación CERRADA (o que ya esté closed/inactive). Con eso ya sale de ML
@@ -2063,43 +2063,52 @@ route('POST', '/api/bulk-delete', async (req, res) => {
           curStatus = await getStatus(url);
         }
       }
+      // 2b) 'under_review' (en revisión por ML): ML casi nunca deja modificarla. Intentamos cerrarla UNA vez
+      //     por las dudas; si no se puede, más abajo se la quita igual del listado (decisión del usuario).
+      if (curStatus === 'under_review') {
+        try { await mlPut(url, { status: 'closed' }, token); await sleep(700); curStatus = await getStatus(url); }
+        catch (eUR) { lastErr = eUR; }
+      }
       // 3) BEST-EFFORT: un ÚNICO intento de borrado definitivo si ya está cerrada/inactiva. Si ML lo rechaza
       //    (lo habitual), no pasa nada: queda 'closed' y es un éxito igual. Sin reintentos = rápido y sin ruido.
       if (curStatus === 'closed' || curStatus === 'inactive') {
         try { await mlPut(url, { status: 'deleted' }, token); deleted = true; }
         catch (eDel) { lastErr = eDel; }
       }
-      // 4) Clasificación final por el estado REAL. Éxito si ya no está viva: 'deleted' (borrada), 'closed'
-      //    (finalizada) o 'inactive' (dada de baja). En esos casos se quita también del listado de Drive.
-      //    Solo es ERROR si sigue 'active'/'paused'/'under_review'.
+      // 4) Clasificación final por el estado REAL. Éxito (y se quita del listado) si ya no es una publicación
+      //    normal y viva: 'deleted' (borrada), 'closed' (finalizada), 'inactive' (dada de baja) o 'under_review'
+      //    (ML no permite modificarla; el usuario pidió quitarla del listado igual). Solo es ERROR si sigue
+      //    'active' o 'paused' (ahí de verdad no se pudo cerrar).
       let finalStatus = deleted ? 'deleted' : await getStatus(url);
       if (finalStatus === 'deleted') {
         okCount++;
-        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId }) + '\n');
+        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, final_status: 'deleted' }) + '\n');
         console.log(`[DELETE] ✓ ${itemId} eliminado de ${account.name}`);
-      } else if (finalStatus === 'closed' || finalStatus === 'inactive') {
+      } else if (finalStatus === 'closed' || finalStatus === 'inactive' || finalStatus === 'under_review') {
         okCount++;
         const nota = finalStatus === 'inactive'
           ? 'Ya estaba inactiva en ML (dada de baja); se quita del listado.'
-          : 'Finalizada/cerrada en ML; se quita del listado.';
-        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, finalized: true, note: nota }) + '\n');
+          : finalStatus === 'under_review'
+            ? 'En revisión en ML (ML no permite modificarla ahora); se quita del listado igual.'
+            : 'Finalizada/cerrada en ML; se quita del listado.';
+        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, finalized: true, final_status: finalStatus, note: nota }) + '\n');
         console.log(`[DELETE] ~ ${itemId} ${finalStatus} — ${nota}`);
       } else {
         errCount++;
         const emsg = lastErr ? mlErrText(lastErr) : ('no se pudo cerrar (sigue ' + (finalStatus || 'sin estado legible') + ')');
-        res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, error: emsg }) + '\n');
+        res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, final_status: (finalStatus || ''), error: emsg }) + '\n');
         console.log(`[DELETE] ✗ ${itemId} — ${emsg}`);
       }
     } catch (e) {
       const emsg = mlErrText(e);
       const finalStatus = await getStatus(url);
-      if (finalStatus === 'closed' || finalStatus === 'inactive') {
+      if (finalStatus === 'closed' || finalStatus === 'inactive' || finalStatus === 'under_review') {
         okCount++;
-        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, finalized: true, note: 'Dada de baja en ML (' + finalStatus + '); se quita del listado.' }) + '\n');
+        res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, finalized: true, final_status: finalStatus, note: 'Dada de baja / en revisión en ML (' + finalStatus + '); se quita del listado.' }) + '\n');
         console.log(`[DELETE] ~ ${itemId} ${finalStatus} — ${emsg}`);
       } else {
         errCount++;
-        res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, error: emsg }) + '\n');
+        res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, final_status: (finalStatus || ''), error: emsg }) + '\n');
         console.log(`[DELETE] ✗ ${itemId} — ${emsg}`);
       }
     }
