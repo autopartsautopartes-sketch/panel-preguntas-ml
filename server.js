@@ -2324,7 +2324,7 @@ route('POST', '/api/drive-listado-update', async (req, res) => {
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL y LISTADO_PUENTE_CLAVE en Render).' });
   try {
     // La edición es directa sobre la Planilla de Google (rápida): le mandamos las ediciones al puente.
-    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'editListado', edits });
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'editListado', edits }, 300000);
     let data; try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'El puente no devolvió JSON (HTTP ' + status + '). Respuesta: ' + String(text).replace(/\s+/g, ' ').trim().slice(0, 220) }; }
     if (status < 200 || status >= 300 || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente respondió HTTP ' + status), detail: data });
     return sendJSON(res, 200, { ok: true, updated: Number(data.updated) || 0, not_found: Array.isArray(data.not_found) ? data.not_found : [] });
