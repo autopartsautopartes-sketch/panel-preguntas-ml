@@ -4164,7 +4164,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   var cmImport = null;   // import: { items:[{titulo,codigo,proveedor,norm}] }
   function cmNorm(s){ s=String(s==null?'':s).toLowerCase(); try{ s=s.normalize('NFD').replace(new RegExp('[\\u0300-\\u036f]','g'),''); }catch(e){} return s.replace(/\s+/g,' ').trim(); }
   function cmEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-  function cmLog(msg){ var d=document.getElementById('cmLog'); if(!d) return; d.style.display='block'; var t=new Date().toISOString().slice(11,19); d.textContent += (d.textContent?'\n':'') + '['+t+'] '+msg; d.scrollTop=d.scrollHeight; }
+  function cmLog(msg){ var d=document.getElementById('cmLog'); if(!d) return; d.style.display='block'; var t; try{ t=new Date().toLocaleTimeString('es-AR',{timeZone:'America/Argentina/Buenos_Aires',hour12:false}); }catch(e){ t=new Date().toTimeString().slice(0,8); } d.textContent += (d.textContent?'\n':'') + '['+t+'] '+msg; d.scrollTop=d.scrollHeight; }
   function cmTab(which){
     var isImp = which==='import';
     document.getElementById('cmManual').style.display = isImp?'none':'block';
