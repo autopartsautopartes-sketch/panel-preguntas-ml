@@ -4280,18 +4280,29 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if(lk.status<200||lk.status>=300||!lk.data||lk.data.ok===false){ throw new Error((lk.data&&lk.data.error)||('HTTP '+lk.status)); }
       var LK=lk.data.result||{};
       function matches(n){ var e=LK[n]; if(!e) return []; var all=(e.f||[]).concat(e.e||[]); var seen={},out=[]; all.forEach(function(m){ if(!seen[m.mla]){seen[m.mla]=1;out.push(m);} }); return out; }
-      var zero=0, pubs=0, edits=[], items=[];
+      var zero=0, sinDato=0, pubs=0, titOk=0, edits=[], items=[];
       cmImport.items.forEach(function(it){
         var ms=matches(it.norm);
         if(!ms.length){ zero++; return; }
-        pubs+=ms.length;
-        if(accion==='cambiar'){ ms.forEach(function(m){ edits.push({mla:m.mla, codigo:it.codigo, proveedor:it.proveedor, sheet:m.sheet}); }); }
-        else { ms.forEach(function(m){ items.push({mla:m.mla, sheet:m.sheet}); }); }
+        if(accion==='cambiar'){
+          // Para "Cambiar" el archivo tiene que traer código y/o proveedor (columnas B/C). Si están vacíos, se saltea.
+          if(!it.codigo && !it.proveedor){ sinDato++; return; }
+          titOk++; pubs+=ms.length;
+          ms.forEach(function(m){ edits.push({mla:m.mla, codigo:it.codigo, proveedor:it.proveedor, sheet:m.sheet}); });
+        } else {
+          titOk++; pubs+=ms.length;
+          ms.forEach(function(m){ items.push({mla:m.mla, sheet:m.sheet}); });
+        }
       });
-      var found=cmImport.items.length-zero;
+      if(accion==='cambiar' && !edits.length){
+        var m0='No hay nada para cambiar: el archivo no trae código/proveedor (columnas B y C) para los títulos encontrados';
+        if(sinDato>0) m0+=' ('+sinDato+' títulos encontrados pero sin código/proveedor en el archivo)';
+        m0+='. ¿Quizás importaste el archivo de ELIMINAR? Para "Cambiar" el archivo tiene que tener código y/o proveedor.';
+        cmLog(m0); alert(m0); return;
+      }
       var resumen = (accion==='cambiar')
-        ? ('CAMBIAR código/proveedor en '+pubs+' publicaciones (de '+found+' títulos encontrados). '+zero+' títulos no se encontraron.')
-        : ('ELIMINAR '+pubs+' publicaciones (de '+found+' títulos), en ML y en el listado. '+zero+' títulos no se encontraron. ESTO ES IRREVERSIBLE EN ML.');
+        ? ('CAMBIAR código/proveedor en '+pubs+' publicaciones (de '+titOk+' títulos). '+zero+' no se encontraron'+(sinDato?(', '+sinDato+' sin código/proveedor en el archivo (se saltean)'):'')+'.')
+        : ('ELIMINAR '+pubs+' publicaciones (de '+titOk+' títulos), en ML y en el listado. '+zero+' títulos no se encontraron. ESTO ES IRREVERSIBLE EN ML.');
       cmLog(resumen);
       if(!confirm(resumen+'\n\n¿Confirmás?')){ cmLog('Cancelado por el usuario.'); return; }
       if(accion==='cambiar'){ var r1=await cmApplyCambios(edits); cmLog('Listo: '+r1.updated+' actualizadas'+(r1.nf?(', '+r1.nf+' no encontradas'):'')); alert('Actualizado: '+r1.updated+' publicaciones.'); }
