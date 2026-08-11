@@ -4100,6 +4100,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             <div style="display:flex;flex-direction:column;gap:4px">
               <label style="font-size:12px;color:#666;font-weight:600">Acción</label>
               <select id="cmAccion" style="padding:9px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
+                <option value="" selected>— Elegí una acción —</option>
                 <option value="cambiar">Cambiar código / proveedor</option>
                 <option value="eliminar">Eliminar (ML + Drive)</option>
               </select>
@@ -4271,6 +4272,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function cmAnalizarImport(){
     if(!cmImport||!cmImport.items.length){ alert('Primero elegí un archivo.'); return; }
     var accion=document.getElementById('cmAccion').value;
+    if(!accion){
+      var av='Primero elegí una acción: "Cambiar código/proveedor" o "Eliminar". No se hizo nada.';
+      var inf=document.getElementById('cmImportInfo'); if(inf) inf.innerHTML='<span style="color:#c0392b;font-weight:600">'+av+'</span>';
+      alert(av); return;
+    }
     var btn=document.getElementById('cmImportApply'); btn.disabled=true; btn.textContent='⏳ Analizando…';
     try{
       await cmLoadCuentas();
