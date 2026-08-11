@@ -2050,44 +2050,28 @@ route('POST', '/api/bulk-delete', async (req, res) => {
         res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId }) + '\n');
         await sleep(150); continue;
       }
-      // 2) Cerrar SOLO si está activa/pausada (ML NO permite borrar directo una activa/pausada, y TAMPOCO
-      //    permite cambiarle el estado a una 'inactive'/'closed'/'under_review' → "status is not modifiable").
-      if (curStatus === 'active' || curStatus === 'paused') {
-        try {
-          await mlPutRetry(url, { status: 'closed' });
-          // ESPERAR a que ML confirme el cierre antes de borrar (si no, rechaza con "Validation error").
-          for (let k = 0; k < 8 && curStatus !== 'closed' && curStatus !== 'deleted'; k++) {
-            await sleep(800);
-            curStatus = await getStatus(url);
-          }
-        } catch (eClose) {
-          // No se pudo cerrar: seguimos y evaluamos el estado real más abajo.
-          lastErr = eClose;
+      // 2) OBJETIVO = dejar la publicación CERRADA (o que ya esté closed/inactive). Con eso ya sale de ML
+      //    (no se muestra ni se puede comprar) y se quita del listado. NO perseguimos el "borrado definitivo":
+      //    para este vendedor ML lo rechaza siempre (conserva historial) y además generaba una carrera de
+      //    tiempos (leía 'closed' pero al borrar veía 'paused') que dejaba falsos errores y demoraba horas.
+      //    Si está activa/pausada, REINTENTAMOS EL CIERRE (que es lo que a veces tarda en asentarse).
+      for (let c = 0; c < 4 && (curStatus === 'active' || curStatus === 'paused'); c++) {
+        try { await mlPutRetry(url, { status: 'closed' }); }
+        catch (eClose) { lastErr = eClose; }
+        for (let k = 0; k < 6 && (curStatus === 'active' || curStatus === 'paused'); k++) {
+          await sleep(700);
           curStatus = await getStatus(url);
         }
       }
-      // 3) Borrar definitivamente. Sirve para 'closed' y también intentamos para 'inactive' (por si ML deja).
-      //    No intentamos si sigue viva (active/paused): en ese caso es un error real (no se pudo cerrar).
-      if (curStatus !== 'deleted' && curStatus !== 'active' && curStatus !== 'paused') {
-        for (let attempt = 0; attempt < 5 && !deleted; attempt++) {
-          try { await mlPut(url, { status: 'deleted' }, token); deleted = true; }
-          catch (e) {
-            lastErr = e;
-            const st = e?.response?.status;
-            if (st === 401) { const rf = await refreshToken(account); if (rf) token = rf; await sleep(500); continue; }
-            if (st === 429) { await sleep([6000, 15000, 30000, 40000][attempt] || 40000); continue; }
-            // Validation error u otro: reintentar tras confirmar/esperar.
-            await sleep(1500);
-            const s2 = await getStatus(url);
-            if (s2 === 'deleted') { deleted = true; break; }
-            // Si ML la conserva como 'inactive' y no deja borrarla, no tiene sentido insistir.
-            if (s2 === 'inactive') break;
-          }
-        }
+      // 3) BEST-EFFORT: un ÚNICO intento de borrado definitivo si ya está cerrada/inactiva. Si ML lo rechaza
+      //    (lo habitual), no pasa nada: queda 'closed' y es un éxito igual. Sin reintentos = rápido y sin ruido.
+      if (curStatus === 'closed' || curStatus === 'inactive') {
+        try { await mlPut(url, { status: 'deleted' }, token); deleted = true; }
+        catch (eDel) { lastErr = eDel; }
       }
-      // 4) Clasificación final. Éxito si la publicación YA NO está viva: 'deleted' (borrada), 'closed'
-      //    (finalizada) o 'inactive' (ML la conserva pero ya está dada de baja). En esos casos también se
-      //    quita del listado de Drive (es lo que se busca). Solo es ERROR si sigue active/paused/under_review.
+      // 4) Clasificación final por el estado REAL. Éxito si ya no está viva: 'deleted' (borrada), 'closed'
+      //    (finalizada) o 'inactive' (dada de baja). En esos casos se quita también del listado de Drive.
+      //    Solo es ERROR si sigue 'active'/'paused'/'under_review'.
       let finalStatus = deleted ? 'deleted' : await getStatus(url);
       if (finalStatus === 'deleted') {
         okCount++;
@@ -2097,12 +2081,12 @@ route('POST', '/api/bulk-delete', async (req, res) => {
         okCount++;
         const nota = finalStatus === 'inactive'
           ? 'Ya estaba inactiva en ML (dada de baja); se quita del listado.'
-          : ('Finalizada/cerrada (ML no permitió el borrado definitivo' + (lastErr ? ': ' + mlErrText(lastErr) : '') + ')');
+          : 'Finalizada/cerrada en ML; se quita del listado.';
         res.write(JSON.stringify({ type: 'result', ok: true, item_id: itemId, finalized: true, note: nota }) + '\n');
         console.log(`[DELETE] ~ ${itemId} ${finalStatus} — ${nota}`);
       } else {
         errCount++;
-        const emsg = lastErr ? mlErrText(lastErr) : ('sigue ' + (finalStatus || 'sin estado legible'));
+        const emsg = lastErr ? mlErrText(lastErr) : ('no se pudo cerrar (sigue ' + (finalStatus || 'sin estado legible') + ')');
         res.write(JSON.stringify({ type: 'result', ok: false, item_id: itemId, error: emsg }) + '\n');
         console.log(`[DELETE] ✗ ${itemId} — ${emsg}`);
       }
