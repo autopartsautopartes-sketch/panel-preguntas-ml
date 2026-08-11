@@ -4317,7 +4317,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     finally{ btn.disabled=false; btn.textContent='🔎 Analizar y aplicar'; }
   }
   async function cmApplyCambios(edits){
-    var CH=120, updated=0, nf=0;
+    var CH=100, updated=0, nf=0;
     for(var i=0;i<edits.length;i+=CH){
       var chunk=edits.slice(i,i+CH);
       var r=await cmApiPost('/api/drive-listado-update',{edits:chunk});
