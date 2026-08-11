@@ -4112,6 +4112,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <div id="cmImportInfo" style="font-size:13px;color:#666;margin-bottom:8px"></div>
           <button id="cmImportApply" onclick="cmAnalizarImport()" style="display:none;padding:10px 22px;background:#2d3277;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">🔎 Analizar y aplicar</button>
         </div>
+        <div id="cmKept" style="margin-top:12px"></div>
         <div id="cmLog" style="display:none;margin-top:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;background:#0d1117;color:#c9d1d9;padding:12px;border-radius:8px;max-height:280px;overflow:auto"></div>
       </div>` : ''}
     `;
@@ -4162,6 +4163,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   var cmGroups = [];     // manual: [{titulo, norm, codigo, proveedor, mlas:[{mla,sheet}]}]
   var cmCuentas = null;  // [{sheet, account_id, account_name}]
   var cmImport = null;   // import: { items:[{titulo,codigo,proveedor,norm}] }
+  var cmLastKept = [];   // publicaciones que ML NO eliminó en la última corrida (para exportar)
   function cmNorm(s){ s=String(s==null?'':s).toLowerCase(); try{ s=s.normalize('NFD').replace(new RegExp('[\\u0300-\\u036f]','g'),''); }catch(e){} return s.replace(/\s+/g,' ').trim(); }
   function cmEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function cmLog(msg){ var d=document.getElementById('cmLog'); if(!d) return; d.style.display='block'; var t; try{ t=new Date().toLocaleTimeString('es-AR',{timeZone:'America/Argentina/Buenos_Aires',hour12:false}); }catch(e){ t=new Date().toTimeString().slice(0,8); } d.textContent += (d.textContent?'\n':'') + '['+t+'] '+msg; d.scrollTop=d.scrollHeight; }
@@ -4320,19 +4322,31 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return res;
   }
   async function cmApplyDeletes(items){
+    cmLastKept = []; cmRenderKept();
     var bySheet={}; items.forEach(function(x){ (bySheet[x.sheet]||(bySheet[x.sheet]=[])).push(x.mla); });
-    var totOk=0,totFin=0,totErr=0,removedAll=[];
+    var totOk=0,totFin=0,totErr=0,removedAll=[]; var keptAll=[];
     var sheets=Object.keys(bySheet).sort();
     for(var si=0; si<sheets.length; si++){
       var sh=sheets[si]; var acc=cmCuentaDeHoja(sh); var ids=Array.from(new Set(bySheet[sh]));
-      if(!acc || acc.account_id==null){ cmLog('  '+sh+': sin cuenta ML mapeada — se saltea ('+ids.length+')'); continue; }
+      if(!acc || acc.account_id==null){
+        cmLog('  '+sh+': sin cuenta ML mapeada — se saltea ('+ids.length+')');
+        ids.forEach(function(m){ keptAll.push({mla:m, sheet:sh, cuenta:(acc&&acc.account_name)||'', estado:'(sin cuenta mapeada)', motivo:'No hay cuenta ML mapeada para esta hoja'}); });
+        continue;
+      }
       cmLog('  Cuenta '+sh+' (#'+acc.account_id+'): eliminando '+ids.length+'…');
-      var CH=25;
+      var CH=25; var shC=sh, accC=acc;
       for(var i=0;i<ids.length;i+=CH){
         var part=ids.slice(i,i+CH);
-        var rr=await cmBulkDeleteAccount(acc.account_id, part, function(ev){ if(!ev.ok) cmLog('    ✗ '+ev.item_id+': '+(ev.error||'error')); });
+        var rr=await cmBulkDeleteAccount(accC.account_id, part, function(ev){
+          if(!ev.ok) cmLog('    ✗ '+ev.item_id+': '+(ev.error||'error'));
+          var fs=ev.final_status||'';
+          // "no eliminada" = ML la conserva viva/en revisión (no quedó deleted/closed/inactive)
+          if(fs!=='deleted' && fs!=='closed' && fs!=='inactive'){
+            keptAll.push({mla:ev.item_id, sheet:shC, cuenta:(accC.account_name||''), estado:(fs||'(desconocido)'), motivo:(ev.error||ev.note||'')});
+          }
+        });
         totOk+=rr.ok; totFin+=rr.fin; totErr+=rr.err; removedAll=removedAll.concat(rr.removed);
-        cmLog('    '+sh+': borradas '+rr.ok+', finalizadas '+rr.fin+', error '+rr.err);
+        cmLog('    '+shC+': borradas '+rr.ok+', finalizadas '+rr.fin+', error '+rr.err);
       }
     }
     removedAll=Array.from(new Set(removedAll));
@@ -4348,7 +4362,26 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
       cmLog('Sincronizando .xlsx del automatizador…'); await cmApiPost('/api/drive-listado-sync',{});
     }
-    return {ok:totOk, fin:totFin, err:totErr, drive:drive};
+    cmLastKept = keptAll; cmRenderKept();
+    return {ok:totOk, fin:totFin, err:totErr, drive:drive, kept:keptAll};
+  }
+  function cmRenderKept(){
+    var d=document.getElementById('cmKept'); if(!d) return;
+    if(!cmLastKept || !cmLastKept.length){ d.innerHTML=''; return; }
+    d.innerHTML='<div style="padding:10px 12px;border:1px solid #f5c6cb;background:#fff8f8;border-radius:8px;font-size:13px">'
+      +'⚠ <b>'+cmLastKept.length+'</b> publicaciones que ML no eliminó (en revisión o activas). '
+      +'<button onclick="cmDescargarNoEliminadas()" style="margin-left:8px;padding:6px 14px;background:#2d3277;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">⬇ Descargar Excel (MLA + cuenta)</button></div>';
+  }
+  function cmDescargarNoEliminadas(){
+    if(!cmLastKept || !cmLastKept.length){ alert('No hay publicaciones para exportar.'); return; }
+    if(!window.XLSX){ alert('El lector de Excel no está cargado; recargá la página.'); return; }
+    var aoa=[['MLA (item_id)','Hoja','Cuenta ML','Estado en ML','Motivo']];
+    cmLastKept.forEach(function(k){ aoa.push([k.mla, k.sheet, k.cuenta, k.estado, k.motivo]); });
+    var ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols']=[{wch:18},{wch:12},{wch:26},{wch:18},{wch:40}];
+    var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'No eliminadas');
+    var t; try{ t=new Date().toLocaleString('es-AR',{timeZone:'America/Argentina/Buenos_Aires'}).replace(/[^0-9]/g,'').slice(0,12); }catch(e){ t=String(Date.now()); }
+    XLSX.writeFile(wb, 'no_eliminadas_'+t+'.xlsx');
   }
 
   async function loadXLSX() {
