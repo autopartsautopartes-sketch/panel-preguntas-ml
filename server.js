@@ -3675,12 +3675,20 @@ route('GET', '/api/messages/options', async (req, res) => {
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
     const packId = orderData.pack_id || order_id;
-    const sellerId = parseInt(account.seller_id);
     let ag = null, agErr = null;
     try {
-      ag = await mlGet(`https://api.mercadolibre.com/messages/action_guide/packs/${packId}/seller/${sellerId}`, token, { tag: 'post_sale' });
+      // Action guide correcto: SOLO pack (sin seller). Devuelve un ARRAY de opciones.
+      ag = await mlGet(`https://api.mercadolibre.com/messages/action_guide/packs/${packId}`, token, { tag: 'post_sale' });
     } catch (e) { agErr = (e && e.response && e.response.data) || (e && e.message) || String(e); }
-    const options = (ag && Array.isArray(ag.options)) ? ag.options : [];
+    const rawOpts = Array.isArray(ag) ? ag : (ag && Array.isArray(ag.options) ? ag.options : []);
+    const options = rawOpts.map(o => {
+      const id = String(o.id || o.option_id || o.type || '');
+      const tid = o.template_id
+        || (Array.isArray(o.templates) && o.templates[0] && (o.templates[0].id || o.templates[0].template_id))
+        || (o.template && (o.template.id || o.template.template_id)) || null;
+      const freeText = (String(o.type || '').toLowerCase().indexOf('free') >= 0) || ['OTHER', 'SEND_INVOICE_LINK'].indexOf(id) >= 0;
+      return { id, type: o.type || '', enabled: (o.enabled !== false), cap_available: (o.cap_available != null ? o.cap_available : null), template_id: tid, free_text: freeText };
+    }).filter(o => o.id && o.enabled && (o.cap_available == null || o.cap_available > 0));
     // Si ML devuelve opciones → hay que elegir una (ME/Flex). Si no, asumimos texto libre (acordar).
     const mode = options.length ? 'options' : 'free';
     return sendJSON(res, 200, { ok: true, mode, pack_id: String(packId), options, ag_error: agErr });
@@ -3694,7 +3702,8 @@ route('GET', '/api/messages/options', async (req, res) => {
 route('POST', '/api/messages/send-option', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-  const { order_id, account_id, option_id, text } = await parseBody(req);
+  const { order_id, account_id, option_id, text, template_id } = await parseBody(req);
+  if (text != null && String(text).length > 350) return sendJSON(res, 400, { error: 'El mensaje no puede superar los 350 caracteres.' });
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
@@ -3703,11 +3712,12 @@ route('POST', '/api/messages/send-option', async (req, res) => {
   try {
     const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
     const packId = orderData.pack_id || order_id;
-    const sellerId = parseInt(account.seller_id);
-    const url = `https://api.mercadolibre.com/messages/action_guide/packs/${packId}/seller/${sellerId}?tag=post_sale&application_id=${ML_CLIENT_ID}`;
+    // Endpoint correcto: POST /messages/action_guide/packs/{PACK}/option?tag=post_sale
+    const url = `https://api.mercadolibre.com/messages/action_guide/packs/${packId}/option?tag=post_sale`;
     const body = { option_id: option_id };
-    if (text != null && String(text) !== '') body.text = String(text);
-    console.log('[MSG OPTION] pack', packId, 'seller', sellerId, 'option', option_id, 'body', JSON.stringify(body));
+    if (template_id) body.template_id = template_id;              // opciones con plantilla (variantes/facturación)
+    else if (text != null && String(text) !== '') body.text = String(text);  // opción de texto libre (OTHER)
+    console.log('[MSG OPTION] pack', packId, 'option', option_id, 'body', JSON.stringify(body));
     const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
     const t = await r.text();
     console.log('[MSG OPTION] status', r.status, 'resp', String(t).slice(0, 400));
