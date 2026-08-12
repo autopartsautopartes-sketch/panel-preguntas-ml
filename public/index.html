@@ -2499,8 +2499,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <h2 style="margin-bottom:20px;color:#2d3277">Mensajes del comprador</h2>
         <a href="/" style="display:inline-block;margin-bottom:16px;color:#3483fa;text-decoration:none;font-size:14px">← Volver al panel</a>
       `;
+      let needInitCompose = false;
       if (conversations.length === 0) {
-        html += '<div class="empty"><p>No hay mensajes con este comprador</p></div>';
+        if (orderId && accountId) {
+          // Sin conversación previa: cargamos las opciones de ML (action_guide) y mostramos el cuadro adecuado.
+          needInitCompose = true;
+          html += '<div id="initCompose"><div class="loading"><div class="spinner"></div><p>Cargando opciones para iniciar la conversación…</p></div></div>';
+        } else {
+          html += '<div class="empty"><p>No hay mensajes con este comprador. Para iniciar una conversación, abrí esta vista desde una venta (botón “Mensajes” en Ventas).</p></div>';
+        }
       } else {
         for (const conv of conversations) {
           html += `
@@ -2554,9 +2561,82 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
       if (navToken !== myNav) return;
       content.innerHTML = html;
+      if (needInitCompose) initBuyerCompose(orderId, accountId);
     } catch (e) {
       if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
+    }
+  }
+  function _composeBoxHtml(orderId, accountId, placeholder){
+    return `
+      <div class="reply-box">
+        <div class="reply-row">
+          <textarea id="msg-${orderId}" placeholder="${placeholder || 'Escribí tu mensaje...'}"></textarea>
+          <div class="msg-btns">
+            <button class="msg-send" onclick="replyMessage('${orderId}', '${accountId}')">Enviar</button>
+          </div>
+        </div>
+        <input type="file" id="msgfile-${orderId}" accept=".jpg,.jpeg,.png,.pdf,.txt" multiple style="display:none" onchange="onMsgFilePick('${orderId}', this)">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px">
+          <button type="button" onclick="document.getElementById('msgfile-${orderId}').click()" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">📎 Adjuntar</button>
+          <span id="msgatt-${orderId}"></span>
+        </div>
+      </div>`;
+  }
+  async function initBuyerCompose(orderId, accountId){
+    const cont = document.getElementById('initCompose');
+    if (!cont) return;
+    let data = null;
+    try {
+      const r = await fetch(`/api/messages/options?order_id=${encodeURIComponent(orderId)}&account_id=${encodeURIComponent(accountId)}`);
+      data = await r.json();
+    } catch(e) { data = { mode: 'free' }; }
+    const mode = (data && data.mode) || 'free';
+    if (mode === 'options' && Array.isArray(data.options) && data.options.length) {
+      // Mercado Envío/Flex: ML exige elegir un motivo de la lista (igual que su pantalla).
+      const opts = data.options.map(o => {
+        const id = escapeHtml(String(o.id || o.option_id || o.type || ''));
+        const label = escapeHtml(String(o.text || o.title || o.label || o.name || o.id || 'Opción'));
+        return `<button type="button" class="opt-msg" onclick="sendMsgOption('${orderId}','${accountId}','${id}')" style="display:block;width:100%;text-align:left;background:#f5f7ff;border:1px solid #dfe3f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px">${label}</button>`;
+      }).join('');
+      cont.innerHTML = `
+        <div class="card">
+          <div class="card-item-title" style="margin-bottom:8px">Para iniciar la conversación (Mercado Envío/Flex), Mercado Libre pide elegir un motivo:</div>
+          <div class="reply-box" style="margin-bottom:10px"><textarea id="msg-${orderId}" placeholder="Escribí acá tu mensaje (para la opción de mensaje personalizado)…"></textarea></div>
+          ${opts}
+          <p style="font-size:11px;color:#999;margin-top:6px">Para escribir libre, elegí la opción de “mensaje personalizado” con el texto de arriba completado. Las demás opciones envían el mensaje predefinido de Mercado Libre.</p>
+        </div>`;
+    } else {
+      // "Acordar con el vendedor" (o ML permite texto libre): cuadro de escritura directo.
+      cont.innerHTML = `
+        <div class="card">
+          <div class="card-item-title" style="margin-bottom:12px">No hay mensajes previos. Escribí para <b>iniciar la conversación</b>.</div>
+          ${_composeBoxHtml(orderId, accountId, 'Escribí tu mensaje para iniciar la conversación…')}
+          <p style="font-size:11px;color:#999;margin-top:10px">Si Mercado Libre no permite iniciar la conversación todavía, te va a avisar con un error.</p>
+        </div>`;
+    }
+  }
+  async function sendMsgOption(orderId, accountId, optionId){
+    const ta = document.getElementById('msg-' + orderId);
+    const text = ta ? ta.value.trim() : '';
+    const btns = [...document.querySelectorAll('.opt-msg')];
+    btns.forEach(b => b.disabled = true);
+    try {
+      const r = await fetch('/api/messages/send-option', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, account_id: accountId, option_id: optionId, text })
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.ok) {
+        showToast('Mensaje enviado', 'success');
+        setTimeout(() => loadMessagesForBuyer(null, accountId, orderId), 800);
+      } else {
+        showToast(d.error || ('Error de Mercado Libre (' + r.status + ')'), 'error');
+        btns.forEach(b => b.disabled = false);
+      }
+    } catch(e) {
+      showToast('Error de red al enviar', 'error');
+      btns.forEach(b => b.disabled = false);
     }
   }
   async function loadQuestionsForBuyer(buyerId, accountId) {
