@@ -2308,8 +2308,10 @@ route('POST', '/api/drive-listado-update', async (req, res) => {
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
   const dbPerm = loadDB();
   const userPerm = dbPerm.users.find(u => u.id === sess.userId);
-  const canBulk = sess.role === 'admin' || userPerm?.can_bulk_update === true;
-  if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  // Guardar código/proveedor en Drive: lo pueden hacer admin, "Actualización masiva" (can_bulk_update)
+  // y también "Buscar y editar" (can_search_update) — desde el buscador. NO habilita la carga masiva.
+  const puedeDrive = sess.role === 'admin' || userPerm?.can_bulk_update === true || userPerm?.can_search_update === true;
+  if (!puedeDrive) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const body = await parseBody(req);
   const rawEdits = Array.isArray(body.edits) ? body.edits : [];
   // Sanitizamos: MLA válido + al menos código o proveedor. Si ambos vacíos, se ignora la fila.
@@ -2317,6 +2319,7 @@ route('POST', '/api/drive-listado-update', async (req, res) => {
     mla: String((e && e.mla) || '').trim(),
     codigo: String((e && e.codigo) || '').trim(),
     proveedor: String((e && e.proveedor) || '').trim(),
+    sheet: (e && e.sheet) ? String(e.sheet).trim() : '',
   })).filter(e => /^MLA\d+$/i.test(e.mla) && (e.codigo !== '' || e.proveedor !== ''));
   if (!edits.length) return sendJSON(res, 400, { error: 'No hay ediciones válidas (falta MLA o código/proveedor).' });
   const PURL = process.env.LISTADO_PUENTE_URL;
@@ -3653,6 +3656,66 @@ route('POST', '/api/messages/reply', async (req, res) => {
   } catch (err) {
     console.error('Error sending message:', err.response?.data || err.message || err);
     sendJSON(res, 500, { error: err.response?.data?.message || err.message || 'Error al enviar mensaje' });
+  }
+});
+// GET /api/messages/options — "Motivos para comunicarse" (action_guide) de ML. En ventas Mercado Envío/Flex,
+// ML NO deja escribir libre hasta elegir una opción de una lista. En "acordar con el vendedor" hay texto libre.
+// Devolvemos mode='options' + la lista si ML la exige, o mode='free' si se puede escribir directo.
+route('GET', '/api/messages/options', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const u = new URL(req.url, 'http://x');
+  const order_id = String(u.searchParams.get('order_id') || '').trim();
+  const account_id = parseInt(u.searchParams.get('account_id'));
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === account_id);
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token inválido' });
+  try {
+    const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
+    const packId = orderData.pack_id || order_id;
+    const sellerId = parseInt(account.seller_id);
+    let ag = null, agErr = null;
+    try {
+      ag = await mlGet(`https://api.mercadolibre.com/messages/action_guide/packs/${packId}/seller/${sellerId}`, token, { tag: 'post_sale' });
+    } catch (e) { agErr = (e && e.response && e.response.data) || (e && e.message) || String(e); }
+    const options = (ag && Array.isArray(ag.options)) ? ag.options : [];
+    // Si ML devuelve opciones → hay que elegir una (ME/Flex). Si no, asumimos texto libre (acordar).
+    const mode = options.length ? 'options' : 'free';
+    return sendJSON(res, 200, { ok: true, mode, pack_id: String(packId), options, ag_error: agErr });
+  } catch (e) {
+    // Ante cualquier error, caemos a texto libre para no bloquear el "acordar con el vendedor".
+    return sendJSON(res, 200, { ok: true, mode: 'free', options: [], error: (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || String(e) });
+  }
+});
+// POST /api/messages/send-option — envía un mensaje eligiendo una opción del action_guide (ME/Flex).
+// Body: { order_id, account_id, option_id, text }. Para "mensaje personalizado" el texto va libre.
+route('POST', '/api/messages/send-option', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const { order_id, account_id, option_id, text } = await parseBody(req);
+  const db = loadDB();
+  const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const token = await getValidToken(account);
+  if (!token) return sendJSON(res, 500, { error: 'Token inválido' });
+  try {
+    const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
+    const packId = orderData.pack_id || order_id;
+    const sellerId = parseInt(account.seller_id);
+    const url = `https://api.mercadolibre.com/messages/action_guide/packs/${packId}/seller/${sellerId}?tag=post_sale&application_id=${ML_CLIENT_ID}`;
+    const body = { option_id: option_id };
+    if (text != null && String(text) !== '') body.text = String(text);
+    console.log('[MSG OPTION] pack', packId, 'seller', sellerId, 'option', option_id, 'body', JSON.stringify(body));
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+    const t = await r.text();
+    console.log('[MSG OPTION] status', r.status, 'resp', String(t).slice(0, 400));
+    if (!r.ok) { let p; try { p = JSON.parse(t); } catch (e) { p = {}; } return sendJSON(res, 500, { error: p.message || p.error || ('ML ' + r.status + ': ' + String(t).slice(0, 200)) }); }
+    try { if (!db.dismissed_msg_packs) db.dismissed_msg_packs = {}; db.dismissed_msg_packs[String(packId)] = new Date().toISOString(); saveDB(db); } catch (e) {}
+    return sendJSON(res, 200, { ok: true });
+  } catch (e) {
+    return sendJSON(res, 500, { error: (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || 'Error al enviar la opción' });
   }
 });
 // Subir un adjunto a ML (JPG/PNG/PDF/TXT, hasta ~18MB por el límite del body). Devuelve el id del adjunto.
