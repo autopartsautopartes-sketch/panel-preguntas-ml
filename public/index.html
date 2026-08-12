@@ -2567,19 +2567,26 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       content.innerHTML = '<div class="empty"><p>Error al cargar mensajes</p></div>';
     }
   }
+  function updMsgCount(orderId){
+    var ta = document.getElementById('msg-' + orderId), c = document.getElementById('count-' + orderId);
+    if (ta && c) { var n = ta.value.length; c.textContent = n + '/350'; c.style.color = (n >= 350 ? '#c0392b' : '#999'); }
+  }
   function _composeBoxHtml(orderId, accountId, placeholder){
     return `
       <div class="reply-box">
         <div class="reply-row">
-          <textarea id="msg-${orderId}" placeholder="${placeholder || 'Escribí tu mensaje...'}"></textarea>
+          <textarea id="msg-${orderId}" maxlength="350" oninput="updMsgCount('${orderId}')" placeholder="${placeholder || 'Escribí tu mensaje...'}"></textarea>
           <div class="msg-btns">
             <button class="msg-send" onclick="replyMessage('${orderId}', '${accountId}')">Enviar</button>
           </div>
         </div>
         <input type="file" id="msgfile-${orderId}" accept=".jpg,.jpeg,.png,.pdf,.txt" multiple style="display:none" onchange="onMsgFilePick('${orderId}', this)">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px">
-          <button type="button" onclick="document.getElementById('msgfile-${orderId}').click()" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">📎 Adjuntar</button>
-          <span id="msgatt-${orderId}"></span>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:2px">
+          <span style="display:flex;align-items:center;gap:8px">
+            <button type="button" onclick="document.getElementById('msgfile-${orderId}').click()" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">📎 Adjuntar</button>
+            <span id="msgatt-${orderId}"></span>
+          </span>
+          <span id="count-${orderId}" style="font-size:11px;color:#999">0/350</span>
         </div>
       </div>`;
   }
@@ -2594,17 +2601,21 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const mode = (data && data.mode) || 'free';
     if (mode === 'options' && Array.isArray(data.options) && data.options.length) {
       // Mercado Envío/Flex: ML exige elegir un motivo de la lista (igual que su pantalla).
+      const LBL = { OTHER:'Escribir un mensaje personalizado', REQUEST_VARIANTS:'Pedir o confirmar variantes', REQUEST_BILLING_INFO:'Solicitar datos de facturación', SEND_INVOICE_LINK:'Enviar link de factura' };
       const opts = data.options.map(o => {
-        const id = escapeHtml(String(o.id || o.option_id || o.type || ''));
-        const label = escapeHtml(String(o.text || o.title || o.label || o.name || o.id || 'Opción'));
-        return `<button type="button" class="opt-msg" onclick="sendMsgOption('${orderId}','${accountId}','${id}')" style="display:block;width:100%;text-align:left;background:#f5f7ff;border:1px solid #dfe3f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px">${label}</button>`;
+        const id = escapeHtml(String(o.id || ''));
+        const label = escapeHtml(LBL[String(o.id || '')] || String(o.id || 'Opción'));
+        const isFree = !!o.free_text;
+        const tid = escapeHtml(String(o.template_id || ''));
+        return `<button type="button" class="opt-msg" onclick="sendMsgOption('${orderId}','${accountId}','${id}',${isFree ? 'true' : 'false'},'${tid}')" style="display:block;width:100%;text-align:left;background:#f5f7ff;border:1px solid #dfe3f5;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-size:13px">${label}${isFree ? ' ✍️' : ''}</button>`;
       }).join('');
       cont.innerHTML = `
         <div class="card">
           <div class="card-item-title" style="margin-bottom:8px">Para iniciar la conversación (Mercado Envío/Flex), Mercado Libre pide elegir un motivo:</div>
-          <div class="reply-box" style="margin-bottom:10px"><textarea id="msg-${orderId}" placeholder="Escribí acá tu mensaje (para la opción de mensaje personalizado)…"></textarea></div>
+          <div class="reply-box" style="margin-bottom:4px"><textarea id="msg-${orderId}" maxlength="350" oninput="updMsgCount('${orderId}')" placeholder="Escribí acá tu mensaje (para “mensaje personalizado”)…"></textarea></div>
+          <div style="text-align:right;margin-bottom:10px"><span id="count-${orderId}" style="font-size:11px;color:#999">0/350</span></div>
           ${opts}
-          <p style="font-size:11px;color:#999;margin-top:6px">Para escribir libre, elegí la opción de “mensaje personalizado” con el texto de arriba completado. Las demás opciones envían el mensaje predefinido de Mercado Libre.</p>
+          <p style="font-size:11px;color:#999;margin-top:6px">Para escribir libre, completá el texto de arriba y elegí “Escribir un mensaje personalizado”. Las demás opciones envían el mensaje predefinido de Mercado Libre.</p>
         </div>`;
     } else {
       // "Acordar con el vendedor" (o ML permite texto libre): cuadro de escritura directo.
@@ -2616,15 +2627,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         </div>`;
     }
   }
-  async function sendMsgOption(orderId, accountId, optionId){
+  async function sendMsgOption(orderId, accountId, optionId, isFree, templateId){
     const ta = document.getElementById('msg-' + orderId);
     const text = ta ? ta.value.trim() : '';
+    if (isFree && !text) { showToast('Escribí el mensaje para “mensaje personalizado”.', 'error'); return; }
+    if (isFree && text.length > 350) { showToast('El mensaje no puede superar los 350 caracteres.', 'error'); return; }
     const btns = [...document.querySelectorAll('.opt-msg')];
     btns.forEach(b => b.disabled = true);
     try {
+      const payload = { order_id: orderId, account_id: accountId, option_id: optionId };
+      if (isFree) payload.text = text;
+      else if (templateId) payload.template_id = templateId;
       const r = await fetch('/api/messages/send-option', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_id: orderId, account_id: accountId, option_id: optionId, text })
+        body: JSON.stringify(payload)
       });
       const d = await r.json().catch(() => ({}));
       if (r.ok && d.ok) {
