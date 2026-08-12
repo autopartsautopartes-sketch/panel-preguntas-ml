@@ -1666,8 +1666,10 @@ route('POST', '/api/bulk-update', async (req, res) => {
   if (!sess) return sendJSON(res, 403, { error: 'No autenticado' });
   const dbPerm = loadDB();
   const userPerm = dbPerm.users.find(u => u.id === sess.userId);
-  const canBulk = sess.role === 'admin' || userPerm?.can_bulk_update === true;
-  if (!canBulk) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  // Aplicar cambios de stock/precio/SKU/estado a ML: admin, "Actualización masiva" (can_bulk_update) y
+  // también "Buscar y editar" (can_search_update), que es exactamente lo que ese permiso habilita.
+  const puedeUpdate = sess.role === 'admin' || userPerm?.can_bulk_update === true || userPerm?.can_search_update === true;
+  if (!puedeUpdate) return sendJSON(res, 403, { error: 'Acceso denegado' });
   const { account_id, items, skip_promo_clean } = await parseBody(req);
   if (!account_id || !Array.isArray(items) || !items.length) return sendJSON(res, 400, { error: 'Datos inválidos' });
   const db = loadDB();
