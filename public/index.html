@@ -4039,7 +4039,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // Todos los usuarios logueados pueden entrar: los que no tienen permisos ven SOLO "Crear en Drive".
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
-      ${canBulk ? `
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
         <select id="updateAccount" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;width:100%;max-width:320px">
@@ -4047,7 +4047,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           ${accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
         </select>
       </div>` : ''}
-      ${canBulk ? `
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px">
           <h3 style="font-size:15px;color:#333">2. Exportar estado actual</h3>
@@ -4055,7 +4055,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         </div>
         <p style="font-size:13px;color:#666">Descargá un Excel con todas tus publicaciones activas y pausadas (item_id, stock, estado, precio, SKU). Usalo como base para editar y volver a subir.</p>
       </div>` : ''}
-      ${canBulk ? `
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:8px">3. Estructura del archivo para subir</h3>
         <div style="overflow-x:auto;margin-bottom:10px">
@@ -4138,7 +4138,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <div id="createDriveForm" style="display:none;margin-top:12px"></div>
         <div id="createDriveLog" style="margin-top:10px"></div>
       </div>` : ''}
-      ${canBulk ? `
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="font-size:15px;color:#333;margin-bottom:12px">4. Subí tu archivo de actualizaciones</h3>
         <div id="dropZone" onclick="document.getElementById('fileInput').click()"
@@ -5893,7 +5893,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               <div class="sale-item">
                 ${item.thumbnail ? `<img src="${item.thumbnail}" alt="" onerror="this.onerror=null;this.style.visibility='hidden'">` : '<div style="width:55px;height:55px;background:#f0f2f5;border-radius:6px"></div>'}
                 <div class="sale-item-info">
-                  <div class="sale-item-title" style="font-weight:600">${escapeHtml(item.title)}</div>
+                  <div class="sale-item-title" style="font-weight:600">${item.id ? `<a href="${escapeHtml(item.permalink || ('https://articulo.mercadolibre.com.ar/' + String(item.id).replace(/^MLA/, 'MLA-')))}" target="_blank" rel="noopener" title="Abrir publicación en Mercado Libre" style="color:#2d3277;text-decoration:none">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}</div>
                   <div class="sale-item-meta">
                     $ ${Number(item.unit_price).toLocaleString('es-AR',{minimumFractionDigits:2})} &middot; ${item.quantity} unidad${item.quantity!==1?'es':''}
                     ${item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : ''}
