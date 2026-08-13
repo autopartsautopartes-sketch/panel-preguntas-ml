@@ -7337,21 +7337,37 @@ async function lookupCodigoInfo(codRaw) {
   const cod = _cotNormCod(codRaw); if (!cod) return { descripcion: '', proveedor: '' };
   const cache = loadLocalDescCache();
   const c = cache[cod];
-  if (c && (c.d || c.p)) return { descripcion: c.d || '', proveedor: c.p || '' };
-  if (typeof c === 'string' && c) return { descripcion: c, proveedor: '' };   // caché viejo (solo título)
+  // SOLO confío en el caché si ya fue resuelto con el puente NUEVO (v:2, que trae proveedor — aunque esté
+  // vacío porque el listado no lo tenga). Los cachés viejos (string, o objeto sin v:2) se IGNORAN y se
+  // vuelve a consultar el puente: así, apenas se publica el puente nuevo, el proveedor aparece solo.
+  if (c && typeof c === 'object' && c.v === 2) return { descripcion: c.d || '', proveedor: c.p || '' };
   const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
-  if (!PURL || !PKEY) return { descripcion: '', proveedor: '' };   // sin puente: se completa a mano. No rompe.
+  if (!PURL || !PKEY) {   // sin puente configurado: devuelvo lo que haya en el caché viejo (título) y listo.
+    if (c && typeof c === 'object' && c.d) return { descripcion: c.d, proveedor: c.p || '' };
+    if (typeof c === 'string' && c) return { descripcion: c, proveedor: '' };
+    return { descripcion: '', proveedor: '' };
+  }
   try {
     const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'lookupByCodigo', codigos: [cod] }, 60000);
     let data; try { data = JSON.parse(text); } catch (e) { data = null; }
     const map = (data && data.map) || {};
     const v = map[cod];
-    let descripcion = '', proveedor = '';
-    if (v && typeof v === 'object') { descripcion = String(v.titulo || ''); proveedor = String(v.proveedor || ''); }
-    else if (typeof v === 'string') { descripcion = v; }   // puente viejo (solo título)
-    if (descripcion || proveedor) { cache[cod] = { d: descripcion, p: proveedor }; saveLocalDescCache(cache); }
-    return { descripcion, proveedor };
-  } catch (e) { return { descripcion: '', proveedor: '' }; }
+    if (v && typeof v === 'object') {
+      // Puente NUEVO: título + proveedor. Cacheo como v:2 (definitivo, aunque el proveedor venga vacío).
+      const descripcion = String(v.titulo || ''), proveedor = String(v.proveedor || '');
+      if (descripcion || proveedor) { cache[cod] = { d: descripcion, p: proveedor, v: 2 }; saveLocalDescCache(cache); }
+      return { descripcion, proveedor };
+    }
+    if (typeof v === 'string') {
+      // Puente VIEJO (solo título): NO lo cacheo como definitivo, para reintentar cuando se publique el nuevo.
+      return { descripcion: v, proveedor: '' };
+    }
+    return { descripcion: '', proveedor: '' };
+  } catch (e) {
+    if (c && typeof c === 'object' && c.d) return { descripcion: c.d, proveedor: c.p || '' };
+    if (typeof c === 'string' && c) return { descripcion: c, proveedor: '' };
+    return { descripcion: '', proveedor: '' };
+  }
 }
 // Compatibilidad: algunos llamados solo quieren la descripción.
 async function lookupDescByCodigo(codRaw) { return (await lookupCodigoInfo(codRaw)).descripcion; }
@@ -7438,6 +7454,13 @@ route('GET', '/api/local/desc-diag', async (req, res) => {
     } else { out.diagnostico = 'OK: el puente devuelve descripción="' + out.titulo + '" y proveedor="' + out.proveedor + '".'; }
   } catch (e) { out.error = String((e && e.message) || e); out.diagnostico = 'No se pudo contactar al puente (¿URL/implementación correcta?).'; }
   return sendJSON(res, 200, out);
+});
+// LIMPIAR el caché de descripción/proveedor (solo admin). Abrilo en el navegador:
+//   /api/local/desc-cache-clear   → fuerza que se vuelva a consultar el puente en la próxima carga.
+route('GET', '/api/local/desc-cache-clear', async (req, res) => {
+  const s = requireAuth(req); if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  try { _fsCosts.writeFileSync(localDescCachePath(), JSON.stringify({})); } catch (e) {}
+  sendJSON(res, 200, { ok: true, mensaje: 'Caché de descripción/proveedor vaciado. Al recargar un código se vuelve a consultar el listado.' });
 });
 // GUARDAR / EDITAR orden. El servidor recalcula costos/ganancia (nunca confía en el cliente) y asigna el N°.
 route('POST', '/api/local/save', async (req, res) => {
