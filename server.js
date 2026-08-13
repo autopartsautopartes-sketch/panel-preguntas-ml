@@ -7351,9 +7351,13 @@ function _localProvSel(codRaw, wantProv) {
   const store = loadCotizadorCostos();
   const provList = _cotProvList((store.codigos || {})[cod]);
   const sorted = provList.slice().sort((a, b) => ((a.cost || Infinity) - (b.cost || Infinity)));
-  let sel = sorted[0] || null;
+  // Si se pide un proveedor puntual, buscamos EXACTAMENTE ese código de ese proveedor (sin caer al más
+  // barato). Si no coincide, sel = null (queda "sin costo para ese proveedor"). Sin proveedor pedido,
+  // sugerimos el más barato (solo para el datalist / descripción).
   const wp = String(wantProv || '').trim();
-  if (wp) { const f = sorted.find(o => o.p.toUpperCase() === wp.toUpperCase()); if (f) sel = f; }
+  let sel;
+  if (wp) sel = sorted.find(o => o.p.toUpperCase() === wp.toUpperCase()) || null;
+  else sel = sorted[0] || null;
   return { sel, sorted, updated: store.updated };
 }
 // Recorta una orden para un usuario NO admin: nunca ve costos ni ganancia.
@@ -7380,9 +7384,14 @@ route('GET', '/api/local/lookup', async (req, res) => {
   const cod = _cotNormCod(url.searchParams.get('codigo') || '');
   const wantProv = url.searchParams.get('prov') || '';
   if (!cod) return sendJSON(res, 400, { error: 'Ingresá un código' });
+  const wp = String(wantProv || '').trim();
   const { sel, sorted, updated } = _localProvSel(cod, wantProv);
   const descripcion = await lookupDescByCodigo(cod);
-  const out = { encontrado: sorted.length > 0, codigo: cod, descripcion, updated, proveedor: sel ? sel.p : '' };
+  const out = {
+    encontrado: sorted.length > 0, codigo: cod, descripcion, updated,
+    proveedor: sel ? sel.p : wp,
+    prov_match: wp ? !!sel : null,   // ¿existe ese código para ese proveedor puntual?
+  };
   if (a.isAdm) {
     out.costo_unit = sel ? (Number(sel.cost) || 0) : 0;
     out.opciones = sorted.map(o => ({ proveedor: o.p, marca: o.marca, costo: o.cost, stock: o.stock }));
@@ -7414,13 +7423,16 @@ route('POST', '/api/local/save', async (req, res) => {
   }
   const itemsIn = Array.isArray(b.items) ? b.items : [];
   const items = []; let total_venta = 0, total_costo = 0;
+  const faltaProv = [];
   for (const it of itemsIn) {
     const cantidad = Math.max(0, Number(it && it.cantidad) || 0);
     const codigo = _cotNormCod(it && it.codigo);
     if (!codigo || cantidad <= 0) continue;
-    const { sel } = _localProvSel(codigo, it && it.proveedor);
-    const costo_unit = sel ? (Number(sel.cost) || 0) : 0;
-    const proveedor = sel ? sel.p : String((it && it.proveedor) || '').trim();
+    const provPedido = String((it && it.proveedor) || '').trim();
+    if (!provPedido) { faltaProv.push(codigo); continue; }   // código Y proveedor son obligatorios
+    const { sel } = _localProvSel(codigo, provPedido);
+    const costo_unit = sel ? (Number(sel.cost) || 0) : 0;   // costo EXACTO de ese código+proveedor (0 si no está en la lista)
+    const proveedor = sel ? sel.p : provPedido;
     let descripcion = String((it && it.descripcion) || '').trim();
     if (!descripcion) descripcion = await lookupDescByCodigo(codigo);
     const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
@@ -7430,7 +7442,8 @@ route('POST', '/api/local/save', async (req, res) => {
     items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_total, precio_venta, subtotal_venta, ganancia });
     total_venta += subtotal_venta; total_costo += costo_total;
   }
-  if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código y cantidad' });
+  if (faltaProv.length) return sendJSON(res, 400, { error: 'Falta el PROVEEDOR en el/los código(s): ' + faltaProv.join(', ') + '. Cargá siempre código y proveedor en cada renglón.' });
+  if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código, proveedor y cantidad' });
   const total_ganancia = total_venta - total_costo;
   const db = loadDB();
   db.local_sales = Array.isArray(db.local_sales) ? db.local_sales : [];
