@@ -444,6 +444,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('sales')" id="nav-sales">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M6 8h12l-1 12H7z"/><path d="M9 8a3 3 0 0 1 6 0"/></svg><span>Ventas</span>
       </a>
+      <a onclick="showSection('local')" id="nav-local" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 9l1-4h14l1 4"/><path d="M4 9h16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M6 14v6h12v-6"/></svg><span>Local</span>
+      </a>
       <a onclick="showSection('reputation')" id="nav-reputation" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.5-.8z"/></svg><span>Reputación</span>
       </a>
@@ -701,6 +704,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           const mobO = document.getElementById('mob-orders');
           if (mobO) mobO.style.display = '';
         }
+        if (currentUser.role === 'admin' || currentUser.can_local) {
+          const nl = document.getElementById('nav-local'); if (nl) nl.style.display = '';
+        }
         loadAccounts();
         // Run immediately so badge shows on first load without waiting 15s
         checkNewMessages();
@@ -795,6 +801,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('nav-orders').style.display = '';
           const mobO2 = document.getElementById('mob-orders');
           if (mobO2) mobO2.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_local) {
+          const nl2 = document.getElementById('nav-local'); if (nl2) nl2.style.display = '';
         }
         if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
@@ -902,6 +911,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'questions': loadQuestions(); break;
       case 'messages': loadMessages(); break;
       case 'sales': loadSales(); break;
+      case 'local': loadLocal(); break;
       case 'reputation': loadReputation(); break;
       case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
@@ -913,6 +923,298 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'stock': loadStock(); break;
     }
   }
+  // ==================== LOCAL (ventas en el local / mostrador) ====================
+  // Carga de ventas locales. Costos/descripciones salen de la MISMA data diaria que Stock/Gestión.
+  // Admin ve costos/ganancia/total; usuario habilitado (can_local) carga y ve precio venta, código y
+  // cantidad, pero NO costos ni ganancia (el servidor los filtra; acá solo mostramos lo que llega).
+  var _localData = { is_admin: false, next_n: 1, orders: [], resumen: {} };
+  var _localForm = null;
+  var _localBusy = false;
+  function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, precio_venta: '', _looked: false, _notfound: false }; }
+  function _localNewForm() {
+    return { editN: null, fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, items: [_localNewItem()] };
+  }
+  function _localM(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
+  function _localIsAdm() { return !!(_localData.is_admin || (currentUser && currentUser.role === 'admin')); }
+
+  async function loadLocal() {
+    const myNav = navToken;
+    if (!(currentUser && (currentUser.role === 'admin' || currentUser.can_local))) {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para Ventas local.</p></div>';
+      return;
+    }
+    if (!_localForm) _localForm = _localNewForm();
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+    try {
+      const r = await fetch('/api/local/data', { credentials: 'same-origin' });
+      const d = await r.json();
+      if (myNav !== navToken) return;
+      if (!r.ok) { content.innerHTML = '<div class="empty"><p>' + escapeHtml(d.error || 'Error') + '</p></div>'; return; }
+      _localData = d;
+      localRender();
+    } catch (e) { content.innerHTML = '<div class="empty"><p>Error de red al cargar Ventas local.</p></div>'; }
+  }
+
+  function localRender() {
+    const content = document.getElementById('content');
+    if (!content) return;
+    content.innerHTML = localFormHTML() + '<div id="loc_msg"></div>' + localSummaryHTML() + localOrdersHTML();
+    localRecalcTotals();
+  }
+
+  function localFormHTML() {
+    const isAdm = _localIsAdm();
+    const f = _localForm;
+    const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
+    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
+    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
+    let h = '';
+    h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:18px">🏪 ' + (f.editN != null ? ('Editar orden N° ' + f.editN) : 'Nueva venta local') + '</div>';
+    h += '<div style="font-size:13px;color:#3483fa;font-weight:700;background:#eef4ff;border-radius:20px;padding:5px 14px">N° de orden: ' + nOrden + '</div>';
+    h += '</div>';
+    // Cabecera
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px">';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localSetForm(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Nombre del cliente</label><input type="text" value="' + escapeHtml(f.cliente) + '" oninput="localSetForm(\'cliente\',this.value)" placeholder="Ej. Juan Pérez" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Teléfono</label><input type="text" value="' + escapeHtml(f.telefono) + '" oninput="localSetForm(\'telefono\',this.value)" placeholder="Ej. 3462-..." style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Local (sucursal)</label><select oninput="localSetForm(\'sucursal\',this.value)" onchange="localSetForm(\'sucursal\',this.value)" style="' + inp + '">' +
+      ['Rufino', 'San Martin'].map(x => '<option value="' + x + '"' + (f.sucursal === x ? ' selected' : '') + '>' + x + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Entrega</label><select onchange="localSetForm(\'entrega\',this.value)" style="' + inp + '">' +
+      '<option value="retiro"' + (f.entrega === 'retiro' ? ' selected' : '') + '>Retira en el local</option>' +
+      '<option value="envio"' + (f.entrega === 'envio' ? ' selected' : '') + '>Envío</option></select></div>';
+    h += '<div><label style="' + lbl + '">Forma de pago</label><select onchange="localFormaPago(this.value)" style="' + inp + '">' +
+      ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'].map(x => '<option value="' + x + '"' + (f.forma_pago === x ? ' selected' : '') + '>' + x.charAt(0) + x.slice(1).toLowerCase() + '</option>').join('') + '</select></div>';
+    h += '</div>';
+    // Panel de cheque
+    if (f.forma_pago === 'CHEQUE') {
+      const c = f.cheque || {};
+      h += '<div style="background:#fff8e6;border:1px solid #ffe08a;border-radius:10px;padding:12px 14px;margin-bottom:12px">';
+      h += '<div style="font-weight:700;color:#8a6d1a;font-size:13px;margin-bottom:10px">🧾 Datos del cheque</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">';
+      h += '<div><label style="' + lbl + '">Banco</label><input type="text" value="' + escapeHtml(c.banco || '') + '" oninput="localSetCheque(\'banco\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">N° de cheque</label><input type="text" value="' + escapeHtml(c.numero || '') + '" oninput="localSetCheque(\'numero\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Titular</label><input type="text" value="' + escapeHtml(c.titular || '') + '" oninput="localSetCheque(\'titular\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">CUIT / DNI</label><input type="text" value="' + escapeHtml(c.cuit || '') + '" oninput="localSetCheque(\'cuit\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Fecha de cobro</label><input type="date" value="' + escapeHtml(c.fecha_cobro || '') + '" oninput="localSetCheque(\'fecha_cobro\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(c.importe || '')) + '" oninput="localSetCheque(\'importe\',this.value)" style="' + inp + '"></div>';
+      h += '</div></div>';
+    }
+    // Renglones
+    h += '<div style="font-weight:700;color:#2d3277;font-size:14px;margin:8px 0 8px">Renglones</div>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:' + (isAdm ? '860px' : '560px') + '">';
+    h += '<thead><tr style="text-align:left;color:#888;font-size:11px;text-transform:uppercase">';
+    h += '<th style="padding:6px 6px;width:70px">Cant.</th><th style="padding:6px 6px;width:140px">Código</th><th style="padding:6px 6px">Descripción</th><th style="padding:6px 6px;width:120px">Proveedor</th>';
+    if (isAdm) h += '<th style="padding:6px 6px;width:100px">Costo u.</th><th style="padding:6px 6px;width:100px">Costo total</th>';
+    h += '<th style="padding:6px 6px;width:110px">Precio venta</th>';
+    if (isAdm) h += '<th style="padding:6px 6px;width:110px">Ganancia</th>';
+    h += '<th style="padding:6px 6px;width:34px"></th></tr></thead><tbody>';
+    for (let i = 0; i < f.items.length; i++) h += localItemRowHTML(i, isAdm);
+    h += '</tbody></table></div>';
+    h += '<button onclick="localAddItem()" style="margin-top:8px;background:#eef2f7;color:#3483fa;border:1px dashed #9db8e8;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer">+ Agregar renglón</button>';
+    // Notas
+    h += '<div style="margin-top:12px"><label style="' + lbl + '">Notas</label><textarea oninput="localSetForm(\'notas\',this.value)" rows="2" placeholder="Observaciones de la venta..." style="' + inp + ';resize:vertical">' + escapeHtml(f.notas || '') + '</textarea></div>';
+    // Totales
+    h += '<div style="display:flex;justify-content:flex-end;gap:22px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #eef1f6">';
+    h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Total venta</div><div id="loc_tot_venta" style="font-size:22px;font-weight:800;color:#2d3277">$ 0</div></div>';
+    if (isAdm) {
+      h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Costo total</div><div id="loc_tot_costo" style="font-size:22px;font-weight:800;color:#b0562a">$ 0</div></div>';
+      h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Ganancia</div><div id="loc_tot_gan" style="font-size:22px;font-weight:800;color:#1a9c53">$ 0</div></div>';
+    }
+    h += '</div>';
+    // Acciones
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">';
+    h += '<button id="loc_save_btn" onclick="localSave()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar orden') + '</button>';
+    if (f.editN != null) h += '<button onclick="localNewOrder()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">Cancelar edición</button>';
+    else h += '<button onclick="localNewOrder()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">🧹 Limpiar</button>';
+    h += '</div>';
+    h += '</div>';
+    return h;
+  }
+
+  function localItemRowHTML(i, isAdm) {
+    const it = _localForm.items[i];
+    const cellInp = 'padding:7px 8px;border:1px solid #d7dee8;border-radius:7px;font-size:13px;outline:none;width:100%;box-sizing:border-box';
+    const cant = (it.cantidad === '' || it.cantidad == null) ? '' : it.cantidad;
+    const pv = (it.precio_venta === '' || it.precio_venta == null) ? '' : it.precio_venta;
+    let h = '<tr style="border-top:1px solid #f0f2f6">';
+    h += '<td style="padding:5px 6px"><input type="number" min="0" step="1" value="' + escapeHtml(String(cant)) + '" oninput="localItemInput(' + i + ',\'cantidad\',this.value)" style="' + cellInp + '"></td>';
+    h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.codigo || '') + '" oninput="localItemInput(' + i + ',\'codigo\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="código" style="' + cellInp + '"></td>';
+    h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
+    h += '<td style="padding:5px 6px;color:#555">' + escapeHtml(it.proveedor || '—') + '</td>';
+    if (isAdm) {
+      h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_cu_' + i + '">' + _localM(it.costo_unit) + '</td>';
+      h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_ct_' + i + '">$ 0</td>';
+    }
+    h += '<td style="padding:5px 6px"><input type="number" min="0" step="0.01" value="' + escapeHtml(String(pv)) + '" oninput="localItemInput(' + i + ',\'precio_venta\',this.value)" id="li_pv_' + i + '" placeholder="0" style="' + cellInp + '"></td>';
+    if (isAdm) h += '<td style="padding:5px 6px;font-weight:700;white-space:nowrap" id="li_gan_' + i + '">$ 0</td>';
+    h += '<td style="padding:5px 6px;text-align:center">' + (_localForm.items.length > 1 ? '<span onclick="localRemoveItem(' + i + ')" title="Quitar" style="cursor:pointer;color:#d43d3d;font-weight:800">✕</span>' : '') + '</td>';
+    h += '</tr>';
+    return h;
+  }
+
+  function localSetForm(field, val) { if (_localForm) _localForm[field] = val; }
+  function localSetCheque(field, val) { if (_localForm) { _localForm.cheque = _localForm.cheque || {}; _localForm.cheque[field] = val; } }
+  function localFormaPago(val) { _localForm.forma_pago = val; localRender(); }
+  function localItemInput(i, field, val) {
+    const it = _localForm.items[i]; if (!it) return;
+    if (field === 'cantidad' || field === 'precio_venta') it[field] = (val === '' ? '' : Number(val));
+    else it[field] = val;
+    if (field === 'cantidad' || field === 'precio_venta') { localRecalcRow(i); localRecalcTotals(); }
+  }
+  function localAddItem() { _localForm.items.push(_localNewItem()); localRender(); }
+  function localRemoveItem(i) { _localForm.items.splice(i, 1); if (!_localForm.items.length) _localForm.items.push(_localNewItem()); localRender(); }
+  function localRecalcRow(i) {
+    if (!_localIsAdm()) return;
+    const it = _localForm.items[i]; if (!it) return;
+    const cant = Number(it.cantidad) || 0, cu = Number(it.costo_unit) || 0, pv = Number(it.precio_venta) || 0;
+    const ct = cu * cant, gan = pv * cant - ct;
+    const ctEl = document.getElementById('li_ct_' + i); if (ctEl) ctEl.textContent = _localM(ct);
+    const gEl = document.getElementById('li_gan_' + i); if (gEl) { gEl.textContent = _localM(gan); gEl.style.color = gan < 0 ? '#d43d3d' : '#1a9c53'; }
+    const cuEl = document.getElementById('li_cu_' + i); if (cuEl) cuEl.textContent = _localM(cu);
+  }
+  function localRecalcTotals() {
+    const isAdm = _localIsAdm();
+    let tv = 0, tc = 0;
+    for (let i = 0; i < _localForm.items.length; i++) {
+      const it = _localForm.items[i];
+      const cant = Number(it.cantidad) || 0, pv = Number(it.precio_venta) || 0, cu = Number(it.costo_unit) || 0;
+      tv += pv * cant; tc += cu * cant;
+      if (isAdm) localRecalcRow(i);
+    }
+    const tvEl = document.getElementById('loc_tot_venta'); if (tvEl) tvEl.textContent = _localM(tv);
+    if (isAdm) {
+      const tcEl = document.getElementById('loc_tot_costo'); if (tcEl) tcEl.textContent = _localM(tc);
+      const tgEl = document.getElementById('loc_tot_gan'); if (tgEl) { const g = tv - tc; tgEl.textContent = _localM(g); tgEl.style.color = g < 0 ? '#d43d3d' : '#1a9c53'; }
+    }
+  }
+  async function localLookup(i) {
+    const it = _localForm.items[i]; if (!it) return;
+    const cod = (it.codigo || '').trim();
+    if (!cod) return;
+    if (it._lastLooked === cod) return;   // evita re-consultar el mismo código (blur + enter)
+    it._lastLooked = cod;
+    try {
+      const r = await fetch('/api/local/lookup?codigo=' + encodeURIComponent(cod), { credentials: 'same-origin' });
+      const d = await r.json();
+      if (!r.ok) return;
+      it.descripcion = d.descripcion || it.descripcion || '';
+      it.proveedor = d.proveedor || '';
+      it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      it._looked = true; it._notfound = !d.encontrado;
+      localRender();
+      const el = document.getElementById('li_pv_' + i); if (el) el.focus();
+    } catch (e) {}
+  }
+  function localNewOrder() { _localForm = _localNewForm(); localRender(); window.scrollTo(0, 0); }
+  function localEditOrder(n) {
+    const o = (_localData.orders || []).find(x => Number(x.n) === Number(n));
+    if (!o) return;
+    _localForm = {
+      editN: o.n, fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || 'Rufino',
+      entrega: o.entrega || 'retiro', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '',
+      cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, o.cheque || {}),
+      items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, precio_venta: it.precio_venta, _looked: true, _lastLooked: it.codigo })),
+    };
+    if (!_localForm.items.length) _localForm.items = [_localNewItem()];
+    localRender(); window.scrollTo(0, 0);
+  }
+  async function localDeleteOrder(n) {
+    if (!confirm('¿Borrar la orden N° ' + n + '? No se puede deshacer.')) return;
+    try {
+      const r = await fetch('/api/local/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n }) });
+      const d = await r.json();
+      if (!r.ok) { alert(d.error || 'Error al borrar'); return; }
+      await loadLocal();
+    } catch (e) { alert('Error de red'); }
+  }
+  async function localSave() {
+    if (_localBusy) return;
+    const f = _localForm;
+    const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
+      .map(it => ({ cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }));
+    if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
+    const payload = {
+      n: f.editN, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
+      entrega: f.entrega, forma_pago: f.forma_pago, notas: f.notas,
+      cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, items,
+    };
+    _localBusy = true;
+    const btn = document.getElementById('loc_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+    try {
+      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const d = await r.json();
+      _localBusy = false;
+      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar orden'; } localMsg(d.error || 'Error al guardar', true); return; }
+      const savedN = d.n;
+      _localForm = _localNewForm();
+      await loadLocal();
+      localMsg('✔ Orden N° ' + savedN + ' guardada. Ya impacta en Gestión, Histórico y Dashboard.', false);
+    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar orden'; } localMsg('Error de red al guardar.', true); }
+  }
+  function localMsg(text, isErr) {
+    const el = document.getElementById('loc_msg'); if (!el) return;
+    el.innerHTML = '<div style="margin:0 0 16px;padding:10px 14px;border-radius:8px;font-size:14px;font-weight:600;' + (isErr ? 'background:#fdecec;color:#c0392b;border:1px solid #f5c6c6' : 'background:#eafaf1;color:#1a7d47;border:1px solid #b6e6ca') + '">' + escapeHtml(text) + '</div>';
+    if (!isErr) setTimeout(() => { const e2 = document.getElementById('loc_msg'); if (e2) e2.innerHTML = ''; }, 6000);
+  }
+
+  function localSummaryHTML() {
+    const isAdm = _localIsAdm();
+    const s = _localData.resumen || {};
+    const card = (label, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:12px 16px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + label + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
+    let h = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">';
+    h += card('Ventas', Number(s.count || 0).toLocaleString('es-AR'));
+    h += card('Unidades', Number(s.unidades || 0).toLocaleString('es-AR'));
+    h += card('Total vendido', _localM(s.total_venta), '#2d3277');
+    if (isAdm) {
+      h += card('Costo total', _localM(s.total_costo), '#b0562a');
+      h += card('Ganancia', _localM(s.total_ganancia), '#1a9c53');
+      h += card('Margen', (s.margin != null ? (Math.round(s.margin * 10) / 10) + '%' : '—'), '#1a9c53');
+    }
+    h += '</div>';
+    return h;
+  }
+
+  function localOrdersHTML() {
+    const isAdm = _localIsAdm();
+    const orders = _localData.orders || [];
+    let h = '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">Órdenes cargadas</div>';
+    if (!orders.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">Todavía no cargaste ventas locales.</div>';
+    for (const o of orders) {
+      const entrega = (o.entrega === 'envio') ? 'Envío' : 'Retira en local';
+      const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
+      h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+      h += '<div><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + o.n + ' · ' + escapeHtml(o.cliente || 'Sin nombre') + '</div>';
+      h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(o.fecha || '') + (o.telefono ? (' · 📞 ' + escapeHtml(o.telefono)) : '') + (o.created_by ? (' · por ' + escapeHtml(o.created_by)) : '') + '</div>';
+      h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🏪 ' + escapeHtml(o.sucursal || 'Rufino'), '#eef4ff', '#3466c9') + chip(entrega, '#f0f4f8', '#556') + chip('💳 ' + escapeHtml((o.forma_pago || '').charAt(0) + (o.forma_pago || '').slice(1).toLowerCase()), '#f6f0ff', '#7a4fc9') + '</div>';
+      h += '</div>';
+      h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Total</div><div style="font-size:20px;font-weight:800;color:#2d3277">' + _localM(o.total_venta) + '</div>';
+      if (isAdm) h += '<div style="font-size:12px;color:#1a9c53;font-weight:700">Ganancia ' + _localM(o.total_ganancia) + '</div><div style="font-size:11px;color:#b0562a">Costo ' + _localM(o.total_costo) + '</div>';
+      h += '</div></div>';
+      // Cheque
+      if (o.forma_pago === 'CHEQUE' && o.cheque) {
+        const c = o.cheque;
+        h += '<div style="font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-top:8px">🧾 Cheque: ' + escapeHtml(c.banco || '') + (c.numero ? (' N° ' + escapeHtml(c.numero)) : '') + (c.titular ? (' · ' + escapeHtml(c.titular)) : '') + (c.cuit ? (' · ' + escapeHtml(c.cuit)) : '') + (c.fecha_cobro ? (' · cobro ' + escapeHtml(c.fecha_cobro)) : '') + (c.importe ? (' · ' + _localM(c.importe)) : '') + '</div>';
+      }
+      // Renglones
+      h += '<div style="margin-top:9px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">';
+      h += '<thead><tr style="text-align:left;color:#aaa;font-size:10.5px;text-transform:uppercase"><th style="padding:3px 6px">Cant.</th><th style="padding:3px 6px">Código</th><th style="padding:3px 6px">Descripción</th><th style="padding:3px 6px">Precio</th>' + (isAdm ? '<th style="padding:3px 6px">Costo</th><th style="padding:3px 6px">Ganancia</th>' : '') + '</tr></thead><tbody>';
+      for (const it of (o.items || [])) {
+        h += '<tr style="border-top:1px solid #f2f4f7"><td style="padding:3px 6px">' + (Number(it.cantidad) || 0) + '</td><td style="padding:3px 6px;font-family:monospace">' + escapeHtml(it.codigo || '') + '</td><td style="padding:3px 6px">' + escapeHtml(it.descripcion || '') + (it.proveedor ? (' <span style="color:#aaa">· ' + escapeHtml(it.proveedor) + '</span>') : '') + '</td><td style="padding:3px 6px">' + _localM(it.precio_venta) + '</td>';
+        if (isAdm) h += '<td style="padding:3px 6px;color:#b0562a">' + _localM(it.costo_total) + '</td><td style="padding:3px 6px;color:#1a9c53;font-weight:600">' + _localM(it.ganancia) + '</td>';
+        h += '</tr>';
+      }
+      h += '</tbody></table></div>';
+      if (o.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(o.notas) + '</div>';
+      if (isAdm) h += '<div style="margin-top:9px;display:flex;gap:8px"><button onclick="localEditOrder(' + o.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button><button onclick="localDeleteOrder(' + o.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button></div>';
+      h += '</div>';
+    }
+    return h;
+  }
+
   // ==================== COTIZADOR ====================
   // Buscador de cotización (código → precio de venta). Va ARRIBA del panel de Preguntas y lo usan
   // todos los usuarios. La configuración de costos/parámetros vive aparte, en Configuración (solo admin).
@@ -3880,6 +4182,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Puede ver la sección Pedidos (armar y consultar pedidos de ventas)">
                   <input type="checkbox" ${u.can_view_orders || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_view_orders', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Pedidos
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Ventas local: puede cargar ventas del local y ver el resumen (precio de venta, código y cantidad). No ve costos ni ganancia.">
+                  <input type="checkbox" ${u.can_local || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_local', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Ventas local
                 </label>
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Compras: puede CARGAR facturas, notas de crédito y pagos (sin ver saldos)">
                   <input type="checkbox" ${u.can_compras_cargar || u.can_compras_saldos || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_compras_cargar', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
