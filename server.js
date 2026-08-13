@@ -7329,38 +7329,44 @@ route('GET', '/api/cotizador', async (req, res) => {
 function localDescCachePath() { return _pathCosts.join(DATA_DIR, 'local_desc_cache.json'); }
 function loadLocalDescCache() { try { return JSON.parse(_fsCosts.readFileSync(localDescCachePath(), 'utf8')) || {}; } catch (e) { return {}; } }
 function saveLocalDescCache(o) { try { _fsCosts.writeFileSync(localDescCachePath(), JSON.stringify(o)); } catch (e) {} }
-// código -> descripción (título del listado de Drive). Cachea SOLO los títulos encontrados (no los
-// vacíos): así, si el puente todavía no estaba actualizado, la próxima vez se vuelve a intentar y se
-// auto-corrige (no queda "envenenado" en vacío).
-async function lookupDescByCodigo(codRaw) {
-  const cod = _cotNormCod(codRaw); if (!cod) return '';
+// código -> { descripcion, proveedor } del LISTADO de Drive (título col E/F, proveedor col H).
+// Cachea SOLO lo encontrado (no los vacíos): si el puente no estaba listo, la próxima vez reintenta y
+// se auto-corrige. Compatibilidad: si el puente viejo devolvía map[cod] como string, lo tomo como título.
+async function lookupCodigoInfo(codRaw) {
+  const cod = _cotNormCod(codRaw); if (!cod) return { descripcion: '', proveedor: '' };
   const cache = loadLocalDescCache();
-  if (cache[cod]) return cache[cod];   // solo hay entrada si tenía título (los vacíos no se guardan)
+  const c = cache[cod];
+  if (c && (c.d || c.p)) return { descripcion: c.d || '', proveedor: c.p || '' };
+  if (typeof c === 'string' && c) return { descripcion: c, proveedor: '' };   // caché viejo (solo título)
   const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
-  if (!PURL || !PKEY) return '';   // sin puente: descripción vacía (editable a mano). No rompe.
+  if (!PURL || !PKEY) return { descripcion: '', proveedor: '' };   // sin puente: se completa a mano. No rompe.
   try {
     const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'lookupByCodigo', codigos: [cod] }, 60000);
     let data; try { data = JSON.parse(text); } catch (e) { data = null; }
     const map = (data && data.map) || {};
-    const titulo = String(map[cod] || '');
-    if (titulo) { cache[cod] = titulo; saveLocalDescCache(cache); }   // solo cacheo si hay título
-    return titulo;
-  } catch (e) { return ''; }
+    const v = map[cod];
+    let descripcion = '', proveedor = '';
+    if (v && typeof v === 'object') { descripcion = String(v.titulo || ''); proveedor = String(v.proveedor || ''); }
+    else if (typeof v === 'string') { descripcion = v; }   // puente viejo (solo título)
+    if (descripcion || proveedor) { cache[cod] = { d: descripcion, p: proveedor }; saveLocalDescCache(cache); }
+    return { descripcion, proveedor };
+  } catch (e) { return { descripcion: '', proveedor: '' }; }
 }
-// Proveedor + costo por código, tomando SIEMPRE la lista diaria actual (nunca un costo del cliente).
-function _localProvSel(codRaw, wantProv) {
+// Compatibilidad: algunos llamados solo quieren la descripción.
+async function lookupDescByCodigo(codRaw) { return (await lookupCodigoInfo(codRaw)).descripcion; }
+// COSTO por código desde la lista diaria. La lista suele NO tener nombre de proveedor: en ese caso
+// (o si el pedido no matchea por nombre) se usa el costo del código (el más barato si hubiera varios).
+// Devuelve { costo, prov, sorted, encontrado }.
+function _localCostFor(codRaw, wantProv) {
   const cod = _cotNormCod(codRaw);
   const store = loadCotizadorCostos();
   const provList = _cotProvList((store.codigos || {})[cod]);
   const sorted = provList.slice().sort((a, b) => ((a.cost || Infinity) - (b.cost || Infinity)));
-  // Si se pide un proveedor puntual, buscamos EXACTAMENTE ese código de ese proveedor (sin caer al más
-  // barato). Si no coincide, sel = null (queda "sin costo para ese proveedor"). Sin proveedor pedido,
-  // sugerimos el más barato (solo para el datalist / descripción).
   const wp = String(wantProv || '').trim();
-  let sel;
-  if (wp) sel = sorted.find(o => o.p.toUpperCase() === wp.toUpperCase()) || null;
-  else sel = sorted[0] || null;
-  return { sel, sorted, updated: store.updated };
+  let sel = null;
+  if (wp) sel = sorted.find(o => o.p && o.p.toUpperCase() === wp.toUpperCase()) || null;
+  if (!sel) sel = sorted[0] || null;   // sin match por nombre (lista sin nombres) → costo del código
+  return { costo: sel ? (Number(sel.cost) || 0) : 0, prov: sel ? sel.p : '', sorted, encontrado: sorted.length > 0, updated: store.updated };
 }
 // Recorta una orden para un usuario NO admin: nunca ve costos ni ganancia.
 function _stripLocalForRole(o, isAdm) {
@@ -7386,19 +7392,20 @@ route('GET', '/api/local/lookup', async (req, res) => {
   const cod = _cotNormCod(url.searchParams.get('codigo') || '');
   const wantProv = url.searchParams.get('prov') || '';
   if (!cod) return sendJSON(res, 400, { error: 'Ingresá un código' });
-  const wp = String(wantProv || '').trim();
-  const { sel, sorted, updated } = _localProvSel(cod, wantProv);
-  const descripcion = await lookupDescByCodigo(cod);
+  const info = await lookupCodigoInfo(cod);                 // descripción + proveedor DEL LISTADO
+  const cost = _localCostFor(cod, wantProv || info.proveedor);  // costo de la lista (por código)
+  // Proveedor a mostrar: el del listado (nombre real). Si el listado no lo tuviera, cae al de la lista de costos.
+  const proveedor = info.proveedor || cost.prov || String(wantProv || '').trim();
   const out = {
-    encontrado: sorted.length > 0, codigo: cod, descripcion, updated,
-    proveedor: sel ? sel.p : wp,
-    prov_match: wp ? !!sel : null,   // ¿existe ese código para ese proveedor puntual?
+    encontrado: cost.encontrado, codigo: cod, descripcion: info.descripcion, proveedor,
+    updated: cost.updated,
   };
   if (a.isAdm) {
-    out.costo_unit = sel ? (Number(sel.cost) || 0) : 0;
-    out.opciones = sorted.map(o => ({ proveedor: o.p, marca: o.marca, costo: o.cost, stock: o.stock }));
+    out.costo_unit = cost.costo;
+    // Opciones = proveedores CON nombre de la lista de costos (por si un código tuviera varios nombrados).
+    out.opciones = cost.sorted.filter(o => (o.p || '').trim()).map(o => ({ proveedor: o.p, marca: o.marca, costo: o.cost, stock: o.stock }));
   } else {
-    out.opciones = sorted.map(o => ({ proveedor: o.p, marca: o.marca }));   // sin costos
+    out.opciones = cost.sorted.filter(o => (o.p || '').trim()).map(o => ({ proveedor: o.p, marca: o.marca }));
   }
   sendJSON(res, 200, out);
 });
@@ -7419,13 +7426,15 @@ route('GET', '/api/local/desc-diag', async (req, res) => {
     let data = null; try { data = JSON.parse(text); } catch (e) {}
     out.json_ok = !!data;
     out.map = (data && data.map) || null;
-    out.titulo = (data && data.map && data.map[cod]) || '';
+    const v = (data && data.map && data.map[cod]);
+    out.titulo = (v && typeof v === 'object') ? String(v.titulo || '') : (typeof v === 'string' ? v : '');
+    out.proveedor = (v && typeof v === 'object') ? String(v.proveedor || '') : '';
     if (data && data.error) out.puente_error = data.error;
-    if (!out.titulo) {
+    if (!out.titulo && !out.proveedor) {
       if (data && /op no soportada/i.test(String(data.error || ''))) out.diagnostico = 'El puente NO tiene la operación lookupByCodigo → falta re-publicar el Apps Script como VERSIÓN NUEVA.';
-      else if (data && data.ok && out.map && Object.keys(out.map).length === 0) out.diagnostico = 'El puente respondió OK pero no encontró ese código en el listado (revisá que el código exista en la columna "codigo" de la planilla, sin espacios/mayúsculas distintas).';
-      else out.diagnostico = 'El puente respondió pero sin título. Revisá respuesta_cruda.';
-    } else { out.diagnostico = 'OK: el puente devuelve la descripción correctamente.'; }
+      else if (data && data.ok && out.map && Object.keys(out.map).length === 0) out.diagnostico = 'El puente respondió OK pero NO encontró ese código en el listado (revisá que exista en la columna "codigo" de la planilla, sin espacios/mayúsculas distintas). Por eso ese código no trae descripción.';
+      else out.diagnostico = 'El puente respondió pero sin datos. Revisá respuesta_cruda.';
+    } else { out.diagnostico = 'OK: el puente devuelve descripción="' + out.titulo + '" y proveedor="' + out.proveedor + '".'; }
   } catch (e) { out.error = String((e && e.message) || e); out.diagnostico = 'No se pudo contactar al puente (¿URL/implementación correcta?).'; }
   return sendJSON(res, 200, out);
 });
@@ -7459,9 +7468,9 @@ route('POST', '/api/local/save', async (req, res) => {
     if (!codigo || cantidad <= 0) continue;
     const provPedido = String((it && it.proveedor) || '').trim();
     if (!provPedido) { faltaProv.push(codigo); continue; }   // código Y proveedor son obligatorios
-    const { sel } = _localProvSel(codigo, provPedido);
-    const costo_unit = sel ? (Number(sel.cost) || 0) : 0;   // costo EXACTO de ese código+proveedor (0 si no está en la lista)
-    const proveedor = sel ? sel.p : provPedido;
+    const cost = _localCostFor(codigo, provPedido);          // costo del código (matchea por nombre si puede)
+    const costo_unit = cost.costo;
+    const proveedor = provPedido;                            // se respeta el proveedor cargado (viene del listado)
     let descripcion = String((it && it.descripcion) || '').trim();
     if (!descripcion) descripcion = await lookupDescByCodigo(codigo);
     const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
