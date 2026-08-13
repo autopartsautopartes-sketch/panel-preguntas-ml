@@ -1042,10 +1042,24 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = '<tr style="border-top:1px solid #f0f2f6">';
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="1" value="' + escapeHtml(String(cant)) + '" oninput="localItemInput(' + i + ',\'cantidad\',this.value)" style="' + cellInp + '"></td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.codigo || '') + '" oninput="localItemInput(' + i + ',\'codigo\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="código" style="' + cellInp + '"></td>';
-    const provs = Array.isArray(it._provs) ? it._provs : [];
-    const dlId = 'li_provdl_' + i;
-    const provWarn = (_localIsAdm() && (it.proveedor || '').toString().trim() && it._provOk === false) ? ';border-color:#e07b39;background:#fff6ef' : '';
-    h += '<td style="padding:5px 6px"><input id="li_prov_' + i + '" list="' + dlId + '" type="text" value="' + escapeHtml(it.proveedor || '') + '" oninput="localItemInput(' + i + ',\'proveedor\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="proveedor" style="' + cellInp + provWarn + '"><datalist id="' + dlId + '">' + provs.map(p => '<option value="' + escapeHtml(p) + '"></option>').join('') + '</datalist></td>';
+    // Proveedor = desplegable con los proveedores que tienen ese código (como el cotizador de Preguntas).
+    const ops = Array.isArray(it._opciones) ? it._opciones : [];
+    const isAdmProv = _localIsAdm();
+    let provCell;
+    if (ops.length === 0) {
+      provCell = '<select id="li_prov_' + i + '" disabled style="' + cellInp + ';color:#aaa;background:#f7f8fa"><option>' + (it._looked ? 'sin proveedores' : 'cargá el código') + '</option></select>';
+    } else {
+      const needChoose = ops.length > 1 && !(it.proveedor || '').toString().trim();
+      provCell = '<select id="li_prov_' + i + '" onchange="localProvPick(' + i + ',this.value)" style="' + cellInp + '">' +
+        (needChoose ? '<option value="">Elegí proveedor…</option>' : '') +
+        ops.map(o => {
+          const nm = o.proveedor || '';
+          const sel = (String(it.proveedor || '').toUpperCase() === String(nm).toUpperCase()) ? ' selected' : '';
+          const cst = (isAdmProv && o.costo != null) ? (' — $ ' + Math.round(Number(o.costo) || 0).toLocaleString('es-AR')) : '';
+          return '<option value="' + escapeHtml(nm) + '"' + sel + '>' + escapeHtml(nm) + cst + '</option>';
+        }).join('') + '</select>';
+    }
+    h += '<td style="padding:5px 6px">' + provCell + '</td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
     if (isAdm) {
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_cu_' + i + '">' + _localM(it.costo_unit) + '</td>';
@@ -1065,6 +1079,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const it = _localForm.items[i]; if (!it) return;
     if (field === 'cantidad' || field === 'precio_venta') it[field] = (val === '' ? '' : Number(val));
     else it[field] = val;
+    // Si cambian el código, se invalida el proveedor/costo hasta que se vuelva a buscar (en blur/Enter).
+    if (field === 'codigo') { it.proveedor = ''; it.costo_unit = 0; it._opciones = []; it._provOk = null; it._looked = false; it._lastCodLooked = null; }
     if (field === 'cantidad' || field === 'precio_venta') { localRecalcRow(i); localRecalcTotals(); }
   }
   function localAddItem() { _localForm.items.push(_localNewItem()); localRender(); }
@@ -1093,37 +1109,45 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const tgEl = document.getElementById('loc_tot_gan'); if (tgEl) { const g = tv - tc; tgEl.textContent = _localM(g); tgEl.style.color = g < 0 ? '#d43d3d' : '#1a9c53'; }
     }
   }
+  // Al cargar el código: trae descripción + la LISTA de proveedores de ese código (con costo para admin).
   async function localLookup(i) {
     const it = _localForm.items[i]; if (!it) return;
     const cod = (it.codigo || '').toString().trim();
     if (!cod) return;
-    const prov = (it.proveedor || '').toString().trim();
-    const key = cod + '|' + prov;
-    if (it._lastLooked === key) return;   // evita re-consultar lo mismo (blur + enter)
-    it._lastLooked = key;
+    if (it._lastCodLooked === cod) return;   // evita re-consultar el mismo código (blur + enter)
+    it._lastCodLooked = cod;
     try {
-      const url = '/api/local/lookup?codigo=' + encodeURIComponent(cod) + (prov ? ('&prov=' + encodeURIComponent(prov)) : '');
-      const r = await fetch(url, { credentials: 'same-origin' });
+      const r = await fetch('/api/local/lookup?codigo=' + encodeURIComponent(cod), { credentials: 'same-origin' });
       const d = await r.json();
       if (!r.ok) return;
       it.descripcion = d.descripcion || it.descripcion || '';
-      it._provs = (d.opciones || []).map(o => o.proveedor);
+      it._opciones = Array.isArray(d.opciones) ? d.opciones : [];
       it._looked = true; it._notfound = !d.encontrado;
-      if (prov) {
-        // Proveedor puntual: costo EXACTO de ese código+proveedor (0 si esa combinación no está en la lista).
-        it._provOk = (d.prov_match !== false);
-        it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
-      } else if (it._provs.length === 1) {
-        // Un solo proveedor para ese código → lo tomamos solo.
-        it.proveedor = it._provs[0]; it._provOk = true;
-        it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      if (it._opciones.length === 1) {
+        // Un solo proveedor → se elige solo y trae su costo.
+        it.proveedor = it._opciones[0].proveedor;
+        it.costo_unit = (it._opciones[0].costo != null) ? (Number(it._opciones[0].costo) || 0) : ((d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0);
+        it._provOk = true;
       } else {
-        it.costo_unit = 0; it._provOk = null;   // varios proveedores: falta que elija cuál
+        // Varios (o cero) proveedores: si ya tenía uno (edición) recalculo su costo; si no, que elija.
+        const cur = (it.proveedor || '').toString().trim();
+        if (cur) { const opt = it._opciones.find(o => String(o.proveedor).toUpperCase() === cur.toUpperCase()); it.costo_unit = (opt && opt.costo != null) ? (Number(opt.costo) || 0) : 0; it._provOk = !!opt; }
+        else { it.costo_unit = 0; it._provOk = null; }
       }
       localRender();
-      const faltaElegir = !(it.proveedor || '').toString().trim() && it._provs.length !== 1;
+      const faltaElegir = it._opciones.length > 1 && !(it.proveedor || '').toString().trim();
       const el = document.getElementById(faltaElegir ? ('li_prov_' + i) : ('li_pv_' + i)); if (el) el.focus();
     } catch (e) {}
+  }
+  // Elegir proveedor del desplegable → toma el costo de ESE proveedor (de la lista ya traída, sin ir al server).
+  function localProvPick(i, val) {
+    const it = _localForm.items[i]; if (!it) return;
+    it.proveedor = val;
+    const opt = (it._opciones || []).find(o => String(o.proveedor).toUpperCase() === String(val || '').toUpperCase());
+    it._provOk = !!opt;
+    it.costo_unit = (opt && opt.costo != null) ? (Number(opt.costo) || 0) : 0;
+    localRecalcRow(i); localRecalcTotals();
+    const el = document.getElementById('li_pv_' + i); if (el && val) el.focus();
   }
   function localNewOrder() { _localForm = _localNewForm(); localRender(); window.scrollTo(0, 0); }
   function localEditOrder(n) {
@@ -1133,7 +1157,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       editN: o.n, fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || 'Rufino',
       entrega: o.entrega || 'retiro', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '',
       cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, o.cheque || {}),
-      items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, precio_venta: it.precio_venta, _looked: true, _lastLooked: it.codigo })),
+      items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, precio_venta: it.precio_venta, _looked: true, _lastCodLooked: it.codigo, _provOk: true, _opciones: [{ proveedor: it.proveedor, costo: (it.costo_unit != null ? it.costo_unit : null) }] })),
     };
     if (!_localForm.items.length) _localForm.items = [_localNewItem()];
     localRender(); window.scrollTo(0, 0);
