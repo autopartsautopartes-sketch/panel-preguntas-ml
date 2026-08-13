@@ -1006,7 +1006,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div style="font-weight:700;color:#2d3277;font-size:14px;margin:8px 0 8px">Renglones</div>';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:' + (isAdm ? '860px' : '560px') + '">';
     h += '<thead><tr style="text-align:left;color:#888;font-size:11px;text-transform:uppercase">';
-    h += '<th style="padding:6px 6px;width:70px">Cant.</th><th style="padding:6px 6px;width:140px">Código</th><th style="padding:6px 6px">Descripción</th><th style="padding:6px 6px;width:120px">Proveedor</th>';
+    h += '<th style="padding:6px 6px;width:70px">Cant.</th><th style="padding:6px 6px;width:130px">Código</th><th style="padding:6px 6px;width:130px">Proveedor</th><th style="padding:6px 6px">Descripción</th>';
     if (isAdm) h += '<th style="padding:6px 6px;width:100px">Costo u.</th><th style="padding:6px 6px;width:100px">Costo total</th>';
     h += '<th style="padding:6px 6px;width:110px">Precio venta</th>';
     if (isAdm) h += '<th style="padding:6px 6px;width:110px">Ganancia</th>';
@@ -1042,8 +1042,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = '<tr style="border-top:1px solid #f0f2f6">';
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="1" value="' + escapeHtml(String(cant)) + '" oninput="localItemInput(' + i + ',\'cantidad\',this.value)" style="' + cellInp + '"></td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.codigo || '') + '" oninput="localItemInput(' + i + ',\'codigo\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="código" style="' + cellInp + '"></td>';
+    const provs = Array.isArray(it._provs) ? it._provs : [];
+    const dlId = 'li_provdl_' + i;
+    const provWarn = (_localIsAdm() && (it.proveedor || '').toString().trim() && it._provOk === false) ? ';border-color:#e07b39;background:#fff6ef' : '';
+    h += '<td style="padding:5px 6px"><input id="li_prov_' + i + '" list="' + dlId + '" type="text" value="' + escapeHtml(it.proveedor || '') + '" oninput="localItemInput(' + i + ',\'proveedor\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="proveedor" style="' + cellInp + provWarn + '"><datalist id="' + dlId + '">' + provs.map(p => '<option value="' + escapeHtml(p) + '"></option>').join('') + '</datalist></td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
-    h += '<td style="padding:5px 6px;color:#555">' + escapeHtml(it.proveedor || '—') + '</td>';
     if (isAdm) {
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_cu_' + i + '">' + _localM(it.costo_unit) + '</td>';
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_ct_' + i + '">$ 0</td>';
@@ -1092,20 +1095,34 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   async function localLookup(i) {
     const it = _localForm.items[i]; if (!it) return;
-    const cod = (it.codigo || '').trim();
+    const cod = (it.codigo || '').toString().trim();
     if (!cod) return;
-    if (it._lastLooked === cod) return;   // evita re-consultar el mismo código (blur + enter)
-    it._lastLooked = cod;
+    const prov = (it.proveedor || '').toString().trim();
+    const key = cod + '|' + prov;
+    if (it._lastLooked === key) return;   // evita re-consultar lo mismo (blur + enter)
+    it._lastLooked = key;
     try {
-      const r = await fetch('/api/local/lookup?codigo=' + encodeURIComponent(cod), { credentials: 'same-origin' });
+      const url = '/api/local/lookup?codigo=' + encodeURIComponent(cod) + (prov ? ('&prov=' + encodeURIComponent(prov)) : '');
+      const r = await fetch(url, { credentials: 'same-origin' });
       const d = await r.json();
       if (!r.ok) return;
       it.descripcion = d.descripcion || it.descripcion || '';
-      it.proveedor = d.proveedor || '';
-      it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      it._provs = (d.opciones || []).map(o => o.proveedor);
       it._looked = true; it._notfound = !d.encontrado;
+      if (prov) {
+        // Proveedor puntual: costo EXACTO de ese código+proveedor (0 si esa combinación no está en la lista).
+        it._provOk = (d.prov_match !== false);
+        it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      } else if (it._provs.length === 1) {
+        // Un solo proveedor para ese código → lo tomamos solo.
+        it.proveedor = it._provs[0]; it._provOk = true;
+        it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      } else {
+        it.costo_unit = 0; it._provOk = null;   // varios proveedores: falta que elija cuál
+      }
       localRender();
-      const el = document.getElementById('li_pv_' + i); if (el) el.focus();
+      const faltaElegir = !(it.proveedor || '').toString().trim() && it._provs.length !== 1;
+      const el = document.getElementById(faltaElegir ? ('li_prov_' + i) : ('li_pv_' + i)); if (el) el.focus();
     } catch (e) {}
   }
   function localNewOrder() { _localForm = _localNewForm(); localRender(); window.scrollTo(0, 0); }
@@ -1133,9 +1150,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function localSave() {
     if (_localBusy) return;
     const f = _localForm;
-    const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
+    const faltaProv = f.items.some(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0 && !(it.proveedor || '').toString().trim());
+    if (faltaProv) { localMsg('Cargá el PROVEEDOR en cada renglón — código y proveedor son obligatorios.', true); return; }
+    const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0 && (it.proveedor || '').toString().trim())
       .map(it => ({ cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }));
-    if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
+    if (!items.length) { localMsg('Cargá al menos un renglón con código, proveedor y cantidad.', true); return; }
     const payload = {
       n: f.editN, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
       entrega: f.entrega, forma_pago: f.forma_pago, notas: f.notas,
