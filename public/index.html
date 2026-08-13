@@ -1042,12 +1042,27 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = '<tr style="border-top:1px solid #f0f2f6">';
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="1" value="' + escapeHtml(String(cant)) + '" oninput="localItemInput(' + i + ',\'cantidad\',this.value)" style="' + cellInp + '"></td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.codigo || '') + '" oninput="localItemInput(' + i + ',\'codigo\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="código" style="' + cellInp + '"></td>';
-    // Proveedor = SOLO LECTURA, identificado a partir del código (columna proveedor del listado de Drive).
-    // No es editable ni desplegable: lo determina el código.
-    const provTxt = it.proveedor
-      ? '<span style="font-weight:600;color:#2d3277">' + escapeHtml(it.proveedor) + '</span>'
-      : (it._looked ? '<span style="color:#e07b39;font-size:11px">no identificado</span>' : '<span style="color:#bbb">—</span>');
-    h += '<td style="padding:5px 6px">' + provTxt + '</td>';
+    // Proveedor: si el código lo tienen VARIOS proveedores → desplegable para elegir cuál (con su costo).
+    // Si es UN solo proveedor → se identifica solo por el código y se muestra fijo (no editable).
+    const isAdmProv = _localIsAdm();
+    const namedProv = (Array.isArray(it._opciones) ? it._opciones : []).filter(o => (o.proveedor || '').toString().trim());
+    let provCell;
+    if (namedProv.length >= 2) {
+      const needChoose = !(it.proveedor || '').toString().trim();
+      provCell = '<select id="li_prov_' + i + '" onchange="localProvPick(' + i + ',this.value)" style="' + cellInp + (needChoose ? ';border-color:#e07b39;background:#fff6ef' : '') + '">' +
+        (needChoose ? '<option value="">Elegí…</option>' : '') +
+        namedProv.map(o => {
+          const nm = o.proveedor || '';
+          const sel = (String(it.proveedor || '').toUpperCase() === String(nm).toUpperCase()) ? ' selected' : '';
+          const cst = (isAdmProv && o.costo != null) ? (' ($ ' + Math.round(Number(o.costo) || 0).toLocaleString('es-AR') + ')') : '';
+          return '<option value="' + escapeHtml(nm) + '"' + sel + '>' + escapeHtml(nm) + cst + '</option>';
+        }).join('') + '</select>';
+    } else {
+      provCell = it.proveedor
+        ? '<span style="font-weight:600;color:#2d3277">' + escapeHtml(it.proveedor) + '</span>'
+        : (it._looked ? '<span style="color:#e07b39;font-size:11px">no identificado</span>' : '<span style="color:#bbb">—</span>');
+    }
+    h += '<td style="padding:5px 6px">' + provCell + '</td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
     if (isAdm) {
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_cu_' + i + '">' + _localM(it.costo_unit) + '</td>';
@@ -1109,12 +1124,33 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const d = await r.json();
       if (!r.ok) return;
       it.descripcion = d.descripcion || it.descripcion || '';
-      it.proveedor = d.proveedor || '';                 // proveedor IDENTIFICADO por el código (del listado)
-      it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      it._opciones = Array.isArray(d.opciones) ? d.opciones : [];
       it._looked = true; it._notfound = !d.encontrado;
+      const named = it._opciones.filter(o => (o.proveedor || '').toString().trim());
+      if (named.length >= 2) {
+        // El código lo tienen varios proveedores → elegir cuál (preselecciona el del listado si coincide).
+        const cur = (d.proveedor || it.proveedor || '').toString().trim();
+        const opt = named.find(o => String(o.proveedor).toUpperCase() === cur.toUpperCase());
+        if (opt) { it.proveedor = opt.proveedor; it.costo_unit = (opt.costo != null) ? (Number(opt.costo) || 0) : 0; }
+        else { it.proveedor = ''; it.costo_unit = 0; }
+      } else {
+        // Único (o ninguno con nombre) → identificado por el código.
+        it.proveedor = d.proveedor || (named[0] && named[0].proveedor) || '';
+        it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
+      }
       localRender();
-      const el = document.getElementById('li_pv_' + i); if (el) el.focus();
+      const faltaElegir = named.length >= 2 && !(it.proveedor || '').toString().trim();
+      const el = document.getElementById(faltaElegir ? ('li_prov_' + i) : ('li_pv_' + i)); if (el) el.focus();
     } catch (e) {}
+  }
+  // Elegir proveedor cuando el código lo tienen varios → toma el costo de ESE proveedor.
+  function localProvPick(i, val) {
+    const it = _localForm.items[i]; if (!it) return;
+    it.proveedor = val;
+    const opt = (it._opciones || []).find(o => String(o.proveedor).toUpperCase() === String(val || '').toUpperCase());
+    if (opt && opt.costo != null) it.costo_unit = Number(opt.costo) || 0;
+    localRender();
+    const el = document.getElementById('li_pv_' + i); if (el && val) el.focus();
   }
   function localNewOrder() { _localForm = _localNewForm(); localRender(); window.scrollTo(0, 0); }
   function localEditOrder(n) {
