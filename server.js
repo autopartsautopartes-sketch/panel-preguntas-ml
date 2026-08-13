@@ -161,6 +161,19 @@ for (const u of dbMigrate8.users) {
   if (u.can_view_orders === undefined) { u.can_view_orders = false; migrated8 = true; }
 }
 if (migrated8) saveDB(dbMigrate8);
+// Migrate: VENTAS LOCALES — permiso can_local, almacén de órdenes y contador correlativo (sin reinicio).
+const dbMigrate9 = loadDB();
+let migrated9 = false;
+for (const u of dbMigrate9.users) {
+  if (u.can_local === undefined) { u.can_local = false; migrated9 = true; }
+}
+if (!Array.isArray(dbMigrate9.local_sales)) { dbMigrate9.local_sales = []; migrated9 = true; }
+if (dbMigrate9.local_seq === undefined) {
+  // Arranca en el máximo N° ya existente (por si se reinstala sobre datos previos); si no, 0 → primer orden = 1.
+  let mx = 0; for (const o of (dbMigrate9.local_sales || [])) { const nn = Number(o && o.n) || 0; if (nn > mx) mx = nn; }
+  dbMigrate9.local_seq = mx; migrated9 = true;
+}
+if (migrated9) saveDB(dbMigrate9);
 // ==================== SESSION STORE (persistent) ====================
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 function loadSessions() {
@@ -537,6 +550,7 @@ route('GET', '/api/me', async (req, res) => {
     can_bulk_update: isAdmin || user?.can_bulk_update === true,
     can_view_promos: isAdmin || user?.can_view_promos === true,
     can_view_orders: isAdmin || user?.can_view_orders === true,
+    can_local: isAdmin || user?.can_local === true,
     // Compras (cuenta corriente proveedores): cargar comprobantes/pagos, y ver saldos/resúmenes.
     can_compras_cargar: isAdmin || user?.can_compras_cargar === true || user?.can_compras_saldos === true,
     can_compras_saldos: isAdmin || user?.can_compras_saldos === true
@@ -562,6 +576,7 @@ route('GET', '/api/users', async (req, res) => {
     can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
     can_view_promos: u.role === 'admin' || u.can_view_promos === true,
     can_view_orders: u.role === 'admin' || u.can_view_orders === true,
+    can_local: u.role === 'admin' || u.can_local === true,
     can_compras_cargar: u.role === 'admin' || u.can_compras_cargar === true || u.can_compras_saldos === true,
     can_compras_saldos: u.role === 'admin' || u.can_compras_saldos === true,
     created_at: u.created_at
@@ -570,7 +585,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_compras_cargar, can_compras_saldos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -587,6 +602,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_bulk_update !== undefined) user.can_bulk_update = !!can_bulk_update;
   if (can_view_promos !== undefined) user.can_view_promos = !!can_view_promos;
   if (can_view_orders !== undefined) user.can_view_orders = !!can_view_orders;
+  if (can_local !== undefined) user.can_local = !!can_local;
   if (can_compras_cargar !== undefined) user.can_compras_cargar = !!can_compras_cargar;
   if (can_compras_saldos !== undefined) user.can_compras_saldos = !!can_compras_saldos;
   saveDB(db);
@@ -7302,6 +7318,202 @@ route('GET', '/api/cotizador', async (req, res) => {
   sendJSON(res, 200, out);
 });
 
+// ===========================================================================
+// VENTAS LOCALES (panel "Local"): órdenes de venta en el local/mostrador.
+// - Los COSTOS y la DESCRIPCIÓN salen de la MISMA data diaria que usa Stock/Gestión
+//   (cotizador_costos.json: código -> [{p,cost,...}]) + el listado de Drive (código -> título).
+// - Persistente en data.json: db.local_sales[] + contador correlativo db.local_seq (sin reinicio).
+// - Rol: admin ve costos/ganancia/total; usuario habilitado (can_local) carga y ve en el resumen
+//   precio de venta, código y cantidad, PERO NO costos ni ganancia (se filtran en el servidor).
+// ===========================================================================
+function localDescCachePath() { return _pathCosts.join(DATA_DIR, 'local_desc_cache.json'); }
+function loadLocalDescCache() { try { return JSON.parse(_fsCosts.readFileSync(localDescCachePath(), 'utf8')) || {}; } catch (e) { return {}; } }
+function saveLocalDescCache(o) { try { _fsCosts.writeFileSync(localDescCachePath(), JSON.stringify(o)); } catch (e) {} }
+// código -> descripción (título del listado de Drive). Cachea para no pegarle al puente cada vez.
+async function lookupDescByCodigo(codRaw) {
+  const cod = _cotNormCod(codRaw); if (!cod) return '';
+  const cache = loadLocalDescCache();
+  if (Object.prototype.hasOwnProperty.call(cache, cod)) return cache[cod] || '';
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return '';   // sin puente: descripción vacía (editable a mano). No rompe.
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'lookupByCodigo', codigos: [cod] }, 60000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = null; }
+    const map = (data && data.map) || {};
+    const titulo = String(map[cod] || '');
+    cache[cod] = titulo; saveLocalDescCache(cache);   // cachea incluso el vacío (evita reintentos infinitos)
+    return titulo;
+  } catch (e) { return ''; }
+}
+// Proveedor + costo por código, tomando SIEMPRE la lista diaria actual (nunca un costo del cliente).
+function _localProvSel(codRaw, wantProv) {
+  const cod = _cotNormCod(codRaw);
+  const store = loadCotizadorCostos();
+  const provList = _cotProvList((store.codigos || {})[cod]);
+  const sorted = provList.slice().sort((a, b) => ((a.cost || Infinity) - (b.cost || Infinity)));
+  let sel = sorted[0] || null;
+  const wp = String(wantProv || '').trim();
+  if (wp) { const f = sorted.find(o => o.p.toUpperCase() === wp.toUpperCase()); if (f) sel = f; }
+  return { sel, sorted, updated: store.updated };
+}
+// Recorta una orden para un usuario NO admin: nunca ve costos ni ganancia.
+function _stripLocalForRole(o, isAdm) {
+  if (isAdm) return o;
+  return {
+    n: o.n, fecha: o.fecha, cliente: o.cliente, telefono: o.telefono, notas: o.notas, sucursal: o.sucursal,
+    entrega: o.entrega, forma_pago: o.forma_pago, cheque: o.cheque,
+    created_at: o.created_at, created_by: o.created_by, total_venta: o.total_venta,
+    items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: it.precio_venta, subtotal_venta: it.subtotal_venta })),
+  };
+}
+function _localAuth(req) {
+  const s = requireAuth(req); if (!s) return { err: [401, 'No autenticado'] };
+  const db = loadDB(); const u = db.users.find(x => x.id === s.userId);
+  const isAdm = s.role === 'admin';
+  if (!(isAdm || (u && u.can_local === true))) return { err: [403, 'Sin permiso para Ventas local'] };
+  return { s, u, isAdm, db };
+}
+// LOOKUP: código -> descripción + proveedor (+ costo solo admin).
+route('GET', '/api/local/lookup', async (req, res) => {
+  const a = _localAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const url = new URL(req.url, 'http://x');
+  const cod = _cotNormCod(url.searchParams.get('codigo') || '');
+  const wantProv = url.searchParams.get('prov') || '';
+  if (!cod) return sendJSON(res, 400, { error: 'Ingresá un código' });
+  const { sel, sorted, updated } = _localProvSel(cod, wantProv);
+  const descripcion = await lookupDescByCodigo(cod);
+  const out = { encontrado: sorted.length > 0, codigo: cod, descripcion, updated, proveedor: sel ? sel.p : '' };
+  if (a.isAdm) {
+    out.costo_unit = sel ? (Number(sel.cost) || 0) : 0;
+    out.opciones = sorted.map(o => ({ proveedor: o.p, marca: o.marca, costo: o.cost, stock: o.stock }));
+  } else {
+    out.opciones = sorted.map(o => ({ proveedor: o.p, marca: o.marca }));   // sin costos
+  }
+  sendJSON(res, 200, out);
+});
+// GUARDAR / EDITAR orden. El servidor recalcula costos/ganancia (nunca confía en el cliente) y asigna el N°.
+route('POST', '/api/local/save', async (req, res) => {
+  const a = _localAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const editN = (b.n != null && !isNaN(Number(b.n))) ? Number(b.n) : null;
+  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha || '')) ? String(b.fecha) : new Date().toISOString().slice(0, 10);
+  const cliente = String(b.cliente || '').trim().slice(0, 120);
+  const telefono = String(b.telefono || '').trim().slice(0, 60);
+  const notas = String(b.notas || '').trim().slice(0, 1000);
+  const sucursal = String(b.sucursal || '').trim().slice(0, 60) || 'Rufino';   // local donde se vendió
+  const entrega = (b.entrega === 'envio') ? 'envio' : 'retiro';
+  const FP = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
+  const forma_pago = FP.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
+  let cheque = null;
+  if (forma_pago === 'CHEQUE' && b.cheque && typeof b.cheque === 'object') {
+    cheque = {
+      banco: String(b.cheque.banco || '').slice(0, 80), numero: String(b.cheque.numero || '').slice(0, 60),
+      titular: String(b.cheque.titular || '').slice(0, 120), cuit: String(b.cheque.cuit || '').slice(0, 20),
+      fecha_cobro: String(b.cheque.fecha_cobro || '').slice(0, 20), importe: Number(b.cheque.importe) || 0,
+    };
+  }
+  const itemsIn = Array.isArray(b.items) ? b.items : [];
+  const items = []; let total_venta = 0, total_costo = 0;
+  for (const it of itemsIn) {
+    const cantidad = Math.max(0, Number(it && it.cantidad) || 0);
+    const codigo = _cotNormCod(it && it.codigo);
+    if (!codigo || cantidad <= 0) continue;
+    const { sel } = _localProvSel(codigo, it && it.proveedor);
+    const costo_unit = sel ? (Number(sel.cost) || 0) : 0;
+    const proveedor = sel ? sel.p : String((it && it.proveedor) || '').trim();
+    let descripcion = String((it && it.descripcion) || '').trim();
+    if (!descripcion) descripcion = await lookupDescByCodigo(codigo);
+    const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
+    const costo_total = costo_unit * cantidad;
+    const subtotal_venta = precio_venta * cantidad;
+    const ganancia = subtotal_venta - costo_total;
+    items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_total, precio_venta, subtotal_venta, ganancia });
+    total_venta += subtotal_venta; total_costo += costo_total;
+  }
+  if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código y cantidad' });
+  const total_ganancia = total_venta - total_costo;
+  const db = loadDB();
+  db.local_sales = Array.isArray(db.local_sales) ? db.local_sales : [];
+  let order;
+  if (editN != null) {
+    if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar una orden' });
+    order = db.local_sales.find(o => Number(o.n) === editN);
+    if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+    Object.assign(order, { fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, items, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+  } else {
+    db.local_seq = (Number(db.local_seq) || 0) + 1;
+    order = { n: db.local_seq, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+    db.local_sales.push(order);
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, n: order.n, order: _stripLocalForRole(order, a.isAdm) });
+});
+// LISTAR órdenes + resumen (rol-aware). Opcional ?from=&to= por fecha.
+route('GET', '/api/local/data', async (req, res) => {
+  const a = _localAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const url = new URL(req.url, 'http://x');
+  const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+  const db = loadDB();
+  let orders = (db.local_sales || []).slice();
+  if (from) orders = orders.filter(o => String(o.fecha || '') >= from);
+  if (to) orders = orders.filter(o => String(o.fecha || '') <= to);
+  orders.sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
+  const resumen = { count: orders.length, total_venta: 0, unidades: 0 };
+  if (a.isAdm) { resumen.total_costo = 0; resumen.total_ganancia = 0; }
+  for (const o of orders) {
+    resumen.total_venta += Number(o.total_venta) || 0;
+    for (const it of (o.items || [])) resumen.unidades += Number(it.cantidad) || 0;
+    if (a.isAdm) { resumen.total_costo += Number(o.total_costo) || 0; resumen.total_ganancia += Number(o.total_ganancia) || 0; }
+  }
+  resumen.margin = (a.isAdm && resumen.total_venta > 0) ? (resumen.total_ganancia / resumen.total_venta * 100) : null;
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
+});
+// BORRAR orden (solo admin).
+route('POST', '/api/local/delete', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador puede borrar una orden' });
+  const b = await parseBody(req);
+  const n = Number(b.n);
+  const db = loadDB();
+  const before = (db.local_sales || []).length;
+  db.local_sales = (db.local_sales || []).filter(o => Number(o.n) !== n);
+  if (db.local_sales.length === before) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, n });
+});
+// Filas sintéticas de VENTAS LOCALES para Gestión/Histórico/Dashboard: 1 orden = 1 fila.
+// Cuenta "Venta local", cantidad 1 (suma el total), sin comisión/envío/impuesto; queda = precio; costo = costo total.
+function localSalesRows(from, to) {
+  const db = loadDB();
+  const orders = Array.isArray(db.local_sales) ? db.local_sales : [];
+  const rows = [];
+  const T = { facturacion: 0, unidades: 0, quedaTotal: 0, costTotal: 0, costStockTotal: 0, ganancia: 0, gananciaSinFlex: 0, conocidas: 0, factConocida: 0, orders: 0, count: 0, perdida: 0, perdidaMonto: 0 };
+  for (const o of orders) {
+    const d = String(o.fecha || '').slice(0, 10);
+    if (!d) continue;
+    if (from && d < from) continue;
+    if (to && d > to) continue;
+    const revenue = Number(o.total_venta) || 0;
+    const cost = Number(o.total_costo) || 0;
+    const net = revenue - cost;
+    const entregaLabel = (o.entrega === 'envio') ? 'Envío' : 'Retira en local';
+    rows.push({
+      order_id: 'LOCAL-' + o.n, pack_id: 'LOCAL-' + o.n, date: o.fecha, datetime: o.created_at || o.fecha,
+      item_id: 'LOCAL', title: o.cliente || ('Venta local #' + o.n), status: 'local',
+      account_name: 'Venta local', es_local: true, sucursal: o.sucursal || '', entrega: o.entrega, forma_pago: o.forma_pago || '',
+      envio_estado: entregaLabel, stock: true, frozen: true, qty: 1, sku: '', proveedor: '',
+      cuotas: 0, flex: false, pack: false, bono: 0,
+      revenue, fee: 0, envio: 0, envioReal: null, tax: 0, taxReal: false, factura: 0,
+      queda: revenue, cost, net, marginPct: revenue > 0 ? (net / revenue) * 100 : null, known: true,
+      net_sin_flex: net, cost_stock: cost,
+    });
+    T.facturacion += revenue; T.unidades += 1; T.quedaTotal += revenue; T.costTotal += cost; T.costStockTotal += cost;
+    T.ganancia += net; T.gananciaSinFlex += net; T.conocidas += 1; T.factConocida += revenue; T.orders += 1; T.count += 1;
+    if (net < 0) { T.perdida += 1; T.perdidaMonto += net; }
+  }
+  return { rows, T };
+}
+
 // ---------------------------------------------------------------------------
 // TABLA DE COSTOS por item_id (MLA). Se llena importando tu Excel procesado.
 // Estructura por item:
@@ -8625,6 +8837,20 @@ function registerAds(deps) {
         porCuenta.push({ account_name: account.name, objetivo: cfg.objetivo, facturacion: v.facturacion, ganancia: v.ganancia, margin: v.margin, orders: v.orders, perdida: v.perdida, proy_mensual: proy });
       }
       if (!soloCanceladas && (fresh > 0 || taxFixed > 0 || costFixed > 0)) { hist.updated = new Date().toISOString(); saveHistFile(hist); }
+      // ===== VENTAS LOCALES (cuenta sintética "Venta local"). Aditivo: NO toca el cálculo de ML.
+      // En modo "solo canceladas" no aplica (las locales no se cancelan por ML).
+      if (!soloCanceladas) {
+        const L = localSalesRows(from, to);
+        for (const r of L.rows) allRows.push(r);
+        facturacion += L.T.facturacion; ganancia += L.T.ganancia; orders += L.T.orders;
+        conocidas += L.T.conocidas; factConocida += L.T.factConocida; perdida += L.T.perdida; perdidaMonto += L.T.perdidaMonto;
+        unidades += L.T.unidades; quedaTotal += L.T.quedaTotal; costTotal += L.T.costTotal; costStockTotal += L.T.costStockTotal;
+        gananciaSinFlex += L.T.gananciaSinFlex;
+        // Las locales cuentan como STOCK propio (mostrador).
+        gAll.stock.ventas += L.T.orders; gAll.stock.fact += L.T.facturacion; gAll.stock.queda += L.T.quedaTotal;
+        gAll.stock.unidades += L.T.unidades; gAll.stock.ganancia += L.T.ganancia; gAll.stock.factConoc += L.T.factConocida;
+        if (L.T.count > 0) porCuenta.push({ account_name: 'Venta local', es_local: true, objetivo: 0, facturacion: L.T.facturacion, ganancia: L.T.ganancia, margin: L.T.factConocida > 0 ? (L.T.ganancia / L.T.factConocida) * 100 : null, orders: L.T.orders, perdida: L.T.perdida, proy_mensual: 0 });
+      }
       const days = daysBetween(from, to);
       const proyMensual = days > 0 ? facturacion / days * 30 : 0;
       sendJSON(res, 200, {
@@ -8676,6 +8902,16 @@ function registerAds(deps) {
       T.cuotasCount += v.cuotasCount; T.bonoTotal += v.bonoTotal; T.conocidas += v.conocidas; T.sinCosto += v.sinCosto; T.factConocida += v.factConocida; T.orders += v.orders; T.count += v.count;
     }
     hist.updated = new Date().toISOString(); saveHistFile(hist);   // guardamos costos congelados de las ventas nuevas
+    // ===== VENTAS LOCALES del día (aditivo). Solo si el scope es "todas": la cuenta "Venta local"
+    // no es una cuenta de ML, así que no aparece al filtrar por una cuenta ML puntual.
+    if (!accountId || accountId === 'all') {
+      const L = localSalesRows(date, date);
+      for (const r of L.rows) { r.account_id = 'local'; allRows.push(r); }
+      T.facturacion += L.T.facturacion; T.unidades += L.T.unidades; T.quedaTotal += L.T.quedaTotal;
+      T.costTotal += L.T.costTotal; T.costStockTotal += L.T.costStockTotal; T.ganancia += L.T.ganancia;
+      T.gananciaSinFlex += L.T.gananciaSinFlex; T.conocidas += L.T.conocidas; T.factConocida += L.T.factConocida;
+      T.orders += L.T.orders; T.count += L.T.count; T.perdida += L.T.perdida; T.perdidaMonto += L.T.perdidaMonto;
+    }
     T.margin = T.factConocida > 0 ? (T.ganancia / T.factConocida) * 100 : null;
     return { sales: allRows, totals: T };
   }
