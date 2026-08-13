@@ -1042,26 +1042,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = '<tr style="border-top:1px solid #f0f2f6">';
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="1" value="' + escapeHtml(String(cant)) + '" oninput="localItemInput(' + i + ',\'cantidad\',this.value)" style="' + cellInp + '"></td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.codigo || '') + '" oninput="localItemInput(' + i + ',\'codigo\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="código" style="' + cellInp + '"></td>';
-    // Proveedor: si la lista de costos tiene VARIOS proveedores con nombre para ese código → desplegable
-    // (como el cotizador de Preguntas). Si no (lo normal), texto autocompletado con el proveedor del
-    // listado de Drive, editable por si hace falta corregirlo.
-    const isAdmProv = _localIsAdm();
-    const named = (Array.isArray(it._opciones) ? it._opciones : []).filter(o => (o.proveedor || '').toString().trim());
-    let provCell;
-    if (named.length >= 2) {
-      const needChoose = !(it.proveedor || '').toString().trim();
-      provCell = '<select id="li_prov_' + i + '" onchange="localProvPick(' + i + ',this.value)" style="' + cellInp + '">' +
-        (needChoose ? '<option value="">Elegí proveedor…</option>' : '') +
-        named.map(o => {
-          const nm = o.proveedor || '';
-          const sel = (String(it.proveedor || '').toUpperCase() === String(nm).toUpperCase()) ? ' selected' : '';
-          const cst = (isAdmProv && o.costo != null) ? (' — $ ' + Math.round(Number(o.costo) || 0).toLocaleString('es-AR')) : '';
-          return '<option value="' + escapeHtml(nm) + '"' + sel + '>' + escapeHtml(nm) + cst + '</option>';
-        }).join('') + '</select>';
-    } else {
-      provCell = '<input id="li_prov_' + i + '" type="text" value="' + escapeHtml(it.proveedor || '') + '" oninput="localItemInput(' + i + ',\'proveedor\',this.value)" placeholder="' + (it._looked ? 'proveedor' : 'cargá el código') + '" style="' + cellInp + '">';
-    }
-    h += '<td style="padding:5px 6px">' + provCell + '</td>';
+    // Proveedor = SOLO LECTURA, identificado a partir del código (columna proveedor del listado de Drive).
+    // No es editable ni desplegable: lo determina el código.
+    const provTxt = it.proveedor
+      ? '<span style="font-weight:600;color:#2d3277">' + escapeHtml(it.proveedor) + '</span>'
+      : (it._looked ? '<span style="color:#e07b39;font-size:11px">no identificado</span>' : '<span style="color:#bbb">—</span>');
+    h += '<td style="padding:5px 6px">' + provTxt + '</td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
     if (isAdm) {
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_cu_' + i + '">' + _localM(it.costo_unit) + '</td>';
@@ -1123,35 +1109,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const d = await r.json();
       if (!r.ok) return;
       it.descripcion = d.descripcion || it.descripcion || '';
-      it._opciones = Array.isArray(d.opciones) ? d.opciones : [];
+      it.proveedor = d.proveedor || '';                 // proveedor IDENTIFICADO por el código (del listado)
+      it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
       it._looked = true; it._notfound = !d.encontrado;
-      const named = it._opciones.filter(o => (o.proveedor || '').toString().trim());
-      if (named.length >= 2) {
-        // Varios proveedores nombrados en la lista de costos → que elija en el desplegable.
-        const cur = (it.proveedor || '').toString().trim();
-        const opt = named.find(o => String(o.proveedor).toUpperCase() === cur.toUpperCase());
-        if (opt) { it._provOk = true; it.costo_unit = (opt.costo != null) ? (Number(opt.costo) || 0) : 0; }
-        else { it.proveedor = ''; it.costo_unit = 0; it._provOk = null; }
-      } else {
-        // Caso normal: proveedor del LISTADO (nombre real) + costo del código.
-        it.proveedor = d.proveedor || it.proveedor || '';
-        it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
-        it._provOk = !!(it.proveedor || '').toString().trim();
-      }
       localRender();
-      const faltaElegir = named.length >= 2 && !(it.proveedor || '').toString().trim();
-      const el = document.getElementById(faltaElegir ? ('li_prov_' + i) : ('li_pv_' + i)); if (el) el.focus();
+      const el = document.getElementById('li_pv_' + i); if (el) el.focus();
     } catch (e) {}
-  }
-  // Elegir proveedor del desplegable → toma el costo de ESE proveedor (de la lista ya traída, sin ir al server).
-  function localProvPick(i, val) {
-    const it = _localForm.items[i]; if (!it) return;
-    it.proveedor = val;
-    const opt = (it._opciones || []).find(o => String(o.proveedor).toUpperCase() === String(val || '').toUpperCase());
-    it._provOk = !!opt;
-    it.costo_unit = (opt && opt.costo != null) ? (Number(opt.costo) || 0) : 0;
-    localRecalcRow(i); localRecalcTotals();
-    const el = document.getElementById('li_pv_' + i); if (el && val) el.focus();
   }
   function localNewOrder() { _localForm = _localNewForm(); localRender(); window.scrollTo(0, 0); }
   function localEditOrder(n) {
@@ -1178,11 +1141,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function localSave() {
     if (_localBusy) return;
     const f = _localForm;
-    const faltaProv = f.items.some(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0 && !(it.proveedor || '').toString().trim());
-    if (faltaProv) { localMsg('Cargá el PROVEEDOR en cada renglón — código y proveedor son obligatorios.', true); return; }
-    const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0 && (it.proveedor || '').toString().trim())
+    const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
       .map(it => ({ cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }));
-    if (!items.length) { localMsg('Cargá al menos un renglón con código, proveedor y cantidad.', true); return; }
+    if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
     const payload = {
       n: f.editN, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
       entrega: f.entrega, forma_pago: f.forma_pago, notas: f.notas,
