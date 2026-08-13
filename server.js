@@ -168,6 +168,7 @@ for (const u of dbMigrate9.users) {
   if (u.can_local === undefined) { u.can_local = false; migrated9 = true; }
 }
 if (!Array.isArray(dbMigrate9.local_sales)) { dbMigrate9.local_sales = []; migrated9 = true; }
+if (!Array.isArray(dbMigrate9.local_proveedores)) { dbMigrate9.local_proveedores = ['DM', 'OTERO', 'CROMOSOL', 'BBA']; migrated9 = true; }  // lista maestra de proveedores (desplegable). Editable por el admin.
 if (dbMigrate9.local_seq === undefined) {
   // Arranca en el máximo N° ya existente (por si se reinstala sobre datos previos); si no, 0 → primer orden = 1.
   let mx = 0; for (const o of (dbMigrate9.local_sales || [])) { const nn = Number(o && o.n) || 0; if (nn > mx) mx = nn; }
@@ -7461,18 +7462,17 @@ route('POST', '/api/local/save', async (req, res) => {
   }
   const itemsIn = Array.isArray(b.items) ? b.items : [];
   const items = []; let total_venta = 0, total_costo = 0;
-  const faltaProv = [];
   for (const it of itemsIn) {
     const cantidad = Math.max(0, Number(it && it.cantidad) || 0);
     const codigo = _cotNormCod(it && it.codigo);
     if (!codigo || cantidad <= 0) continue;
-    const provPedido = String((it && it.proveedor) || '').trim();
-    if (!provPedido) { faltaProv.push(codigo); continue; }   // código Y proveedor son obligatorios
-    const cost = _localCostFor(codigo, provPedido);          // costo del código (matchea por nombre si puede)
+    // El proveedor se IDENTIFICA por el código (listado). Si el cliente no lo mandó, lo resolvemos acá.
+    const info = await lookupCodigoInfo(codigo);
+    let proveedor = String((it && it.proveedor) || '').trim() || info.proveedor || '';
+    const cost = _localCostFor(codigo, proveedor);          // costo del código
     const costo_unit = cost.costo;
-    const proveedor = provPedido;                            // se respeta el proveedor cargado (viene del listado)
     let descripcion = String((it && it.descripcion) || '').trim();
-    if (!descripcion) descripcion = await lookupDescByCodigo(codigo);
+    if (!descripcion) descripcion = info.descripcion || '';
     const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
     const costo_total = costo_unit * cantidad;
     const subtotal_venta = precio_venta * cantidad;
@@ -7480,8 +7480,7 @@ route('POST', '/api/local/save', async (req, res) => {
     items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_total, precio_venta, subtotal_venta, ganancia });
     total_venta += subtotal_venta; total_costo += costo_total;
   }
-  if (faltaProv.length) return sendJSON(res, 400, { error: 'Falta el PROVEEDOR en el/los código(s): ' + faltaProv.join(', ') + '. Cargá siempre código y proveedor en cada renglón.' });
-  if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código, proveedor y cantidad' });
+  if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código y cantidad' });
   const total_ganancia = total_venta - total_costo;
   const db = loadDB();
   db.local_sales = Array.isArray(db.local_sales) ? db.local_sales : [];
@@ -7496,6 +7495,9 @@ route('POST', '/api/local/save', async (req, res) => {
     order = { n: db.local_seq, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
     db.local_sales.push(order);
   }
+  // Auto-sumar proveedores nuevos a la lista maestra (así el desplegable se completa solo con el uso).
+  db.local_proveedores = Array.isArray(db.local_proveedores) ? db.local_proveedores : [];
+  for (const it of items) { const p = String(it.proveedor || '').trim(); if (p && !db.local_proveedores.some(x => String(x).toUpperCase() === p.toUpperCase())) db.local_proveedores.push(p); }
   saveDB(db);
   sendJSON(res, 200, { ok: true, n: order.n, order: _stripLocalForRole(order, a.isAdm) });
 });
@@ -7517,7 +7519,21 @@ route('GET', '/api/local/data', async (req, res) => {
     if (a.isAdm) { resumen.total_costo += Number(o.total_costo) || 0; resumen.total_ganancia += Number(o.total_ganancia) || 0; }
   }
   resumen.margin = (a.isAdm && resumen.total_venta > 0) ? (resumen.total_ganancia / resumen.total_venta * 100) : null;
-  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
+  const proveedores = (Array.isArray(db.local_proveedores) ? db.local_proveedores : []).slice();
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, proveedores, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
+});
+// GESTIONAR la lista maestra de proveedores del desplegable (solo admin).
+route('POST', '/api/local/proveedores', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador puede editar la lista de proveedores' });
+  const b = await parseBody(req);
+  const list = Array.isArray(b.proveedores) ? b.proveedores : [];
+  const clean = []; const seen = {};
+  for (const x of list) { const v = String(x || '').trim().slice(0, 60); if (v && !seen[v.toUpperCase()]) { seen[v.toUpperCase()] = 1; clean.push(v); } }
+  const db = loadDB();
+  db.local_proveedores = clean;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, proveedores: clean });
 });
 // BORRAR orden (solo admin).
 route('POST', '/api/local/delete', async (req, res) => {
