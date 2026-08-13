@@ -7329,11 +7329,13 @@ route('GET', '/api/cotizador', async (req, res) => {
 function localDescCachePath() { return _pathCosts.join(DATA_DIR, 'local_desc_cache.json'); }
 function loadLocalDescCache() { try { return JSON.parse(_fsCosts.readFileSync(localDescCachePath(), 'utf8')) || {}; } catch (e) { return {}; } }
 function saveLocalDescCache(o) { try { _fsCosts.writeFileSync(localDescCachePath(), JSON.stringify(o)); } catch (e) {} }
-// código -> descripción (título del listado de Drive). Cachea para no pegarle al puente cada vez.
+// código -> descripción (título del listado de Drive). Cachea SOLO los títulos encontrados (no los
+// vacíos): así, si el puente todavía no estaba actualizado, la próxima vez se vuelve a intentar y se
+// auto-corrige (no queda "envenenado" en vacío).
 async function lookupDescByCodigo(codRaw) {
   const cod = _cotNormCod(codRaw); if (!cod) return '';
   const cache = loadLocalDescCache();
-  if (Object.prototype.hasOwnProperty.call(cache, cod)) return cache[cod] || '';
+  if (cache[cod]) return cache[cod];   // solo hay entrada si tenía título (los vacíos no se guardan)
   const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return '';   // sin puente: descripción vacía (editable a mano). No rompe.
   try {
@@ -7341,7 +7343,7 @@ async function lookupDescByCodigo(codRaw) {
     let data; try { data = JSON.parse(text); } catch (e) { data = null; }
     const map = (data && data.map) || {};
     const titulo = String(map[cod] || '');
-    cache[cod] = titulo; saveLocalDescCache(cache);   // cachea incluso el vacío (evita reintentos infinitos)
+    if (titulo) { cache[cod] = titulo; saveLocalDescCache(cache); }   // solo cacheo si hay título
     return titulo;
   } catch (e) { return ''; }
 }
@@ -7399,6 +7401,33 @@ route('GET', '/api/local/lookup', async (req, res) => {
     out.opciones = sorted.map(o => ({ proveedor: o.p, marca: o.marca }));   // sin costos
   }
   sendJSON(res, 200, out);
+});
+// DIAGNÓSTICO (solo admin): muestra EXACTAMENTE qué devuelve el puente para un código, sin caché.
+// Abrilo en el navegador logueado como admin:  /api/local/desc-diag?codigo=TU_CODIGO
+route('GET', '/api/local/desc-diag', async (req, res) => {
+  const s = requireAuth(req); if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const url = new URL(req.url, 'http://x');
+  const cod = _cotNormCod(url.searchParams.get('codigo') || '');
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  const out = { codigo: cod, puente_configurado: !!(PURL && PKEY) };
+  if (!cod) return sendJSON(res, 400, { error: 'Pasá ?codigo=' });
+  if (!out.puente_configurado) { out.diagnostico = 'Falta configurar LISTADO_PUENTE_URL / LISTADO_PUENTE_CLAVE en Render.'; return sendJSON(res, 200, out); }
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'lookupByCodigo', codigos: [cod] }, 60000);
+    out.http_status = status;
+    out.respuesta_cruda = String(text).replace(/\s+/g, ' ').trim().slice(0, 500);
+    let data = null; try { data = JSON.parse(text); } catch (e) {}
+    out.json_ok = !!data;
+    out.map = (data && data.map) || null;
+    out.titulo = (data && data.map && data.map[cod]) || '';
+    if (data && data.error) out.puente_error = data.error;
+    if (!out.titulo) {
+      if (data && /op no soportada/i.test(String(data.error || ''))) out.diagnostico = 'El puente NO tiene la operación lookupByCodigo → falta re-publicar el Apps Script como VERSIÓN NUEVA.';
+      else if (data && data.ok && out.map && Object.keys(out.map).length === 0) out.diagnostico = 'El puente respondió OK pero no encontró ese código en el listado (revisá que el código exista en la columna "codigo" de la planilla, sin espacios/mayúsculas distintas).';
+      else out.diagnostico = 'El puente respondió pero sin título. Revisá respuesta_cruda.';
+    } else { out.diagnostico = 'OK: el puente devuelve la descripción correctamente.'; }
+  } catch (e) { out.error = String((e && e.message) || e); out.diagnostico = 'No se pudo contactar al puente (¿URL/implementación correcta?).'; }
+  return sendJSON(res, 200, out);
 });
 // GUARDAR / EDITAR orden. El servidor recalcula costos/ganancia (nunca confía en el cliente) y asigna el N°.
 route('POST', '/api/local/save', async (req, res) => {
