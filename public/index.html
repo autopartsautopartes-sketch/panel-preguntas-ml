@@ -1074,12 +1074,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
     h += '<div style="margin-top:14px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px">';
     h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Los archivos se suben a tu Google Drive automáticamente (carpeta "Parabrisas Adjuntos") y queda el link guardado.</div>';
-    // ORDEN
-    h += '<div style="margin-bottom:12px"><label style="' + lbl + '">Adjuntar ORDEN (foto o documento)</label>';
-    if (f._ordenBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
-    else if (f.orden_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.orden_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📄 Ver orden subida</a><span onclick="pbRemoveOrden()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
-    else h += '<input type="file" accept="image/*,application/pdf" onchange="pbUploadOrden(this)" style="font-size:13px">';
-    h += '</div>';
+    // ORDEN — solo en SEGURO (el Particular no tiene orden)
+    if (!esPart) {
+      h += '<div style="margin-bottom:12px"><label style="' + lbl + '">Adjuntar ORDEN (foto o documento)</label>';
+      if (f._ordenBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+      else if (f.orden_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.orden_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📄 Ver orden subida</a><span onclick="pbRemoveOrden()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
+      else h += '<input type="file" accept="image/*,application/pdf" onchange="pbUploadOrden(this)" style="font-size:13px">';
+      h += '</div>';
+    }
     // FOTOS
     h += '<div><label style="' + lbl + '">Adjuntar FOTOS (podés subir varias)</label>';
     if (Array.isArray(f.fotos_links) && f.fotos_links.length) { for (let i = 0; i < f.fotos_links.length; i++) h += '<div style="display:flex;gap:10px;align-items:center;margin-bottom:5px"><a href="' + escapeHtml(f.fotos_links[i]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:13px">🖼️ Foto ' + (i + 1) + '</a><span onclick="pbRemoveFotoUrl(' + i + ')" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:12px">✕ quitar</span></div>'; }
@@ -1101,6 +1103,35 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (field === 'marca') f.modelo = '';
     pbRenderBody();
   }
+  // Prepara un archivo para subir: si es imagen, la redimensiona (máx 1600px) y comprime a JPEG (queda
+  // liviana, no satura Render). Si es PDF u otro, lo manda tal cual. Devuelve { b64, mime }.
+  function _autochapPrepFile(file, maxDim, quality) {
+    maxDim = maxDim || 1600; quality = quality || 0.82;
+    return new Promise((resolve, reject) => {
+      const raw = () => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve({ b64: i >= 0 ? s.slice(i + 1) : s, mime: file.type || 'application/octet-stream' }); }; r.onerror = reject; r.readAsDataURL(file); };
+      if (!/^image\//.test(file.type || '')) { raw(); return; }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          const scale = Math.min(1, maxDim / Math.max(w, h));
+          w = Math.max(1, Math.round(w * scale)); h = Math.max(1, Math.round(h * scale));
+          const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          const durl = cv.toDataURL('image/jpeg', quality);
+          resolve({ b64: durl.slice(durl.indexOf(',') + 1), mime: 'image/jpeg' });
+        } catch (e) { raw(); }
+      };
+      img.onerror = () => raw();
+      const r = new FileReader(); r.onload = () => { img.src = String(r.result || ''); }; r.onerror = reject; r.readAsDataURL(file);
+    });
+  }
+  async function _autochapPostJSON(url, payload) {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+    let d; try { d = await r.json(); } catch (e) { throw new Error('El servidor no respondió correctamente (puede ser el archivo muy grande, o el server desactualizado). Probá con una foto más chica.'); }
+    if (!r.ok) throw new Error(d.error || 'Error');
+    return d;
+  }
   function pbSetTxt(field, val) { _pb.form[field] = val; }
   function pbSetMonto(field, val) { _pb.form[field] = val; const el = document.getElementById('pb_gan_form'); if (el) el.textContent = _pbMoney(_pbGananciaForm()); }
   function pbSetCheque(field, val) { if (_pb.form) { _pb.form.cheque = _pb.form.cheque || {}; _pb.form.cheque[field] = val; } }
@@ -1108,7 +1139,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!input.files || !input.files[0]) return;
     const f = input.files[0];
     _pb.form._transferBusy = true; pbRenderBody();
-    try { const b64 = await pbFileToB64(f); const r = await fetch('/api/transferencia/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ origen: 'PARABRISAS', fecha: _pb.form.fecha || '', nombre: f.name, mime: f.type || 'application/octet-stream', datab64: b64 }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error'); _pb.form.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
+    try { const prep = await _autochapPrepFile(f); const d = await _autochapPostJSON('/api/transferencia/upload', { origen: 'PARABRISAS', fecha: _pb.form.fecha || '', nombre: f.name, mime: prep.mime, datab64: prep.b64 }); _pb.form.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
     _pb.form._transferBusy = false; pbRenderBody();
   }
   function pbRemoveTransfer() { const url = _pb.form.transfer_link; _pb.form.transfer_link = ''; pbRenderBody(); if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} } }
@@ -1118,9 +1149,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function pbRemoveFotoUrl(i) { const url = _pb.form.fotos_links[i]; _pb.form.fotos_links.splice(i, 1); pbRenderBody(); pbDeleteDriveFile(url); }
   function pbFileToB64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve(i >= 0 ? s.slice(i + 1) : s); }; r.onerror = reject; r.readAsDataURL(file); }); }
   async function pbUploadFile(file) {
-    const b64 = await pbFileToB64(file);
-    const r = await fetch('/api/parabrisas/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ nombre: file.name, mime: file.type || 'application/octet-stream', datab64: b64, patente: _pb.form.patente || '', fecha: _pb.form.fecha || '' }) });
-    const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error al subir'); return d.url;
+    const prep = await _autochapPrepFile(file);
+    const d = await _autochapPostJSON('/api/parabrisas/upload', { nombre: file.name, mime: prep.mime, datab64: prep.b64, patente: _pb.form.patente || '', fecha: _pb.form.fecha || '' });
+    return d.url;
   }
   async function pbUploadOrden(input) {
     if (!input.files || !input.files[0]) return;
@@ -1514,7 +1545,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!input.files || !input.files[0]) return;
     const f = input.files[0];
     _localForm._transferBusy = true; localRender();
-    try { const b64 = await _localFileB64(f); const r = await fetch('/api/transferencia/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ origen: 'LOCAL', fecha: _localForm.fecha || '', nombre: f.name, mime: f.type || 'application/octet-stream', datab64: b64 }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error'); _localForm.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
+    try { const prep = await _autochapPrepFile(f); const d = await _autochapPostJSON('/api/transferencia/upload', { origen: 'LOCAL', fecha: _localForm.fecha || '', nombre: f.name, mime: prep.mime, datab64: prep.b64 }); _localForm.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
     _localForm._transferBusy = false; localRender();
   }
   function localRemoveTransfer() { const url = _localForm.transfer_link; _localForm.transfer_link = ''; localRender(); if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} } }
