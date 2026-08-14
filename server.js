@@ -7400,7 +7400,7 @@ function _stripLocalForRole(o, isAdm) {
   if (isAdm) return o;
   return {
     n: o.n, fecha: o.fecha, cliente: o.cliente, telefono: o.telefono, notas: o.notas, sucursal: o.sucursal,
-    entrega: o.entrega, forma_pago: o.forma_pago, cheque: o.cheque,
+    entrega: o.entrega, forma_pago: o.forma_pago, cheque: o.cheque, transfer_link: o.transfer_link,
     created_at: o.created_at, created_by: o.created_by, total_venta: o.total_venta,
     items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: it.precio_venta, subtotal_venta: it.subtotal_venta })),
   };
@@ -7492,6 +7492,7 @@ route('POST', '/api/local/save', async (req, res) => {
       fecha_cobro: String(b.cheque.fecha_cobro || '').slice(0, 20), importe: Number(b.cheque.importe) || 0,
     };
   }
+  const transfer_link = (forma_pago === 'TRANSFERENCIA') ? String(b.transfer_link || '').trim().slice(0, 500) : '';
   const itemsIn = Array.isArray(b.items) ? b.items : [];
   const items = []; let total_venta = 0, total_costo = 0;
   for (const it of itemsIn) {
@@ -7520,10 +7521,10 @@ route('POST', '/api/local/save', async (req, res) => {
     if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar una orden' });
     order = db.local_sales.find(o => Number(o.n) === editN);
     if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
-    Object.assign(order, { fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, items, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+    Object.assign(order, { fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
   } else {
     db.local_seq = (Number(db.local_seq) || 0) + 1;
-    order = { n: db.local_seq, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+    order = { n: db.local_seq, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
     db.local_sales.push(order);
   }
   // Auto-sumar proveedores nuevos a la lista maestra (así el desplegable se completa solo con el uso).
@@ -7701,7 +7702,8 @@ function pbSanitizeBase(b, cfg) {
       titular: String(b.cheque.titular || '').slice(0, 120), cuit: String(b.cheque.cuit || '').slice(0, 20),
       fecha_cobro: String(b.cheque.fecha_cobro || '').slice(0, 20), importe: Number(b.cheque.importe) || 0,
     } : null;
-  } else { base.telefono = ''; base.forma_pago = ''; base.cheque = null; }
+    base.transfer_link = (base.forma_pago === 'TRANSFERENCIA') ? String(b.transfer_link || '').trim().slice(0, 500) : '';
+  } else { base.telefono = ''; base.forma_pago = ''; base.cheque = null; base.transfer_link = ''; }
   return base;
 }
 // Ganancia de un caso = precio de venta (monto de factura en SEGURO, precio_venta en PARTICULAR) − costos.
@@ -7758,6 +7760,48 @@ route('POST', '/api/parabrisas/upload', async (req, res) => {
 // BORRAR un adjunto de Drive (cuando pulsan "quitar"). Manda el archivo a la Papelera. can_parabrisas.
 route('POST', '/api/parabrisas/delete-file', async (req, res) => {
   const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const url = String(b.url || '').trim();
+  if (!url) return sendJSON(res, 400, { error: 'Falta la URL del archivo' });
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive.' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'borrarArchivo', url }, 60000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = null; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('Puente HTTP ' + status) });
+    return sendJSON(res, 200, { ok: true });
+  } catch (e) { return sendJSON(res, 502, { error: 'No se pudo borrar de Drive: ' + String((e && e.message) || e) }); }
+});
+// ===== COMPROBANTES DE TRANSFERENCIA (compartido Parabrisas + Local) =====
+// Guarda en Drive: "TRANSFERENCIAS AUTOCHAP" / (PARABRISAS|LOCAL) / FECHA / comprobante.
+function _transfAuth(req) {
+  const s = requireAuth(req); if (!s) return { err: [401, 'No autenticado'] };
+  const db = loadDB(); const u = db.users.find(x => x.id === s.userId);
+  const ok = s.role === 'admin' || (u && (u.can_local === true || u.can_parabrisas === true));
+  if (!ok) return { err: [403, 'Sin permiso' ] };
+  return { s };
+}
+route('POST', '/api/transferencia/upload', async (req, res) => {
+  const a = _transfAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const nombre = String(b.nombre || 'comprobante').slice(0, 150);
+  const mime = String(b.mime || 'application/octet-stream').slice(0, 100);
+  const datab64 = String(b.datab64 || '');
+  if (!datab64) return sendJSON(res, 400, { error: 'Sin archivo' });
+  const origen = String(b.origen || '').toUpperCase() === 'LOCAL' ? 'LOCAL' : 'PARABRISAS';
+  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha || '')) ? String(b.fecha) : new Date().toISOString().slice(0, 10);
+  const ruta = ['TRANSFERENCIAS AUTOCHAP', origen, fecha];
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL / LISTADO_PUENTE_CLAVE).' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'uploadArchivo', nombre, mime, datab64, ruta }, 180000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = null; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('El puente respondió HTTP ' + status) });
+    return sendJSON(res, 200, { ok: true, url: data.url, nombre: data.nombre });
+  } catch (e) { return sendJSON(res, 502, { error: 'No se pudo subir a Drive: ' + String((e && e.message) || e) }); }
+});
+route('POST', '/api/transferencia/delete-file', async (req, res) => {
+  const a = _transfAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const b = await parseBody(req);
   const url = String(b.url || '').trim();
   if (!url) return sendJSON(res, 400, { error: 'Falta la URL del archivo' });
