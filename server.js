@@ -7656,11 +7656,16 @@ function pbSanitizeBase(b, cfg) {
   let lado = String(b.lado || '').toUpperCase();
   const ladoAuto = pbLadoAuto(tc);
   if (ladoAuto) lado = ladoAuto; else if (!['IZQUIERDO', 'DERECHO'].includes(lado)) lado = '';
-  return {
+  // Modalidad: SEGURO (con sistema/compañía/siniestro) o PARTICULAR (sin eso, con precio de venta + costos).
+  const modalidad = String(b.modalidad || '').toUpperCase() === 'PARTICULAR' ? 'PARTICULAR' : 'SEGURO';
+  const esPart = modalidad === 'PARTICULAR';
+  const base = {
+    modalidad,
     fecha: /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha || '')) ? String(b.fecha) : new Date().toISOString().slice(0, 10),
-    sistema: inSet(b.sistema, cfg.sistemas) ? String(b.sistema) : '',
-    compania: inSet(b.compania, cfg.companias) ? String(b.compania) : '',
-    siniestro: String(b.siniestro || '').trim().slice(0, 80),
+    sistema: esPart ? '' : (inSet(b.sistema, cfg.sistemas) ? String(b.sistema) : ''),
+    compania: esPart ? '' : (inSet(b.compania, cfg.companias) ? String(b.compania) : ''),
+    siniestro: esPart ? '' : String(b.siniestro || '').trim().slice(0, 80),
+    precio_venta: esPart ? Math.max(0, Number(b.precio_venta) || 0) : 0,
     patente: String(b.patente || '').trim().toUpperCase().slice(0, 20),
     tipo_cristal: tc, posicion, lado,
     tipo_vehiculo: inSet(b.tipo_vehiculo, cfg.tipos_vehiculo) ? String(b.tipo_vehiculo).toUpperCase() : '',
@@ -7671,6 +7676,15 @@ function pbSanitizeBase(b, cfg) {
     fotos_links: (Array.isArray(b.fotos_links) ? b.fotos_links : []).map(x => String(x || '').trim().slice(0, 500)).filter(Boolean).slice(0, 30),
     notas: String(b.notas || '').trim().slice(0, 1200),
   };
+  // Los costos: en PARTICULAR se cargan en el mismo formulario de Taller; en SEGURO se cargan en Factura
+  // (por eso NO los toco acá para seguro: así no se borran al editar los datos base).
+  if (esPart) { base.costo_parabrisas = Math.max(0, Number(b.costo_parabrisas) || 0); base.costo_colocacion = Math.max(0, Number(b.costo_colocacion) || 0); }
+  return base;
+}
+// Ganancia de un caso = precio de venta (monto de factura en SEGURO, precio_venta en PARTICULAR) − costos.
+function pbGanancia(c) {
+  const venta = (c.modalidad === 'PARTICULAR') ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0);
+  return venta - (Number(c.costo_parabrisas) || 0) - (Number(c.costo_colocacion) || 0);
 }
 // CONFIG: leer (can_parabrisas) / editar (solo admin).
 route('GET', '/api/parabrisas/config', async (req, res) => {
@@ -7743,6 +7757,7 @@ route('GET', '/api/parabrisas/casos', async (req, res) => {
   const sistema = (url.searchParams.get('sistema') || '').toUpperCase();
   const patente = (url.searchParams.get('patente') || '').toUpperCase().trim();
   const sometido = (url.searchParams.get('sometido') || '').toUpperCase();
+  const modalidad = (url.searchParams.get('modalidad') || '').toUpperCase();
   const store = loadPbCasos();
   let casos = store.casos.slice();
   if (!a.isAdm) casos = casos.filter(c => c.estado === 'taller');
@@ -7753,10 +7768,16 @@ route('GET', '/api/parabrisas/casos', async (req, res) => {
   if (sistema) casos = casos.filter(c => String(c.sistema || '').toUpperCase() === sistema);
   if (patente) casos = casos.filter(c => String(c.patente || '').toUpperCase().includes(patente));
   if (sometido) casos = casos.filter(c => String(c.sometido || '').toUpperCase() === sometido);
+  if (modalidad) casos = casos.filter(c => String(c.modalidad || 'SEGURO').toUpperCase() === modalidad);
   casos.sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
-  let por_cobrar = 0, cobrado = 0;
-  for (const c of store.casos) { const m = Number(c.monto) || 0; if (c.estado === 'facturado' && !c.pagado) por_cobrar += m; if (c.pagado) cobrado += m; }
-  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, casos: a.isAdm ? casos : casos.map(pbStripForUser), resumen: { por_cobrar, cobrado, count: casos.length } });
+  let por_cobrar = 0, cobrado = 0, ganancia_total = 0;
+  for (const c of store.casos) {
+    const m = Number(c.monto) || 0;
+    if (c.estado === 'facturado' && !c.pagado) por_cobrar += m;
+    if (c.pagado) cobrado += m;
+    if (c.estado === 'facturado' || c.estado === 'finalizado' || String(c.modalidad).toUpperCase() === 'PARTICULAR') ganancia_total += pbGanancia(c);
+  }
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, casos: a.isAdm ? casos : casos.map(pbStripForUser), resumen: { por_cobrar, cobrado, ganancia_total, count: casos.length } });
 });
 // CREAR / EDITAR caso (Carga de Taller) — can_parabrisas.
 route('POST', '/api/parabrisas/caso', async (req, res) => {
@@ -7774,7 +7795,13 @@ route('POST', '/api/parabrisas/caso', async (req, res) => {
     Object.assign(caso, base, { updated_at: new Date().toISOString() });
   } else {
     store.seq = (Number(store.seq) || 0) + 1;
-    caso = { n: store.seq, estado: 'taller', ...base, fecha_facturacion: '', nro_factura: '', monto: 0, sometido: '', pagado: false, finalizado: false, created_at: new Date().toISOString(), created_by: (a.s.username || '') };
+    // PARTICULAR: no pasa por factura/pago, va DIRECTO a finalizados (y queda pagado).
+    const esPart = base.modalidad === 'PARTICULAR';
+    caso = Object.assign(
+      { n: store.seq, fecha_facturacion: '', nro_factura: '', monto: 0, sometido: '', costo_parabrisas: 0, costo_colocacion: 0, created_at: new Date().toISOString(), created_by: (a.s.username || '') },
+      base,
+      { estado: esPart ? 'finalizado' : 'taller', pagado: esPart, finalizado: esPart }
+    );
     store.casos.push(caso);
   }
   savePbCasos(store);
@@ -7792,6 +7819,8 @@ route('POST', '/api/parabrisas/caso-factura', async (req, res) => {
   caso.nro_factura = String(b.nro_factura || '').trim().slice(0, 60);
   caso.monto = Math.max(0, Number(b.monto) || 0);
   caso.sometido = ['SI', 'NO'].includes(String(b.sometido || '').toUpperCase()) ? String(b.sometido).toUpperCase() : (caso.sometido || '');
+  if (b.costo_parabrisas !== undefined) caso.costo_parabrisas = Math.max(0, Number(b.costo_parabrisas) || 0);   // Costo Cristal
+  if (b.costo_colocacion !== undefined) caso.costo_colocacion = Math.max(0, Number(b.costo_colocacion) || 0);   // Costo Instalación
   if (caso.estado === 'taller') caso.estado = 'facturado';
   caso.updated_at = new Date().toISOString();
   savePbCasos(store);
