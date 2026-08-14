@@ -935,7 +935,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   // ==================== PARABRISAS ====================
   var _pb = null;
-  function _pbNewForm() { return { editN: null, modalidad: 'SEGURO', fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', precio_venta: '', telefono: '', forma_pago: 'EFECTIVO', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, costo_parabrisas: '', costo_colocacion: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
+  function _pbNewForm() { return { editN: null, modalidad: 'SEGURO', fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', precio_venta: '', telefono: '', forma_pago: 'EFECTIVO', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, transfer_link: '', _transferBusy: false, costo_parabrisas: '', costo_colocacion: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
   function _pbGananciaForm() { const f = _pb.form; const venta = f.modalidad === 'PARTICULAR' ? (Number(f.precio_venta) || 0) : 0; return venta - (Number(f.costo_parabrisas) || 0) - (Number(f.costo_colocacion) || 0); }
   function _pbMoney(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
   function _pbSort(arr) { return (arr || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true, sensitivity: 'base' })); }
@@ -1062,6 +1062,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(cq.importe || '')) + '" oninput="pbSetCheque(\'importe\',this.value)" style="' + inp + '"></div>';
         h += '</div></div>';
       }
+      if (f.forma_pago === 'TRANSFERENCIA') {
+        h += '<div style="margin-top:10px;background:#eef6ff;border:1px solid #cfe0fb;border-radius:10px;padding:12px 14px">';
+        h += '<label style="' + lbl + '">Comprobante de transferencia</label>';
+        if (f._transferBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+        else if (f.transfer_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📎 Ver comprobante</a><span onclick="pbRemoveTransfer()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
+        else h += '<input type="file" accept="image/*,application/pdf" onchange="pbUploadTransfer(this)" style="font-size:13px">';
+        h += '<div style="font-size:11px;color:#888;margin-top:6px">Se guarda en Drive: TRANSFERENCIAS AUTOCHAP / PARABRISAS / ' + escapeHtml(f.fecha || 'fecha') + '</div>';
+        h += '</div>';
+      }
     }
     h += '<div style="margin-top:14px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px">';
     h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Los archivos se suben a tu Google Drive automáticamente (carpeta "Parabrisas Adjuntos") y queda el link guardado.</div>';
@@ -1095,6 +1104,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function pbSetTxt(field, val) { _pb.form[field] = val; }
   function pbSetMonto(field, val) { _pb.form[field] = val; const el = document.getElementById('pb_gan_form'); if (el) el.textContent = _pbMoney(_pbGananciaForm()); }
   function pbSetCheque(field, val) { if (_pb.form) { _pb.form.cheque = _pb.form.cheque || {}; _pb.form.cheque[field] = val; } }
+  async function pbUploadTransfer(input) {
+    if (!input.files || !input.files[0]) return;
+    const f = input.files[0];
+    _pb.form._transferBusy = true; pbRenderBody();
+    try { const b64 = await pbFileToB64(f); const r = await fetch('/api/transferencia/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ origen: 'PARABRISAS', fecha: _pb.form.fecha || '', nombre: f.name, mime: f.type || 'application/octet-stream', datab64: b64 }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error'); _pb.form.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
+    _pb.form._transferBusy = false; pbRenderBody();
+  }
+  function pbRemoveTransfer() { const url = _pb.form.transfer_link; _pb.form.transfer_link = ''; pbRenderBody(); if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} } }
   function pbSetNotas(val) { _pb.form.notas = val; const el = document.getElementById('pb_words'); if (el) { const w = val.trim() ? val.trim().split(/\s+/).length : 0; el.textContent = '(' + w + '/150 palabras)'; el.style.color = w > 150 ? '#d43d3d' : '#aaa'; } }
   function pbDeleteDriveFile(url) { if (!url) return; try { fetch('/api/parabrisas/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} }
   function pbRemoveOrden() { const url = _pb.form.orden_link; _pb.form.orden_link = ''; pbRenderBody(); pbDeleteDriveFile(url); }
@@ -1128,7 +1145,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!f.tipo_cristal) { pbMsg('Elegí el tipo de cristal.', true); return; }
     const words = f.notas.trim() ? f.notas.trim().split(/\s+/).length : 0;
     if (words > 150) { pbMsg('Las notas superan las 150 palabras.', true); return; }
-    const payload = { n: f.editN, modalidad: f.modalidad, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, precio_venta: Number(f.precio_venta) || 0, telefono: f.telefono, forma_pago: f.forma_pago, cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
+    const payload = { n: f.editN, modalidad: f.modalidad, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, precio_venta: Number(f.precio_venta) || 0, telefono: f.telefono, forma_pago: f.forma_pago, cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, transfer_link: (f.forma_pago === 'TRANSFERENCIA') ? f.transfer_link : '', patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
     const btn = document.getElementById('pb_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
     try {
       const r = await fetch('/api/parabrisas/caso', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
@@ -1141,7 +1158,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbEditCaso(n) {
     const c = _pb.casos.find(x => Number(x.n) === Number(n)); if (!c) return;
-    _pb.form = { editN: c.n, modalidad: c.modalidad || 'SEGURO', fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', precio_venta: (c.precio_venta || ''), telefono: c.telefono || '', forma_pago: c.forma_pago || 'EFECTIVO', cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, c.cheque || {}), costo_parabrisas: (c.costo_parabrisas || ''), costo_colocacion: (c.costo_colocacion || ''), patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
+    _pb.form = { editN: c.n, modalidad: c.modalidad || 'SEGURO', fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', precio_venta: (c.precio_venta || ''), telefono: c.telefono || '', forma_pago: c.forma_pago || 'EFECTIVO', cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, c.cheque || {}), transfer_link: c.transfer_link || '', _transferBusy: false, costo_parabrisas: (c.costo_parabrisas || ''), costo_colocacion: (c.costo_colocacion || ''), patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
     _pb.tab = 'taller'; pbRender(); window.scrollTo(0, 0);
   }
   async function pbDeleteCaso(n) {
@@ -1195,6 +1212,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div style="flex:1;min-width:240px"><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + c.n + ' · ' + escapeHtml(c.patente || 'sin patente') + ' <span style="font-weight:600;color:#888;font-size:13px">' + escapeHtml(((c.marca || '') + ' ' + (c.modelo || '')).trim()) + (c.anio ? (' ' + escapeHtml(c.anio)) : '') + '</span></div>';
     h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(c.fecha || '') + (c.compania ? (' · ' + escapeHtml(c.compania)) : '') + (c.sistema ? (' · ' + escapeHtml(c.sistema)) : '') + (c.siniestro ? (' · Sin. ' + escapeHtml(c.siniestro)) : '') + (c.telefono ? (' · 📞 ' + escapeHtml(c.telefono)) : '') + (c.forma_pago ? (' · 💳 ' + escapeHtml(c.forma_pago.charAt(0) + c.forma_pago.slice(1).toLowerCase())) : '') + '</div>';
     if (c.forma_pago === 'CHEQUE' && c.cheque) { const cq = c.cheque; h += '<div style="font-size:11px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:7px;padding:4px 8px;margin-top:5px;display:inline-block">🧾 Cheque ' + escapeHtml(cq.banco || '') + (cq.numero ? (' N° ' + escapeHtml(cq.numero)) : '') + (cq.fecha_cobro ? (' · cobro ' + escapeHtml(cq.fecha_cobro)) : '') + (cq.importe ? (' · ' + _pbMoney(cq.importe)) : '') + '</div>'; }
+    if (c.forma_pago === 'TRANSFERENCIA' && c.transfer_link) h += '<div style="margin-top:5px"><a href="' + escapeHtml(c.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">📎 Comprobante</a></div>';
     const modChip = (String(c.modalidad || 'SEGURO') === 'PARTICULAR') ? chip('👤 Particular', '#fef0f7', '#b5388a') : chip('🛡️ Seguro', '#eef4ff', '#3466c9');
     h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + modChip + chip(_pbEstadoLabel(c.estado), '#f0f4f8', '#556') + (c.tipo_cristal ? chip(escapeHtml(c.tipo_cristal), '#eef4ff', '#3466c9') : '') + (c.posicion ? chip(escapeHtml(c.posicion), '#f6f0ff', '#7a4fc9') : '') + (c.lado ? chip(escapeHtml(c.lado), '#eefaf3', '#1a7d47') : '') + (c.tipo_vehiculo ? chip(escapeHtml(c.tipo_vehiculo), '#fff6e6', '#8a6d1a') : '') + '</div>';
     let links = '';
@@ -1336,7 +1354,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   var _localBusy = false;
   function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, precio_venta: '', _looked: false, _notfound: false }; }
   function _localNewForm() {
-    return { editN: null, fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, items: [_localNewItem()] };
+    return { editN: null, fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, transfer_link: '', _transferBusy: false, items: [_localNewItem()] };
   }
   function _localM(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
   function _localIsAdm() { return !!(_localData.is_admin || (currentUser && currentUser.role === 'admin')); }
@@ -1405,6 +1423,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<div><label style="' + lbl + '">Fecha de cobro</label><input type="date" value="' + escapeHtml(c.fecha_cobro || '') + '" oninput="localSetCheque(\'fecha_cobro\',this.value)" style="' + inp + '"></div>';
       h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(c.importe || '')) + '" oninput="localSetCheque(\'importe\',this.value)" style="' + inp + '"></div>';
       h += '</div></div>';
+    }
+    if (f.forma_pago === 'TRANSFERENCIA') {
+      h += '<div style="margin-bottom:12px;background:#eef6ff;border:1px solid #cfe0fb;border-radius:10px;padding:12px 14px">';
+      h += '<label style="' + lbl + '">Comprobante de transferencia</label>';
+      if (f._transferBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+      else if (f.transfer_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📎 Ver comprobante</a><span onclick="localRemoveTransfer()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
+      else h += '<input type="file" accept="image/*,application/pdf" onchange="localUploadTransfer(this)" style="font-size:13px">';
+      h += '<div style="font-size:11px;color:#888;margin-top:6px">Se guarda en Drive: TRANSFERENCIAS AUTOCHAP / LOCAL / ' + escapeHtml(f.fecha || 'fecha') + '</div>';
+      h += '</div>';
     }
     // Renglones
     h += '<div style="font-weight:700;color:#2d3277;font-size:14px;margin:8px 0 8px">Renglones</div>';
@@ -1482,6 +1509,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function localSetForm(field, val) { if (_localForm) _localForm[field] = val; }
   function localSetCheque(field, val) { if (_localForm) { _localForm.cheque = _localForm.cheque || {}; _localForm.cheque[field] = val; } }
   function localFormaPago(val) { _localForm.forma_pago = val; localRender(); }
+  function _localFileB64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve(i >= 0 ? s.slice(i + 1) : s); }; r.onerror = reject; r.readAsDataURL(file); }); }
+  async function localUploadTransfer(input) {
+    if (!input.files || !input.files[0]) return;
+    const f = input.files[0];
+    _localForm._transferBusy = true; localRender();
+    try { const b64 = await _localFileB64(f); const r = await fetch('/api/transferencia/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ origen: 'LOCAL', fecha: _localForm.fecha || '', nombre: f.name, mime: f.type || 'application/octet-stream', datab64: b64 }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error'); _localForm.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
+    _localForm._transferBusy = false; localRender();
+  }
+  function localRemoveTransfer() { const url = _localForm.transfer_link; _localForm.transfer_link = ''; localRender(); if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} } }
   function localItemInput(i, field, val) {
     const it = _localForm.items[i]; if (!it) return;
     if (field === 'cantidad' || field === 'precio_venta') it[field] = (val === '' ? '' : Number(val));
@@ -1564,6 +1600,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       editN: o.n, fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || 'Rufino',
       entrega: o.entrega || 'retiro', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '',
       cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, o.cheque || {}),
+      transfer_link: o.transfer_link || '', _transferBusy: false,
       items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, precio_venta: it.precio_venta, _looked: true, _lastCodLooked: it.codigo, _provOk: true, _opciones: [{ proveedor: it.proveedor, costo: (it.costo_unit != null ? it.costo_unit : null) }] })),
     };
     if (!_localForm.items.length) _localForm.items = [_localNewItem()];
@@ -1587,7 +1624,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const payload = {
       n: f.editN, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
       entrega: f.entrega, forma_pago: f.forma_pago, notas: f.notas,
-      cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, items,
+      cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, transfer_link: (f.forma_pago === 'TRANSFERENCIA') ? f.transfer_link : '', items,
     };
     _localBusy = true;
     const btn = document.getElementById('loc_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
@@ -1647,6 +1684,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         const c = o.cheque;
         h += '<div style="font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-top:8px">🧾 Cheque: ' + escapeHtml(c.banco || '') + (c.numero ? (' N° ' + escapeHtml(c.numero)) : '') + (c.titular ? (' · ' + escapeHtml(c.titular)) : '') + (c.cuit ? (' · ' + escapeHtml(c.cuit)) : '') + (c.fecha_cobro ? (' · cobro ' + escapeHtml(c.fecha_cobro)) : '') + (c.importe ? (' · ' + _localM(c.importe)) : '') + '</div>';
       }
+      if (o.forma_pago === 'TRANSFERENCIA' && o.transfer_link) h += '<div style="margin-top:8px"><a href="' + escapeHtml(o.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">📎 Comprobante de transferencia</a></div>';
       // Renglones
       h += '<div style="margin-top:9px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">';
       h += '<thead><tr style="text-align:left;color:#aaa;font-size:10.5px;text-transform:uppercase"><th style="padding:3px 6px">Cant.</th><th style="padding:3px 6px">Código</th><th style="padding:3px 6px">Descripción</th><th style="padding:3px 6px">Precio</th>' + (isAdm ? '<th style="padding:3px 6px">Costo</th><th style="padding:3px 6px">Ganancia</th>' : '') + '</tr></thead><tbody>';
