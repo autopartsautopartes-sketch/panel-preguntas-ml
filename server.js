@@ -175,6 +175,13 @@ if (dbMigrate9.local_seq === undefined) {
   dbMigrate9.local_seq = mx; migrated9 = true;
 }
 if (migrated9) saveDB(dbMigrate9);
+// Migrate: PARABRISAS — permiso can_parabrisas (default false para no-admin).
+const dbMigrate10 = loadDB();
+let migrated10 = false;
+for (const u of dbMigrate10.users) {
+  if (u.can_parabrisas === undefined) { u.can_parabrisas = false; migrated10 = true; }
+}
+if (migrated10) saveDB(dbMigrate10);
 // ==================== SESSION STORE (persistent) ====================
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 function loadSessions() {
@@ -552,6 +559,7 @@ route('GET', '/api/me', async (req, res) => {
     can_view_promos: isAdmin || user?.can_view_promos === true,
     can_view_orders: isAdmin || user?.can_view_orders === true,
     can_local: isAdmin || user?.can_local === true,
+    can_parabrisas: isAdmin || user?.can_parabrisas === true,
     // Compras (cuenta corriente proveedores): cargar comprobantes/pagos, y ver saldos/resúmenes.
     can_compras_cargar: isAdmin || user?.can_compras_cargar === true || user?.can_compras_saldos === true,
     can_compras_saldos: isAdmin || user?.can_compras_saldos === true
@@ -578,6 +586,7 @@ route('GET', '/api/users', async (req, res) => {
     can_view_promos: u.role === 'admin' || u.can_view_promos === true,
     can_view_orders: u.role === 'admin' || u.can_view_orders === true,
     can_local: u.role === 'admin' || u.can_local === true,
+    can_parabrisas: u.role === 'admin' || u.can_parabrisas === true,
     can_compras_cargar: u.role === 'admin' || u.can_compras_cargar === true || u.can_compras_saldos === true,
     can_compras_saldos: u.role === 'admin' || u.can_compras_saldos === true,
     created_at: u.created_at
@@ -586,7 +595,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_compras_cargar, can_compras_saldos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -604,6 +613,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_view_promos !== undefined) user.can_view_promos = !!can_view_promos;
   if (can_view_orders !== undefined) user.can_view_orders = !!can_view_orders;
   if (can_local !== undefined) user.can_local = !!can_local;
+  if (can_parabrisas !== undefined) user.can_parabrisas = !!can_parabrisas;
   if (can_compras_cargar !== undefined) user.can_compras_cargar = !!can_compras_cargar;
   if (can_compras_saldos !== undefined) user.can_compras_saldos = !!can_compras_saldos;
   saveDB(db);
@@ -7409,12 +7419,11 @@ route('GET', '/api/local/lookup', async (req, res) => {
   const cod = _cotNormCod(url.searchParams.get('codigo') || '');
   const wantProv = url.searchParams.get('prov') || '';
   if (!cod) return sendJSON(res, 400, { error: 'Ingresá un código' });
-  const info = await lookupCodigoInfo(cod);                 // descripción + proveedor DEL LISTADO
-  const cost = _localCostFor(cod, wantProv || info.proveedor);  // costo de la lista (por código)
-  // Proveedor a mostrar: el del listado (nombre real). Si el listado no lo tuviera, cae al de la lista de costos.
-  const proveedor = info.proveedor || cost.prov || String(wantProv || '').trim();
+  // El proveedor y el costo salen de la LISTA DE COSTOS (por código). La descripción se carga a mano.
+  const cost = _localCostFor(cod, wantProv);
+  const proveedor = cost.prov || String(wantProv || '').trim();
   const out = {
-    encontrado: cost.encontrado, codigo: cod, descripcion: info.descripcion, proveedor,
+    encontrado: cost.encontrado, codigo: cod, descripcion: '', proveedor,
     updated: cost.updated,
   };
   if (a.isAdm) {
@@ -7489,13 +7498,12 @@ route('POST', '/api/local/save', async (req, res) => {
     const cantidad = Math.max(0, Number(it && it.cantidad) || 0);
     const codigo = _cotNormCod(it && it.codigo);
     if (!codigo || cantidad <= 0) continue;
-    // El proveedor se IDENTIFICA por el código (listado). Si el cliente no lo mandó, lo resolvemos acá.
-    const info = await lookupCodigoInfo(codigo);
-    let proveedor = String((it && it.proveedor) || '').trim() || info.proveedor || '';
-    const cost = _localCostFor(codigo, proveedor);          // costo del código
+    // El proveedor sale de la lista de costos por código. Si el cliente ya lo eligió, se respeta.
+    const provPedido = String((it && it.proveedor) || '').trim();
+    const cost = _localCostFor(codigo, provPedido);          // costo del código (matchea por nombre si puede)
     const costo_unit = cost.costo;
-    let descripcion = String((it && it.descripcion) || '').trim();
-    if (!descripcion) descripcion = info.descripcion || '';
+    const proveedor = provPedido || cost.prov || '';
+    const descripcion = String((it && it.descripcion) || '').trim();   // manual (no se autocompleta)
     const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
     const costo_total = costo_unit * cantidad;
     const subtotal_venta = precio_venta * cantidad;
@@ -7603,6 +7611,199 @@ function localSalesRows(from, to) {
   }
   return { rows, T };
 }
+
+// ===========================================================================
+// PARABRISAS: casos de cristales (taller → facturado → finalizado).
+// Persistente en DATA_DIR: parabrisas_config.json y parabrisas_casos.json.
+// Adjuntos = LINKS de Drive (no se suben archivos). Rol: admin ve todo; usuario con
+// can_parabrisas SOLO usa "Carga de Taller" (crear y ver los casos en taller).
+// ===========================================================================
+const PB_TIPOS_CRISTAL = ["ALETA/VENTILETE", "CUSTODIO/COLETA", "LUNETA", "PARABRISAS", "PUERTA"];
+const PB_TIPOS_VEHICULO = ["AUTO", "CAMIONETA", "CAMION", "UTILITARIO", "AGRO"];
+const PB_VEHICULOS_SEED = {"ALFA ROMEO": ["MITO", "155", "156"], "AUDI": ["A4", "A3 '02", "A3 '96", "A3 '05", "A5", "Q7", "TT", "A3", "Q5 ´09", "Q3", "A1", "A3 ´15", "Q5 ´18", "A6"], "BMW": ["X5", "X3", "MINICOOPER", "S1", "SERIE 3", "X6", "X1", "SERIE 1", "S3", "SERIE 2", "X4", "S7", "Z3"], "CHERY": ["QQ", "TIGGO", "CHERY", "FULWIN", "TIGGO 5", "TIGGO 2"], "CHEVROLET": ["VITARA", "CORSA", "MERIVA", "ASTRA", "MONTANA", "VECTRA", "PRISMA", "AVEO", "CAPTIVA", "SPARK", "AGILE", "CRUZE", "SONIC", "S10 '12", "TRAILBLAZER", "ONIX/PRISMA", "SPIN", "TRACKER", "COBALT", "ONIX", "CRUZE ´16", "S10", "TRACKER´17", "EQUINOX", "S10 ´19", "TRACKER´20", "ONIX ´19", "400", "PICK UP", "CHEVY COUPE", "MONZA", "KADETT", "LUV", "OMEGA", "BLAZER/S10", "BLAZER", "SILVERADO", "CHEVETTE", "OPEL 2000", "ZAFIRA"], "CITROEN": ["PICASSO", "C3", "C3 '13", "C3´13", "C4 PICASSO", "C4 GRAND PICASSO", "C4", "C3 '09", "DS3", "C3 PICASSO / AIRCROSS", "DS4", "C4 LOUNGE", "C4 CACTUS", "JUMPY", "C3 '22", "C3´23", "AIRCROSS ´23", "BASALT", "C15", "XSARA", "PARTNER/BERLINGO"], "DAEWOO": ["NUBIRA", "LANOS", "LEGANZA", "CIELO"], "DAIHATSU": ["CUORE"], "DODGE/CHRYSLER": ["DAKOTA", "CARAVAN", "PTCRUISER", "RAM", "GRAND CHEROKEE", "CHEROKEE ´05", "PATRIOT", "JEEP COMPASS", "JOURNEY", "CHEROKEE", "TOWN & COUNTRY", "GRAND CHEROKEE  ´14", "GRAND CHEROKEE  ´15", "JEEP RENEGADE", "JEEP COMPASS ´16", "JEEP COMMANDER", "JEEP COMPASS ´21", "RAMPAGE", "PICK UP  61", "1500", "SPIRIT", "NEON", "STRATUS", "WRANGLER", "DURANGO"], "FIAT": ["STILO", "PALIO", "IDEA", "PUNTO", "IVECO", "DAILY", "LINEA", "STRADA", "UNO", "UNO ´10", "500", "SIENA", "GRAND SIENA", "PALIO '12", "QUBO", "FIORINO", "BRAVO '12", "DOBLO", "BRAVO", "EUROCARGO '12", "VERTIS", "STRALIS", "TORO", "MOBI", "ARGO/CRONOS", "ARGO", "CRONOS", "TIPO", "DUCATO", "STRADA '20", "TORO ´21", "PULSE", "FASTBACK", "TITANO", "125", "1600", "619CAMION", "133", "147", "147/FIORINO", "128EUROPA", "128", "128SUPER EUROPA", "REGATTA", "DUNA/UNO", "DUNA", "EUROCARGO", "TEMPRA", "190 CAMION", "PALIO/SIENA", "PALIO WEEK", "EUROTRAKER", "UNO MILLE", "MAREA"], "FORD": ["TRANSIT '00", "FIESTA", "KA", "ECOSPORT", "MONDEO", "RANGER", "FOCUS ´08", "KA '08", "FIESTA KINETIC '10", "KUGA", "FIESTA KINETIC", "CARGO ´11", "FIESTA KINETIC '11", "CARGO", "RANGER '12", "FOCUS '13", "ECOSPORT '12", "FIESTA KINETIC '13", "FOCUS ´13", "CARGO 14", "KA ´15", "FOCUS '15", "FOCUS ´15", "FOCUS", "MONDEO ´16", "ECOSPORT ´17", "CARGO ´18", "F150", "TERRITORY '20", "TRANSIT '21", "BRONCO", "MAVERICK", "RANGER ´23", "TERRITORY '24", "TRANSIT '25", "FALCON", "RANCHERA", "PICK UP 74/80", "TAUNUS 74 4", "TAUNUS", "P-UP", "SIERRA", "ESCORT", "F-100", "GALAXIE", "TRANSIT", "EXPEDITION", "PICK UP", "FORD EXPLORER"], "HONDA": ["CIVIC", "CR-V '02", "CR-V ´02", "FIT", "CIVIC '06", "CR-V '08", "PILOT", "FIT '09", "CITY", "CR-V '12", "CIVIC '14", "CIVIC '12", "ACCORD", "NEW CITY", "HR-V '15", "HR-V", "CIVIC ´17", "WR-V/FIT ´19", "HR-V ´22", "HRV", "ZRV", "WRV '26", "PASSPORT", "ODYSEY", "ACCENT PRIME"], "HYUNDAI": ["TUCSON", "SANTA FE '07", "I-30", "TUCSON ´08", "H1", "VERACRUZ", "GENESIS", "HR/H100", "SONATA", "SONATA ´10", "H100", "TUCSON  '11", "VELOSTER", "HB20", "I30", "ELANTRA", "SANTA FE", "TUCSON '17", "CRETA", "ACCENT", "EXCEL"], "ISUZU": ["RODEO", "TROOPER"], "KIA-ASIA": ["PICANTO", "K2700", "SORENTO '08", "SPORTAGE '08", "MOHAVE", "SOUL", "CERATO", "SORENTO", "SPORTAGE '11", "SPORTAGE", "RIO", "SPORTAGE  ´17", "BESTA", "SEPHIA"], "MAZDA": ["B2000", "626"], "MERCEDES BENZ": ["SLK", "SPRINTER", "ACCELO", "ACELLO", "ACTROS", "CLASE C", "ATEGO", "CLASE E", "GLA", "SPRINTER ´13", "CLASE A", "CLASE B", "ACTROS 14", "CLA 200/250", "GLE", "CLASE GLA", "SPRINTER '19", "1112/1114", "1112", "1517-18-21", "1214/15-913", "1215-1722", "1633", "COMBI", "CLASEA"], "MERCURY": ["VILLAGER"], "MITSUBISHI": ["OUTLANDER", "L-200", "MONTERO '08", "LANCER", "L-100", "GALANT", "ECLIPSE", "MONTERO", "MONTERO '98", "MONTERO '99"], "NISSAN": ["MAXIMA", "ALTIMA", "NISSAN", "TIIDA", "FRONTIER '10", "X-TRAIL", "SENTRA '11", "MURANO", "MARCH", "VERSA", "SENTRA", "NOTE", "SENTRA  ´18", "SENTRA ´14", "KICKS", "FRONTIER´17", "FRONTIER", "KICKS ´21", "FRONTIER '22", "KICKS '25", "KICKS '26", "PATHFINDER", "CPC14/16"], "PEUGEOT": ["307", "206", "EXPERT", "207", "3008", "5008", "PARTNER/BERLINGO", "308", "308-408", "408", "PARTNER", "208", "208/2008", "508", "2008", "301/C-ELYSEE", "EXPERT/JUMPY", "208 ´20", "504", "505", "405", "PEUGEOT 405", "306", "406", "605", "106"], "RENAULT": ["MEGANE II", "LOGAN", "SANDERO/DUSTER", "SANDERO", "SYMBOL", "KOLEOS", "FLUENCE", "MASTER ´11", "DUSTER", "MASTER", "CLIO II", "LATITUD ´12", "LOGAN/SANDERO '14", "LOGAN/SANDERO", "LOGAN '14", "SANDERO II", "SANDERO´14", "DUSTER/OROCH", "CAPTUR", "KWID", "KANGOO", "OROCH", "KARDIAN", "BOREAL", "12", "18", "FUEGO", "9/11", "TRAFIC", "21", "19", "19 COUPE", "CLIO", "EXPRESS", "TWINGO", "MEGANE", "LAGUNA", "SCENIC", "MIDLUM"], "ROVER": ["FREELANDER", "RANGE ROVER EVOQUE", "EVOQUE", "DISCOVERY", "ROVER", "S200", "SERIE 200"], "SCANIA": ["SERIE 5", "SERIE 6", "SCANIA 111", "112/113", "112", "114"], "SEAT": ["IBIZA", "TOLEDO"], "SMART": ["SMART FORTWO"], "SSANG YONG": ["KORANDO"], "SUBARU": ["FORESTER", "LEGAY OUTBACK", "IMPREZA", "LEGACY"], "SUZUKI": ["JIMNY", "FUN", "JIII", "SWIFT", "VITARA", "WAGON"], "TOYOTA": ["COROLLA", "HILUX ´05", "RAV-4", "CRUISER", "FIELDER", "COROLLA ´08", "PRIUS", "CAMRY", "ETIOS", "RAV-4 ´ 13", "COROLLA '14", "HILUX ´15", "YARIS", "INNOVA", "COROLLA ´19", "RAV 4", "HILUX", "COROLLA CROSS", "HIACE", "COROLLA '24", "YARIS CROSS", "RUNNER"], "VOLKSWAGEN": ["NEW BEETLE", "FOX", "PARATI", "VENTO", "CONSTELLATION", "GOL", "SURAN", "BORA", "GOL TREND", "PASSAT ´08", "VOYAGE", "TIGUAN", "AMAROK", "SAVEIRO", "TREND", "FOX ´10", "PASSAT", "VENTO ´11", "TOUAREG", "SCIROCCO", "BEETLE '14", "UP", "SAVEIRO '14", "GOLF '15", "POLO´16", "GOLF", "TREND / SAVEIRO", "GOL '16", "CAMION", "VENTO ´17", "CAMION ´17", "VIRTUS/POLO", "VIRTUS", "POLO ´18", "POLO", "T-CROSS", "VENTO ´19", "METEOR", "NIVUS", "TAOS", "1500", "GACEL/GOL/SENDA/SAVE", "GACEL", "CARAT", "GACEL / SENDA", "GACEL/SENDA", "GOL/SAVEIRO", "LOGUS", "95", "SAVEIRO '98", "QUANTUM"], "VOLSKWAGEN": ["VENTO ´18", "TERA"], "VOLVO": ["FH/NH 12", "FH", "V40", "VOLVO", "FH-13", "XC90", "XC40", "FM", "FH 21", "S40/V40", "S40", "N10", "S70/V70", "PREMIUM"]};
+function pbConfigPath() { return _pathCosts.join(DATA_DIR, 'parabrisas_config.json'); }
+function pbCasosPath() { return _pathCosts.join(DATA_DIR, 'parabrisas_casos.json'); }
+function loadPbConfig() {
+  try {
+    const c = JSON.parse(_fsCosts.readFileSync(pbConfigPath(), 'utf8'));
+    if (c && typeof c === 'object') {
+      if (!Array.isArray(c.sistemas)) c.sistemas = [];
+      if (!Array.isArray(c.companias)) c.companias = [];
+      if (!Array.isArray(c.tipos_cristal) || !c.tipos_cristal.length) c.tipos_cristal = PB_TIPOS_CRISTAL.slice();
+      if (!Array.isArray(c.tipos_vehiculo) || !c.tipos_vehiculo.length) c.tipos_vehiculo = PB_TIPOS_VEHICULO.slice();
+      if (!c.vehiculos || typeof c.vehiculos !== 'object') c.vehiculos = PB_VEHICULOS_SEED;
+      return c;
+    }
+  } catch (e) {}
+  const seed = { sistemas: [], companias: [], tipos_cristal: PB_TIPOS_CRISTAL.slice(), tipos_vehiculo: PB_TIPOS_VEHICULO.slice(), vehiculos: PB_VEHICULOS_SEED, updated: null };
+  try { _fsCosts.writeFileSync(pbConfigPath(), JSON.stringify(seed)); } catch (e) {}
+  return seed;
+}
+function savePbConfig(c) { try { _fsCosts.writeFileSync(pbConfigPath(), JSON.stringify(c)); } catch (e) {} }
+function loadPbCasos() { try { const d = JSON.parse(_fsCosts.readFileSync(pbCasosPath(), 'utf8')); if (d && Array.isArray(d.casos)) return d; } catch (e) {} return { casos: [], seq: 0 }; }
+function savePbCasos(d) { try { _fsCosts.writeFileSync(pbCasosPath(), JSON.stringify(d)); } catch (e) {} }
+// Regla de POSICION/LADO segun tipo de cristal (el resto lo elige el usuario).
+function pbPosicionAuto(tc) { tc = String(tc || '').toUpperCase(); if (tc === 'ALETA/VENTILETE' || tc === 'PARABRISAS') return 'DELANTERO'; if (tc === 'CUSTODIO/COLETA' || tc === 'LUNETA') return 'TRASERO'; return ''; }
+function pbLadoAuto(tc) { tc = String(tc || '').toUpperCase(); if (tc === 'LUNETA' || tc === 'PARABRISAS') return 'S/L'; return ''; }
+function pbAuth(req) { const s = requireAuth(req); if (!s) return { err: [401, 'No autenticado'] }; const db = loadDB(); const u = db.users.find(x => x.id === s.userId); const isAdm = s.role === 'admin'; if (!(isAdm || (u && u.can_parabrisas === true))) return { err: [403, 'Sin permiso para Parabrisas'] }; return { s, u, isAdm }; }
+function pbStripForUser(c) { return { n: c.n, estado: c.estado, fecha: c.fecha, sistema: c.sistema, compania: c.compania, siniestro: c.siniestro, patente: c.patente, tipo_cristal: c.tipo_cristal, posicion: c.posicion, lado: c.lado, tipo_vehiculo: c.tipo_vehiculo, marca: c.marca, modelo: c.modelo, anio: c.anio, orden_link: c.orden_link, fotos_links: c.fotos_links, notas: c.notas, created_at: c.created_at, created_by: c.created_by }; }
+function pbSanitizeBase(b, cfg) {
+  const inSet = (v, arr) => (arr || []).map(x => String(x).toUpperCase()).includes(String(v || '').toUpperCase());
+  const tc = inSet(b.tipo_cristal, cfg.tipos_cristal) ? String(b.tipo_cristal).toUpperCase() : '';
+  let posicion = String(b.posicion || '').toUpperCase();
+  const posAuto = pbPosicionAuto(tc);
+  if (posAuto) posicion = posAuto; else if (!['DELANTERO', 'TRASERO'].includes(posicion)) posicion = '';
+  let lado = String(b.lado || '').toUpperCase();
+  const ladoAuto = pbLadoAuto(tc);
+  if (ladoAuto) lado = ladoAuto; else if (!['IZQUIERDO', 'DERECHO'].includes(lado)) lado = '';
+  return {
+    fecha: /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha || '')) ? String(b.fecha) : new Date().toISOString().slice(0, 10),
+    sistema: inSet(b.sistema, cfg.sistemas) ? String(b.sistema) : '',
+    compania: inSet(b.compania, cfg.companias) ? String(b.compania) : '',
+    siniestro: String(b.siniestro || '').trim().slice(0, 80),
+    patente: String(b.patente || '').trim().toUpperCase().slice(0, 20),
+    tipo_cristal: tc, posicion, lado,
+    tipo_vehiculo: inSet(b.tipo_vehiculo, cfg.tipos_vehiculo) ? String(b.tipo_vehiculo).toUpperCase() : '',
+    marca: String(b.marca || '').trim().toUpperCase().slice(0, 60),
+    modelo: String(b.modelo || '').trim().slice(0, 80),
+    anio: String(b.anio || '').trim().slice(0, 10),
+    orden_link: String(b.orden_link || '').trim().slice(0, 500),
+    fotos_links: (Array.isArray(b.fotos_links) ? b.fotos_links : []).map(x => String(x || '').trim().slice(0, 500)).filter(Boolean).slice(0, 30),
+    notas: String(b.notas || '').trim().slice(0, 1200),
+  };
+}
+// CONFIG: leer (can_parabrisas) / editar (solo admin).
+route('GET', '/api/parabrisas/config', async (req, res) => {
+  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const c = loadPbConfig();
+  const marcas = Object.keys(c.vehiculos || {}).sort();
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, sistemas: c.sistemas || [], companias: c.companias || [], tipos_cristal: c.tipos_cristal || [], tipos_vehiculo: c.tipos_vehiculo || [], marcas, vehiculos: c.vehiculos || {} });
+});
+route('POST', '/api/parabrisas/config', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador puede editar la configuración' });
+  const b = await parseBody(req);
+  const c = loadPbConfig();
+  const cleanList = arr => { const out = [], seen = {}; for (const x of (Array.isArray(arr) ? arr : [])) { const v = String(x || '').trim().slice(0, 80); if (v && !seen[v.toUpperCase()]) { seen[v.toUpperCase()] = 1; out.push(v); } } return out; };
+  if (b.sistemas !== undefined) c.sistemas = cleanList(b.sistemas);
+  if (b.companias !== undefined) c.companias = cleanList(b.companias);
+  if (b.tipos_cristal !== undefined) c.tipos_cristal = cleanList(b.tipos_cristal);
+  if (b.tipos_vehiculo !== undefined) c.tipos_vehiculo = cleanList(b.tipos_vehiculo);
+  if (b.vehiculos !== undefined && b.vehiculos && typeof b.vehiculos === 'object') {
+    const v = {}; for (const m of Object.keys(b.vehiculos)) { const mk = String(m || '').trim().toUpperCase(); if (!mk) continue; v[mk] = cleanList(b.vehiculos[m]); } c.vehiculos = v;
+  }
+  c.updated = new Date().toISOString();
+  savePbConfig(c);
+  sendJSON(res, 200, { ok: true });
+});
+// SUBIR ADJUNTO a Drive (orden o foto) vía el puente. Devuelve la URL. can_parabrisas.
+route('POST', '/api/parabrisas/upload', async (req, res) => {
+  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const nombre = String(b.nombre || 'archivo').slice(0, 150);
+  const mime = String(b.mime || 'application/octet-stream').slice(0, 100);
+  const datab64 = String(b.datab64 || '');
+  if (!datab64) return sendJSON(res, 400, { error: 'Sin archivo' });
+  const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
+  if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL / LISTADO_PUENTE_CLAVE).' });
+  try {
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'uploadArchivo', nombre, mime, datab64 }, 180000);
+    let data; try { data = JSON.parse(text); } catch (e) { data = null; }
+    if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('El puente respondió HTTP ' + status) });
+    return sendJSON(res, 200, { ok: true, url: data.url, nombre: data.nombre });
+  } catch (e) { return sendJSON(res, 502, { error: 'No se pudo subir a Drive: ' + String((e && e.message) || e) }); }
+});
+// LISTAR casos con filtros. No-admin: SOLO estado 'taller'.
+route('GET', '/api/parabrisas/casos', async (req, res) => {
+  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const url = new URL(req.url, 'http://x');
+  const estado = url.searchParams.get('estado') || '';
+  const from = url.searchParams.get('from') || '', to = url.searchParams.get('to') || '';
+  const compania = (url.searchParams.get('compania') || '').toUpperCase();
+  const sistema = (url.searchParams.get('sistema') || '').toUpperCase();
+  const patente = (url.searchParams.get('patente') || '').toUpperCase().trim();
+  const sometido = (url.searchParams.get('sometido') || '').toUpperCase();
+  const store = loadPbCasos();
+  let casos = store.casos.slice();
+  if (!a.isAdm) casos = casos.filter(c => c.estado === 'taller');
+  else if (estado) casos = casos.filter(c => c.estado === estado);
+  if (from) casos = casos.filter(c => String(c.fecha || '') >= from);
+  if (to) casos = casos.filter(c => String(c.fecha || '') <= to);
+  if (compania) casos = casos.filter(c => String(c.compania || '').toUpperCase() === compania);
+  if (sistema) casos = casos.filter(c => String(c.sistema || '').toUpperCase() === sistema);
+  if (patente) casos = casos.filter(c => String(c.patente || '').toUpperCase().includes(patente));
+  if (sometido) casos = casos.filter(c => String(c.sometido || '').toUpperCase() === sometido);
+  casos.sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
+  let por_cobrar = 0, cobrado = 0;
+  for (const c of store.casos) { const m = Number(c.monto) || 0; if (c.estado === 'facturado' && !c.pagado) por_cobrar += m; if (c.pagado) cobrado += m; }
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, casos: a.isAdm ? casos : casos.map(pbStripForUser), resumen: { por_cobrar, cobrado, count: casos.length } });
+});
+// CREAR / EDITAR caso (Carga de Taller) — can_parabrisas.
+route('POST', '/api/parabrisas/caso', async (req, res) => {
+  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const cfg = loadPbConfig();
+  const editN = (b.n != null && !isNaN(Number(b.n))) ? Number(b.n) : null;
+  const base = pbSanitizeBase(b, cfg);
+  const store = loadPbCasos();
+  let caso;
+  if (editN != null) {
+    caso = store.casos.find(c => Number(c.n) === editN);
+    if (!caso) return sendJSON(res, 404, { error: 'Caso no encontrado' });
+    if (!a.isAdm && caso.estado !== 'taller') return sendJSON(res, 403, { error: 'No podés editar un caso que ya avanzó de etapa' });
+    Object.assign(caso, base, { updated_at: new Date().toISOString() });
+  } else {
+    store.seq = (Number(store.seq) || 0) + 1;
+    caso = { n: store.seq, estado: 'taller', ...base, fecha_facturacion: '', nro_factura: '', monto: 0, sometido: '', pagado: false, finalizado: false, created_at: new Date().toISOString(), created_by: (a.s.username || '') };
+    store.casos.push(caso);
+  }
+  savePbCasos(store);
+  sendJSON(res, 200, { ok: true, n: caso.n });
+});
+// FACTURA (Tab 2) — SOLO admin. fecha fact + nro + monto + sometido → estado 'facturado'.
+route('POST', '/api/parabrisas/caso-factura', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req);
+  const store = loadPbCasos();
+  const caso = store.casos.find(c => Number(c.n) === Number(b.n));
+  if (!caso) return sendJSON(res, 404, { error: 'Caso no encontrado' });
+  caso.fecha_facturacion = /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha_facturacion || '')) ? String(b.fecha_facturacion) : (caso.fecha_facturacion || '');
+  caso.nro_factura = String(b.nro_factura || '').trim().slice(0, 60);
+  caso.monto = Math.max(0, Number(b.monto) || 0);
+  caso.sometido = ['SI', 'NO'].includes(String(b.sometido || '').toUpperCase()) ? String(b.sometido).toUpperCase() : (caso.sometido || '');
+  if (caso.estado === 'taller') caso.estado = 'facturado';
+  caso.updated_at = new Date().toISOString();
+  savePbCasos(store);
+  sendJSON(res, 200, { ok: true });
+});
+// FINALIZAR (Tab 3) — SOLO admin. Tilde Pagado + botón Finalizar.
+route('POST', '/api/parabrisas/caso-finalizar', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 403, { error: 'Solo el administrador' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req);
+  const store = loadPbCasos();
+  const caso = store.casos.find(c => Number(c.n) === Number(b.n));
+  if (!caso) return sendJSON(res, 404, { error: 'Caso no encontrado' });
+  if (b.pagado !== undefined) caso.pagado = !!b.pagado;
+  if (b.finalizar) { caso.finalizado = true; caso.estado = 'finalizado'; }
+  caso.updated_at = new Date().toISOString();
+  savePbCasos(store);
+  sendJSON(res, 200, { ok: true, estado: caso.estado, pagado: caso.pagado });
+});
+// BORRAR caso — SOLO admin.
+route('POST', '/api/parabrisas/caso-delete', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 403, { error: 'Solo el administrador' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req);
+  const store = loadPbCasos();
+  const before = store.casos.length;
+  store.casos = store.casos.filter(c => Number(c.n) !== Number(b.n));
+  if (store.casos.length === before) return sendJSON(res, 404, { error: 'Caso no encontrado' });
+  savePbCasos(store);
+  sendJSON(res, 200, { ok: true });
+});
+
 
 // ---------------------------------------------------------------------------
 // TABLA DE COSTOS por item_id (MLA). Se llena importando tu Excel procesado.
