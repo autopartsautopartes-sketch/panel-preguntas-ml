@@ -935,11 +935,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   // ==================== PARABRISAS ====================
   var _pb = null;
-  function _pbNewForm() { return { editN: null, modalidad: 'SEGURO', fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', precio_venta: '', costo_parabrisas: '', costo_colocacion: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
+  function _pbNewForm() { return { editN: null, modalidad: 'SEGURO', fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', precio_venta: '', telefono: '', forma_pago: 'EFECTIVO', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, costo_parabrisas: '', costo_colocacion: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
   function _pbGananciaForm() { const f = _pb.form; const venta = f.modalidad === 'PARTICULAR' ? (Number(f.precio_venta) || 0) : 0; return venta - (Number(f.costo_parabrisas) || 0) - (Number(f.costo_colocacion) || 0); }
   function _pbMoney(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
   function _pbSort(arr) { return (arr || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true, sensitivity: 'base' })); }
-  function _pbEstadoLabel(e) { return e === 'taller' ? 'En taller' : (e === 'facturado' ? 'Facturado' : (e === 'finalizado' ? 'Finalizado' : e)); }
+  function _pbEstadoLabel(e) { return e === 'factura' ? 'En factura' : (e === 'por_pagar' ? 'Por pagar' : (e === 'finalizado' ? 'Finalizada' : (e === 'taller' ? 'En taller' : e))); }
   function _pbAutoPos(tc) { return (tc === 'ALETA/VENTILETE' || tc === 'PARABRISAS') ? 'DELANTERO' : ((tc === 'CUSTODIO/COLETA' || tc === 'LUNETA') ? 'TRASERO' : ''); }
   function _pbAutoLado(tc) { return (tc === 'LUNETA' || tc === 'PARABRISAS') ? 'S/L' : ''; }
 
@@ -973,7 +973,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const content = document.getElementById('content'); if (!content) return;
     let h = '<h2 style="margin-bottom:14px;color:#2d3277">🪟 Parabrisas</h2>';
     if (_pb.isAdmin) {
-      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Pago / Finalización'], ['finalizado', 'Finalizados'], ['resumen', 'Resumen'], ['config', 'Configuración']];
+      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Por Pagar'], ['finalizado', 'Finalizada'], ['resumen', 'Resumen'], ['config', 'Configuración']];
       h += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #eef1f6">';
       for (let i = 0; i < tabs.length; i++) { const k = tabs[i][0], lbl = tabs[i][1], on = _pb.tab === k; h += '<button onclick="pbSetTab(\'' + k + '\')" style="padding:9px 15px;border:none;background:none;font-size:13.5px;font-weight:' + (on ? '800' : '600') + ';color:' + (on ? '#3483fa' : '#8a94a6') + ';border-bottom:3px solid ' + (on ? '#3483fa' : 'transparent') + ';margin-bottom:-2px;cursor:pointer">' + lbl + '</button>'; }
       h += '</div>';
@@ -995,10 +995,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbTallerHTML() {
     let h = pbFormHTML();
-    h += '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:8px 0 10px">Casos en taller</div>';
-    h += pbFilterBarHTML(false);
-    const casos = _pb.casos.filter(c => c.estado === 'taller');
-    h += pbCasosListHTML(casos, 'taller');
+    h += '<div style="font-size:12.5px;color:#94a3b8;margin-top:6px">Al guardar, el caso pasa automáticamente a <b>Carga de Factura</b> (si es Seguro) o a <b>Por Pagar</b> (si es Particular).</div>';
     return h;
   }
   function pbFormHTML() {
@@ -1044,14 +1041,27 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div><label style="' + lbl + '">Modelo</label><select onchange="pbSetForm(\'modelo\',this.value)" style="' + inp + '" ' + (f.marca ? '' : 'disabled') + '><option value="">' + (f.marca ? 'Elegí…' : 'Elegí la marca') + '</option>' + modelos.map(m => '<option value="' + escapeHtml(m) + '"' + (f.modelo === m ? ' selected' : '') + '>' + escapeHtml(m) + '</option>').join('') + '</select></div>';
     h += '<div><label style="' + lbl + '">Año</label><input type="text" value="' + escapeHtml(f.anio) + '" oninput="pbSetTxt(\'anio\',this.value)" style="' + inp + '"></div>';
     h += '</div>';
-    // PARTICULAR: precio de venta + costos + ganancia (en Seguro esto se carga en la pestaña Factura).
+    // PARTICULAR: precio de venta + teléfono + forma de pago (con cheque). Los costos y la ganancia se
+    // cargan en "Por Pagar" (Taller no ve costos ni ganancia).
     if (esPart) {
-      h += '<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;background:#f8fbff;border:1px solid #dce9fb;border-radius:10px;padding:12px 14px">';
-      h += '<div><label style="' + lbl + '">Precio de venta</label><input type="number" step="0.01" value="' + escapeHtml(String(f.precio_venta)) + '" oninput="pbSetMonto(\'precio_venta\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">Costo Cristal</label><input type="number" step="0.01" value="' + escapeHtml(String(f.costo_parabrisas)) + '" oninput="pbSetMonto(\'costo_parabrisas\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">Costo Instalación</label><input type="number" step="0.01" value="' + escapeHtml(String(f.costo_colocacion)) + '" oninput="pbSetMonto(\'costo_colocacion\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">Ganancia</label><div id="pb_gan_form" style="' + inp + ';font-weight:800;color:#1a9c53;background:#f3faf6">' + _pbMoney(_pbGananciaForm()) + '</div></div>';
+      h += '<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;background:#f8fbff;border:1px solid #dce9fb;border-radius:10px;padding:12px 14px">';
+      h += '<div><label style="' + lbl + '">Precio de venta</label><input type="number" step="0.01" value="' + escapeHtml(String(f.precio_venta)) + '" oninput="pbSetTxt(\'precio_venta\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Teléfono</label><input type="text" value="' + escapeHtml(f.telefono || '') + '" oninput="pbSetTxt(\'telefono\',this.value)" placeholder="Ej. 3462-..." style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Forma de pago</label><select onchange="pbSetForm(\'forma_pago\',this.value)" style="' + inp + '">' + ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'].map(x => '<option value="' + x + '"' + (f.forma_pago === x ? ' selected' : '') + '>' + x.charAt(0) + x.slice(1).toLowerCase() + '</option>').join('') + '</select></div>';
       h += '</div>';
+      if (f.forma_pago === 'CHEQUE') {
+        const cq = f.cheque || {};
+        h += '<div style="margin-top:10px;background:#fff8e6;border:1px solid #ffe08a;border-radius:10px;padding:12px 14px">';
+        h += '<div style="font-weight:700;color:#8a6d1a;font-size:13px;margin-bottom:10px">🧾 Datos del cheque</div>';
+        h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">';
+        h += '<div><label style="' + lbl + '">Banco</label><input type="text" value="' + escapeHtml(cq.banco || '') + '" oninput="pbSetCheque(\'banco\',this.value)" style="' + inp + '"></div>';
+        h += '<div><label style="' + lbl + '">N° de cheque</label><input type="text" value="' + escapeHtml(cq.numero || '') + '" oninput="pbSetCheque(\'numero\',this.value)" style="' + inp + '"></div>';
+        h += '<div><label style="' + lbl + '">Titular</label><input type="text" value="' + escapeHtml(cq.titular || '') + '" oninput="pbSetCheque(\'titular\',this.value)" style="' + inp + '"></div>';
+        h += '<div><label style="' + lbl + '">CUIT / DNI</label><input type="text" value="' + escapeHtml(cq.cuit || '') + '" oninput="pbSetCheque(\'cuit\',this.value)" style="' + inp + '"></div>';
+        h += '<div><label style="' + lbl + '">Fecha de cobro</label><input type="date" value="' + escapeHtml(cq.fecha_cobro || '') + '" oninput="pbSetCheque(\'fecha_cobro\',this.value)" style="' + inp + '"></div>';
+        h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(cq.importe || '')) + '" oninput="pbSetCheque(\'importe\',this.value)" style="' + inp + '"></div>';
+        h += '</div></div>';
+      }
     }
     h += '<div style="margin-top:14px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px">';
     h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Los archivos se suben a tu Google Drive automáticamente (carpeta "Parabrisas Adjuntos") y queda el link guardado.</div>';
@@ -1084,6 +1094,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbSetTxt(field, val) { _pb.form[field] = val; }
   function pbSetMonto(field, val) { _pb.form[field] = val; const el = document.getElementById('pb_gan_form'); if (el) el.textContent = _pbMoney(_pbGananciaForm()); }
+  function pbSetCheque(field, val) { if (_pb.form) { _pb.form.cheque = _pb.form.cheque || {}; _pb.form.cheque[field] = val; } }
   function pbSetNotas(val) { _pb.form.notas = val; const el = document.getElementById('pb_words'); if (el) { const w = val.trim() ? val.trim().split(/\s+/).length : 0; el.textContent = '(' + w + '/150 palabras)'; el.style.color = w > 150 ? '#d43d3d' : '#aaa'; } }
   function pbDeleteDriveFile(url) { if (!url) return; try { fetch('/api/parabrisas/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} }
   function pbRemoveOrden() { const url = _pb.form.orden_link; _pb.form.orden_link = ''; pbRenderBody(); pbDeleteDriveFile(url); }
@@ -1117,7 +1128,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!f.tipo_cristal) { pbMsg('Elegí el tipo de cristal.', true); return; }
     const words = f.notas.trim() ? f.notas.trim().split(/\s+/).length : 0;
     if (words > 150) { pbMsg('Las notas superan las 150 palabras.', true); return; }
-    const payload = { n: f.editN, modalidad: f.modalidad, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, precio_venta: Number(f.precio_venta) || 0, costo_parabrisas: Number(f.costo_parabrisas) || 0, costo_colocacion: Number(f.costo_colocacion) || 0, patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
+    const payload = { n: f.editN, modalidad: f.modalidad, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, precio_venta: Number(f.precio_venta) || 0, telefono: f.telefono, forma_pago: f.forma_pago, cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
     const btn = document.getElementById('pb_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
     try {
       const r = await fetch('/api/parabrisas/caso', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
@@ -1130,7 +1141,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbEditCaso(n) {
     const c = _pb.casos.find(x => Number(x.n) === Number(n)); if (!c) return;
-    _pb.form = { editN: c.n, modalidad: c.modalidad || 'SEGURO', fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', precio_venta: (c.precio_venta || ''), costo_parabrisas: (c.costo_parabrisas || ''), costo_colocacion: (c.costo_colocacion || ''), patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
+    _pb.form = { editN: c.n, modalidad: c.modalidad || 'SEGURO', fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', precio_venta: (c.precio_venta || ''), telefono: c.telefono || '', forma_pago: c.forma_pago || 'EFECTIVO', cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, c.cheque || {}), costo_parabrisas: (c.costo_parabrisas || ''), costo_colocacion: (c.costo_colocacion || ''), patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
     _pb.tab = 'taller'; pbRender(); window.scrollTo(0, 0);
   }
   async function pbDeleteCaso(n) {
@@ -1166,8 +1177,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = pbSummaryBarHTML();
     h += pbFilterBarHTML(mode === 'factura' || mode === 'pago' || mode === 'finalizado' || mode === 'resumen', mode === 'finalizado' || mode === 'resumen');
     let casos = _pb.casos.slice();
-    if (mode === 'factura') casos = casos.filter(c => c.estado === 'taller' || c.estado === 'facturado');
-    else if (mode === 'pago') casos = casos.filter(c => c.estado === 'facturado');
+    if (mode === 'factura') casos = casos.filter(c => String(c.modalidad || 'SEGURO') !== 'PARTICULAR' && c.estado === 'factura');
+    else if (mode === 'pago') casos = casos.filter(c => c.estado === 'por_pagar');
     else if (mode === 'finalizado') casos = casos.filter(c => c.estado === 'finalizado');
     h += pbCasosListHTML(casos, mode);
     return h;
@@ -1182,7 +1193,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
     h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
     h += '<div style="flex:1;min-width:240px"><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + c.n + ' · ' + escapeHtml(c.patente || 'sin patente') + ' <span style="font-weight:600;color:#888;font-size:13px">' + escapeHtml(((c.marca || '') + ' ' + (c.modelo || '')).trim()) + (c.anio ? (' ' + escapeHtml(c.anio)) : '') + '</span></div>';
-    h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(c.fecha || '') + (c.compania ? (' · ' + escapeHtml(c.compania)) : '') + (c.sistema ? (' · ' + escapeHtml(c.sistema)) : '') + (c.siniestro ? (' · Sin. ' + escapeHtml(c.siniestro)) : '') + '</div>';
+    h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(c.fecha || '') + (c.compania ? (' · ' + escapeHtml(c.compania)) : '') + (c.sistema ? (' · ' + escapeHtml(c.sistema)) : '') + (c.siniestro ? (' · Sin. ' + escapeHtml(c.siniestro)) : '') + (c.telefono ? (' · 📞 ' + escapeHtml(c.telefono)) : '') + (c.forma_pago ? (' · 💳 ' + escapeHtml(c.forma_pago.charAt(0) + c.forma_pago.slice(1).toLowerCase())) : '') + '</div>';
+    if (c.forma_pago === 'CHEQUE' && c.cheque) { const cq = c.cheque; h += '<div style="font-size:11px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:7px;padding:4px 8px;margin-top:5px;display:inline-block">🧾 Cheque ' + escapeHtml(cq.banco || '') + (cq.numero ? (' N° ' + escapeHtml(cq.numero)) : '') + (cq.fecha_cobro ? (' · cobro ' + escapeHtml(cq.fecha_cobro)) : '') + (cq.importe ? (' · ' + _pbMoney(cq.importe)) : '') + '</div>'; }
     const modChip = (String(c.modalidad || 'SEGURO') === 'PARTICULAR') ? chip('👤 Particular', '#fef0f7', '#b5388a') : chip('🛡️ Seguro', '#eef4ff', '#3466c9');
     h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + modChip + chip(_pbEstadoLabel(c.estado), '#f0f4f8', '#556') + (c.tipo_cristal ? chip(escapeHtml(c.tipo_cristal), '#eef4ff', '#3466c9') : '') + (c.posicion ? chip(escapeHtml(c.posicion), '#f6f0ff', '#7a4fc9') : '') + (c.lado ? chip(escapeHtml(c.lado), '#eefaf3', '#1a7d47') : '') + (c.tipo_vehiculo ? chip(escapeHtml(c.tipo_vehiculo), '#fff6e6', '#8a6d1a') : '') + '</div>';
     let links = '';
@@ -1198,7 +1210,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Precio venta</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + _pbMoney(c.precio_venta) + '</div>';
       h += '<div style="font-size:11px;color:#b0562a">Cristal ' + _pbMoney(c.costo_parabrisas) + ' · Inst. ' + _pbMoney(c.costo_colocacion) + '</div>';
       h += '<div style="font-size:13px;color:#1a9c53;font-weight:800">Ganancia ' + _pbMoney(gan) + '</div>';
-    } else if (adm && (c.estado === 'facturado' || c.estado === 'finalizado')) {
+    } else if (adm && (c.estado === 'factura' || c.estado === 'por_pagar' || c.estado === 'finalizado')) {
       h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Factura</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + _pbMoney(c.monto) + '</div>';
       if (c.nro_factura) h += '<div style="font-size:12px;color:#666">' + escapeHtml(c.nro_factura) + (c.fecha_facturacion ? (' · ' + escapeHtml(c.fecha_facturacion)) : '') + '</div>';
       if ((Number(c.costo_parabrisas) || 0) || (Number(c.costo_colocacion) || 0)) h += '<div style="font-size:11px;color:#b0562a">Cristal ' + _pbMoney(c.costo_parabrisas) + ' · Inst. ' + _pbMoney(c.costo_colocacion) + '</div><div style="font-size:13px;color:#1a9c53;font-weight:800">Ganancia ' + _pbMoney(gan) + '</div>';
@@ -1243,16 +1255,34 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     try { const r = await fetch('/api/parabrisas/caso-factura', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
   }
   function pbPagoFormHTML(c) {
-    let h = '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e6ebf5;display:flex;gap:16px;flex-wrap:wrap;align-items:center">';
-    h += '<label style="display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#1a7d47;cursor:pointer"><input type="checkbox" ' + (c.pagado ? 'checked' : '') + ' onchange="pbTogglePagado(' + c.n + ',this.checked)" style="width:17px;height:17px;cursor:pointer">Pagado</label>';
-    h += '<button onclick="pbFinalizar(' + c.n + ')" style="background:#1a9c53;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer">✓ Finalizar</button>';
+    const esPart = String(c.modalidad || 'SEGURO') === 'PARTICULAR';
+    let h = '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e6ebf5;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">';
+    if (esPart) {
+      const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
+      h += '<label style="font-size:11px;color:#666">Precio de venta<br><input type="number" step="0.01" id="pbp_pv_' + c.n + '" value="' + (c.precio_venta || '') + '" oninput="pbPagoGan(' + c.n + ')" style="' + inp + ';width:120px"></label>';
+      h += '<label style="font-size:11px;color:#666">Costo Cristal<br><input type="number" step="0.01" id="pbp_ccri_' + c.n + '" value="' + (c.costo_parabrisas || '') + '" oninput="pbPagoGan(' + c.n + ')" style="' + inp + ';width:110px"></label>';
+      h += '<label style="font-size:11px;color:#666">Costo Instalación<br><input type="number" step="0.01" id="pbp_cins_' + c.n + '" value="' + (c.costo_colocacion || '') + '" oninput="pbPagoGan(' + c.n + ')" style="' + inp + ';width:110px"></label>';
+      h += '<div style="font-size:11px;color:#666">Ganancia<br><div id="pbp_gan_' + c.n + '" style="' + inp + ';font-weight:800;color:#1a9c53;background:#f3faf6;min-width:100px">' + _pbMoney((Number(c.precio_venta) || 0) - (Number(c.costo_parabrisas) || 0) - (Number(c.costo_colocacion) || 0)) + '</div></div>';
+      h += '<button onclick="pbGuardarCostosPart(' + c.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer">Guardar</button>';
+    }
+    h += '<label style="display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#1a7d47;cursor:pointer;margin-bottom:2px"><input type="checkbox" ' + (c.pagado ? 'checked' : '') + ' onchange="pbTogglePagado(' + c.n + ',this.checked)" style="width:17px;height:17px;cursor:pointer">Pagado</label>';
+    h += '<button onclick="pbFinalizar(' + c.n + ')" style="background:' + (c.pagado ? '#1a9c53' : '#c7d0dc') + ';color:#fff;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer">✓ Confirmar y finalizar</button>';
     h += '</div>';
     return h;
   }
+  function pbPagoGan(n) { const g = id => Number((document.getElementById(id) || {}).value) || 0; const el = document.getElementById('pbp_gan_' + n); if (el) el.textContent = _pbMoney(g('pbp_pv_' + n) - g('pbp_ccri_' + n) - g('pbp_cins_' + n)); }
+  function _pbPagoPart(n) { const el = document.getElementById('pbp_pv_' + n); if (!el) return null; const g = id => Number((document.getElementById(id) || {}).value) || 0; return { precio_venta: g('pbp_pv_' + n), costo_parabrisas: g('pbp_ccri_' + n), costo_colocacion: g('pbp_cins_' + n) }; }
+  async function pbGuardarCostosPart(n) {
+    const p = _pbPagoPart(n) || {};
+    try { const r = await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(Object.assign({ n }, p)) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
+  }
   async function pbTogglePagado(n, val) { try { await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n, pagado: val }) }); await pbLoadCasos(true); pbRenderBody(); } catch (e) {} }
   async function pbFinalizar(n) {
-    if (!confirm('¿Finalizar el caso N° ' + n + '? Pasa a Finalizados.')) return;
-    try { const r = await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n, finalizar: true }) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
+    const c = (_pb.casos || []).find(x => Number(x.n) === Number(n));
+    if (!(c && c.pagado)) { alert('Primero marcá "Pagado" y después confirmá.'); return; }
+    if (!confirm('¿Confirmar y finalizar el caso N° ' + n + '? Pasa a Finalizada.')) return;
+    const payload = Object.assign({ n, finalizar: true }, _pbPagoPart(n) || {});
+    try { const r = await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
   }
   function pbConfigHTML() {
     const c = _pb.cfg;
