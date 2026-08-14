@@ -935,7 +935,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   // ==================== PARABRISAS ====================
   var _pb = null;
-  function _pbNewForm() { return { editN: null, fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
+  function _pbNewForm() { return { editN: null, modalidad: 'SEGURO', fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', precio_venta: '', costo_parabrisas: '', costo_colocacion: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
+  function _pbGananciaForm() { const f = _pb.form; const venta = f.modalidad === 'PARTICULAR' ? (Number(f.precio_venta) || 0) : 0; return venta - (Number(f.costo_parabrisas) || 0) - (Number(f.costo_colocacion) || 0); }
   function _pbMoney(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
   function _pbSort(arr) { return (arr || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true, sensitivity: 'base' })); }
   function _pbEstadoLabel(e) { return e === 'taller' ? 'En taller' : (e === 'facturado' ? 'Facturado' : (e === 'finalizado' ? 'Finalizado' : e)); }
@@ -947,7 +948,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!(currentUser && (currentUser.role === 'admin' || currentUser.can_parabrisas))) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para Parabrisas.</p></div>'; return;
     }
-    if (!_pb) _pb = { isAdmin: (currentUser.role === 'admin'), tab: 'taller', cfg: null, casos: [], resumen: {}, filters: { from: '', to: '', compania: '', sistema: '', patente: '', sometido: '' }, form: _pbNewForm() };
+    if (!_pb) _pb = { isAdmin: (currentUser.role === 'admin'), tab: 'taller', cfg: null, casos: [], resumen: {}, filters: { from: '', to: '', compania: '', sistema: '', patente: '', sometido: '', modalidad: '' }, form: _pbNewForm() };
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
     try {
@@ -964,7 +965,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function pbLoadCasos(skipRender) {
     const f = _pb.filters; const p = new URLSearchParams();
     if (f.from) p.set('from', f.from); if (f.to) p.set('to', f.to); if (f.compania) p.set('compania', f.compania);
-    if (f.sistema) p.set('sistema', f.sistema); if (f.patente) p.set('patente', f.patente); if (f.sometido) p.set('sometido', f.sometido);
+    if (f.sistema) p.set('sistema', f.sistema); if (f.patente) p.set('patente', f.patente); if (f.sometido) p.set('sometido', f.sometido); if (f.modalidad) p.set('modalidad', f.modalidad);
     try { const r = await fetch('/api/parabrisas/casos?' + p.toString(), { credentials: 'same-origin' }); const d = await r.json(); if (r.ok) { _pb.casos = d.casos || []; _pb.resumen = d.resumen || {}; } } catch (e) {}
     if (!skipRender) pbRenderBody();
   }
@@ -972,7 +973,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const content = document.getElementById('content'); if (!content) return;
     let h = '<h2 style="margin-bottom:14px;color:#2d3277">🪟 Parabrisas</h2>';
     if (_pb.isAdmin) {
-      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Pago / Finalización'], ['resumen', 'Resumen'], ['config', 'Configuración']];
+      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Pago / Finalización'], ['finalizado', 'Finalizados'], ['resumen', 'Resumen'], ['config', 'Configuración']];
       h += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #eef1f6">';
       for (let i = 0; i < tabs.length; i++) { const k = tabs[i][0], lbl = tabs[i][1], on = _pb.tab === k; h += '<button onclick="pbSetTab(\'' + k + '\')" style="padding:9px 15px;border:none;background:none;font-size:13.5px;font-weight:' + (on ? '800' : '600') + ';color:' + (on ? '#3483fa' : '#8a94a6') + ';border-bottom:3px solid ' + (on ? '#3483fa' : 'transparent') + ';margin-bottom:-2px;cursor:pointer">' + lbl + '</button>'; }
       h += '</div>';
@@ -988,6 +989,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (t === 'taller') body.innerHTML = pbTallerHTML();
     else if (t === 'factura') body.innerHTML = pbListHTML('factura');
     else if (t === 'pago') body.innerHTML = pbListHTML('pago');
+    else if (t === 'finalizado') body.innerHTML = pbListHTML('finalizado');
     else if (t === 'resumen') body.innerHTML = pbListHTML('resumen');
     else if (t === 'config') body.innerHTML = pbConfigHTML();
   }
@@ -1021,12 +1023,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const marcas = _pbSort(c.marcas || []);
     const modelos = _pbSort((c.vehiculos && c.vehiculos[f.marca]) ? c.vehiculos[f.marca] : []);
     let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px 18px;margin-bottom:18px">';
-    h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:14px">' + (f.editN != null ? ('Editar caso N° ' + f.editN) : 'Nuevo caso de taller') + '</div>';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:12px">' + (f.editN != null ? ('Editar caso N° ' + f.editN) : 'Nuevo caso de taller') + '</div>';
+    // PREVIO: Seguro / Particular
+    const segBtn = (val, lblx) => { const on = f.modalidad === val; return '<button type="button" onclick="pbSetForm(\'modalidad\',\'' + val + '\')" style="padding:9px 22px;border:2px solid ' + (on ? '#3483fa' : '#d7dee8') + ';background:' + (on ? '#eef4ff' : '#fff') + ';color:' + (on ? '#2d3277' : '#8a94a6') + ';font-weight:800;font-size:14px;border-radius:9px;cursor:pointer">' + lblx + '</button>'; };
+    h += '<div style="display:flex;gap:10px;margin-bottom:16px">' + segBtn('SEGURO', '🛡️ Seguro') + segBtn('PARTICULAR', '👤 Particular') + '</div>';
+    const esPart = f.modalidad === 'PARTICULAR';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">';
     h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" onchange="pbSetForm(\'fecha\',this.value)" style="' + inp + '"></div>';
-    h += '<div><label style="' + lbl + '">Sistema</label>' + sel('sistema', c.sistemas || [], (c.sistemas && c.sistemas.length) ? 'Elegí…' : '(cargá en Config)') + '</div>';
-    h += '<div><label style="' + lbl + '">Compañía</label>' + sel('compania', c.companias || [], (c.companias && c.companias.length) ? 'Elegí…' : '(cargá en Config)') + '</div>';
-    h += '<div><label style="' + lbl + '">N° de siniestro</label><input type="text" value="' + escapeHtml(f.siniestro) + '" oninput="pbSetTxt(\'siniestro\',this.value)" style="' + inp + '"></div>';
+    if (!esPart) {
+      h += '<div><label style="' + lbl + '">Sistema</label>' + sel('sistema', c.sistemas || [], (c.sistemas && c.sistemas.length) ? 'Elegí…' : '(cargá en Config)') + '</div>';
+      h += '<div><label style="' + lbl + '">Compañía</label>' + sel('compania', c.companias || [], (c.companias && c.companias.length) ? 'Elegí…' : '(cargá en Config)') + '</div>';
+      h += '<div><label style="' + lbl + '">N° de siniestro</label><input type="text" value="' + escapeHtml(f.siniestro) + '" oninput="pbSetTxt(\'siniestro\',this.value)" style="' + inp + '"></div>';
+    }
     h += '<div><label style="' + lbl + '">Patente</label><input type="text" value="' + escapeHtml(f.patente) + '" oninput="pbSetTxt(\'patente\',this.value)" style="' + inp + '"></div>';
     h += '<div><label style="' + lbl + '">Tipo de cristal</label>' + sel('tipo_cristal', c.tipos_cristal || []) + '</div>';
     h += '<div><label style="' + lbl + '">Posición</label>' + posCell + '</div>';
@@ -1036,6 +1044,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div><label style="' + lbl + '">Modelo</label><select onchange="pbSetForm(\'modelo\',this.value)" style="' + inp + '" ' + (f.marca ? '' : 'disabled') + '><option value="">' + (f.marca ? 'Elegí…' : 'Elegí la marca') + '</option>' + modelos.map(m => '<option value="' + escapeHtml(m) + '"' + (f.modelo === m ? ' selected' : '') + '>' + escapeHtml(m) + '</option>').join('') + '</select></div>';
     h += '<div><label style="' + lbl + '">Año</label><input type="text" value="' + escapeHtml(f.anio) + '" oninput="pbSetTxt(\'anio\',this.value)" style="' + inp + '"></div>';
     h += '</div>';
+    // PARTICULAR: precio de venta + costos + ganancia (en Seguro esto se carga en la pestaña Factura).
+    if (esPart) {
+      h += '<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;background:#f8fbff;border:1px solid #dce9fb;border-radius:10px;padding:12px 14px">';
+      h += '<div><label style="' + lbl + '">Precio de venta</label><input type="number" step="0.01" value="' + escapeHtml(String(f.precio_venta)) + '" oninput="pbSetMonto(\'precio_venta\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Costo Cristal</label><input type="number" step="0.01" value="' + escapeHtml(String(f.costo_parabrisas)) + '" oninput="pbSetMonto(\'costo_parabrisas\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Costo Instalación</label><input type="number" step="0.01" value="' + escapeHtml(String(f.costo_colocacion)) + '" oninput="pbSetMonto(\'costo_colocacion\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Ganancia</label><div id="pb_gan_form" style="' + inp + ';font-weight:800;color:#1a9c53;background:#f3faf6">' + _pbMoney(_pbGananciaForm()) + '</div></div>';
+      h += '</div>';
+    }
     h += '<div style="margin-top:14px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px">';
     h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Los archivos se suben a tu Google Drive automáticamente (carpeta "Parabrisas Adjuntos") y queda el link guardado.</div>';
     // ORDEN
@@ -1066,6 +1083,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     pbRenderBody();
   }
   function pbSetTxt(field, val) { _pb.form[field] = val; }
+  function pbSetMonto(field, val) { _pb.form[field] = val; const el = document.getElementById('pb_gan_form'); if (el) el.textContent = _pbMoney(_pbGananciaForm()); }
   function pbSetNotas(val) { _pb.form.notas = val; const el = document.getElementById('pb_words'); if (el) { const w = val.trim() ? val.trim().split(/\s+/).length : 0; el.textContent = '(' + w + '/150 palabras)'; el.style.color = w > 150 ? '#d43d3d' : '#aaa'; } }
   function pbDeleteDriveFile(url) { if (!url) return; try { fetch('/api/parabrisas/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} }
   function pbRemoveOrden() { const url = _pb.form.orden_link; _pb.form.orden_link = ''; pbRenderBody(); pbDeleteDriveFile(url); }
@@ -1099,7 +1117,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!f.tipo_cristal) { pbMsg('Elegí el tipo de cristal.', true); return; }
     const words = f.notas.trim() ? f.notas.trim().split(/\s+/).length : 0;
     if (words > 150) { pbMsg('Las notas superan las 150 palabras.', true); return; }
-    const payload = { n: f.editN, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
+    const payload = { n: f.editN, modalidad: f.modalidad, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, precio_venta: Number(f.precio_venta) || 0, costo_parabrisas: Number(f.costo_parabrisas) || 0, costo_colocacion: Number(f.costo_colocacion) || 0, patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
     const btn = document.getElementById('pb_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
     try {
       const r = await fetch('/api/parabrisas/caso', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
@@ -1112,14 +1130,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbEditCaso(n) {
     const c = _pb.casos.find(x => Number(x.n) === Number(n)); if (!c) return;
-    _pb.form = { editN: c.n, fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
+    _pb.form = { editN: c.n, modalidad: c.modalidad || 'SEGURO', fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', precio_venta: (c.precio_venta || ''), costo_parabrisas: (c.costo_parabrisas || ''), costo_colocacion: (c.costo_colocacion || ''), patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
     _pb.tab = 'taller'; pbRender(); window.scrollTo(0, 0);
   }
   async function pbDeleteCaso(n) {
     if (!confirm('¿Borrar el caso N° ' + n + '? No se puede deshacer.')) return;
     try { const r = await fetch('/api/parabrisas/caso-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n }) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
   }
-  function pbFilterBarHTML(withSometido) {
+  function pbFilterBarHTML(withSometido, withModalidad) {
     const f = _pb.filters, c = _pb.cfg;
     const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
     const optList = (field, arr) => { let o = '<option value="">Todas</option>'; const a = _pbSort(arr); for (let i = 0; i < a.length; i++) { o += '<option value="' + escapeHtml(a[i]) + '"' + (f[field] === a[i] ? ' selected' : '') + '>' + escapeHtml(a[i]) + '</option>'; } return o; };
@@ -1130,6 +1148,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<label style="font-size:11px;color:#666">Sistema<br><select onchange="pbSetFilter(\'sistema\',this.value)" style="' + inp + '">' + optList('sistema', c.sistemas || []) + '</select></label>';
     h += '<label style="font-size:11px;color:#666">Patente<br><input type="text" value="' + escapeHtml(f.patente) + '" oninput="pbSetFilter(\'patente\',this.value)" placeholder="buscar" style="' + inp + '"></label>';
     if (withSometido) h += '<label style="font-size:11px;color:#666">Sometido<br><select onchange="pbSetFilter(\'sometido\',this.value)" style="' + inp + '"><option value="">Todos</option><option value="SI"' + (f.sometido === 'SI' ? ' selected' : '') + '>Sí</option><option value="NO"' + (f.sometido === 'NO' ? ' selected' : '') + '>No</option></select></label>';
+    if (withModalidad) h += '<label style="font-size:11px;color:#666">Tipo<br><select onchange="pbSetFilter(\'modalidad\',this.value)" style="' + inp + '"><option value="">Todos</option><option value="SEGURO"' + (f.modalidad === 'SEGURO' ? ' selected' : '') + '>Seguro</option><option value="PARTICULAR"' + (f.modalidad === 'PARTICULAR' ? ' selected' : '') + '>Particular</option></select></label>';
     h += '<button onclick="pbApplyFilters()" style="background:#3483fa;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">Buscar</button>';
     h += '<button onclick="pbClearFilters()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:7px;padding:8px 12px;font-size:13px;cursor:pointer">Limpiar</button>';
     h += '</div>';
@@ -1137,18 +1156,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbSetFilter(field, val) { _pb.filters[field] = val; }
   function pbApplyFilters() { pbLoadCasos(false); }
-  function pbClearFilters() { _pb.filters = { from: '', to: '', compania: '', sistema: '', patente: '', sometido: '' }; pbLoadCasos(false); }
+  function pbClearFilters() { _pb.filters = { from: '', to: '', compania: '', sistema: '', patente: '', sometido: '', modalidad: '' }; pbLoadCasos(false); }
   function pbSummaryBarHTML() {
     const r = _pb.resumen || {};
     const card = (lbl, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:11px 16px;min-width:150px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + lbl + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
-    return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">' + card('Me tienen que pagar', _pbMoney(r.por_cobrar), '#b0562a') + card('Cobrado', _pbMoney(r.cobrado), '#1a9c53') + '</div>';
+    return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">' + card('Me tienen que pagar', _pbMoney(r.por_cobrar), '#b0562a') + card('Cobrado', _pbMoney(r.cobrado), '#1a9c53') + card('Ganancia', _pbMoney(r.ganancia_total), '#1a9c53') + '</div>';
   }
   function pbListHTML(mode) {
     let h = pbSummaryBarHTML();
-    h += pbFilterBarHTML(mode === 'factura' || mode === 'pago' || mode === 'resumen');
+    h += pbFilterBarHTML(mode === 'factura' || mode === 'pago' || mode === 'finalizado' || mode === 'resumen', mode === 'finalizado' || mode === 'resumen');
     let casos = _pb.casos.slice();
     if (mode === 'factura') casos = casos.filter(c => c.estado === 'taller' || c.estado === 'facturado');
     else if (mode === 'pago') casos = casos.filter(c => c.estado === 'facturado');
+    else if (mode === 'finalizado') casos = casos.filter(c => c.estado === 'finalizado');
     h += pbCasosListHTML(casos, mode);
     return h;
   }
@@ -1163,7 +1183,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
     h += '<div style="flex:1;min-width:240px"><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + c.n + ' · ' + escapeHtml(c.patente || 'sin patente') + ' <span style="font-weight:600;color:#888;font-size:13px">' + escapeHtml(((c.marca || '') + ' ' + (c.modelo || '')).trim()) + (c.anio ? (' ' + escapeHtml(c.anio)) : '') + '</span></div>';
     h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(c.fecha || '') + (c.compania ? (' · ' + escapeHtml(c.compania)) : '') + (c.sistema ? (' · ' + escapeHtml(c.sistema)) : '') + (c.siniestro ? (' · Sin. ' + escapeHtml(c.siniestro)) : '') + '</div>';
-    h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip(_pbEstadoLabel(c.estado), '#f0f4f8', '#556') + (c.tipo_cristal ? chip(escapeHtml(c.tipo_cristal), '#eef4ff', '#3466c9') : '') + (c.posicion ? chip(escapeHtml(c.posicion), '#f6f0ff', '#7a4fc9') : '') + (c.lado ? chip(escapeHtml(c.lado), '#eefaf3', '#1a7d47') : '') + (c.tipo_vehiculo ? chip(escapeHtml(c.tipo_vehiculo), '#fff6e6', '#8a6d1a') : '') + '</div>';
+    const modChip = (String(c.modalidad || 'SEGURO') === 'PARTICULAR') ? chip('👤 Particular', '#fef0f7', '#b5388a') : chip('🛡️ Seguro', '#eef4ff', '#3466c9');
+    h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + modChip + chip(_pbEstadoLabel(c.estado), '#f0f4f8', '#556') + (c.tipo_cristal ? chip(escapeHtml(c.tipo_cristal), '#eef4ff', '#3466c9') : '') + (c.posicion ? chip(escapeHtml(c.posicion), '#f6f0ff', '#7a4fc9') : '') + (c.lado ? chip(escapeHtml(c.lado), '#eefaf3', '#1a7d47') : '') + (c.tipo_vehiculo ? chip(escapeHtml(c.tipo_vehiculo), '#fff6e6', '#8a6d1a') : '') + '</div>';
     let links = '';
     if (c.orden_link) links += '<a href="' + escapeHtml(c.orden_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px;margin-right:10px">📄 Orden</a>';
     if (c.fotos_links && c.fotos_links.length) { for (let j = 0; j < c.fotos_links.length; j++) links += '<a href="' + escapeHtml(c.fotos_links[j]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px;margin-right:8px">🖼️ Foto ' + (j + 1) + '</a>'; }
@@ -1171,9 +1192,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (c.notas) h += '<div style="font-size:12px;color:#777;margin-top:6px;font-style:italic">📝 ' + escapeHtml(c.notas) + '</div>';
     h += '</div>';
     h += '<div style="text-align:right">';
-    if (adm && (c.estado === 'facturado' || c.estado === 'finalizado')) {
+    const esPart = String(c.modalidad || 'SEGURO') === 'PARTICULAR';
+    const gan = (esPart ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0)) - (Number(c.costo_parabrisas) || 0) - (Number(c.costo_colocacion) || 0);
+    if (adm && esPart) {
+      h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Precio venta</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + _pbMoney(c.precio_venta) + '</div>';
+      h += '<div style="font-size:11px;color:#b0562a">Cristal ' + _pbMoney(c.costo_parabrisas) + ' · Inst. ' + _pbMoney(c.costo_colocacion) + '</div>';
+      h += '<div style="font-size:13px;color:#1a9c53;font-weight:800">Ganancia ' + _pbMoney(gan) + '</div>';
+    } else if (adm && (c.estado === 'facturado' || c.estado === 'finalizado')) {
       h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Factura</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + _pbMoney(c.monto) + '</div>';
       if (c.nro_factura) h += '<div style="font-size:12px;color:#666">' + escapeHtml(c.nro_factura) + (c.fecha_facturacion ? (' · ' + escapeHtml(c.fecha_facturacion)) : '') + '</div>';
+      if ((Number(c.costo_parabrisas) || 0) || (Number(c.costo_colocacion) || 0)) h += '<div style="font-size:11px;color:#b0562a">Cristal ' + _pbMoney(c.costo_parabrisas) + ' · Inst. ' + _pbMoney(c.costo_colocacion) + '</div><div style="font-size:13px;color:#1a9c53;font-weight:800">Ganancia ' + _pbMoney(gan) + '</div>';
       h += '<div style="margin-top:4px;display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">' + (c.sometido ? chip('Sometido: ' + c.sometido, '#eef4ff', '#3466c9') : '') + (c.pagado ? chip('PAGADO', '#eafaf1', '#1a7d47') : chip('impago', '#fdf0f0', '#d43d3d')) + '</div>';
     }
     h += '</div></div>';
@@ -1195,15 +1223,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let h = '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e6ebf5;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">';
     h += '<label style="font-size:11px;color:#666">Fecha facturación<br><input type="date" id="pbf_fecha_' + c.n + '" value="' + escapeHtml(c.fecha_facturacion || '') + '" style="' + inp + '"></label>';
     h += '<label style="font-size:11px;color:#666">N° factura<br><input type="text" id="pbf_nro_' + c.n + '" value="' + escapeHtml(c.nro_factura || '') + '" style="' + inp + '"></label>';
-    h += '<label style="font-size:11px;color:#666">Monto<br><input type="number" step="0.01" id="pbf_monto_' + c.n + '" value="' + (c.monto || '') + '" style="' + inp + ';width:120px"></label>';
+    h += '<label style="font-size:11px;color:#666">Monto (precio venta)<br><input type="number" step="0.01" id="pbf_monto_' + c.n + '" value="' + (c.monto || '') + '" oninput="pbFacturaGan(' + c.n + ')" style="' + inp + ';width:120px"></label>';
     h += '<label style="font-size:11px;color:#666">Sometido<br><select id="pbf_som_' + c.n + '" style="' + inp + '"><option value="">—</option><option value="SI"' + (c.sometido === 'SI' ? ' selected' : '') + '>Sí</option><option value="NO"' + (c.sometido === 'NO' ? ' selected' : '') + '>No</option></select></label>';
+    h += '<label style="font-size:11px;color:#666">Costo Cristal<br><input type="number" step="0.01" id="pbf_ccri_' + c.n + '" value="' + (c.costo_parabrisas || '') + '" oninput="pbFacturaGan(' + c.n + ')" style="' + inp + ';width:110px"></label>';
+    h += '<label style="font-size:11px;color:#666">Costo Instalación<br><input type="number" step="0.01" id="pbf_cins_' + c.n + '" value="' + (c.costo_colocacion || '') + '" oninput="pbFacturaGan(' + c.n + ')" style="' + inp + ';width:110px"></label>';
+    h += '<div style="font-size:11px;color:#666">Ganancia<br><div id="pbf_gan_' + c.n + '" style="' + inp + ';font-weight:800;color:#1a9c53;background:#f3faf6;min-width:100px">' + _pbMoney((Number(c.monto) || 0) - (Number(c.costo_parabrisas) || 0) - (Number(c.costo_colocacion) || 0)) + '</div></div>';
     h += '<button onclick="pbSaveFactura(' + c.n + ')" style="background:#3483fa;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">' + (c.estado === 'taller' ? 'Guardar factura' : 'Actualizar') + '</button>';
     h += '</div>';
     return h;
   }
+  function pbFacturaGan(n) {
+    const g = id => Number((document.getElementById(id) || {}).value) || 0;
+    const gan = g('pbf_monto_' + n) - g('pbf_ccri_' + n) - g('pbf_cins_' + n);
+    const el = document.getElementById('pbf_gan_' + n); if (el) el.textContent = _pbMoney(gan);
+  }
   async function pbSaveFactura(n) {
     const g = id => (document.getElementById(id) || {}).value || '';
-    const payload = { n, fecha_facturacion: g('pbf_fecha_' + n), nro_factura: g('pbf_nro_' + n), monto: g('pbf_monto_' + n) || 0, sometido: g('pbf_som_' + n) };
+    const payload = { n, fecha_facturacion: g('pbf_fecha_' + n), nro_factura: g('pbf_nro_' + n), monto: g('pbf_monto_' + n) || 0, sometido: g('pbf_som_' + n), costo_parabrisas: g('pbf_ccri_' + n) || 0, costo_colocacion: g('pbf_cins_' + n) || 0 };
     try { const r = await fetch('/api/parabrisas/caso-factura', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
   }
   function pbPagoFormHTML(c) {
