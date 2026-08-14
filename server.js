@@ -7704,10 +7704,15 @@ route('POST', '/api/parabrisas/upload', async (req, res) => {
   const mime = String(b.mime || 'application/octet-stream').slice(0, 100);
   const datab64 = String(b.datab64 || '');
   if (!datab64) return sendJSON(res, 400, { error: 'Sin archivo' });
+  // Carpeta destino: AÑO / MES (de la fecha del caso, o de hoy) / PATENTE.
+  const mfecha = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(b.fecha || ''));
+  const anio = mfecha ? mfecha[1] : new Date().toISOString().slice(0, 4);
+  const mes = mfecha ? mfecha[2] : new Date().toISOString().slice(5, 7);
+  const patente = (String(b.patente || '').trim().toUpperCase().replace(/[^A-Z0-9 .-]/g, '').slice(0, 20)) || 'SIN PATENTE';
   const PURL = process.env.LISTADO_PUENTE_URL, PKEY = process.env.LISTADO_PUENTE_CLAVE;
   if (!PURL || !PKEY) return sendJSON(res, 500, { error: 'Falta configurar el puente de Drive (LISTADO_PUENTE_URL / LISTADO_PUENTE_CLAVE).' });
   try {
-    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'uploadArchivo', nombre, mime, datab64 }, 180000);
+    const { status, text } = await _postPuente(PURL, { clave: PKEY, op: 'uploadArchivo', nombre, mime, datab64, anio, mes, patente }, 180000);
     let data; try { data = JSON.parse(text); } catch (e) { data = null; }
     if (status < 200 || status >= 300 || !data || data.ok === false) return sendJSON(res, 502, { error: (data && data.error) || ('El puente respondió HTTP ' + status) });
     return sendJSON(res, 200, { ok: true, url: data.url, nombre: data.nombre });
