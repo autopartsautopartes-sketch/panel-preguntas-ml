@@ -937,6 +937,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   var _pb = null;
   function _pbNewForm() { return { editN: null, fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
   function _pbMoney(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
+  function _pbSort(arr) { return (arr || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true, sensitivity: 'base' })); }
   function _pbEstadoLabel(e) { return e === 'taller' ? 'En taller' : (e === 'facturado' ? 'Facturado' : (e === 'finalizado' ? 'Finalizado' : e)); }
   function _pbAutoPos(tc) { return (tc === 'ALETA/VENTILETE' || tc === 'PARABRISAS') ? 'DELANTERO' : ((tc === 'CUSTODIO/COLETA' || tc === 'LUNETA') ? 'TRASERO' : ''); }
   function _pbAutoLado(tc) { return (tc === 'LUNETA' || tc === 'PARABRISAS') ? 'S/L' : ''; }
@@ -1004,7 +1005,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
     const sel = (field, options, ph) => {
       let o = '<option value="">' + (ph || 'Elegí…') + '</option>';
-      for (let i = 0; i < options.length; i++) { const v = options[i]; o += '<option value="' + escapeHtml(v) + '"' + (String(f[field]) === String(v) ? ' selected' : '') + '>' + escapeHtml(v) + '</option>'; }
+      const opts = _pbSort(options);
+      for (let i = 0; i < opts.length; i++) { const v = opts[i]; o += '<option value="' + escapeHtml(v) + '"' + (String(f[field]) === String(v) ? ' selected' : '') + '>' + escapeHtml(v) + '</option>'; }
       return '<select onchange="pbSetForm(\'' + field + '\',this.value)" style="' + inp + '">' + o + '</select>';
     };
     const tc = f.tipo_cristal, posAuto = _pbAutoPos(tc), ladoAuto = _pbAutoLado(tc);
@@ -1016,8 +1018,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (ladoAuto) ladoCell = '<div style="' + inp + ';background:#f3f6fb;color:#2d3277;font-weight:600">S/L</div>';
     else if (tc) ladoCell = '<select onchange="pbSetForm(\'lado\',this.value)" style="' + inp + '"><option value="">Elegí…</option><option value="IZQUIERDO"' + (f.lado === 'IZQUIERDO' ? ' selected' : '') + '>IZQUIERDO</option><option value="DERECHO"' + (f.lado === 'DERECHO' ? ' selected' : '') + '>DERECHO</option></select>';
     else ladoCell = '<div style="' + inp + ';color:#bbb">Elegí el cristal</div>';
-    const marcas = c.marcas || [];
-    const modelos = (c.vehiculos && c.vehiculos[f.marca]) ? c.vehiculos[f.marca] : [];
+    const marcas = _pbSort(c.marcas || []);
+    const modelos = _pbSort((c.vehiculos && c.vehiculos[f.marca]) ? c.vehiculos[f.marca] : []);
     let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px 18px;margin-bottom:18px">';
     h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:14px">' + (f.editN != null ? ('Editar caso N° ' + f.editN) : 'Nuevo caso de taller') + '</div>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">';
@@ -1065,8 +1067,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function pbSetTxt(field, val) { _pb.form[field] = val; }
   function pbSetNotas(val) { _pb.form.notas = val; const el = document.getElementById('pb_words'); if (el) { const w = val.trim() ? val.trim().split(/\s+/).length : 0; el.textContent = '(' + w + '/150 palabras)'; el.style.color = w > 150 ? '#d43d3d' : '#aaa'; } }
-  function pbRemoveOrden() { _pb.form.orden_link = ''; pbRenderBody(); }
-  function pbRemoveFotoUrl(i) { _pb.form.fotos_links.splice(i, 1); pbRenderBody(); }
+  function pbDeleteDriveFile(url) { if (!url) return; try { fetch('/api/parabrisas/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} }
+  function pbRemoveOrden() { const url = _pb.form.orden_link; _pb.form.orden_link = ''; pbRenderBody(); pbDeleteDriveFile(url); }
+  function pbRemoveFotoUrl(i) { const url = _pb.form.fotos_links[i]; _pb.form.fotos_links.splice(i, 1); pbRenderBody(); pbDeleteDriveFile(url); }
   function pbFileToB64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve(i >= 0 ? s.slice(i + 1) : s); }; r.onerror = reject; r.readAsDataURL(file); }); }
   async function pbUploadFile(file) {
     const b64 = await pbFileToB64(file);
@@ -1119,7 +1122,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function pbFilterBarHTML(withSometido) {
     const f = _pb.filters, c = _pb.cfg;
     const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
-    const optList = (field, arr) => { let o = '<option value="">Todas</option>'; for (let i = 0; i < arr.length; i++) { o += '<option value="' + escapeHtml(arr[i]) + '"' + (f[field] === arr[i] ? ' selected' : '') + '>' + escapeHtml(arr[i]) + '</option>'; } return o; };
+    const optList = (field, arr) => { let o = '<option value="">Todas</option>'; const a = _pbSort(arr); for (let i = 0; i < a.length; i++) { o += '<option value="' + escapeHtml(a[i]) + '"' + (f[field] === a[i] ? ' selected' : '') + '>' + escapeHtml(a[i]) + '</option>'; } return o; };
     let h = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:10px 12px">';
     h += '<label style="font-size:11px;color:#666">Desde<br><input type="date" value="' + escapeHtml(f.from) + '" onchange="pbSetFilter(\'from\',this.value)" style="' + inp + '"></label>';
     h += '<label style="font-size:11px;color:#666">Hasta<br><input type="date" value="' + escapeHtml(f.to) + '" onchange="pbSetFilter(\'to\',this.value)" style="' + inp + '"></label>';
@@ -1228,7 +1231,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += box('Tipos de cristal', '', 'pbcfg_tcristal', (c.tipos_cristal || []).join('\n'));
     h += box('Tipos de vehículo', '', 'pbcfg_tveh', (c.tipos_vehiculo || []).join('\n'));
     h += '<button onclick="pbSaveConfigTipos()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer">Guardar tipos</button>';
-    const marcas = c.marcas || [];
+    const marcas = _pbSort(c.marcas || []);
     h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:16px;margin-top:22px">';
     h += '<div style="font-weight:800;color:#2d3277;margin-bottom:8px">Marcas y modelos</div>';
     h += '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px"><label style="font-size:12px;color:#666">Marca<br><select id="pbcfg_marca" onchange="pbConfigMarcaChange()" style="padding:8px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:14px"><option value="">Elegí…</option>' + marcas.map(m => '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>').join('') + '</select></label>';
