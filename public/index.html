@@ -447,6 +447,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('local')" id="nav-local" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M4 9l1-4h14l1 4"/><path d="M4 9h16v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M6 14v6h12v-6"/></svg><span>Local</span>
       </a>
+      <a onclick="showSection('parabrisas')" id="nav-parabrisas" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 12h18"/><path d="M12 6v12"/></svg><span>Parabrisas</span>
+      </a>
       <a onclick="showSection('reputation')" id="nav-reputation" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.5-.8z"/></svg><span>Reputación</span>
       </a>
@@ -707,6 +710,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_local) {
           const nl = document.getElementById('nav-local'); if (nl) nl.style.display = '';
         }
+        if (currentUser.role === 'admin' || currentUser.can_parabrisas) {
+          const np = document.getElementById('nav-parabrisas'); if (np) np.style.display = '';
+        }
         loadAccounts();
         // Run immediately so badge shows on first load without waiting 15s
         checkNewMessages();
@@ -804,6 +810,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
         if (currentUser.role === 'admin' || currentUser.can_local) {
           const nl2 = document.getElementById('nav-local'); if (nl2) nl2.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_parabrisas) {
+          const np2 = document.getElementById('nav-parabrisas'); if (np2) np2.style.display = '';
         }
         if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
@@ -912,6 +921,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'messages': loadMessages(); break;
       case 'sales': loadSales(); break;
       case 'local': loadLocal(); break;
+      case 'parabrisas': loadParabrisas(); break;
       case 'reputation': loadReputation(); break;
       case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
@@ -923,6 +933,323 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'stock': loadStock(); break;
     }
   }
+  // ==================== PARABRISAS ====================
+  var _pb = null;
+  function _pbNewForm() { return { editN: null, fecha: new Date().toISOString().slice(0, 10), sistema: '', compania: '', siniestro: '', patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '', orden_link: '', fotos_links: [], notas: '', _ordenBusy: false, _fotosBusy: false }; }
+  function _pbMoney(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
+  function _pbEstadoLabel(e) { return e === 'taller' ? 'En taller' : (e === 'facturado' ? 'Facturado' : (e === 'finalizado' ? 'Finalizado' : e)); }
+  function _pbAutoPos(tc) { return (tc === 'ALETA/VENTILETE' || tc === 'PARABRISAS') ? 'DELANTERO' : ((tc === 'CUSTODIO/COLETA' || tc === 'LUNETA') ? 'TRASERO' : ''); }
+  function _pbAutoLado(tc) { return (tc === 'LUNETA' || tc === 'PARABRISAS') ? 'S/L' : ''; }
+
+  async function loadParabrisas() {
+    const myNav = navToken;
+    if (!(currentUser && (currentUser.role === 'admin' || currentUser.can_parabrisas))) {
+      document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para Parabrisas.</p></div>'; return;
+    }
+    if (!_pb) _pb = { isAdmin: (currentUser.role === 'admin'), tab: 'taller', cfg: null, casos: [], resumen: {}, filters: { from: '', to: '', compania: '', sistema: '', patente: '', sometido: '' }, form: _pbNewForm() };
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+    try {
+      const rc = await fetch('/api/parabrisas/config', { credentials: 'same-origin' });
+      const dc = await rc.json();
+      if (myNav !== navToken) return;
+      if (!rc.ok) { content.innerHTML = '<div class="empty"><p>' + escapeHtml(dc.error || 'Error') + '</p></div>'; return; }
+      _pb.cfg = dc; _pb.isAdmin = dc.is_admin;
+      await pbLoadCasos(true);
+      if (myNav !== navToken) return;
+      pbRender();
+    } catch (e) { content.innerHTML = '<div class="empty"><p>Error de red al cargar Parabrisas.</p></div>'; }
+  }
+  async function pbLoadCasos(skipRender) {
+    const f = _pb.filters; const p = new URLSearchParams();
+    if (f.from) p.set('from', f.from); if (f.to) p.set('to', f.to); if (f.compania) p.set('compania', f.compania);
+    if (f.sistema) p.set('sistema', f.sistema); if (f.patente) p.set('patente', f.patente); if (f.sometido) p.set('sometido', f.sometido);
+    try { const r = await fetch('/api/parabrisas/casos?' + p.toString(), { credentials: 'same-origin' }); const d = await r.json(); if (r.ok) { _pb.casos = d.casos || []; _pb.resumen = d.resumen || {}; } } catch (e) {}
+    if (!skipRender) pbRenderBody();
+  }
+  function pbRender() {
+    const content = document.getElementById('content'); if (!content) return;
+    let h = '<h2 style="margin-bottom:14px;color:#2d3277">🪟 Parabrisas</h2>';
+    if (_pb.isAdmin) {
+      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Pago / Finalización'], ['resumen', 'Resumen'], ['config', 'Configuración']];
+      h += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #eef1f6">';
+      for (let i = 0; i < tabs.length; i++) { const k = tabs[i][0], lbl = tabs[i][1], on = _pb.tab === k; h += '<button onclick="pbSetTab(\'' + k + '\')" style="padding:9px 15px;border:none;background:none;font-size:13.5px;font-weight:' + (on ? '800' : '600') + ';color:' + (on ? '#3483fa' : '#8a94a6') + ';border-bottom:3px solid ' + (on ? '#3483fa' : 'transparent') + ';margin-bottom:-2px;cursor:pointer">' + lbl + '</button>'; }
+      h += '</div>';
+    }
+    h += '<div id="pb_body"></div>';
+    content.innerHTML = h;
+    pbRenderBody();
+  }
+  function pbSetTab(t) { _pb.tab = t; pbRender(); }
+  function pbRenderBody() {
+    const body = document.getElementById('pb_body'); if (!body) return;
+    const t = _pb.isAdmin ? _pb.tab : 'taller';
+    if (t === 'taller') body.innerHTML = pbTallerHTML();
+    else if (t === 'factura') body.innerHTML = pbListHTML('factura');
+    else if (t === 'pago') body.innerHTML = pbListHTML('pago');
+    else if (t === 'resumen') body.innerHTML = pbListHTML('resumen');
+    else if (t === 'config') body.innerHTML = pbConfigHTML();
+  }
+  function pbTallerHTML() {
+    let h = pbFormHTML();
+    h += '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:8px 0 10px">Casos en taller</div>';
+    h += pbFilterBarHTML(false);
+    const casos = _pb.casos.filter(c => c.estado === 'taller');
+    h += pbCasosListHTML(casos, 'taller');
+    return h;
+  }
+  function pbFormHTML() {
+    const c = _pb.cfg, f = _pb.form;
+    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
+    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
+    const sel = (field, options, ph) => {
+      let o = '<option value="">' + (ph || 'Elegí…') + '</option>';
+      for (let i = 0; i < options.length; i++) { const v = options[i]; o += '<option value="' + escapeHtml(v) + '"' + (String(f[field]) === String(v) ? ' selected' : '') + '>' + escapeHtml(v) + '</option>'; }
+      return '<select onchange="pbSetForm(\'' + field + '\',this.value)" style="' + inp + '">' + o + '</select>';
+    };
+    const tc = f.tipo_cristal, posAuto = _pbAutoPos(tc), ladoAuto = _pbAutoLado(tc);
+    let posCell;
+    if (posAuto) posCell = '<div style="' + inp + ';background:#f3f6fb;color:#2d3277;font-weight:600">' + posAuto + '</div>';
+    else if (tc === 'PUERTA') posCell = '<select onchange="pbSetForm(\'posicion\',this.value)" style="' + inp + '"><option value="">Elegí…</option><option value="DELANTERO"' + (f.posicion === 'DELANTERO' ? ' selected' : '') + '>DELANTERO</option><option value="TRASERO"' + (f.posicion === 'TRASERO' ? ' selected' : '') + '>TRASERO</option></select>';
+    else posCell = '<div style="' + inp + ';color:#bbb">Elegí el cristal</div>';
+    let ladoCell;
+    if (ladoAuto) ladoCell = '<div style="' + inp + ';background:#f3f6fb;color:#2d3277;font-weight:600">S/L</div>';
+    else if (tc) ladoCell = '<select onchange="pbSetForm(\'lado\',this.value)" style="' + inp + '"><option value="">Elegí…</option><option value="IZQUIERDO"' + (f.lado === 'IZQUIERDO' ? ' selected' : '') + '>IZQUIERDO</option><option value="DERECHO"' + (f.lado === 'DERECHO' ? ' selected' : '') + '>DERECHO</option></select>';
+    else ladoCell = '<div style="' + inp + ';color:#bbb">Elegí el cristal</div>';
+    const marcas = c.marcas || [];
+    const modelos = (c.vehiculos && c.vehiculos[f.marca]) ? c.vehiculos[f.marca] : [];
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px 18px;margin-bottom:18px">';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:14px">' + (f.editN != null ? ('Editar caso N° ' + f.editN) : 'Nuevo caso de taller') + '</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" onchange="pbSetForm(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Sistema</label>' + sel('sistema', c.sistemas || [], (c.sistemas && c.sistemas.length) ? 'Elegí…' : '(cargá en Config)') + '</div>';
+    h += '<div><label style="' + lbl + '">Compañía</label>' + sel('compania', c.companias || [], (c.companias && c.companias.length) ? 'Elegí…' : '(cargá en Config)') + '</div>';
+    h += '<div><label style="' + lbl + '">N° de siniestro</label><input type="text" value="' + escapeHtml(f.siniestro) + '" oninput="pbSetTxt(\'siniestro\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Patente</label><input type="text" value="' + escapeHtml(f.patente) + '" oninput="pbSetTxt(\'patente\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Tipo de cristal</label>' + sel('tipo_cristal', c.tipos_cristal || []) + '</div>';
+    h += '<div><label style="' + lbl + '">Posición</label>' + posCell + '</div>';
+    h += '<div><label style="' + lbl + '">Lado</label>' + ladoCell + '</div>';
+    h += '<div><label style="' + lbl + '">Tipo de vehículo</label>' + sel('tipo_vehiculo', c.tipos_vehiculo || []) + '</div>';
+    h += '<div><label style="' + lbl + '">Marca</label>' + sel('marca', marcas) + '</div>';
+    h += '<div><label style="' + lbl + '">Modelo</label><select onchange="pbSetForm(\'modelo\',this.value)" style="' + inp + '" ' + (f.marca ? '' : 'disabled') + '><option value="">' + (f.marca ? 'Elegí…' : 'Elegí la marca') + '</option>' + modelos.map(m => '<option value="' + escapeHtml(m) + '"' + (f.modelo === m ? ' selected' : '') + '>' + escapeHtml(m) + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Año</label><input type="text" value="' + escapeHtml(f.anio) + '" oninput="pbSetTxt(\'anio\',this.value)" style="' + inp + '"></div>';
+    h += '</div>';
+    h += '<div style="margin-top:14px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px">';
+    h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Los archivos se suben a tu Google Drive automáticamente (carpeta "Parabrisas Adjuntos") y queda el link guardado.</div>';
+    // ORDEN
+    h += '<div style="margin-bottom:12px"><label style="' + lbl + '">Adjuntar ORDEN (foto o documento)</label>';
+    if (f._ordenBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+    else if (f.orden_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.orden_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📄 Ver orden subida</a><span onclick="pbRemoveOrden()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
+    else h += '<input type="file" accept="image/*,application/pdf" onchange="pbUploadOrden(this)" style="font-size:13px">';
+    h += '</div>';
+    // FOTOS
+    h += '<div><label style="' + lbl + '">Adjuntar FOTOS (podés subir varias)</label>';
+    if (Array.isArray(f.fotos_links) && f.fotos_links.length) { for (let i = 0; i < f.fotos_links.length; i++) h += '<div style="display:flex;gap:10px;align-items:center;margin-bottom:5px"><a href="' + escapeHtml(f.fotos_links[i]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:13px">🖼️ Foto ' + (i + 1) + '</a><span onclick="pbRemoveFotoUrl(' + i + ')" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:12px">✕ quitar</span></div>'; }
+    if (f._fotosBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+    h += '<input type="file" accept="image/*" multiple onchange="pbUploadFotos(this)" style="font-size:13px;margin-top:4px">';
+    h += '</div>';
+    h += '</div>';
+    const words = f.notas.trim() ? f.notas.trim().split(/\s+/).length : 0;
+    h += '<div style="margin-top:12px"><label style="' + lbl + '">Notas <span id="pb_words" style="color:' + (words > 150 ? '#d43d3d' : '#aaa') + ';font-weight:400">(' + words + '/150 palabras)</span></label><textarea rows="3" oninput="pbSetNotas(this.value)" placeholder="Observaciones..." style="' + inp + ';resize:vertical">' + escapeHtml(f.notas) + '</textarea></div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px"><button id="pb_save_btn" onclick="pbSaveCaso()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar caso') + '</button>';
+    h += '<button onclick="pbNewCaso()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">' + (f.editN != null ? 'Cancelar' : '🧹 Limpiar') + '</button></div>';
+    h += '<div id="pb_msg" style="margin-top:10px"></div>';
+    h += '</div>';
+    return h;
+  }
+  function pbSetForm(field, val) {
+    const f = _pb.form; f[field] = val;
+    if (field === 'tipo_cristal') { const a = _pbAutoPos(val), l = _pbAutoLado(val); f.posicion = a || ''; f.lado = l || ''; }
+    if (field === 'marca') f.modelo = '';
+    pbRenderBody();
+  }
+  function pbSetTxt(field, val) { _pb.form[field] = val; }
+  function pbSetNotas(val) { _pb.form.notas = val; const el = document.getElementById('pb_words'); if (el) { const w = val.trim() ? val.trim().split(/\s+/).length : 0; el.textContent = '(' + w + '/150 palabras)'; el.style.color = w > 150 ? '#d43d3d' : '#aaa'; } }
+  function pbRemoveOrden() { _pb.form.orden_link = ''; pbRenderBody(); }
+  function pbRemoveFotoUrl(i) { _pb.form.fotos_links.splice(i, 1); pbRenderBody(); }
+  function pbFileToB64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve(i >= 0 ? s.slice(i + 1) : s); }; r.onerror = reject; r.readAsDataURL(file); }); }
+  async function pbUploadFile(file) {
+    const b64 = await pbFileToB64(file);
+    const r = await fetch('/api/parabrisas/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ nombre: file.name, mime: file.type || 'application/octet-stream', datab64: b64 }) });
+    const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error al subir'); return d.url;
+  }
+  async function pbUploadOrden(input) {
+    if (!input.files || !input.files[0]) return;
+    const f = input.files[0];
+    _pb.form._ordenBusy = true; pbRenderBody();
+    try { _pb.form.orden_link = await pbUploadFile(f); } catch (e) { alert('No se pudo subir la orden: ' + e.message); }
+    _pb.form._ordenBusy = false; pbRenderBody();
+  }
+  async function pbUploadFotos(input) {
+    if (!input.files || !input.files.length) return;
+    const files = Array.prototype.slice.call(input.files);
+    _pb.form._fotosBusy = true; pbRenderBody();
+    for (const f of files) { try { const url = await pbUploadFile(f); if (!Array.isArray(_pb.form.fotos_links)) _pb.form.fotos_links = []; _pb.form.fotos_links.push(url); } catch (e) { alert('No se pudo subir ' + f.name + ': ' + e.message); } }
+    _pb.form._fotosBusy = false; pbRenderBody();
+  }
+  function pbNewCaso() { _pb.form = _pbNewForm(); pbRenderBody(); }
+  function pbMsg(t, err) { const el = document.getElementById('pb_msg'); if (!el) return; el.innerHTML = '<div style="padding:9px 13px;border-radius:8px;font-size:14px;font-weight:600;' + (err ? 'background:#fdecec;color:#c0392b;border:1px solid #f5c6c6' : 'background:#eafaf1;color:#1a7d47;border:1px solid #b6e6ca') + '">' + escapeHtml(t) + '</div>'; if (!err) setTimeout(() => { const e2 = document.getElementById('pb_msg'); if (e2) e2.innerHTML = ''; }, 5000); }
+  async function pbSaveCaso() {
+    const f = _pb.form;
+    if (!f.tipo_cristal) { pbMsg('Elegí el tipo de cristal.', true); return; }
+    const words = f.notas.trim() ? f.notas.trim().split(/\s+/).length : 0;
+    if (words > 150) { pbMsg('Las notas superan las 150 palabras.', true); return; }
+    const payload = { n: f.editN, fecha: f.fecha, sistema: f.sistema, compania: f.compania, siniestro: f.siniestro, patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo, marca: f.marca, modelo: f.modelo, anio: f.anio, orden_link: f.orden_link, fotos_links: f.fotos_links.filter(x => x && x.trim()), notas: f.notas };
+    const btn = document.getElementById('pb_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+    try {
+      const r = await fetch('/api/parabrisas/caso', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const d = await r.json();
+      if (!r.ok) { pbMsg(d.error || 'Error', true); if (btn) { btn.disabled = false; btn.textContent = 'Guardar caso'; } return; }
+      const savedN = d.n; _pb.form = _pbNewForm();
+      await pbLoadCasos(true); pbRenderBody();
+      pbMsg('✔ Caso N° ' + savedN + ' guardado.', false);
+    } catch (e) { pbMsg('Error de red al guardar.', true); if (btn) { btn.disabled = false; btn.textContent = 'Guardar caso'; } }
+  }
+  function pbEditCaso(n) {
+    const c = _pb.casos.find(x => Number(x.n) === Number(n)); if (!c) return;
+    _pb.form = { editN: c.n, fecha: c.fecha, sistema: c.sistema || '', compania: c.compania || '', siniestro: c.siniestro || '', patente: c.patente || '', tipo_cristal: c.tipo_cristal || '', posicion: c.posicion || '', lado: c.lado || '', tipo_vehiculo: c.tipo_vehiculo || '', marca: c.marca || '', modelo: c.modelo || '', anio: c.anio || '', orden_link: c.orden_link || '', fotos_links: (c.fotos_links && c.fotos_links.length ? c.fotos_links.slice() : []), notas: c.notas || '', _ordenBusy: false, _fotosBusy: false };
+    _pb.tab = 'taller'; pbRender(); window.scrollTo(0, 0);
+  }
+  async function pbDeleteCaso(n) {
+    if (!confirm('¿Borrar el caso N° ' + n + '? No se puede deshacer.')) return;
+    try { const r = await fetch('/api/parabrisas/caso-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n }) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
+  }
+  function pbFilterBarHTML(withSometido) {
+    const f = _pb.filters, c = _pb.cfg;
+    const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
+    const optList = (field, arr) => { let o = '<option value="">Todas</option>'; for (let i = 0; i < arr.length; i++) { o += '<option value="' + escapeHtml(arr[i]) + '"' + (f[field] === arr[i] ? ' selected' : '') + '>' + escapeHtml(arr[i]) + '</option>'; } return o; };
+    let h = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:10px 12px">';
+    h += '<label style="font-size:11px;color:#666">Desde<br><input type="date" value="' + escapeHtml(f.from) + '" onchange="pbSetFilter(\'from\',this.value)" style="' + inp + '"></label>';
+    h += '<label style="font-size:11px;color:#666">Hasta<br><input type="date" value="' + escapeHtml(f.to) + '" onchange="pbSetFilter(\'to\',this.value)" style="' + inp + '"></label>';
+    h += '<label style="font-size:11px;color:#666">Compañía<br><select onchange="pbSetFilter(\'compania\',this.value)" style="' + inp + '">' + optList('compania', c.companias || []) + '</select></label>';
+    h += '<label style="font-size:11px;color:#666">Sistema<br><select onchange="pbSetFilter(\'sistema\',this.value)" style="' + inp + '">' + optList('sistema', c.sistemas || []) + '</select></label>';
+    h += '<label style="font-size:11px;color:#666">Patente<br><input type="text" value="' + escapeHtml(f.patente) + '" oninput="pbSetFilter(\'patente\',this.value)" placeholder="buscar" style="' + inp + '"></label>';
+    if (withSometido) h += '<label style="font-size:11px;color:#666">Sometido<br><select onchange="pbSetFilter(\'sometido\',this.value)" style="' + inp + '"><option value="">Todos</option><option value="SI"' + (f.sometido === 'SI' ? ' selected' : '') + '>Sí</option><option value="NO"' + (f.sometido === 'NO' ? ' selected' : '') + '>No</option></select></label>';
+    h += '<button onclick="pbApplyFilters()" style="background:#3483fa;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">Buscar</button>';
+    h += '<button onclick="pbClearFilters()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:7px;padding:8px 12px;font-size:13px;cursor:pointer">Limpiar</button>';
+    h += '</div>';
+    return h;
+  }
+  function pbSetFilter(field, val) { _pb.filters[field] = val; }
+  function pbApplyFilters() { pbLoadCasos(false); }
+  function pbClearFilters() { _pb.filters = { from: '', to: '', compania: '', sistema: '', patente: '', sometido: '' }; pbLoadCasos(false); }
+  function pbSummaryBarHTML() {
+    const r = _pb.resumen || {};
+    const card = (lbl, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:11px 16px;min-width:150px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + lbl + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
+    return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">' + card('Me tienen que pagar', _pbMoney(r.por_cobrar), '#b0562a') + card('Cobrado', _pbMoney(r.cobrado), '#1a9c53') + '</div>';
+  }
+  function pbListHTML(mode) {
+    let h = pbSummaryBarHTML();
+    h += pbFilterBarHTML(mode === 'factura' || mode === 'pago' || mode === 'resumen');
+    let casos = _pb.casos.slice();
+    if (mode === 'factura') casos = casos.filter(c => c.estado === 'taller' || c.estado === 'facturado');
+    else if (mode === 'pago') casos = casos.filter(c => c.estado === 'facturado');
+    h += pbCasosListHTML(casos, mode);
+    return h;
+  }
+  function pbCasosListHTML(casos, mode) {
+    if (!casos.length) return '<div class="empty" style="padding:22px;color:#94a3b8">No hay casos para mostrar.</div>';
+    let h = ''; for (let i = 0; i < casos.length; i++) h += pbCasoCardHTML(casos[i], mode); return h;
+  }
+  function pbCasoCardHTML(c, mode) {
+    const adm = _pb.isAdmin;
+    const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+    h += '<div style="flex:1;min-width:240px"><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + c.n + ' · ' + escapeHtml(c.patente || 'sin patente') + ' <span style="font-weight:600;color:#888;font-size:13px">' + escapeHtml(((c.marca || '') + ' ' + (c.modelo || '')).trim()) + (c.anio ? (' ' + escapeHtml(c.anio)) : '') + '</span></div>';
+    h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(c.fecha || '') + (c.compania ? (' · ' + escapeHtml(c.compania)) : '') + (c.sistema ? (' · ' + escapeHtml(c.sistema)) : '') + (c.siniestro ? (' · Sin. ' + escapeHtml(c.siniestro)) : '') + '</div>';
+    h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip(_pbEstadoLabel(c.estado), '#f0f4f8', '#556') + (c.tipo_cristal ? chip(escapeHtml(c.tipo_cristal), '#eef4ff', '#3466c9') : '') + (c.posicion ? chip(escapeHtml(c.posicion), '#f6f0ff', '#7a4fc9') : '') + (c.lado ? chip(escapeHtml(c.lado), '#eefaf3', '#1a7d47') : '') + (c.tipo_vehiculo ? chip(escapeHtml(c.tipo_vehiculo), '#fff6e6', '#8a6d1a') : '') + '</div>';
+    let links = '';
+    if (c.orden_link) links += '<a href="' + escapeHtml(c.orden_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px;margin-right:10px">📄 Orden</a>';
+    if (c.fotos_links && c.fotos_links.length) { for (let j = 0; j < c.fotos_links.length; j++) links += '<a href="' + escapeHtml(c.fotos_links[j]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px;margin-right:8px">🖼️ Foto ' + (j + 1) + '</a>'; }
+    if (links) h += '<div style="margin-top:7px">' + links + '</div>';
+    if (c.notas) h += '<div style="font-size:12px;color:#777;margin-top:6px;font-style:italic">📝 ' + escapeHtml(c.notas) + '</div>';
+    h += '</div>';
+    h += '<div style="text-align:right">';
+    if (adm && (c.estado === 'facturado' || c.estado === 'finalizado')) {
+      h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Factura</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + _pbMoney(c.monto) + '</div>';
+      if (c.nro_factura) h += '<div style="font-size:12px;color:#666">' + escapeHtml(c.nro_factura) + (c.fecha_facturacion ? (' · ' + escapeHtml(c.fecha_facturacion)) : '') + '</div>';
+      h += '<div style="margin-top:4px;display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">' + (c.sometido ? chip('Sometido: ' + c.sometido, '#eef4ff', '#3466c9') : '') + (c.pagado ? chip('PAGADO', '#eafaf1', '#1a7d47') : chip('impago', '#fdf0f0', '#d43d3d')) + '</div>';
+    }
+    h += '</div></div>';
+    if (mode === 'taller') {
+      h += '<div style="margin-top:10px;display:flex;gap:8px"><button onclick="pbEditCaso(' + c.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button>' + (adm ? ('<button onclick="pbDeleteCaso(' + c.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button>') : '') + '</div>';
+    } else if (mode === 'factura') { h += pbFacturaFormHTML(c); }
+    else if (mode === 'pago') { h += pbPagoFormHTML(c); }
+    h += '</div>';
+    return h;
+  }
+  function pbFacturaFormHTML(c) {
+    const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
+    let h = '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e6ebf5;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">';
+    h += '<label style="font-size:11px;color:#666">Fecha facturación<br><input type="date" id="pbf_fecha_' + c.n + '" value="' + escapeHtml(c.fecha_facturacion || '') + '" style="' + inp + '"></label>';
+    h += '<label style="font-size:11px;color:#666">N° factura<br><input type="text" id="pbf_nro_' + c.n + '" value="' + escapeHtml(c.nro_factura || '') + '" style="' + inp + '"></label>';
+    h += '<label style="font-size:11px;color:#666">Monto<br><input type="number" step="0.01" id="pbf_monto_' + c.n + '" value="' + (c.monto || '') + '" style="' + inp + ';width:120px"></label>';
+    h += '<label style="font-size:11px;color:#666">Sometido<br><select id="pbf_som_' + c.n + '" style="' + inp + '"><option value="">—</option><option value="SI"' + (c.sometido === 'SI' ? ' selected' : '') + '>Sí</option><option value="NO"' + (c.sometido === 'NO' ? ' selected' : '') + '>No</option></select></label>';
+    h += '<button onclick="pbSaveFactura(' + c.n + ')" style="background:#3483fa;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">' + (c.estado === 'taller' ? 'Guardar factura' : 'Actualizar') + '</button>';
+    h += '</div>';
+    return h;
+  }
+  async function pbSaveFactura(n) {
+    const g = id => (document.getElementById(id) || {}).value || '';
+    const payload = { n, fecha_facturacion: g('pbf_fecha_' + n), nro_factura: g('pbf_nro_' + n), monto: g('pbf_monto_' + n) || 0, sometido: g('pbf_som_' + n) };
+    try { const r = await fetch('/api/parabrisas/caso-factura', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
+  }
+  function pbPagoFormHTML(c) {
+    let h = '<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e6ebf5;display:flex;gap:16px;flex-wrap:wrap;align-items:center">';
+    h += '<label style="display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#1a7d47;cursor:pointer"><input type="checkbox" ' + (c.pagado ? 'checked' : '') + ' onchange="pbTogglePagado(' + c.n + ',this.checked)" style="width:17px;height:17px;cursor:pointer">Pagado</label>';
+    h += '<button onclick="pbFinalizar(' + c.n + ')" style="background:#1a9c53;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer">✓ Finalizar</button>';
+    h += '</div>';
+    return h;
+  }
+  async function pbTogglePagado(n, val) { try { await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n, pagado: val }) }); await pbLoadCasos(true); pbRenderBody(); } catch (e) {} }
+  async function pbFinalizar(n) {
+    if (!confirm('¿Finalizar el caso N° ' + n + '? Pasa a Finalizados.')) return;
+    try { const r = await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n, finalizar: true }) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
+  }
+  function pbConfigHTML() {
+    const c = _pb.cfg;
+    const ta = 'width:100%;box-sizing:border-box;border:1px solid #d7dee8;border-radius:8px;padding:10px;font-size:14px;min-height:110px;resize:vertical';
+    const box = (title, desc, id, val) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:16px;margin-bottom:14px"><div style="font-weight:800;color:#2d3277;margin-bottom:4px">' + title + '</div>' + (desc ? '<div style="font-size:12px;color:#888;margin-bottom:8px">' + desc + '</div>' : '') + '<textarea id="' + id + '" style="' + ta + '">' + escapeHtml(val) + '</textarea></div>';
+    let h = '<div style="max-width:760px">';
+    h += '<div style="font-size:13px;color:#888;margin-bottom:12px">Uno por línea. Estos valores aparecen en los desplegables de la Carga de Taller.</div>';
+    h += box('Compañías', 'Aseguradoras / compañías.', 'pbcfg_companias', (c.companias || []).join('\n'));
+    h += box('Sistemas', 'Sistemas de gestión.', 'pbcfg_sistemas', (c.sistemas || []).join('\n'));
+    h += '<button onclick="pbSaveConfigBasico()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:700;cursor:pointer">Guardar compañías y sistemas</button>';
+    h += '<div style="margin-top:24px;font-weight:800;color:#2d3277;font-size:15px;margin-bottom:8px">Avanzado</div>';
+    h += box('Tipos de cristal', '', 'pbcfg_tcristal', (c.tipos_cristal || []).join('\n'));
+    h += box('Tipos de vehículo', '', 'pbcfg_tveh', (c.tipos_vehiculo || []).join('\n'));
+    h += '<button onclick="pbSaveConfigTipos()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer">Guardar tipos</button>';
+    const marcas = c.marcas || [];
+    h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:16px;margin-top:22px">';
+    h += '<div style="font-weight:800;color:#2d3277;margin-bottom:8px">Marcas y modelos</div>';
+    h += '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px"><label style="font-size:12px;color:#666">Marca<br><select id="pbcfg_marca" onchange="pbConfigMarcaChange()" style="padding:8px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:14px"><option value="">Elegí…</option>' + marcas.map(m => '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>').join('') + '</select></label>';
+    h += '<label style="font-size:12px;color:#666">Nueva marca<br><input type="text" id="pbcfg_newmarca" placeholder="agregar marca" style="padding:8px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:14px"></label><button onclick="pbConfigAddMarca()" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer">+ Agregar marca</button></div>';
+    h += '<div style="font-size:12px;color:#888;margin-bottom:6px">Modelos de la marca elegida (uno por línea):</div>';
+    h += '<textarea id="pbcfg_modelos" style="' + ta + '"></textarea>';
+    h += '<div style="margin-top:8px"><button onclick="pbSaveConfigModelos()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer">Guardar modelos de esta marca</button></div>';
+    h += '</div>';
+    h += '<div id="pb_cfg_msg" style="margin-top:12px"></div>';
+    h += '</div>';
+    return h;
+  }
+  function pbLines(id) { const el = document.getElementById(id); if (!el) return []; return el.value.split('\n').map(s => s.trim()).filter(Boolean); }
+  function pbCfgMsg(t, err) { const el = document.getElementById('pb_cfg_msg'); if (!el) return; el.innerHTML = '<div style="padding:9px 13px;border-radius:8px;font-size:14px;font-weight:600;' + (err ? 'background:#fdecec;color:#c0392b;border:1px solid #f5c6c6' : 'background:#eafaf1;color:#1a7d47;border:1px solid #b6e6ca') + '">' + escapeHtml(t) + '</div>'; if (!err) setTimeout(() => { const e2 = document.getElementById('pb_cfg_msg'); if (e2) e2.innerHTML = ''; }, 4000); }
+  async function pbPostConfig(patch, msg) {
+    try {
+      const r = await fetch('/api/parabrisas/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(patch) });
+      const d = await r.json(); if (!r.ok) { pbCfgMsg(d.error || 'Error', true); return false; }
+      const rc = await fetch('/api/parabrisas/config', { credentials: 'same-origin' }); _pb.cfg = await rc.json();
+      pbCfgMsg(msg || 'Guardado ✔', false); return true;
+    } catch (e) { pbCfgMsg('Error de red', true); return false; }
+  }
+  async function pbSaveConfigBasico() { await pbPostConfig({ companias: pbLines('pbcfg_companias'), sistemas: pbLines('pbcfg_sistemas') }, 'Compañías y sistemas guardados ✔'); }
+  async function pbSaveConfigTipos() { await pbPostConfig({ tipos_cristal: pbLines('pbcfg_tcristal'), tipos_vehiculo: pbLines('pbcfg_tveh') }, 'Tipos guardados ✔'); pbRenderBody(); }
+  function pbConfigMarcaChange() { const m = (document.getElementById('pbcfg_marca') || {}).value || ''; const ta = document.getElementById('pbcfg_modelos'); if (ta) { const mods = (_pb.cfg.vehiculos && _pb.cfg.vehiculos[m]) ? _pb.cfg.vehiculos[m] : []; ta.value = mods.join('\n'); } }
+  function pbConfigAddMarca() { const nm = ((document.getElementById('pbcfg_newmarca') || {}).value || '').trim().toUpperCase(); if (!nm) return; _pb.cfg.vehiculos = _pb.cfg.vehiculos || {}; if (!_pb.cfg.vehiculos[nm]) _pb.cfg.vehiculos[nm] = []; _pb.cfg.marcas = _pb.cfg.marcas || []; if (_pb.cfg.marcas.indexOf(nm) < 0) { _pb.cfg.marcas.push(nm); _pb.cfg.marcas.sort(); } pbRenderBody(); }
+  async function pbSaveConfigModelos() { const m = (document.getElementById('pbcfg_marca') || {}).value || ''; if (!m) { pbCfgMsg('Elegí una marca primero.', true); return; } const mods = pbLines('pbcfg_modelos'); const veh = Object.assign({}, _pb.cfg.vehiculos); veh[m] = mods; await pbPostConfig({ vehiculos: veh }, 'Modelos de ' + m + ' guardados ✔'); }
+
+
   // ==================== LOCAL (ventas en el local / mostrador) ====================
   // Carga de ventas locales. Costos/descripciones salen de la MISMA data diaria que Stock/Gestión.
   // Admin ve costos/ganancia/total; usuario habilitado (can_local) carga y ve precio venta, código y
@@ -1123,7 +1450,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const r = await fetch('/api/local/lookup?codigo=' + encodeURIComponent(cod), { credentials: 'same-origin' });
       const d = await r.json();
       if (!r.ok) return;
-      it.descripcion = d.descripcion || it.descripcion || '';
+      // La descripción se carga a MANO (no se autocompleta). No tocamos it.descripcion.
       it._opciones = Array.isArray(d.opciones) ? d.opciones : [];
       it._looked = true; it._notfound = !d.encontrado;
       const named = it._opciones.filter(o => (o.proveedor || '').toString().trim());
@@ -4230,6 +4557,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Ventas local: puede cargar ventas del local y ver el resumen (precio de venta, código y cantidad). No ve costos ni ganancia.">
                   <input type="checkbox" ${u.can_local || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_local', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Ventas local
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Parabrisas: puede usar la Carga de Taller (los usuarios habilitados solo ven ese paso).">
+                  <input type="checkbox" ${u.can_parabrisas || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_parabrisas', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Parabrisas
                 </label>
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Compras: puede CARGAR facturas, notas de crédito y pagos (sin ver saldos)">
                   <input type="checkbox" ${u.can_compras_cargar || u.can_compras_saldos || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_compras_cargar', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
