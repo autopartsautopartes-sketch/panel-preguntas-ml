@@ -7640,7 +7640,20 @@ function loadPbConfig() {
   return seed;
 }
 function savePbConfig(c) { try { _fsCosts.writeFileSync(pbConfigPath(), JSON.stringify(c)); } catch (e) {} }
-function loadPbCasos() { try { const d = JSON.parse(_fsCosts.readFileSync(pbCasosPath(), 'utf8')); if (d && Array.isArray(d.casos)) return d; } catch (e) {} return { casos: [], seq: 0 }; }
+function loadPbCasos() {
+  let d = null; try { d = JSON.parse(_fsCosts.readFileSync(pbCasosPath(), 'utf8')); } catch (e) {}
+  if (!d || !Array.isArray(d.casos)) return { casos: [], seq: 0 };
+  // Normaliza estados viejos al esquema nuevo: factura → por_pagar → finalizado.
+  let changed = false;
+  for (const c of d.casos) {
+    const esPart = String(c.modalidad || 'SEGURO').toUpperCase() === 'PARTICULAR';
+    if (c.estado === 'taller') { c.estado = esPart ? 'por_pagar' : 'factura'; changed = true; }
+    else if (c.estado === 'facturado') { c.estado = (String(c.sometido).toUpperCase() === 'SI' && String(c.nro_factura || '').trim()) ? 'por_pagar' : 'factura'; changed = true; }
+    else if (c.estado === 'pendiente') { c.estado = 'por_pagar'; changed = true; }
+  }
+  if (changed) { try { savePbCasos(d); } catch (e) {} }
+  return d;
+}
 function savePbCasos(d) { try { _fsCosts.writeFileSync(pbCasosPath(), JSON.stringify(d)); } catch (e) {} }
 // Regla de POSICION/LADO segun tipo de cristal (el resto lo elige el usuario).
 function pbPosicionAuto(tc) { tc = String(tc || '').toUpperCase(); if (tc === 'ALETA/VENTILETE' || tc === 'PARABRISAS') return 'DELANTERO'; if (tc === 'CUSTODIO/COLETA' || tc === 'LUNETA') return 'TRASERO'; return ''; }
@@ -7676,9 +7689,19 @@ function pbSanitizeBase(b, cfg) {
     fotos_links: (Array.isArray(b.fotos_links) ? b.fotos_links : []).map(x => String(x || '').trim().slice(0, 500)).filter(Boolean).slice(0, 30),
     notas: String(b.notas || '').trim().slice(0, 1200),
   };
-  // Los costos: en PARTICULAR se cargan en el mismo formulario de Taller; en SEGURO se cargan en Factura
-  // (por eso NO los toco acá para seguro: así no se borran al editar los datos base).
-  if (esPart) { base.costo_parabrisas = Math.max(0, Number(b.costo_parabrisas) || 0); base.costo_colocacion = Math.max(0, Number(b.costo_colocacion) || 0); }
+  // Los COSTOS no se cargan en Taller (ni seguro ni particular): SEGURO los carga en Factura y PARTICULAR
+  // en Por Pagar. Así "Taller" nunca ve costos ni ganancia. Por eso no los tocamos acá.
+  // PARTICULAR: teléfono + forma de pago (con datos de cheque si corresponde) se cargan en Taller.
+  if (esPart) {
+    base.telefono = String(b.telefono || '').trim().slice(0, 60);
+    const FP = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
+    base.forma_pago = FP.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
+    base.cheque = (base.forma_pago === 'CHEQUE' && b.cheque && typeof b.cheque === 'object') ? {
+      banco: String(b.cheque.banco || '').slice(0, 80), numero: String(b.cheque.numero || '').slice(0, 60),
+      titular: String(b.cheque.titular || '').slice(0, 120), cuit: String(b.cheque.cuit || '').slice(0, 20),
+      fecha_cobro: String(b.cheque.fecha_cobro || '').slice(0, 20), importe: Number(b.cheque.importe) || 0,
+    } : null;
+  } else { base.telefono = ''; base.forma_pago = ''; base.cheque = null; }
   return base;
 }
 // Ganancia de un caso = precio de venta (monto de factura en SEGURO, precio_venta en PARTICULAR) − costos.
@@ -7771,11 +7794,12 @@ route('GET', '/api/parabrisas/casos', async (req, res) => {
   if (modalidad) casos = casos.filter(c => String(c.modalidad || 'SEGURO').toUpperCase() === modalidad);
   casos.sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
   let por_cobrar = 0, cobrado = 0, ganancia_total = 0;
+  const saleAmount = c => (String(c.modalidad || 'SEGURO').toUpperCase() === 'PARTICULAR') ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0);
   for (const c of store.casos) {
-    const m = Number(c.monto) || 0;
-    if (c.estado === 'facturado' && !c.pagado) por_cobrar += m;
-    if (c.pagado) cobrado += m;
-    if (c.estado === 'facturado' || c.estado === 'finalizado' || String(c.modalidad).toUpperCase() === 'PARTICULAR') ganancia_total += pbGanancia(c);
+    const venta = saleAmount(c);
+    if (c.estado === 'por_pagar' && !c.pagado) por_cobrar += venta;   // en "Por Pagar" y todavía sin pagar
+    if (c.pagado) cobrado += venta;
+    if (c.estado === 'factura' || c.estado === 'por_pagar' || c.estado === 'finalizado') ganancia_total += pbGanancia(c);
   }
   sendJSON(res, 200, { ok: true, is_admin: a.isAdm, casos: a.isAdm ? casos : casos.map(pbStripForUser), resumen: { por_cobrar, cobrado, ganancia_total, count: casos.length } });
 });
@@ -7795,12 +7819,13 @@ route('POST', '/api/parabrisas/caso', async (req, res) => {
     Object.assign(caso, base, { updated_at: new Date().toISOString() });
   } else {
     store.seq = (Number(store.seq) || 0) + 1;
-    // PARTICULAR: no pasa por factura/pago, va DIRECTO a finalizados (y queda pagado).
+    // Al guardar en Taller el caso pasa a la siguiente sección (una sección a la vez):
+    // SEGURO → "Carga de Factura" ('factura'); PARTICULAR → "Por Pagar" ('por_pagar', ahí van los costos).
     const esPart = base.modalidad === 'PARTICULAR';
     caso = Object.assign(
       { n: store.seq, fecha_facturacion: '', nro_factura: '', monto: 0, sometido: '', costo_parabrisas: 0, costo_colocacion: 0, created_at: new Date().toISOString(), created_by: (a.s.username || '') },
       base,
-      { estado: esPart ? 'finalizado' : 'taller', pagado: esPart, finalizado: esPart }
+      { estado: esPart ? 'por_pagar' : 'factura', pagado: false, finalizado: false }
     );
     store.casos.push(caso);
   }
@@ -7821,7 +7846,10 @@ route('POST', '/api/parabrisas/caso-factura', async (req, res) => {
   caso.sometido = ['SI', 'NO'].includes(String(b.sometido || '').toUpperCase()) ? String(b.sometido).toUpperCase() : (caso.sometido || '');
   if (b.costo_parabrisas !== undefined) caso.costo_parabrisas = Math.max(0, Number(b.costo_parabrisas) || 0);   // Costo Cristal
   if (b.costo_colocacion !== undefined) caso.costo_colocacion = Math.max(0, Number(b.costo_colocacion) || 0);   // Costo Instalación
-  if (caso.estado === 'taller') caso.estado = 'facturado';
+  // Con N° de factura cargado Y Sometido = SÍ, se va de Carga de Factura y pasa a "Por Pagar".
+  if (caso.estado === 'factura' || caso.estado === 'por_pagar') {
+    caso.estado = (String(caso.nro_factura || '').trim() && caso.sometido === 'SI') ? 'por_pagar' : 'factura';
+  }
   caso.updated_at = new Date().toISOString();
   savePbCasos(store);
   sendJSON(res, 200, { ok: true });
@@ -7834,6 +7862,10 @@ route('POST', '/api/parabrisas/caso-finalizar', async (req, res) => {
   const store = loadPbCasos();
   const caso = store.casos.find(c => Number(c.n) === Number(b.n));
   if (!caso) return sendJSON(res, 404, { error: 'Caso no encontrado' });
+  // PARTICULAR: acá (Pago/Finalización) se cargan precio de venta + costos (y se ve la ganancia).
+  if (b.precio_venta !== undefined) caso.precio_venta = Math.max(0, Number(b.precio_venta) || 0);
+  if (b.costo_parabrisas !== undefined) caso.costo_parabrisas = Math.max(0, Number(b.costo_parabrisas) || 0);
+  if (b.costo_colocacion !== undefined) caso.costo_colocacion = Math.max(0, Number(b.costo_colocacion) || 0);
   if (b.pagado !== undefined) caso.pagado = !!b.pagado;
   if (b.finalizar) { caso.finalizado = true; caso.estado = 'finalizado'; }
   caso.updated_at = new Date().toISOString();
