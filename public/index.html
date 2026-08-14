@@ -1070,11 +1070,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function pbFileToB64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve(i >= 0 ? s.slice(i + 1) : s); }; r.onerror = reject; r.readAsDataURL(file); }); }
   async function pbUploadFile(file) {
     const b64 = await pbFileToB64(file);
-    const r = await fetch('/api/parabrisas/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ nombre: file.name, mime: file.type || 'application/octet-stream', datab64: b64 }) });
+    const r = await fetch('/api/parabrisas/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ nombre: file.name, mime: file.type || 'application/octet-stream', datab64: b64, patente: _pb.form.patente || '', fecha: _pb.form.fecha || '' }) });
     const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Error al subir'); return d.url;
   }
   async function pbUploadOrden(input) {
     if (!input.files || !input.files[0]) return;
+    if (!(_pb.form.patente || '').trim()) { alert('Cargá primero la PATENTE (la carpeta de Drive se crea con la patente).'); input.value = ''; return; }
     const f = input.files[0];
     _pb.form._ordenBusy = true; pbRenderBody();
     try { _pb.form.orden_link = await pbUploadFile(f); } catch (e) { alert('No se pudo subir la orden: ' + e.message); }
@@ -1082,6 +1083,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   async function pbUploadFotos(input) {
     if (!input.files || !input.files.length) return;
+    if (!(_pb.form.patente || '').trim()) { alert('Cargá primero la PATENTE (la carpeta de Drive se crea con la patente).'); input.value = ''; return; }
     const files = Array.prototype.slice.call(input.files);
     _pb.form._fotosBusy = true; pbRenderBody();
     for (const f of files) { try { const url = await pbUploadFile(f); if (!Array.isArray(_pb.form.fotos_links)) _pb.form.fotos_links = []; _pb.form.fotos_links.push(url); } catch (e) { alert('No se pudo subir ' + f.name + ': ' + e.message); } }
@@ -1174,10 +1176,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</div></div>';
     if (mode === 'taller') {
       h += '<div style="margin-top:10px;display:flex;gap:8px"><button onclick="pbEditCaso(' + c.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button>' + (adm ? ('<button onclick="pbDeleteCaso(' + c.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button>') : '') + '</div>';
-    } else if (mode === 'factura') { h += pbFacturaFormHTML(c); }
-    else if (mode === 'pago') { h += pbPagoFormHTML(c); }
+    } else if (mode === 'factura') { h += pbFacturaFormHTML(c); h += pbAdminActionsHTML(c); }
+    else if (mode === 'pago') { h += pbPagoFormHTML(c); h += pbAdminActionsHTML(c); }
+    else if (mode === 'resumen') { h += pbAdminActionsHTML(c); }
     h += '</div>';
     return h;
+  }
+  // Fila de acciones del admin (editar datos base / borrar) para Factura, Pago y Resumen.
+  function pbAdminActionsHTML(c) {
+    if (!_pb.isAdmin) return '';
+    return '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="pbEditCaso(' + c.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">✏️ Editar datos</button><button onclick="pbDeleteCaso(' + c.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button></div>';
   }
   function pbFacturaFormHTML(c) {
     const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
