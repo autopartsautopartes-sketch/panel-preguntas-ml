@@ -2714,7 +2714,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   ${currentUser?.saludo ? `<label class="sig-line"><input type="checkbox" id="saludo-${q.id}" checked> <span>${escapeHtml(currentUser.saludo)}</span></label>` : ''}
-                  <div class="env-qhelp" data-envready="0" data-qid="${escapeHtml(String(q.id))}" data-qtext="${escapeHtml(q.text || '')}"></div>
+                  <div class="env-qhelp" data-envready="0" data-qid="${escapeHtml(String(q.id))}" data-account="${escapeHtml(String(q.account_id||''))}" data-qtext="${escapeHtml(q.text || '')}"></div>
                   <div class="reply-row">
                     <textarea id="reply-${q.id}" placeholder="Ingresá tu respuesta"></textarea>
                     <button onclick="answerQuestion('${q.id}', ${q.account_id})" title="Enviar respuesta">✓</button>
@@ -2831,7 +2831,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (saludo) finalText = saludo + '\n\n' + finalText;
     if (firma) finalText = finalText + '\n\n' + firma;
     const box = textarea.closest('.reply-box');
-    const btn = box ? box.querySelector('button') : textarea.nextElementSibling;
+    const btn = (box ? (box.querySelector('.reply-row button') || box.querySelector('button')) : null) || textarea.nextElementSibling;
     btn.disabled = true;
     btn.textContent = 'Enviando...';
     try {
@@ -3525,7 +3525,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   ${currentUser?.saludo ? `<label class="sig-line"><input type="checkbox" id="saludo-${q.id}" checked> <span>${escapeHtml(currentUser.saludo)}</span></label>` : ''}
-                  <div class="env-qhelp" data-envready="0" data-qid="${escapeHtml(String(q.id))}" data-qtext="${escapeHtml(q.text || '')}"></div>
+                  <div class="env-qhelp" data-envready="0" data-qid="${escapeHtml(String(q.id))}" data-account="${escapeHtml(String(q.account_id||''))}" data-qtext="${escapeHtml(q.text || '')}"></div>
                   <div class="reply-row">
                     <textarea id="reply-${q.id}" placeholder="Ingresá tu respuesta"></textarea>
                     <button onclick="answerQuestion('${q.id}', ${q.account_id})" title="Enviar respuesta">✓</button>
@@ -7554,7 +7554,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     try {
       const r = await fetch('/api/envios/config');
       const d = await r.json();
-      if (d && d.ok) { _enviosCfg = { transportes: d.transportes||[], destinos: d.destinos||[], can_edit: !!d.can_edit, updated: d.updated||'' }; _enviosCfgAt = now; }
+      if (d && d.ok) { _enviosCfg = { transportes: d.transportes||[], destinos: d.destinos||[], can_edit: !!d.can_edit, updated: d.updated||'', auto_reply: !!d.auto_reply }; _enviosCfgAt = now; _envAutoReplyOn = !!d.auto_reply; }
     } catch(e){}
     return _enviosCfg || { transportes: [], destinos: [], can_edit: false, updated: '' };
   }
@@ -7705,7 +7705,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <div style="max-width:980px">
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">
           <h2 style="color:#2d3277;margin:0">🚚 Envíos</h2>
-          <button onclick="envSave()" id="env-save-btn" style="margin-left:auto;background:var(--ac-brand,#2d3277);color:#fff;border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer">💾 Guardar cambios</button>
+          <button onclick="envImportSeed()" id="env-seed-btn" title="Trae la lista actualizada de transportes, destinos y cobertura (Vía Cargo, MD Cargas, Andesmar, Flecha). Conserva los costos y demoras que ya cargaste." style="margin-left:auto;background:#eef1ff;color:#2d3277;border:1px solid #cdd6f5;border-radius:9px;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer">🔄 Actualizar desde pre-carga</button>
+          <button onclick="envSave()" id="env-save-btn" style="background:var(--ac-brand,#2d3277);color:#fff;border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer">💾 Guardar cambios</button>
         </div>
         <p style="color:#777;font-size:13px;margin:0 0 18px">Cargá los <b>destinos</b> por provincia y ciudad, los <b>transportes</b> con su costo estimado, y marcá a dónde llega cada uno (provincia entera o ciudades sueltas). Se usa para <b>pre-cargar respuestas en Preguntas</b> y para <b>elegir el transporte en Preparación</b>.</p>
 
@@ -7773,38 +7774,220 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }catch(e){ showToast('Error de red al guardar', 'error'); if(btn){ btn.disabled=false; btn.textContent='💾 Guardar cambios'; } }
   }
 
-  // ---------- PREGUNTAS: pre-cargar respuesta por destino ----------
+  // ---------- IMPORTAR / ACTUALIZAR PRE-CARGA (conserva costos por transporte) ----------
+  async function envImportSeed(){
+    if(!confirm('Va a REEMPLAZAR la lista de destinos y la cobertura de cada transporte por la pre-carga actualizada (Vía Cargo, MD Cargas, Andesmar, Flecha).\n\nSe MANTIENEN los costos y demoras que ya cargaste en cada transporte.\n\nDespués revisás y apretás "Guardar cambios". ¿Continuar?')) return;
+    const btn=document.getElementById('env-seed-btn'); if(btn){btn.disabled=true;btn.textContent='Cargando...';}
+    try{
+      const r=await fetch('/api/envios/seed'); const d=await r.json().catch(()=>({}));
+      if(!(r.ok && d.ok)){ showToast(d.error||'No pude cargar la pre-carga','error'); if(btn){btn.disabled=false;btn.textContent='🔄 Actualizar desde pre-carga';} return; }
+      // Destinos: reemplazar por los de la pre-carga
+      _envEdit.destinos = (d.destinos||[]).map(x=>({ id:x.id, nombre:x.nombre, provincia:x.provincia, cpsStr:(x.cps||[]).join(', ') }));
+      // Transportes: preservar costo/demora/contacto/notas por nombre; actualizar cobertura
+      const prev={}; for(const t of _envEdit.transportes) prev[(t.nombre||'').trim().toLowerCase()]=t;
+      const seedNames=new Set(); const merged=[];
+      for(const st of (d.transportes||[])){
+        const nk=(st.nombre||'').trim().toLowerCase(); seedNames.add(nk); const p=prev[nk];
+        const cov={}; for(const id of (st.destinos||[])) cov[id]=true;
+        const prov={}; for(const pr of (st.provincias||[])) prov[pr]=true;
+        merged.push({
+          id: p? p.id : st.id, nombre: st.nombre,
+          costoStr: p? p.costoStr : (st.costo_estimado?String(st.costo_estimado):''),
+          demora: p? p.demora : (st.demora||''),
+          contacto: p? p.contacto : (st.contacto||''),
+          notas: p? p.notas : (st.notas||''),
+          cov, prov
+        });
+      }
+      // conservar transportes propios que el usuario agregó y no están en la pre-carga
+      for(const t of _envEdit.transportes){ if(!seedNames.has((t.nombre||'').trim().toLowerCase())) merged.push(t); }
+      _envEdit.transportes = merged;
+      envRender();
+      showToast('Pre-carga actualizada ('+(d.destinos||[]).length+' destinos). Revisá y apretá Guardar.', 'success');
+    }catch(e){ showToast('Error de red al traer la pre-carga','error'); const b=document.getElementById('env-seed-btn'); if(b){b.disabled=false;b.textContent='🔄 Actualizar desde pre-carga';} }
+  }
+
+  // ---------- PREGUNTAS: provincia→localidad + auto-lectura + auto-envío ----------
+  let _envAutoReplyOn = false;        // estado global (lo maneja el admin)
+  const _envAuto = {};                // qid -> {iv, deadline, sent, account}
+  const _envHandled = {};             // qid -> true (cancelado / editado / enviado): no reprogramar
+  const ENV_AUTO_SECS = 30;
+
+  function _envCanonProvJs(raw){
+    const n=_envNorm(raw); if(!n) return '';
+    if(/capital federal|ciudad autonoma|ciudad de buenos aires|^caba$/.test(n)) return 'CABA';
+    for(const p of PROV_AR){ if(_envNorm(p)===n) return p; }
+    const map={'cordoba':'Córdoba','entre rios':'Entre Ríos','rio negro':'Río Negro','neuquen':'Neuquén','tucuman':'Tucumán'};
+    return map[n]||'';
+  }
+  function _envSimpJs(s){ return _envNorm(s).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); }
+  // Lee "…envíos a <Localidad>, <Provincia> (CP 1234)…"
+  function _envParseQuestion(text){
+    const t=String(text||'');
+    let m=t.match(/env[ií]os?\s+a\s+([^,(]+?)\s*,\s*([^,(]+?)\s*\(\s*c\.?\s*p\.?\s*:?\s*(\d{3,5})\s*\)/i);
+    if(m) return { loc:m[1].trim(), prov:m[2].trim(), cp:m[3].trim() };
+    m=t.match(/env[ií]os?\s+a\s+([^,(]+?)\s*,\s*([^,(?.\n]+)/i);
+    if(m) return { loc:m[1].trim(), prov:m[2].trim(), cp:'' };
+    return null;
+  }
+  function _envMatchDestinoQ(cfg, parsed){
+    if(!parsed) return '';
+    const prov=_envCanonProvJs(parsed.prov);
+    const locS=_envSimpJs(parsed.loc);
+    const inProv=(cfg.destinos||[]).filter(d=> !prov || d.provincia===prov);
+    let best='', bestScore=-1;
+    for(const d of inProv){
+      const ds=_envSimpJs(d.nombre); if(!ds) continue;
+      let score=-1;
+      if(ds===locS) score=100000;                                              // exacto: gana siempre
+      else if((' '+locS+' ').indexOf(' '+ds+' ')>=0) score=50000+ds.length;     // nombre del destino contenido en la pregunta ("Fernandez Oro" ⊂ "General Fernandez Oro")
+      else if((' '+ds+' ').indexOf(' '+locS+' ')>=0) score=10000-(ds.length-locS.length); // la pregunta contenida en el destino: el más parecido
+      if(score>bestScore){ bestScore=score; best=d.id; }
+    }
+    if(best) return best;
+    if(parsed.cp){ for(const d of inProv){ if((d.cps||[]).indexOf(parsed.cp)>=0) return d.id; } }
+    return '';
+  }
+  function _envProvsInCfg(cfg){ const set={}; (cfg.destinos||[]).forEach(d=>{ if(d.provincia) set[d.provincia]=1; }); return _envSortStr(Object.keys(set)); }
+  function _envProvOptionsQ(cfg, sel){ return '<option value="">— Provincia —</option>'+_envProvsInCfg(cfg).map(p=>`<option value="${escapeHtml(p)}" ${p===sel?'selected':''}>${escapeHtml(p)}</option>`).join(''); }
+  function _envLocOptions(cfg, prov, selId){
+    const list=_envSortByName((cfg.destinos||[]).filter(d=>d.provincia===prov));
+    return '<option value="">— Localidad —</option>'+list.map(d=>`<option value="${escapeHtml(d.id)}" ${d.id===selId?'selected':''}>${escapeHtml(d.nombre)}</option>`).join('');
+  }
+  // Texto de corrido: hacemos el envío + demora + costo aprox + CTA (sin saludo/firma; van por sus tildes).
+  function _envComposeAuto(cfg, destId){
+    const d=(cfg.destinos||[]).find(x=>x.id===destId); if(!d) return '';
+    const lugar=d.nombre+(d.provincia?(', '+d.provincia):'');
+    const list=_envTransportsFor(cfg,destId);
+    if(!list.length) return `Sí, realizamos envíos a ${lugar}. Escribinos y coordinamos el costo y la demora. Podés comprar directamente en la publicación y lo despachamos a la brevedad.`;
+    const nombres=list.map(t=>t.nombre);
+    const nomTxt = nombres.length===1?nombres[0]:(nombres.slice(0,-1).join(', ')+' o '+nombres[nombres.length-1]);
+    let s=`Sí, realizamos envíos a ${lugar} por ${nomTxt}.`;
+    const conCosto=list.filter(t=>t.costo_estimado>0).sort((a,b)=>a.costo_estimado-b.costo_estimado);
+    const ref=conCosto[0]||list[0]; const extra=[];
+    if(ref.demora) extra.push(`la demora estimada es de ${ref.demora}`);
+    if(ref.costo_estimado>0) extra.push(`el costo aproximado es de ${_envMoney(ref.costo_estimado)}`);
+    if(extra.length) s+=` ${extra.join(' y ')}.`;
+    s+=` Podés realizar la compra directamente en la publicación y lo despachamos enseguida. ¡Quedamos a la espera!`;
+    return s;
+  }
+
   async function envDecorateQuestions(){
-    const wraps = document.querySelectorAll('.env-qhelp[data-envready="0"]');
+    const wraps=document.querySelectorAll('.env-qhelp[data-envready="0"]');
+    const cfg=await enviosFetchConfig();
+    envRenderAutoBar();   // barra ON/OFF (solo admin)
     if(!wraps.length) return;
-    const cfg = await enviosFetchConfig();
     if(!(cfg.destinos||[]).length){ wraps.forEach(w=>{ w.dataset.envready='1'; w.style.display='none'; }); return; }
     wraps.forEach(w=>{
-      w.dataset.envready = '1';
-      const qid = w.dataset.qid || '';
-      const qtext = w.dataset.qtext || '';
-      const guess = _envGuessDestino(cfg, qtext);
-      const opts = '<option value="">— Elegí destino para pre-cargar el envío —</option>' + _envCityOptionsHTML(cfg, guess);
+      w.dataset.envready='1';
+      const qid=w.dataset.qid||'', qtext=w.dataset.qtext||'', account=w.dataset.account||'';
+      const parsed=_envParseQuestion(qtext);
+      const destId=_envMatchDestinoQ(cfg, parsed);
+      const selProv = destId ? ((cfg.destinos.find(d=>d.id===destId)||{}).provincia||'') : '';
       w.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#f6f8ff;border:1px solid #e3e8ff;border-radius:9px;padding:8px 10px">
-          <span style="font-size:12px">📦</span>
-          <select id="envq-${qid}" style="flex:1;min-width:160px;padding:7px 9px;border:1px solid #cdd6f5;border-radius:7px;font-size:12.5px;background:#fff;cursor:pointer">${opts}</select>
-          <button type="button" onclick="envPrecargar('${qid}')" style="background:#2d3277;color:#fff;border:none;border-radius:7px;padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">Pre-cargar respuesta</button>
+        <div style="background:#f6f8ff;border:1px solid #e3e8ff;border-radius:9px;padding:8px 10px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:12px">📦</span>
+            <select id="envprov-${qid}" onchange="envProvChange('${qid}')" style="flex:1;min-width:120px;padding:7px 9px;border:1px solid #cdd6f5;border-radius:7px;font-size:12.5px;background:#fff;cursor:pointer">${_envProvOptionsQ(cfg, selProv)}</select>
+            <select id="envloc-${qid}" onchange="envLocChange('${qid}')" style="flex:1.3;min-width:140px;padding:7px 9px;border:1px solid #cdd6f5;border-radius:7px;font-size:12.5px;background:#fff;cursor:pointer">${_envLocOptions(cfg, selProv, destId)}</select>
+            <button type="button" onclick="envPrecargar('${qid}')" style="background:#2d3277;color:#fff;border:none;border-radius:7px;padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">Pre-cargar respuesta</button>
+          </div>
+          <div id="envinfo-${qid}" style="font-size:11.5px;color:#555;margin-top:6px;min-height:14px"></div>
+          <div id="envauto-${qid}" style="font-size:12px;margin-top:4px"></div>
         </div>`;
+      envLocChange(qid, true);
+      if(destId){
+        if(_envAuto[qid]){ envAutoRenderCountdown(qid); }
+        else if(_envAutoReplyOn && !_envHandled[qid]){ envPrecargar(qid, true); envStartAuto(qid, account); }
+        else if(!_envHandled[qid]){ /* auto OFF: dejamos elegido pero sin precargar ni enviar */ }
+      }
     });
   }
-  async function envPrecargar(qid){
-    const sel = document.getElementById('envq-'+qid);
-    const ta = document.getElementById('reply-'+qid);
+  function envRenderAutoBar(){
+    const content=document.getElementById('content'); if(!content) return;
+    if(!(currentUser && currentUser.role==='admin')){ const ex=document.getElementById('env-autoreply-bar'); if(ex) ex.remove(); return; }
+    let bar=document.getElementById('env-autoreply-bar');
+    if(!bar){ bar=document.createElement('div'); bar.id='env-autoreply-bar'; content.insertBefore(bar, content.firstChild); }
+    const on=_envAutoReplyOn;
+    bar.innerHTML=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:${on?'#eafaf1':'#f5f6f8'};border:1px solid ${on?'#a7e0c1':'#e2e5ea'};border-radius:10px;padding:8px 12px;margin-bottom:12px">
+      <span style="font-size:13px;font-weight:700;color:#2d3277">🤖 Respuesta automática de envíos</span>
+      <span style="font-size:12px;color:#666">Cuando la pregunta trae localidad y provincia, arma la respuesta y la envía sola a los ${ENV_AUTO_SECS}s (con opción de cancelar).</span>
+      <button onclick="envToggleAutoReply()" style="margin-left:auto;background:${on?'#1e8e4e':'#c0392b'};color:#fff;border:none;border-radius:20px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer">${on?'ENCENDIDA — apagar':'APAGADA — encender'}</button>
+    </div>`;
+  }
+  async function envToggleAutoReply(){
+    const next=!_envAutoReplyOn;
+    try{
+      const r=await fetch('/api/envios/auto-reply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:next})});
+      const d=await r.json().catch(()=>({}));
+      if(r.ok && d.ok){
+        _envAutoReplyOn=!!d.auto_reply; if(_enviosCfg) _enviosCfg.auto_reply=_envAutoReplyOn;
+        envRenderAutoBar();
+        if(!_envAutoReplyOn){ Object.keys(_envAuto).forEach(qid=>envCancelAuto(qid, true)); showToast('Respuesta automática apagada','success'); }
+        else { showToast('Respuesta automática encendida','success'); document.querySelectorAll('.env-qhelp').forEach(w=>w.dataset.envready='0'); envDecorateQuestions(); }
+      } else { showToast(d.error||'No pude cambiar el estado','error'); }
+    }catch(e){ showToast('Error de red','error'); }
+  }
+  function envProvChange(qid){
+    const cfg=_enviosCfg||{destinos:[]};
+    const prov=(document.getElementById('envprov-'+qid)||{}).value||'';
+    const locSel=document.getElementById('envloc-'+qid); if(locSel) locSel.innerHTML=_envLocOptions(cfg, prov, '');
+    envLocChange(qid, true);
+    envCancelAuto(qid, true); _envHandled[qid]=true;   // cambió a mano
+  }
+  function envLocChange(qid, keepAuto){
+    const cfg=_enviosCfg||{destinos:[],transportes:[]};
+    const id=(document.getElementById('envloc-'+qid)||{}).value||'';
+    const info=document.getElementById('envinfo-'+qid);
+    if(info){
+      if(!id) info.textContent='';
+      else{
+        const list=_envTransportsFor(cfg,id);
+        if(!list.length) info.innerHTML='<span style="color:#c0392b">Ningún transporte cargado llega a este destino.</span>';
+        else info.innerHTML='🚚 Llegan: '+list.map(t=>escapeHtml(t.nombre)+((t.costo_estimado||t.demora)?(' ('+[t.costo_estimado?_envMoney(t.costo_estimado):'',t.demora?escapeHtml(t.demora):''].filter(Boolean).join(' · ')+')'):'')).join(' · ');
+      }
+    }
+    if(!keepAuto){ envCancelAuto(qid, true); _envHandled[qid]=true; }
+  }
+  async function envPrecargar(qid, auto){
+    const sel=document.getElementById('envloc-'+qid);
+    const ta=document.getElementById('reply-'+qid);
     if(!sel || !ta) return;
-    const destinoId = sel.value;
-    if(!destinoId){ showToast('Elegí un destino primero', 'error'); return; }
-    const cfg = await enviosFetchConfig();
-    const texto = _envComposeRespuesta(cfg, destinoId);
-    if(!texto){ showToast('No pude armar la respuesta', 'error'); return; }
-    ta.value = texto;
-    ta.focus();
-    try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch(e){}
+    const destinoId=sel.value;
+    if(!destinoId){ if(!auto) showToast('Elegí una localidad primero','error'); return; }
+    const cfg=await enviosFetchConfig();
+    const texto = auto ? _envComposeAuto(cfg,destinoId) : _envComposeRespuesta(cfg,destinoId);
+    if(!texto){ if(!auto) showToast('No pude armar la respuesta','error'); return; }
+    ta.value=texto;
+    if(!auto){ ta.focus(); try{ ta.setSelectionRange(ta.value.length,ta.value.length); }catch(e){} }
+  }
+  // ----- auto-envío a los 30s (con contador y cancelar) -----
+  function envStartAuto(qid, account){
+    if(_envAuto[qid]) return;
+    _envAuto[qid]={ deadline: Date.now()+ENV_AUTO_SECS*1000, sent:false, account:account, iv:setInterval(()=>envAutoTick(qid),1000) };
+    envAutoRenderCountdown(qid);
+  }
+  function envAutoRenderCountdown(qid){
+    const a=_envAuto[qid]; const el=document.getElementById('envauto-'+qid); if(!a||!el) return;
+    const rem=Math.max(0, Math.ceil((a.deadline-Date.now())/1000));
+    el.innerHTML=`<span style="background:#fff4e5;border:1px solid #ffd9a8;color:#b25e00;border-radius:6px;padding:3px 8px;font-weight:600">⏱️ Se enviará solo en ${rem}s</span> <button type="button" onclick="envCancelAuto('${qid}')" style="background:#fff;border:1px solid #e0a0a0;color:#c0392b;border-radius:6px;padding:3px 8px;font-size:11.5px;cursor:pointer;font-weight:600">Cancelar envío</button>`;
+  }
+  function envAutoTick(qid){
+    const a=_envAuto[qid]; if(!a) return;
+    if(a.sent){ clearInterval(a.iv); return; }
+    const ta=document.getElementById('reply-'+qid);
+    if(!ta){ if(Date.now()-a.deadline>90000){ clearInterval(a.iv); delete _envAuto[qid]; } return; }
+    if(Date.now()>=a.deadline){
+      a.sent=true; clearInterval(a.iv); _envHandled[qid]=true;
+      const el=document.getElementById('envauto-'+qid); if(el) el.innerHTML='<span style="color:#1e8e4e;font-weight:600">Enviando…</span>';
+      try{ answerQuestion(qid, a.account); }catch(e){}
+      setTimeout(()=>{ delete _envAuto[qid]; }, 3000);
+    } else { envAutoRenderCountdown(qid); }
+  }
+  function envCancelAuto(qid, silent){
+    const a=_envAuto[qid]; _envHandled[qid]=true;
+    if(a){ a.sent=true; if(a.iv) clearInterval(a.iv); delete _envAuto[qid]; }
+    const el=document.getElementById('envauto-'+qid); if(el) el.innerHTML = silent? '' : '<span style="color:#888">Envío automático cancelado.</span>';
   }
 
   // ---------- PREPARACIÓN (ACORDAR): elegir transporte + ver si llega ----------
