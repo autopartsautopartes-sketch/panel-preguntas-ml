@@ -7783,15 +7783,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if(!(r.ok && d.ok)){ showToast(d.error||'No pude cargar la pre-carga','error'); if(btn){btn.disabled=false;btn.textContent='🔄 Actualizar desde pre-carga';} return; }
       // Destinos: reemplazar por los de la pre-carga
       _envEdit.destinos = (d.destinos||[]).map(x=>({ id:x.id, nombre:x.nombre, provincia:x.provincia, cpsStr:(x.cps||[]).join(', ') }));
-      // Transportes: preservar costo/demora/contacto/notas por nombre; actualizar cobertura
-      const prev={}; for(const t of _envEdit.transportes) prev[(t.nombre||'').trim().toLowerCase()]=t;
-      const seedNames=new Set(); const merged=[];
+      // Transportes: preservar costo/demora/contacto/notas; actualizar cobertura.
+      // Match por NOMBRE BASE (ignora "(...)"), así "Flecha Carga" ≈ "Flecha Carga (Buspack)" y no se duplica.
+      const _base = n => String(n||'').toLowerCase().replace(/\s*\([^)]*\)\s*/g,' ').replace(/\s+/g,' ').trim();
+      const prev={}; for(const t of _envEdit.transportes) prev[_base(t.nombre)]=t;
+      const seedBases=new Set(); const merged=[];
       for(const st of (d.transportes||[])){
-        const nk=(st.nombre||'').trim().toLowerCase(); seedNames.add(nk); const p=prev[nk];
+        const nk=_base(st.nombre); seedBases.add(nk); const p=prev[nk];
         const cov={}; for(const id of (st.destinos||[])) cov[id]=true;
         const prov={}; for(const pr of (st.provincias||[])) prov[pr]=true;
         merged.push({
-          id: p? p.id : st.id, nombre: st.nombre,
+          id: p? p.id : st.id, nombre: st.nombre,                    // usa el nombre nuevo de la pre-carga
           costoStr: p? p.costoStr : (st.costo_estimado?String(st.costo_estimado):''),
           demora: p? p.demora : (st.demora||''),
           contacto: p? p.contacto : (st.contacto||''),
@@ -7800,7 +7802,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         });
       }
       // conservar transportes propios que el usuario agregó y no están en la pre-carga
-      for(const t of _envEdit.transportes){ if(!seedNames.has((t.nombre||'').trim().toLowerCase())) merged.push(t); }
+      for(const t of _envEdit.transportes){ if(!seedBases.has(_base(t.nombre))) merged.push(t); }
       _envEdit.transportes = merged;
       envRender();
       showToast('Pre-carga actualizada ('+(d.destinos||[]).length+' destinos). Revisá y apretá Guardar.', 'success');
@@ -8090,7 +8092,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const tw=document.getElementById('acordar-trans-wrap'); const tsel=document.getElementById('acordar-transporte'); const badge=document.getElementById('acordar-cov-badge');
     if(tw) tw.style.display='block';
     if(!list.length){ if(tsel) tsel.innerHTML='<option value="">(sin transporte disponible)</option>'; if(badge) badge.innerHTML='<span style="color:#c0392b;font-weight:600">Ningún transporte cargado llega a '+escapeHtml(d.nombre)+'.</span>'; return; }
-    if(tsel){ tsel.innerHTML = (list.length>1?'<option value="">— Elegí transporte —</option>':'') + list.map(t=>`<option value="${escapeHtml(t.id)}">${escapeHtml(t.nombre)}${t.costo_estimado?(' — '+_envMoney(t.costo_estimado)):''}</option>`).join(''); }
+    if(tsel){ tsel.innerHTML = (list.length>1?'<option value="">— Elegí transporte —</option>':'') + list.map(t=>`<option value="${escapeHtml(t.id)}">${escapeHtml(t.nombre)}</option>`).join(''); }
     if(list.length===1){ if(tsel) tsel.value=list[0].id; envAcordarTransChange(); }
     else { if(badge) badge.innerHTML='<span style="color:#b25e00;font-weight:600">Hay '+list.length+' transportes que llegan: elegí uno.</span>'; }
   }
@@ -8104,10 +8106,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       let obs=obsEl.value.replace(/^\s*Transporte:.*(\r?\n|$)/i,'').replace(/^\s+/,'');
       obsEl.value = t ? ('Transporte: '+t.nombre + (obs?('\n'+obs):'')) : obs;
     }
-    if(badge){
-      if(t){ const ex=[]; if(t.costo_estimado) ex.push('costo estimado '+_envMoney(t.costo_estimado)); if(t.demora) ex.push('demora '+t.demora); badge.innerHTML='<span style="color:#1e8e4e;font-weight:600">✓ '+escapeHtml(t.nombre)+(ex.length?(' — '+ex.join(' · ')):'')+'</span> <span style="color:#777">(cargado en Observaciones)</span>'; }
-      else badge.innerHTML='';
-    }
+    if(badge) badge.innerHTML = t ? '<span style="color:#1e8e4e;font-weight:600">✓ '+escapeHtml(t.nombre)+' cargado en Observaciones</span>' : '';
   }
   function closeAcordarModal() {
     const modal = document.getElementById('acordar-modal');
