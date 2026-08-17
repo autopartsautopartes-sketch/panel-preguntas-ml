@@ -2651,6 +2651,42 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return h;
   }
 
+  // Pestaña "Automático": muestra las preguntas respondidas por el auto-envío (solo admin).
+  async function loadAutoQuestions(){
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando automáticas…</p></div>';
+    let data = {};
+    try { const r = await fetch('/api/envios/auto-stats'); data = await r.json(); } catch(e) {}
+    if (navToken !== myNav) return;
+    const entries = (data && data.entries) || [];
+    let html = `
+      <h2 style="margin-bottom:14px;color:#2d3277">Preguntas</h2>
+      <div class="filters">
+        <button onclick="questionStatus='UNANSWERED';loadQuestions()">Sin responder</button>
+        <button onclick="questionStatus='ANSWERED';loadQuestions()">Respondidas</button>
+        <button class="active" onclick="questionStatus='AUTO';loadQuestions()">🤖 Automático</button>
+      </div>
+      <div style="margin:6px 0 14px;font-size:13px;color:#2d3277;font-weight:600">🤖 Respondidas automáticamente hoy: ${data.today_count||0} · Total registradas: ${data.total||0}</div>`;
+    if (!entries.length) {
+      html += '<div class="empty"><p>Todavía no hay respuestas automáticas.</p></div>';
+    } else {
+      for (const e of entries) {
+        html += `
+          <div class="card">
+            <div class="card-header">
+              <span class="card-account">${escapeHtml(e.account_name||'')}</span>
+              <span class="card-date">${formatDate(e.ts)}</span>
+            </div>
+            <div class="card-question">${escapeHtml(e.question||'')}</div>
+            <div class="card-answer" style="white-space:pre-line"><strong>Respuesta automática:</strong> ${escapeHtml(e.answer||'')}</div>
+          </div>`;
+      }
+    }
+    if (navToken !== myNav) return;
+    content.innerHTML = html;
+  }
+
   async function loadQuestions(accountId = '') {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_questions) {
@@ -2658,6 +2694,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       return;
     }
     const content = document.getElementById('content');
+    if (questionStatus === 'AUTO') return loadAutoQuestions();
     try {
       const res = await fetch(`/api/questions?status=${questionStatus}&account_id=${accountId}`);
       let questions = await res.json();
@@ -2680,6 +2717,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <div class="filters">
           <button class="${questionStatus === 'UNANSWERED' ? 'active' : ''}" onclick="questionStatus='UNANSWERED';loadQuestions()">Sin responder</button>
           <button class="${questionStatus === 'ANSWERED' ? 'active' : ''}" onclick="questionStatus='ANSWERED';loadQuestions()">Respondidas</button>
+          ${currentUser?.role==='admin' ? `<button class="${questionStatus === 'AUTO' ? 'active' : ''}" onclick="questionStatus='AUTO';loadQuestions()">🤖 Automático</button>` : ''}
           <select onchange="loadQuestions(this.value)">${accountFilterHTML()}</select>
         </div>
       `;
@@ -7903,33 +7941,86 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let _envSearchTerm='';       // buscador de transportes (persistente entre refrescos)
   let _envSearchResultHtml='';
 
+  let _envServerPending={};    // qid -> deadline absoluto (ms) que trae el server
+  let _envCancelledLocal={};   // qid -> true (cancelado por el admin en esta pantalla)
+  let _envClientDue={};        // qid -> deadline 30s (panel abierto)
+  let _envSentTrigger={};      // qid -> true (ya pedí "responder ya")
+  let _envQMeta={};            // qid -> {account, qtext}
+  const ENV_OPEN_SECS=30;
+  let _envPendTimer=null;
+  async function envFetchServerPending(){
+    try{
+      const r=await fetch('/api/envios/auto-pending'); const d=await r.json();
+      if(d && d.ok){
+        _envAutoReplyOn=!!d.on; if(_enviosCfg) _enviosCfg.auto_reply=_envAutoReplyOn;
+        const now=Date.now(); const nn={};
+        for(const qid of Object.keys(d.pending||{})){ nn[qid]=now + (d.pending[qid]||0); }
+        _envServerPending=nn;
+      }
+    }catch(e){}
+  }
   async function envDecorateQuestions(){
     const wraps=document.querySelectorAll('.env-qhelp[data-envready="0"]');
     const cfg=await enviosFetchConfig();
-    envRenderTopBar(cfg);   // buscador (todos) + ON/OFF (solo admin), siempre visible
+    await envFetchServerPending();
+    envRenderTopBar(cfg);   // buscador (todos) + ON/OFF + contador (admin)
+    envUpdateAutoCounter();
     if(!wraps.length) return;
     wraps.forEach(w=>{
       w.dataset.envready='1';
       const qid=w.dataset.qid||'', qtext=w.dataset.qtext||'', account=w.dataset.account||'';
       const parsed=_envParseQuestion(qtext);
       const destId=parsed?_envMatchDestinoQ(cfg, parsed):'';
-      // Texto de la respuesta: CABA/GBA (tarifa plana) → match puntual → resto del país.
       let autoText='';
       if(parsed && _envIsCabaGba(parsed)) autoText=ENV_MSG_CABAGBA;
       else if(destId) autoText=_envComposeForDest(cfg, destId);
       else if(parsed) autoText=ENV_MSG_PAIS;
       if(!autoText){ w.innerHTML=''; return; }   // no es una pregunta de envío
+      _envQMeta[qid]={ account, qtext };   // para "responder ya"
       // PRE-CARGA SIEMPRE (una vez), respetando ediciones posteriores del operador.
       if(!_envPrefilled[qid]){ _envFillReply(qid, autoText); _envPrefilled[qid]=true; }
-      const on=_envAutoReplyOn;
       w.innerHTML=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#f6f8ff;border:1px solid #e3e8ff;border-radius:9px;padding:6px 10px">
           <span style="font-size:11.5px;color:#2d3277;font-weight:600">📦 Respuesta de envío pre-cargada</span>
-          <span id="envauto-${qid}" style="font-size:12px;margin-left:auto"></span>
+          <span class="env-autostatus" data-qid="${qid}" style="font-size:12px;margin-left:auto"></span>
         </div>`;
-      // Auto-ENVÍO solo si está encendido.
-      if(_envAuto[qid]) envAutoRenderCountdown(qid);
-      else if(on && !_envHandled[qid]) envStartAuto(qid, account);
     });
+    envRenderAutoStatuses();
+    envEnsurePendTimer();
+  }
+  function envRenderAutoStatuses(){
+    const isAdmin=currentUser && currentUser.role==='admin';
+    const now=Date.now();
+    document.querySelectorAll('.env-autostatus').forEach(el=>{
+      const qid=el.dataset.qid||'';
+      if(_envCancelledLocal[qid]){ el.innerHTML='<span style="color:#888">Auto-respuesta cancelada</span>'; return; }
+      if(!_envAutoReplyOn){ el.innerHTML = isAdmin?'<span style="color:#999;font-size:11px">Auto-envío apagado</span>':''; return; }
+      if(!isAdmin){ el.innerHTML=''; return; }   // el operador no controla el auto (lo maneja el server)
+      // Panel abierto: contador de 30s. Al llegar a 0 le pido al server que responda ya.
+      if(!_envClientDue[qid]) _envClientDue[qid]=now+ENV_OPEN_SECS*1000;
+      const rem=Math.max(0, Math.ceil((_envClientDue[qid]-now)/1000));
+      const cancelBtn = ` <button type="button" onclick="envCancelServerAuto('${qid}')" style="background:#fff;border:1px solid #e0a0a0;color:#c0392b;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;font-weight:600">Cancelar</button>`;
+      if(rem>0){ el.innerHTML=`<span style="background:#fff4e5;border:1px solid #ffd9a8;color:#b25e00;border-radius:6px;padding:2px 8px;font-weight:600">⏱️ Se responderá solo en ${rem}s</span>`+cancelBtn; }
+      else {
+        el.innerHTML=`<span style="color:#1e8e4e;font-weight:600">Respondiendo…</span>`;
+        if(!_envSentTrigger[qid]){ _envSentTrigger[qid]=true; envTriggerSendNow(qid); }
+      }
+    });
+  }
+  async function envTriggerSendNow(qid){
+    const m=_envQMeta[qid]||{};
+    try{
+      await fetch('/api/envios/auto-send-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid, account_id:m.account, qtext:m.qtext})});
+      setTimeout(()=>{ envUpdateAutoCounter(); }, 1500);
+    }catch(e){}
+  }
+  function envEnsurePendTimer(){ if(_envPendTimer) return; _envPendTimer=setInterval(()=>{ if(!document.querySelector('.env-autostatus')){ clearInterval(_envPendTimer); _envPendTimer=null; return; } envRenderAutoStatuses(); }, 1000); }
+  async function envCancelServerAuto(qid){
+    try{
+      const r=await fetch('/api/envios/auto-cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid})});
+      const d=await r.json().catch(()=>({}));
+      if(r.ok && d.ok){ _envCancelledLocal[qid]=true; _envSentTrigger[qid]=true; delete _envClientDue[qid]; delete _envServerPending[qid]; envRenderAutoStatuses(); showToast('Auto-respuesta cancelada','success'); }
+      else showToast(d.error||'No pude cancelar','error');
+    }catch(e){ showToast('Error de red','error'); }
   }
   function _envFillReply(qid, text){ const ta=document.getElementById('reply-'+qid); if(ta && text) ta.value=text; }
 
@@ -7945,7 +8036,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <div style="background:#fff;border:1px solid #e3e8ff;border-radius:12px;padding:10px 12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span style="font-size:13px;font-weight:700;color:#2d3277">🚚 Buscar transporte por localidad</span>
-          ${isAdmin?`<button onclick="envToggleAutoReply()" title="Enciende/apaga el ENVÍO automático de la respuesta a los ${ENV_AUTO_SECS}s. La pre-carga del texto funciona siempre." style="margin-left:auto;background:${on?'#1e8e4e':'#c0392b'};color:#fff;border:none;border-radius:20px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer">🤖 Auto-envío: ${on?'ENCENDIDO':'APAGADO'}</button>`:''}
+          ${isAdmin?`<span id="env-auto-counter" style="margin-left:auto;font-size:12px;background:#eef1ff;border:1px solid #d6ddff;color:#2d3277;border-radius:20px;padding:5px 12px;font-weight:600" title="Respuestas automáticas enviadas hoy (hora Argentina)">🤖 Hoy: … automáticas</span>
+          <button onclick="envToggleAutoReply()" title="Enciende/apaga el ENVÍO automático (corre en el servidor 24/7, aunque no tengas el panel abierto). La pre-carga del texto funciona siempre." style="background:${on?'#1e8e4e':'#c0392b'};color:#fff;border:none;border-radius:20px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer">🤖 Auto-envío: ${on?'ENCENDIDO':'APAGADO'}</button>`:''}
         </div>
         <div style="position:relative;margin-top:8px">
           <div style="display:flex;gap:8px">
@@ -7956,6 +8048,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         </div>
         <div id="env-search-res" style="font-size:12.5px;color:#333;margin-top:8px;min-height:16px">${_envSearchResultHtml||''}</div>
       </div>`;
+  }
+  async function envUpdateAutoCounter(){
+    if(!(currentUser && currentUser.role==='admin')) return;
+    try{
+      const r=await fetch('/api/envios/auto-stats'); const d=await r.json();
+      const el=document.getElementById('env-auto-counter');
+      if(el && d && d.ok) el.textContent='🤖 Hoy: '+(d.today_count||0)+' automática'+((d.today_count===1)?'':'s');
+    }catch(e){}
   }
   function envSearchInput(){
     const cfg=_enviosCfg||{destinos:[]};
@@ -8001,9 +8101,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const d=await r.json().catch(()=>({}));
       if(r.ok && d.ok){
         _envAutoReplyOn=!!d.auto_reply; if(_enviosCfg) _enviosCfg.auto_reply=_envAutoReplyOn;
-        envRenderTopBar(_enviosCfg);
-        if(!_envAutoReplyOn){ Object.keys(_envAuto).forEach(qid=>envCancelAuto(qid, true)); showToast('Auto-envío apagado (la pre-carga sigue funcionando)','success'); }
-        else { showToast('Auto-envío encendido','success'); document.querySelectorAll('.env-qhelp').forEach(w=>w.dataset.envready='0'); envDecorateQuestions(); }
+        envRenderTopBar(_enviosCfg); envUpdateAutoCounter();
+        envRenderAutoStatuses();
+        showToast(_envAutoReplyOn?'Auto-envío encendido (corre en el servidor)':'Auto-envío apagado (la pre-carga sigue funcionando)','success');
       } else { showToast(d.error||'No pude cambiar el estado','error'); }
     }catch(e){ showToast('Error de red','error'); }
   }
@@ -8052,14 +8152,21 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const badge=document.getElementById('acordar-cov-badge'); if(badge) badge.innerHTML='';
     const sug=document.getElementById('acordar-sugg'); if(sug){ sug.style.display='none'; sug.innerHTML=''; }
     const se=document.getElementById('acordar-search'); if(se) se.value='';
+    envAcordarModo();      // modo vacío → oculta Localidad/Provincia/CP/Observaciones
     enviosFetchConfig();   // precache
   }
   function envAcordarModo(){
     const modo=(document.getElementById('acordar-modo')||{}).value||'';
     const pre=document.getElementById('acordar-precarga');
     if(pre) pre.style.display = (modo==='precarga')?'block':'none';
+    // Mostrar Localidad/Provincia/CP/Observaciones SOLO cuando hay un modo elegido.
+    document.querySelectorAll('.acordar-destgrp').forEach(g=>{ g.style.display = modo ? '' : 'none'; });
+    // En Pre-carga, Localidad y Provincia quedan bloqueadas (las llena el buscador).
+    const form=document.getElementById('acordar-form');
+    const setRO=(n,ro)=>{ const el=form&&form.querySelector('[name="'+n+'"]'); if(el){ el.readOnly=ro; el.style.background=ro?'#f3f4f7':'#fff'; el.style.cursor=ro?'not-allowed':'text'; } };
+    const ro=(modo==='precarga');
+    setRO('localidad', ro); setRO('provincia', ro);
     if(modo==='precarga'){ const se=document.getElementById('acordar-search'); if(se) setTimeout(()=>se.focus(),50); }
-    // S/Transporte: los campos quedan manuales (como antes), nada que hacer.
   }
   function envAcordarSearchInput(){
     const cfg=_enviosCfg||{destinos:[]};
@@ -9589,19 +9696,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             <div id="acordar-cov-badge" style="font-size:12.5px;margin-top:8px;min-height:16px"></div>
           </div>
         </div>
-        <div>
+        <div class="acordar-destgrp" style="display:none">
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Localidad</label>
           <input name="localidad" type="text" placeholder="Ciudad / Localidad" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
-        <div>
+        <div class="acordar-destgrp" style="display:none">
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Provincia</label>
           <input name="provincia" type="text" placeholder="Buenos Aires" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
-        <div>
+        <div class="acordar-destgrp" style="display:none">
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Código Postal</label>
           <input name="cp" type="text" placeholder="1234" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
-        <div style="grid-column:1/-1">
+        <div class="acordar-destgrp" style="display:none;grid-column:1/-1">
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Observaciones</label>
           <textarea name="observaciones" placeholder="Notas adicionales para el envío..." rows="2" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
         </div>
