@@ -493,6 +493,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('envios')" id="nav-envios" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M3 7h11v8H3z"/><path d="M14 10h4l3 3v2h-7z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/></svg><span>Envíos</span>
       </a>
+      <a onclick="showSection('tracking')" id="nav-tracking" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 0-8 8c0 5 8 12 8 12s8-7 8-12a8 8 0 0 0-8-8z"/></svg><span>Tracking</span>
+      </a>
     </nav>
     <div class="content" id="content">
       <!-- Dynamic content loads here -->
@@ -719,6 +722,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin') {
           const ne = document.getElementById('nav-envios'); if (ne) ne.style.display = '';
         }
+        if (currentUser.role === 'admin' || currentUser.can_tracking) {
+          const nt = document.getElementById('nav-tracking'); if (nt) nt.style.display = '';
+        }
         loadAccounts();
         // Run immediately so badge shows on first load without waiting 15s
         checkNewMessages();
@@ -822,6 +828,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
         if (currentUser.role === 'admin') {
           const ne2 = document.getElementById('nav-envios'); if (ne2) ne2.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_tracking) {
+          const nt2 = document.getElementById('nav-tracking'); if (nt2) nt2.style.display = '';
         }
         if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
@@ -932,6 +941,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'local': loadLocal(); break;
       case 'parabrisas': loadParabrisas(); break;
       case 'envios': loadEnvios(); break;
+      case 'tracking': loadTracking(); break;
       case 'reputation': loadReputation(); break;
       case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
@@ -4762,6 +4772,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                   <input type="checkbox" ${u.can_parabrisas || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_parabrisas', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Parabrisas
                 </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Tracking: puede ver y gestionar el seguimiento de envíos (acordar con el vendedor).">
+                  <input type="checkbox" ${u.can_tracking || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_tracking', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Tracking
+                </label>
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Compras: puede CARGAR facturas, notas de crédito y pagos (sin ver saldos)">
                   <input type="checkbox" ${u.can_compras_cargar || u.can_compras_saldos || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_compras_cargar', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Compras · cargar
@@ -7225,6 +7239,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!container) return;
     container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    const can_track = currentUser?.role === 'admin' || currentUser?.can_tracking;
     try {
       const res = await fetch('/api/prep/list?status=done');
       const orders = await res.json();
@@ -7283,7 +7298,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               <span>Finalizado por: <strong style="color:#333">${escapeHtml(order.done_by || '-')}</strong></span>
               <span>${formatDateTime(order.done_at)}</span>
               ${can_manage ? `<span>| Orden: <a onclick="verVentaPrep('${escapeHtml(order.order_id)}','${order.account_id}')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#${escapeHtml(order.order_id)}</a></span>` : ''}
-              ${can_manage ? `<button onclick="volverASinPreparar('${escapeHtml(order.order_id)}',this)" style="margin-left:auto;padding:5px 12px;background:white;color:#e74c3c;border:1.5px solid #e74c3c;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
+              ${can_track ? `<button onclick="pasarATracking('${escapeHtml(order.order_id)}',this)" title="Pasar esta venta al panel de Tracking (seguimiento de envío)" style="margin-left:auto;padding:5px 12px;background:white;color:#8e44ad;border:1.5px solid #8e44ad;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">📍 Tracking</button>` : ''}
+              ${can_manage ? `<button onclick="volverASinPreparar('${escapeHtml(order.order_id)}',this)" style="${can_track?'':'margin-left:auto;'}padding:5px 12px;background:white;color:#e74c3c;border:1.5px solid #e74c3c;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
             </div>
           </div>
         `;
@@ -7296,6 +7312,247 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch(e) {
       container.innerHTML = '<div class="empty"><p>Error al cargar finalizadas</p></div>';
     }
+  }
+  // ==================== TRACKING (seguimiento de envíos) ====================
+  let _trackData = null;
+  let _trackTab = 'iniciadas';
+  let _trackCfg = { transportes: {}, msg_envio: '', msg_aviso: '' };
+  // Pasar manualmente una venta finalizada al panel de Tracking (botón en Finalizadas).
+  async function pasarATracking(orderId, btn){
+    if(!confirm('¿Pasar esta venta al panel de Tracking?\n\nQuedará en la pestaña INICIADAS para cargar el envío.')) return;
+    if(btn){ btn.disabled=true; btn.textContent='...'; }
+    try{
+      const r = await fetch('/api/tracking/intake', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({order_id: orderId})});
+      const d = await r.json();
+      if(!r.ok || !d.ok){ showToast(d.error||'No se pudo pasar a Tracking','error'); if(btn){btn.disabled=false;btn.textContent='📍 Tracking';} return; }
+      showToast(d.created ? 'Pasado a Tracking → Iniciadas' : 'Esta venta ya estaba en Tracking');
+      if(btn){ btn.textContent='✓ En Tracking'; btn.style.color='#27ae60'; btn.style.borderColor='#27ae60'; }
+    }catch(e){ showToast('Error de red','error'); if(btn){btn.disabled=false;btn.textContent='📍 Tracking';} }
+  }
+  async function loadTracking(){
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+    try{
+      const [r, _cfgEnv] = await Promise.all([ fetch('/api/tracking/list'), enviosFetchConfig() ]);
+      const d = await r.json();
+      if(!r.ok || !d.ok){ content.innerHTML = '<div class="empty"><p>'+escapeHtml((d&&d.error)||'No se pudo cargar Tracking')+'</p></div>'; return; }
+      _trackData = d;
+      _trackCfg = d.config || { transportes:{}, msg_envio:'', msg_aviso:'' };
+      trackRender();
+    }catch(e){ content.innerHTML = '<div class="empty"><p>Error al cargar Tracking</p></div>'; }
+  }
+  function _trackFind(id){ const d=_trackData; if(!d) return null; return [].concat(d.iniciadas,d.en_camino,d.entregadas).find(x=>x.id===id); }
+  function _trackTransOptions(sel){
+    const cfg = _enviosCfg || { transportes:[] };
+    const list = _envSortByName(cfg.transportes||[]);
+    return ['<option value="">— Transporte —</option>'].concat(list.map(t=>`<option value="${escapeHtml(t.nombre)}" ${t.nombre===sel?'selected':''}>${escapeHtml(t.nombre)}</option>`)).join('');
+  }
+  function _trackShipHtml(sd){
+    if(!sd) return '<span style="color:#bbb;font-size:12px">Sin datos de envío</span>';
+    const rows = [['Nombre',sd.nombre],['Tel',sd.telefono],['Dirección',sd.direccion],['Localidad',sd.localidad],['Provincia',sd.provincia],['CP',sd.cp],['Transporte',sd.transporte],['Obs',sd.observaciones]].filter(([,v])=>v);
+    if(!rows.length) return '<span style="color:#bbb;font-size:12px">Sin datos de envío</span>';
+    return rows.map(([l,v])=>`<span style="font-size:12px;color:#555;margin-right:12px"><b>${l}:</b> ${escapeHtml(String(v))}</span>`).join('');
+  }
+  function trackRender(){
+    const content = document.getElementById('content');
+    const d = _trackData; if(!d) return;
+    const nI = d.iniciadas.length, nC = d.en_camino.length, nE = d.entregadas.length;
+    const tab = (k,label,n)=>`<button onclick="switchTrackTab('${k}')" style="padding:8px 16px;border:none;border-bottom:3px solid ${_trackTab===k?'#8e44ad':'transparent'};background:none;font-size:14px;font-weight:${_trackTab===k?'700':'500'};color:${_trackTab===k?'#8e44ad':'#666'};cursor:pointer">${label} <span style="background:${_trackTab===k?'#8e44ad':'#ccc'};color:white;border-radius:10px;padding:1px 8px;font-size:12px;margin-left:2px">${n}</span></button>`;
+    content.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+        <h2 style="margin:0;font-size:20px">📍 Tracking de envíos</h2>
+        ${d.can_config?`<button onclick="openTrackConfig()" style="padding:8px 16px;background:white;border:1.5px solid #8e44ad;color:#8e44ad;border-radius:8px;font-weight:600;cursor:pointer">⚙️ Configuración</button>`:''}
+      </div>
+      <p style="color:#999;font-size:13px;margin:0 0 10px">Seguimiento de las ventas "acordar con el vendedor". Las entregadas se guardan 3 meses y luego se borran automáticamente.</p>
+      <div style="display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:16px;flex-wrap:wrap">
+        ${tab('iniciadas','🕓 Iniciadas',nI)}
+        ${tab('en_camino','🚚 En camino',nC)}
+        ${tab('entregadas','✅ Entregadas',nE)}
+      </div>
+      <div id="track-list"></div>`;
+    trackRenderList();
+  }
+  function switchTrackTab(k){ _trackTab = k; trackRender(); }
+  function trackRenderList(){
+    const box = document.getElementById('track-list'); if(!box) return;
+    const d = _trackData;
+    const list = _trackTab==='iniciadas'?d.iniciadas:(_trackTab==='en_camino'?d.en_camino:d.entregadas);
+    if(!list.length){ box.innerHTML='<div class="empty"><p>No hay envíos en esta etapa.</p></div>'; return; }
+    box.innerHTML = list.map(trackCard).join('');
+  }
+  function trackCard(t){
+    const items = (t.items||[]).map(it=>`<div style="font-size:13px;color:#333">• ${escapeHtml(it.title||'')} <span style="color:#999">x${it.quantity||1}</span></div>`).join('');
+    const head = `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <span class="card-account">${escapeHtml(t.account_name||'')}</span>
+        <span style="font-weight:600">${escapeHtml(t.buyer_name||'')}</span>
+        ${t.manual?'<span style="font-size:11px;background:#f0e6ff;color:#8e44ad;border-radius:10px;padding:2px 8px;font-weight:600">manual</span>':''}
+        <span style="margin-left:auto;font-size:12px;color:#999">#${escapeHtml(t.order_id)}</span>
+      </div>
+      <div style="margin-bottom:8px">${items}</div>
+      <div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:2">${_trackShipHtml(t.shipping_data)}</div>`;
+    let footer='';
+    if(t.estado==='iniciada') footer = trackFooterIniciada(t);
+    else if(t.estado==='en_camino') footer = trackFooterEnCamino(t);
+    else footer = trackFooterEntregada(t);
+    const border = t.estado==='entregada'?'#27ae60':(t.estado==='en_camino'?'#3483fa':'#f5a623');
+    return `<div class="sale-card" id="track-${t.id}" style="border-left:4px solid ${border}">${head}${footer}</div>`;
+  }
+  function trackFooterIniciada(t){
+    const pre = (t.shipping_data && t.shipping_data.transporte) ? t.shipping_data.transporte : '';
+    return `
+     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Fecha de envío</label>
+        <input type="date" id="tk-fecha-${t.id}" value="${escapeHtml(t.fecha_envio||'')}" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"></div>
+      <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Transporte</label>
+        <select id="tk-trans-${t.id}" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:170px">${_trackTransOptions(t.transporte||pre)}</select></div>
+      <div style="flex:1;min-width:150px"><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">N° de guía</label>
+        <input type="text" id="tk-guia-${t.id}" value="${escapeHtml(t.guia||'')}" placeholder="N° de seguimiento" style="width:100%;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box"></div>
+     </div>
+     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+       <button onclick="trackPrint('${t.id}')" style="padding:8px 14px;background:white;border:1px solid #ccc;border-radius:7px;font-size:13px;cursor:pointer">🖨️ Imprimir etiqueta</button>
+       <button onclick="trackShip('${t.id}',this)" style="padding:8px 18px;background:#8e44ad;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">📦 Despachar y avisar al comprador</button>
+     </div>
+     <div style="font-size:11px;color:#999;margin-top:6px">Al despachar se le envía un mensaje al comprador con el N° de guía y el link de seguimiento, y pasa a "En camino".</div>`;
+  }
+  function trackFooterEnCamino(t){
+    const cfg = _trackCfg||{};
+    const tc = (cfg.transportes||{})[t.transporte];
+    let link='';
+    if(tc && tc.track_url){ link = tc.track_url.indexOf('{guia}')>=0 ? tc.track_url.replace(/\{guia\}/g, encodeURIComponent(t.guia||'')) : tc.track_url; }
+    const avisado = t.sub==='con_aviso';
+    return `
+     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px;margin-bottom:10px">
+       <span>🚚 <b>${escapeHtml(t.transporte||'-')}</b></span>
+       <span>Guía: <b>${escapeHtml(t.guia||'-')}</b></span>
+       ${t.fecha_envio?`<span>Envío: ${escapeHtml(t.fecha_envio)}</span>`:''}
+       ${link?`<a href="${escapeHtml(link)}" target="_blank" rel="noopener" style="color:#3483fa;text-decoration:underline">Ver seguimiento ↗</a>`:''}
+       ${avisado?'<span style="font-size:11px;background:#fff4e0;color:#c67b00;border-radius:10px;padding:2px 8px;font-weight:600">🔔 Avisado en sucursal</span>':''}
+     </div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap">
+       <button onclick="trackAviso('${t.id}',this)" style="padding:8px 14px;background:white;border:1.5px solid #c67b00;color:#c67b00;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">🔔 Avisar "en sucursal"</button>
+       <button onclick="trackEntregado('${t.id}',true,this)" style="padding:8px 14px;background:#27ae60;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">✅ Entregado + avisar a ML</button>
+       <button onclick="trackEntregado('${t.id}',false,this)" style="padding:8px 14px;background:white;border:1.5px solid #27ae60;color:#27ae60;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">✅ Entregado (solo panel)</button>
+     </div>`;
+  }
+  function trackFooterEntregada(t){
+    return `
+     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px">
+       <span>🚚 <b>${escapeHtml(t.transporte||'-')}</b></span>
+       <span>Guía: <b>${escapeHtml(t.guia||'-')}</b></span>
+       <span style="color:#27ae60;font-weight:600">✅ Entregado ${t.entregada_at?formatDateTime(t.entregada_at):''}</span>
+       ${t.entregada_ml?'<span style="font-size:11px;background:#e8f8ef;color:#1e824c;border-radius:10px;padding:2px 8px;font-weight:600">avisado a ML</span>':''}
+       <button onclick="trackDelete('${t.id}',this)" title="Quitar del panel" style="margin-left:auto;padding:6px 12px;background:white;border:1px solid #ddd;color:#e74c3c;border-radius:7px;font-size:12px;cursor:pointer">🗑️ Quitar</button>
+     </div>
+     <div style="font-size:11px;color:#bbb;margin-top:6px">Se borra automáticamente a los 3 meses.</div>`;
+  }
+  function trackPrint(id){
+    const t = _trackFind(id); if(!t) return;
+    const w = window.open('','_blank','width=800,height=900');
+    if(!w){ showToast('Permití los pop-ups para imprimir','error'); return; }
+    w.document.write(generateEtiquetaHtml(t.shipping_data||{}));
+    w.document.close();
+    w.onload=()=>{ try{ w.print(); }catch(e){} };
+  }
+  async function trackShip(id, btn){
+    const fecha = (document.getElementById('tk-fecha-'+id)||{}).value||'';
+    const trans = (document.getElementById('tk-trans-'+id)||{}).value||'';
+    const guia = (document.getElementById('tk-guia-'+id)||{}).value||'';
+    if(!trans){ showToast('Elegí el transporte','error'); return; }
+    if(!guia.trim()){ showToast('Cargá el N° de guía','error'); return; }
+    if(!confirm('¿Despachar y enviar el mensaje al comprador con el seguimiento?')) return;
+    btn.disabled=true; const old=btn.textContent; btn.textContent='Enviando...';
+    try{
+      const r = await fetch('/api/tracking/ship',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,fecha_envio:fecha,transporte:trans,guia:guia.trim()})});
+      const d = await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
+      if(d.sent) showToast('Despachado. Mensaje enviado al comprador ✅');
+      else showToast('Despachado, pero el mensaje no salió: '+(d.send_error||''),'error');
+      loadTracking();
+    }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
+  }
+  async function trackAviso(id, btn){
+    if(!confirm('¿Avisar al comprador que el envío está en la sucursal para retirar?')) return;
+    btn.disabled=true; const old=btn.textContent; btn.textContent='Enviando...';
+    try{
+      const r=await fetch('/api/tracking/aviso',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
+      if(d.sent) showToast('Aviso enviado al comprador ✅'); else showToast('No se pudo enviar: '+(d.send_error||''),'error');
+      loadTracking();
+    }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
+  }
+  async function trackEntregado(id, ml, btn){
+    if(!confirm(ml?'¿Marcar como entregado y avisar la entrega a Mercado Libre?':'¿Marcar como entregado (solo en el panel)?')) return;
+    btn.disabled=true; const old=btn.textContent; btn.textContent='...';
+    try{
+      const r=await fetch('/api/tracking/entregado',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,ml})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
+      if(ml && !d.ml_ok) showToast('Marcado entregado. En ML no se pudo: '+(d.ml_error||''),'error');
+      else showToast('Marcado como entregado ✅');
+      loadTracking();
+    }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
+  }
+  async function trackDelete(id, btn){
+    if(!confirm('¿Quitar este envío del panel de Tracking? (no afecta la venta ni ML)')) return;
+    try{
+      const r=await fetch('/api/tracking/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); return; }
+      showToast('Quitado'); loadTracking();
+    }catch(e){ showToast('Error de red','error'); }
+  }
+  function openTrackConfig(){
+    const cfg = _trackCfg||{transportes:{},msg_envio:'',msg_aviso:''};
+    const envCfg = _enviosCfg||{transportes:[]};
+    const trs = _envSortByName(envCfg.transportes||[]);
+    const rows = trs.map(t=>{
+      const cur = (cfg.transportes||{})[t.nombre]||{};
+      return `<div style="margin-bottom:10px">
+        <label style="font-size:12px;font-weight:600;color:#333;display:block;margin-bottom:3px">${escapeHtml(t.nombre)}</label>
+        <input type="text" data-trans="${escapeHtml(t.nombre)}" value="${escapeHtml(cur.track_url||'')}" placeholder="https://...seguimiento...{guia}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box">
+      </div>`;
+    }).join('') || '<p style="color:#999;font-size:13px">No hay transportes cargados en Envíos.</p>';
+    const ov=document.createElement('div');
+    ov.id='trackCfgOverlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 12px';
+    ov.innerHTML=`<div style="background:white;border-radius:14px;max-width:640px;width:100%;padding:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0">⚙️ Configuración de Tracking</h3>
+        <button onclick="document.getElementById('trackCfgOverlay').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#999">×</button>
+      </div>
+      <p style="font-size:12px;color:#777;margin:0 0 12px">Link de seguimiento por transporte. Usá <code>{guia}</code> donde el link lleva el número de guía.</p>
+      <div id="trackCfgTrans">${rows}</div>
+      <hr style="border:none;border-top:1px solid #eee;margin:16px 0">
+      <label style="font-size:12px;font-weight:600;display:block;margin-bottom:3px">Mensaje al despachar</label>
+      <textarea id="trackMsgEnvio" style="width:100%;min-height:70px;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box;font-family:inherit">${escapeHtml(cfg.msg_envio||'')}</textarea>
+      <label style="font-size:12px;font-weight:600;display:block;margin:10px 0 3px">Mensaje "en sucursal / listo para retirar"</label>
+      <textarea id="trackMsgAviso" style="width:100%;min-height:70px;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box;font-family:inherit">${escapeHtml(cfg.msg_aviso||'')}</textarea>
+      <p style="font-size:11px;color:#999;margin:8px 0 0">Placeholders disponibles: {transporte} {guia} {link} {nombre}</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button onclick="document.getElementById('trackCfgOverlay').remove()" style="padding:9px 18px;border:1px solid #ddd;background:white;border-radius:8px;cursor:pointer">Cancelar</button>
+        <button onclick="saveTrackConfig(this)" style="padding:9px 20px;background:#8e44ad;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer">Guardar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(ov);
+  }
+  async function saveTrackConfig(btn){
+    const transportes={};
+    document.querySelectorAll('#trackCfgTrans input[data-trans]').forEach(inp=>{
+      transportes[inp.getAttribute('data-trans')] = { track_url: inp.value.trim() };
+    });
+    const msg_envio = (document.getElementById('trackMsgEnvio')||{}).value||'';
+    const msg_aviso = (document.getElementById('trackMsgAviso')||{}).value||'';
+    btn.disabled=true; btn.textContent='Guardando...';
+    try{
+      const r=await fetch('/api/tracking/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({transportes,msg_envio,msg_aviso})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent='Guardar'; return; }
+      _trackCfg = d.config;
+      showToast('Configuración guardada ✅');
+      const ov=document.getElementById('trackCfgOverlay'); if(ov) ov.remove();
+    }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent='Guardar'; }
   }
   // ==================== ESTADÍSTICAS (solo admin) ====================
   let statsFrom = '';
