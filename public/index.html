@@ -7868,7 +7868,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if(ref.demora) extra.push(`la demora estimada es de ${ref.demora}`);
     if(ref.costo_estimado>0) extra.push(`el costo aproximado es de ${_envMoney(ref.costo_estimado)}`);
     if(extra.length) s+=` ${extra.join(' y ')}.`;
-    s+=` Podés realizar la compra directamente en la publicación y lo despachamos enseguida. ¡Quedamos a la espera!`;
+    s+=` Podés realizar la compra directamente en la publicación y comenzamos a prepararlo para el envío. ¡Quedamos a la espera!`;
     return s;
   }
 
@@ -7897,54 +7897,101 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return esAmba ? ENV_MSG_CABAGBA : _envComposeAuto(cfg, destId);
   }
 
+  let _envPrefilled={};        // qid -> true (ya se pre-cargó una vez; no re-pisar ediciones)
+  let _envSearchTerm='';       // buscador de transportes (persistente entre refrescos)
+  let _envSearchResultHtml='';
+
   async function envDecorateQuestions(){
     const wraps=document.querySelectorAll('.env-qhelp[data-envready="0"]');
     const cfg=await enviosFetchConfig();
-    envRenderAutoBar();   // barra ON/OFF (solo admin)
+    envRenderTopBar(cfg);   // buscador (todos) + ON/OFF (solo admin), siempre visible
     if(!wraps.length) return;
-    if(!(cfg.destinos||[]).length){ wraps.forEach(w=>{ w.dataset.envready='1'; w.style.display='none'; }); return; }
     wraps.forEach(w=>{
       w.dataset.envready='1';
       const qid=w.dataset.qid||'', qtext=w.dataset.qtext||'', account=w.dataset.account||'';
       const parsed=_envParseQuestion(qtext);
-      const destId=_envMatchDestinoQ(cfg, parsed);
-      const selProv = destId ? ((cfg.destinos.find(d=>d.id===destId)||{}).provincia||'') : '';
-      w.innerHTML = `
-        <div style="background:#f6f8ff;border:1px solid #e3e8ff;border-radius:9px;padding:8px 10px">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:12px">📦</span>
-            <select id="envprov-${qid}" onchange="envProvChange('${qid}')" style="flex:1;min-width:120px;padding:7px 9px;border:1px solid #cdd6f5;border-radius:7px;font-size:12.5px;background:#fff;cursor:pointer">${_envProvOptionsQ(cfg, selProv)}</select>
-            <select id="envloc-${qid}" onchange="envLocChange('${qid}')" style="flex:1.3;min-width:140px;padding:7px 9px;border:1px solid #cdd6f5;border-radius:7px;font-size:12.5px;background:#fff;cursor:pointer">${_envLocOptions(cfg, selProv, destId)}</select>
-            <button type="button" onclick="envPrecargar('${qid}')" style="background:#2d3277;color:#fff;border:none;border-radius:7px;padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">Pre-cargar respuesta</button>
-          </div>
-          <div id="envinfo-${qid}" style="font-size:11.5px;color:#555;margin-top:6px;min-height:14px"></div>
-          <div id="envauto-${qid}" style="font-size:12px;margin-top:4px"></div>
-        </div>`;
-      envLocChange(qid, true);
-      // Decidir el texto automático: CABA/GBA (tarifa plana) → match puntual → resto del país.
+      const destId=parsed?_envMatchDestinoQ(cfg, parsed):'';
+      // Texto de la respuesta: CABA/GBA (tarifa plana) → match puntual → resto del país.
       let autoText='';
       if(parsed && _envIsCabaGba(parsed)) autoText=ENV_MSG_CABAGBA;
       else if(destId) autoText=_envComposeForDest(cfg, destId);
       else if(parsed) autoText=ENV_MSG_PAIS;
-      if(autoText){
-        if(_envAuto[qid]){ envAutoRenderCountdown(qid); }
-        else if(_envAutoReplyOn && !_envHandled[qid]){ _envFillReply(qid, autoText); envStartAuto(qid, account); }
-      }
+      if(!autoText){ w.innerHTML=''; return; }   // no es una pregunta de envío
+      // PRE-CARGA SIEMPRE (una vez), respetando ediciones posteriores del operador.
+      if(!_envPrefilled[qid]){ _envFillReply(qid, autoText); _envPrefilled[qid]=true; }
+      const on=_envAutoReplyOn;
+      w.innerHTML=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#f6f8ff;border:1px solid #e3e8ff;border-radius:9px;padding:6px 10px">
+          <span style="font-size:11.5px;color:#2d3277;font-weight:600">📦 Respuesta de envío pre-cargada</span>
+          <span id="envauto-${qid}" style="font-size:12px;margin-left:auto"></span>
+        </div>`;
+      // Auto-ENVÍO solo si está encendido.
+      if(_envAuto[qid]) envAutoRenderCountdown(qid);
+      else if(on && !_envHandled[qid]) envStartAuto(qid, account);
     });
   }
   function _envFillReply(qid, text){ const ta=document.getElementById('reply-'+qid); if(ta && text) ta.value=text; }
-  function envRenderAutoBar(){
+
+  // ----- Barra superior: buscador de transportes + ON/OFF de auto-envío -----
+  function envRenderTopBar(cfg){
     const content=document.getElementById('content'); if(!content) return;
-    if(!(currentUser && currentUser.role==='admin')){ const ex=document.getElementById('env-autoreply-bar'); if(ex) ex.remove(); return; }
-    let bar=document.getElementById('env-autoreply-bar');
-    if(!bar){ bar=document.createElement('div'); bar.id='env-autoreply-bar'; content.insertBefore(bar, content.firstChild); }
+    if(currentSection!=='questions'){ const ex=document.getElementById('env-top-bar'); if(ex) ex.remove(); return; }
+    let bar=document.getElementById('env-top-bar');
+    if(!bar){ bar=document.createElement('div'); bar.id='env-top-bar'; content.insertBefore(bar, content.firstChild); }
+    const isAdmin=currentUser && currentUser.role==='admin';
     const on=_envAutoReplyOn;
-    bar.innerHTML=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:${on?'#eafaf1':'#f5f6f8'};border:1px solid ${on?'#a7e0c1':'#e2e5ea'};border-radius:10px;padding:8px 12px;margin-bottom:12px">
-      <span style="font-size:13px;font-weight:700;color:#2d3277">🤖 Respuesta automática de envíos</span>
-      <span style="font-size:12px;color:#666">Cuando la pregunta trae localidad y provincia, arma la respuesta y la envía sola a los ${ENV_AUTO_SECS}s (con opción de cancelar).</span>
-      <button onclick="envToggleAutoReply()" style="margin-left:auto;background:${on?'#1e8e4e':'#c0392b'};color:#fff;border:none;border-radius:20px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer">${on?'ENCENDIDA — apagar':'APAGADA — encender'}</button>
-    </div>`;
+    bar.innerHTML=`
+      <div style="background:#fff;border:1px solid #e3e8ff;border-radius:12px;padding:10px 12px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:700;color:#2d3277">🚚 Buscar transporte por localidad</span>
+          ${isAdmin?`<button onclick="envToggleAutoReply()" title="Enciende/apaga el ENVÍO automático de la respuesta a los ${ENV_AUTO_SECS}s. La pre-carga del texto funciona siempre." style="margin-left:auto;background:${on?'#1e8e4e':'#c0392b'};color:#fff;border:none;border-radius:20px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer">🤖 Auto-envío: ${on?'ENCENDIDO':'APAGADO'}</button>`:''}
+        </div>
+        <div style="position:relative;margin-top:8px">
+          <div style="display:flex;gap:8px">
+            <input id="env-search" value="${escapeHtml(_envSearchTerm)}" oninput="envSearchInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();envSearchDo();}" placeholder="Escribí una localidad… (van apareciendo mientras escribís)" autocomplete="off" style="flex:1;min-width:180px;padding:8px 11px;border:1px solid #cdd6f5;border-radius:8px;font-size:13px;outline:none">
+            <button onclick="envSearchDo()" style="background:#2d3277;color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer">Buscar</button>
+          </div>
+          <div id="env-sugg" style="position:absolute;left:0;right:70px;top:41px;background:#fff;border:1px solid #dfe3f5;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,0.14);z-index:60;display:none;max-height:250px;overflow:auto"></div>
+        </div>
+        <div id="env-search-res" style="font-size:12.5px;color:#333;margin-top:8px;min-height:16px">${_envSearchResultHtml||''}</div>
+      </div>`;
   }
+  function envSearchInput(){
+    const cfg=_enviosCfg||{destinos:[]};
+    const inp=document.getElementById('env-search'), sug=document.getElementById('env-sugg'); if(!inp||!sug) return;
+    _envSearchTerm=inp.value;
+    const s=_envSimpJs(_envSearchTerm);
+    if(s.length<2){ sug.style.display='none'; sug.innerHTML=''; return; }
+    const matches=(cfg.destinos||[]).filter(d=>_envSimpJs(d.nombre).indexOf(s)>=0)
+      .sort((a,b)=>{ const A=_envSimpJs(a.nombre),B=_envSimpJs(b.nombre); return (A.indexOf(s)-B.indexOf(s)) || A.localeCompare(B,'es'); }).slice(0,10);
+    if(!matches.length){ sug.innerHTML='<div style="padding:8px 10px;color:#888;font-size:12.5px">Sin resultados en el listado (igual enviamos a todo el país).</div>'; sug.style.display='block'; return; }
+    sug.innerHTML=matches.map(d=>`<div onclick="envSearchPick('${d.id}')" style="padding:7px 10px;cursor:pointer;font-size:12.5px;border-bottom:1px solid #f2f2f2" onmouseover="this.style.background='#f6f8ff'" onmouseout="this.style.background='#fff'">${escapeHtml(d.nombre)} <span style="color:#999">— ${escapeHtml(d.provincia)}</span></div>`).join('');
+    sug.style.display='block';
+  }
+  function envSearchPick(id){
+    const cfg=_enviosCfg||{destinos:[]}; const d=(cfg.destinos||[]).find(x=>x.id===id); if(!d) return;
+    _envSearchTerm=d.nombre; const inp=document.getElementById('env-search'); if(inp) inp.value=d.nombre;
+    const sug=document.getElementById('env-sugg'); if(sug){ sug.style.display='none'; sug.innerHTML=''; }
+    envShowTransportsForId(id);
+  }
+  function envSearchDo(){
+    const cfg=_enviosCfg||{destinos:[]}; const s=_envSimpJs(_envSearchTerm);
+    const sug=document.getElementById('env-sugg'); if(sug){ sug.style.display='none'; }
+    if(!s){ _envSearchResultHtml='<span style="color:#888">Escribí una localidad para buscar.</span>'; envUpdateSearchRes(); return; }
+    let d=(cfg.destinos||[]).find(x=>_envSimpJs(x.nombre)===s) ||
+          (cfg.destinos||[]).filter(x=>_envSimpJs(x.nombre).indexOf(s)>=0).sort((a,b)=>_envSimpJs(a.nombre).indexOf(s)-_envSimpJs(b.nombre).indexOf(s))[0];
+    if(!d){ _envSearchResultHtml=`<span style="color:#b25e00">No encontré "<b>${escapeHtml(_envSearchTerm)}</b>" en el listado. Igual realizamos envíos a todo el país (a la terminal más cercana).</span>`; envUpdateSearchRes(); return; }
+    envShowTransportsForId(d.id);
+  }
+  function envShowTransportsForId(id){
+    const cfg=_enviosCfg||{destinos:[],transportes:[]}; const d=(cfg.destinos||[]).find(x=>x.id===id); if(!d) return;
+    const list=_envTransportsFor(cfg,id);
+    const lugar=`<b>${escapeHtml(d.nombre)}</b> <span style="color:#999">(${escapeHtml(d.provincia)})</span>`;
+    if(!list.length) _envSearchResultHtml=`📍 ${lugar}: <span style="color:#c0392b">ningún transporte cargado llega a este destino.</span>`;
+    else _envSearchResultHtml=`📍 ${lugar} → 🚚 <b>Llegan:</b> `+list.map(t=>escapeHtml(t.nombre)+((t.costo_estimado||t.demora)?(' ('+[t.costo_estimado?_envMoney(t.costo_estimado):'',t.demora?escapeHtml(t.demora):''].filter(Boolean).join(' · ')+')'):'')).join(' · ');
+    envUpdateSearchRes();
+  }
+  function envUpdateSearchRes(){ const el=document.getElementById('env-search-res'); if(el) el.innerHTML=_envSearchResultHtml; }
+
   async function envToggleAutoReply(){
     const next=!_envAutoReplyOn;
     try{
@@ -7952,44 +7999,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const d=await r.json().catch(()=>({}));
       if(r.ok && d.ok){
         _envAutoReplyOn=!!d.auto_reply; if(_enviosCfg) _enviosCfg.auto_reply=_envAutoReplyOn;
-        envRenderAutoBar();
-        if(!_envAutoReplyOn){ Object.keys(_envAuto).forEach(qid=>envCancelAuto(qid, true)); showToast('Respuesta automática apagada','success'); }
-        else { showToast('Respuesta automática encendida','success'); document.querySelectorAll('.env-qhelp').forEach(w=>w.dataset.envready='0'); envDecorateQuestions(); }
+        envRenderTopBar(_enviosCfg);
+        if(!_envAutoReplyOn){ Object.keys(_envAuto).forEach(qid=>envCancelAuto(qid, true)); showToast('Auto-envío apagado (la pre-carga sigue funcionando)','success'); }
+        else { showToast('Auto-envío encendido','success'); document.querySelectorAll('.env-qhelp').forEach(w=>w.dataset.envready='0'); envDecorateQuestions(); }
       } else { showToast(d.error||'No pude cambiar el estado','error'); }
     }catch(e){ showToast('Error de red','error'); }
-  }
-  function envProvChange(qid){
-    const cfg=_enviosCfg||{destinos:[]};
-    const prov=(document.getElementById('envprov-'+qid)||{}).value||'';
-    const locSel=document.getElementById('envloc-'+qid); if(locSel) locSel.innerHTML=_envLocOptions(cfg, prov, '');
-    envLocChange(qid, true);
-    envCancelAuto(qid, true); _envHandled[qid]=true;   // cambió a mano
-  }
-  function envLocChange(qid, keepAuto){
-    const cfg=_enviosCfg||{destinos:[],transportes:[]};
-    const id=(document.getElementById('envloc-'+qid)||{}).value||'';
-    const info=document.getElementById('envinfo-'+qid);
-    if(info){
-      if(!id) info.textContent='';
-      else{
-        const list=_envTransportsFor(cfg,id);
-        if(!list.length) info.innerHTML='<span style="color:#c0392b">Ningún transporte cargado llega a este destino.</span>';
-        else info.innerHTML='🚚 Llegan: '+list.map(t=>escapeHtml(t.nombre)+((t.costo_estimado||t.demora)?(' ('+[t.costo_estimado?_envMoney(t.costo_estimado):'',t.demora?escapeHtml(t.demora):''].filter(Boolean).join(' · ')+')'):'')).join(' · ');
-      }
-    }
-    if(!keepAuto){ envCancelAuto(qid, true); _envHandled[qid]=true; }
-  }
-  async function envPrecargar(qid, auto){
-    const sel=document.getElementById('envloc-'+qid);
-    const ta=document.getElementById('reply-'+qid);
-    if(!sel || !ta) return;
-    const destinoId=sel.value;
-    if(!destinoId){ if(!auto) showToast('Elegí una localidad primero','error'); return; }
-    const cfg=await enviosFetchConfig();
-    const texto = _envComposeForDest(cfg,destinoId);
-    if(!texto){ if(!auto) showToast('No pude armar la respuesta','error'); return; }
-    ta.value=texto;
-    if(!auto){ ta.focus(); try{ ta.setSelectionRange(ta.value.length,ta.value.length); }catch(e){} }
   }
   // ----- auto-envío a los 30s (con contador y cancelar) -----
   function envStartAuto(qid, account){
