@@ -8034,64 +8034,80 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const el=document.getElementById('envauto-'+qid); if(el) el.innerHTML = silent? '' : '<span style="color:#888">Envío automático cancelado.</span>';
   }
 
-  // ---------- PREPARACIÓN (ACORDAR): elegir transporte + ver si llega ----------
-  async function envFillAcordarSelects(sd){
-    const cfg = await enviosFetchConfig();
-    const destSel = document.getElementById('acordar-destino');
-    const transSel = document.getElementById('acordar-transporte');
-    if(!destSel || !transSel) return;
-    destSel.dataset.manual = '';   // al abrir/poblar, la detección automática vuelve a mandar
-    const box = document.getElementById('acordar-envios-box');
-    if(!(cfg.destinos||[]).length && !(cfg.transportes||[]).length){ if(box) box.style.display='none'; return; }
-    if(box) box.style.display='';
-    const hint = [ (sd&&sd.localidad)||'', (sd&&sd.provincia)||'', (sd&&sd.cp)||'' ].join(' ');
-    const guess = _envGuessDestino(cfg, hint);
-    destSel.innerHTML = '<option value="">— (auto) elegí destino —</option>' + _envCityOptionsHTML(cfg, guess);
-    transSel.innerHTML = ['<option value="">— elegí transporte —</option>']
-      .concat(_envSortByName(cfg.transportes||[]).map(t=>`<option value="${escapeHtml(t.id)}" ${ (sd&&sd.transporte_id)===t.id?'selected':'' }>${escapeHtml(t.nombre)}${t.costo_estimado?(' — '+_envMoney(t.costo_estimado)):''}</option>`)).join('');
-    envAcordarCoverage();
-  }
-  async function envAcordarCoverage(){
-    const cfg = await enviosFetchConfig();
-    const destSel = document.getElementById('acordar-destino');
-    const transSel = document.getElementById('acordar-transporte');
-    const badge = document.getElementById('acordar-cov-badge');
-    if(!destSel || !transSel || !badge) return;
-    const destId = destSel.value, transId = transSel.value;
-    const t = (cfg.transportes||[]).find(x=>x.id===transId);
-    if(!transId){ badge.innerHTML=''; return; }
-    const extra=[]; if(t&&t.costo_estimado) extra.push('costo estimado '+_envMoney(t.costo_estimado)); if(t&&t.demora) extra.push('demora '+t.demora);
-    const extraTxt = extra.length?(' · '+extra.join(' · ')):'';
-    if(!destId){ badge.innerHTML = `<span style="color:#777">Elegí un destino para verificar la cobertura.${extraTxt?('<br>'+escapeHtml(t.nombre)+extraTxt):''}</span>`; return; }
-    const d = (cfg.destinos||[]).find(x=>x.id===destId);
-    const llega = _envReaches(t, d);
-    if(llega){ badge.innerHTML = `<span style="color:#1e8e4e;font-weight:600">✓ ${escapeHtml(t.nombre)} llega a ${escapeHtml(_envDestName(cfg,destId))}${extraTxt}</span>`; }
-    else { badge.innerHTML = `<span style="color:#c0392b;font-weight:600">✗ ${escapeHtml(t.nombre)} NO figura con cobertura a ${escapeHtml(_envDestName(cfg,destId))}.</span> <span style="color:#777">Podés elegirlo igual, es solo un aviso.</span>`; }
-  }
-
+  // ---------- PREPARACIÓN (ACORDAR): modo Pre-carga (buscador) / S-Transporte ----------
+  let _acordarDestId = '';
   // ==================== ACORDAR MODAL ====================
   function openAcordarModal(saleKey, btn) {
     acordarPendingData = { saleKey, btn };
     const modal = document.getElementById('acordar-modal');
-    if (modal) {
-      modal.style.display = 'flex';
-      modal.querySelector('form')?.reset();
-      const badge = document.getElementById('acordar-cov-badge'); if (badge) badge.innerHTML = '';
-      envFillAcordarSelects({});   // pobla Destino/Transporte (Envíos)
-    }
+    if (!modal) return;
+    modal.style.display = 'flex';
+    modal.querySelector('form')?.reset();
+    _acordarDestId = '';
+    const modo=document.getElementById('acordar-modo'); if(modo) modo.value='';
+    const pre=document.getElementById('acordar-precarga'); if(pre) pre.style.display='none';
+    const tw=document.getElementById('acordar-trans-wrap'); if(tw) tw.style.display='none';
+    const badge=document.getElementById('acordar-cov-badge'); if(badge) badge.innerHTML='';
+    const sug=document.getElementById('acordar-sugg'); if(sug){ sug.style.display='none'; sug.innerHTML=''; }
+    const se=document.getElementById('acordar-search'); if(se) se.value='';
+    enviosFetchConfig();   // precache
   }
-  // Re-adivina el destino desde Localidad/Provincia/CP mientras se escribe (sin pisar una elección manual).
-  function envAcordarReguess(){
-    const form = document.getElementById('acordar-form'); if(!form) return;
-    const destSel = document.getElementById('acordar-destino'); if(!destSel) return;
-    if(destSel.dataset.manual === '1') { envAcordarCoverage(); return; }
-    enviosFetchConfig().then(cfg=>{
-      const get = n => form.querySelector('[name="'+n+'"]')?.value || '';
-      const hint = [get('localidad'), get('provincia'), get('cp')].join(' ');
-      const guess = _envGuessDestino(cfg, hint);
-      if(guess && destSel.value !== guess){ destSel.value = guess; }
-      envAcordarCoverage();
-    });
+  function envAcordarModo(){
+    const modo=(document.getElementById('acordar-modo')||{}).value||'';
+    const pre=document.getElementById('acordar-precarga');
+    if(pre) pre.style.display = (modo==='precarga')?'block':'none';
+    if(modo==='precarga'){ const se=document.getElementById('acordar-search'); if(se) setTimeout(()=>se.focus(),50); }
+    // S/Transporte: los campos quedan manuales (como antes), nada que hacer.
+  }
+  function envAcordarSearchInput(){
+    const cfg=_enviosCfg||{destinos:[]};
+    const inp=document.getElementById('acordar-search'), sug=document.getElementById('acordar-sugg'); if(!inp||!sug) return;
+    const s=_envSimpJs(inp.value);
+    if(s.length<2){ sug.style.display='none'; sug.innerHTML=''; return; }
+    const m=(cfg.destinos||[]).filter(d=>_envSimpJs(d.nombre).indexOf(s)>=0)
+      .sort((a,b)=>{const A=_envSimpJs(a.nombre),B=_envSimpJs(b.nombre);return (A.indexOf(s)-B.indexOf(s))||A.localeCompare(B,'es');}).slice(0,10);
+    if(!m.length){ sug.innerHTML='<div style="padding:8px 10px;color:#888;font-size:13px">Sin resultados en el listado.</div>'; sug.style.display='block'; return; }
+    sug.innerHTML=m.map(d=>`<div onclick="envAcordarSearchPick('${d.id}')" style="padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid #f2f2f2" onmouseover="this.style.background='#f6f8ff'" onmouseout="this.style.background='#fff'">${escapeHtml(d.nombre)} <span style="color:#999">— ${escapeHtml(d.provincia)}</span></div>`).join('');
+    sug.style.display='block';
+  }
+  function envAcordarSearchDo(){
+    const cfg=_enviosCfg||{destinos:[]}; const inp=document.getElementById('acordar-search'); const s=_envSimpJs(inp?inp.value:'');
+    const sug=document.getElementById('acordar-sugg'); if(sug) sug.style.display='none';
+    if(!s) return;
+    let d=(cfg.destinos||[]).find(x=>_envSimpJs(x.nombre)===s) ||
+          (cfg.destinos||[]).filter(x=>_envSimpJs(x.nombre).indexOf(s)>=0).sort((a,b)=>_envSimpJs(a.nombre).indexOf(s)-_envSimpJs(b.nombre).indexOf(s))[0];
+    if(d) envAcordarSearchPick(d.id);
+  }
+  function envAcordarSearchPick(id){
+    const cfg=_enviosCfg||{destinos:[],transportes:[]}; const d=(cfg.destinos||[]).find(x=>x.id===id); if(!d) return;
+    _acordarDestId=id;
+    const form=document.getElementById('acordar-form');
+    const set=(n,v)=>{ const el=form&&form.querySelector('[name="'+n+'"]'); if(el) el.value=v; };
+    set('localidad', d.nombre); set('provincia', d.provincia||''); if((d.cps||[]).length) set('cp', d.cps[0]);
+    const inp=document.getElementById('acordar-search'); if(inp) inp.value=d.nombre;
+    const sug=document.getElementById('acordar-sugg'); if(sug){ sug.style.display='none'; sug.innerHTML=''; }
+    const list=_envTransportsFor(cfg,id);
+    const tw=document.getElementById('acordar-trans-wrap'); const tsel=document.getElementById('acordar-transporte'); const badge=document.getElementById('acordar-cov-badge');
+    if(tw) tw.style.display='block';
+    if(!list.length){ if(tsel) tsel.innerHTML='<option value="">(sin transporte disponible)</option>'; if(badge) badge.innerHTML='<span style="color:#c0392b;font-weight:600">Ningún transporte cargado llega a '+escapeHtml(d.nombre)+'.</span>'; return; }
+    if(tsel){ tsel.innerHTML = (list.length>1?'<option value="">— Elegí transporte —</option>':'') + list.map(t=>`<option value="${escapeHtml(t.id)}">${escapeHtml(t.nombre)}${t.costo_estimado?(' — '+_envMoney(t.costo_estimado)):''}</option>`).join(''); }
+    if(list.length===1){ if(tsel) tsel.value=list[0].id; envAcordarTransChange(); }
+    else { if(badge) badge.innerHTML='<span style="color:#b25e00;font-weight:600">Hay '+list.length+' transportes que llegan: elegí uno.</span>'; }
+  }
+  function envAcordarTransChange(){
+    const cfg=_enviosCfg||{transportes:[]};
+    const tsel=document.getElementById('acordar-transporte'); const badge=document.getElementById('acordar-cov-badge');
+    const form=document.getElementById('acordar-form'); if(!tsel||!form) return;
+    const t=(cfg.transportes||[]).find(x=>x.id===tsel.value);
+    const obsEl=form.querySelector('[name="observaciones"]');
+    if(obsEl){
+      let obs=obsEl.value.replace(/^\s*Transporte:.*(\r?\n|$)/i,'').replace(/^\s+/,'');
+      obsEl.value = t ? ('Transporte: '+t.nombre + (obs?('\n'+obs):'')) : obs;
+    }
+    if(badge){
+      if(t){ const ex=[]; if(t.costo_estimado) ex.push('costo estimado '+_envMoney(t.costo_estimado)); if(t.demora) ex.push('demora '+t.demora); badge.innerHTML='<span style="color:#1e8e4e;font-weight:600">✓ '+escapeHtml(t.nombre)+(ex.length?(' — '+ex.join(' · ')):'')+'</span> <span style="color:#777">(cargado en Observaciones)</span>'; }
+      else badge.innerHTML='';
+    }
   }
   function closeAcordarModal() {
     const modal = document.getElementById('acordar-modal');
@@ -8101,14 +8117,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function confirmAcordarModal() {
     const form = document.getElementById('acordar-form');
     if (!form) return;
+    const modo=(document.getElementById('acordar-modo')||{}).value||'';
+    if(!modo){ showToast('Elegí el modo de envío (Pre-carga o S/Transporte).', 'error'); return; }
+    const transId = document.getElementById('acordar-transporte')?.value || '';
+    if(modo==='precarga'){
+      const tsel=document.getElementById('acordar-transporte');
+      const hayOpciones = tsel && [...tsel.options].some(o=>o.value);
+      if(hayOpciones && !transId){ showToast('Elegí un transporte.', 'error'); return; }
+    }
     const get = name => form.querySelector('[name="' + name + '"]')?.value.trim() || '';
     const shipping_data = {
       nombre: get('nombre'), dni: get('dni'), telefono: get('telefono'),
       direccion: get('direccion'), localidad: get('localidad'),
       provincia: get('provincia'), cp: get('cp'), observaciones: get('observaciones')
     };
-    // Transporte elegido (Envíos): se guarda en la etiqueta.
-    const transId = document.getElementById('acordar-transporte')?.value || '';
     if (transId) {
       try {
         const cfg = await enviosFetchConfig();
@@ -9548,35 +9570,41 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Dirección</label>
           <input name="direccion" type="text" placeholder="Calle y número" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
+        <div style="grid-column:1/-1;border-top:1px dashed #e3e3e3;padding-top:12px;margin-top:2px">
+          <label style="font-size:12px;font-weight:700;color:#2d3277;display:block;margin-bottom:4px">🚚 Modo de envío *</label>
+          <select id="acordar-modo" onchange="envAcordarModo()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer">
+            <option value="">— Elegí una opción —</option>
+            <option value="precarga">Pre-carga (buscar transporte)</option>
+            <option value="sintransporte">S/Transporte (cargar a mano)</option>
+          </select>
+          <div id="acordar-precarga" style="display:none;margin-top:10px">
+            <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Buscar localidad</label>
+            <div style="position:relative">
+              <input id="acordar-search" oninput="envAcordarSearchInput()" onkeydown="if(event.key==='Enter'){event.preventDefault();envAcordarSearchDo();}" placeholder="Escribí una localidad…" autocomplete="off" style="width:100%;padding:9px 12px;border:1px solid #cdd6f5;border-radius:7px;font-size:14px;outline:none">
+              <div id="acordar-sugg" style="position:absolute;left:0;right:0;top:44px;background:#fff;border:1px solid #dfe3f5;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,0.14);z-index:70;display:none;max-height:220px;overflow:auto"></div>
+            </div>
+            <div id="acordar-trans-wrap" style="display:none;margin-top:10px">
+              <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Transporte * <span style="color:#999;font-weight:400">(se guarda en Observaciones)</span></label>
+              <select id="acordar-transporte" onchange="envAcordarTransChange()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer"></select>
+            </div>
+            <div id="acordar-cov-badge" style="font-size:12.5px;margin-top:8px;min-height:16px"></div>
+          </div>
+        </div>
         <div>
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Localidad</label>
-          <input name="localidad" type="text" placeholder="Ciudad / Localidad" oninput="envAcordarReguess()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+          <input name="localidad" type="text" placeholder="Ciudad / Localidad" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div>
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Provincia</label>
-          <input name="provincia" type="text" placeholder="Buenos Aires" oninput="envAcordarReguess()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+          <input name="provincia" type="text" placeholder="Buenos Aires" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div>
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Código Postal</label>
-          <input name="cp" type="text" placeholder="1234" oninput="envAcordarReguess()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+          <input name="cp" type="text" placeholder="1234" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div style="grid-column:1/-1">
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Observaciones</label>
           <textarea name="observaciones" placeholder="Notas adicionales para el envío..." rows="2" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
-        </div>
-        <div style="grid-column:1/-1;margin-top:4px;border-top:1px dashed #e3e3e3;padding-top:12px" id="acordar-envios-box">
-          <div style="font-size:12px;font-weight:700;color:#2d3277;margin-bottom:8px">🚚 Transporte (Envíos)</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div>
-              <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Destino</label>
-              <select id="acordar-destino" onchange="this.dataset.manual='1';envAcordarCoverage()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer"></select>
-            </div>
-            <div>
-              <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Transporte</label>
-              <select id="acordar-transporte" onchange="envAcordarCoverage()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer"></select>
-            </div>
-          </div>
-          <div id="acordar-cov-badge" style="font-size:12.5px;margin-top:8px;min-height:16px"></div>
         </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:20px">
