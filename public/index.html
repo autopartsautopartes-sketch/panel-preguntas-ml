@@ -490,6 +490,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('cotizador')" id="nav-cotizador" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M20.5 11.3L12 2.8H3v9l8.5 8.5a1.4 1.4 0 0 0 2 0l7-7a1.4 1.4 0 0 0 0-2z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg><span>Cotizador</span>
       </a>
+      <a onclick="showSection('envios')" id="nav-envios" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M3 7h11v8H3z"/><path d="M14 10h4l3 3v2h-7z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/></svg><span>Envíos</span>
+      </a>
     </nav>
     <div class="content" id="content">
       <!-- Dynamic content loads here -->
@@ -713,6 +716,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_parabrisas) {
           const np = document.getElementById('nav-parabrisas'); if (np) np.style.display = '';
         }
+        if (currentUser.role === 'admin') {
+          const ne = document.getElementById('nav-envios'); if (ne) ne.style.display = '';
+        }
         loadAccounts();
         // Run immediately so badge shows on first load without waiting 15s
         checkNewMessages();
@@ -813,6 +819,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
         if (currentUser.role === 'admin' || currentUser.can_parabrisas) {
           const np2 = document.getElementById('nav-parabrisas'); if (np2) np2.style.display = '';
+        }
+        if (currentUser.role === 'admin') {
+          const ne2 = document.getElementById('nav-envios'); if (ne2) ne2.style.display = '';
         }
         if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
           document.getElementById('nav-dashboard').style.display = 'none';
@@ -922,6 +931,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'sales': loadSales(); break;
       case 'local': loadLocal(); break;
       case 'parabrisas': loadParabrisas(); break;
+      case 'envios': loadEnvios(); break;
       case 'reputation': loadReputation(); break;
       case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
@@ -2704,6 +2714,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   ${currentUser?.saludo ? `<label class="sig-line"><input type="checkbox" id="saludo-${q.id}" checked> <span>${escapeHtml(currentUser.saludo)}</span></label>` : ''}
+                  <div class="env-qhelp" data-envready="0" data-qid="${escapeHtml(String(q.id))}" data-qtext="${escapeHtml(q.text || '')}"></div>
                   <div class="reply-row">
                     <textarea id="reply-${q.id}" placeholder="Ingresá tu respuesta"></textarea>
                     <button onclick="answerQuestion('${q.id}', ${q.account_id})" title="Enviar respuesta">✓</button>
@@ -2744,6 +2755,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       content.querySelectorAll('.reply-box textarea[id^="reply-"]').forEach(ta => { if (ta.value) qDraft[ta.id] = ta.value; });
       const qChecks = {};
       content.querySelectorAll('.reply-box input[type="checkbox"][id^="saludo-"], .reply-box input[type="checkbox"][id^="firma-"]').forEach(cb => { qChecks[cb.id] = cb.checked; });
+      // (envDecorateQuestions se llama al final, después de pintar el HTML)
       const qFocEl = document.activeElement;
       const qFocId = (qFocEl && qFocEl.id) ? qFocEl.id : null;
       const qFocStart = (qFocEl && qFocEl.selectionStart != null) ? qFocEl.selectionStart : null;
@@ -2774,6 +2786,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
       // Restaurar scroll para que un refresco no devuelva la vista al tope de golpe
       content.scrollTop = qPrevScroll;
+      // Decorar cada pregunta con el mini-selector de destino (Envíos) para pre-cargar la respuesta.
+      envDecorateQuestions();
       // Verificar en paralelo si cada comprador tiene preguntas anteriores.
       // Solo muestra el botón "Ver preguntas anteriores" cuando hay al menos una.
       // (Solo para wrappers que NO fueron ya restaurados arriba)
@@ -3511,6 +3525,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               ${q.answer ? `<div class="card-answer"><strong>Respuesta:</strong> ${escapeHtml(q.answer.text)}</div>` : `
                 <div class="reply-box">
                   ${currentUser?.saludo ? `<label class="sig-line"><input type="checkbox" id="saludo-${q.id}" checked> <span>${escapeHtml(currentUser.saludo)}</span></label>` : ''}
+                  <div class="env-qhelp" data-envready="0" data-qid="${escapeHtml(String(q.id))}" data-qtext="${escapeHtml(q.text || '')}"></div>
                   <div class="reply-row">
                     <textarea id="reply-${q.id}" placeholder="Ingresá tu respuesta"></textarea>
                     <button onclick="answerQuestion('${q.id}', ${q.account_id})" title="Enviar respuesta">✓</button>
@@ -3526,6 +3541,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
       if (navToken !== myNav) return;
       content.innerHTML = html;
+      envDecorateQuestions();
     } catch (e) {
       if (navToken !== myNav) return;
       content.innerHTML = '<div class="empty"><p>Error al cargar preguntas</p></div>';
@@ -7029,6 +7045,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <span style="font-size:12px;color:#999">${formatDate(order.added_at)}</span>
           ${(currentUser?.role === 'admin' || currentUser?.can_view_sales) ? `<a href="/?section=sales&order_id=${encodeURIComponent(oid)}&account_id=${encodeURIComponent(order.account_id)}" target="_blank" onclick="event.stopPropagation()" style="font-size:12px;color:#3483fa;text-decoration:none;font-weight:600" title="Ver venta">#${oid}</a>` : `<span style="font-size:12px;color:#999">#${oid}</span>`}
           <span id="prep-sale-status-badge-${oid}" style="font-size:11px"></span>
+          ${order.shipping_data && order.shipping_data.transporte ? `<span title="Transporte asignado" style="font-size:11px;font-weight:600;color:#1e6091;background:#e7f1fb;border:1px solid #cfe3f7;border-radius:20px;padding:2px 9px">🚚 ${escapeHtml(order.shipping_data.transporte)}</span>` : ''}
           <span id="prep-toggle-icon-${oid}" style="margin-left:auto;font-size:12px;color:#3483fa;font-weight:600">${expanded ? '▲ Contraer' : '▼ Ver detalle'}</span>
         </div>
         <div id="prep-body-${oid}" style="display:${expanded?'block':'none'}">
@@ -7516,6 +7533,315 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       btn.textContent = '↩️ Sin preparar';
     }
   }
+  // ==================== ENVÍOS (transportes / destinos / cobertura) ====================
+  // Config en memoria (cache liviano). Se usa en el editor (Configuración), en Preguntas
+  // (pre-cargar respuesta) y en Preparación (elegir transporte y ver si llega).
+  // Destinos segmentados por PROVINCIA → CIUDAD. Cobertura MIXTA: un transporte puede
+  // cubrir provincias enteras y/o ciudades sueltas.
+  const PROV_AR = ['Buenos Aires','CABA','Catamarca','Chaco','Chubut','Córdoba','Corrientes','Entre Ríos','Formosa','Jujuy','La Pampa','La Rioja','Mendoza','Misiones','Neuquén','Río Negro','Salta','San Juan','San Luis','Santa Cruz','Santa Fe','Santiago del Estero','Tierra del Fuego','Tucumán'];
+  let _enviosCfg = null;        // { transportes, destinos, can_edit, updated }
+  let _enviosCfgAt = 0;
+  let _envEdit = null;          // copia editable para el editor
+  function _envNewId(p){ return (p||'e') + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+  function _envMoney(n){ n = Number(n)||0; return n ? ('$' + n.toLocaleString('es-AR')) : ''; }
+  function _envNumClean(x){ let s = String(x==null?'':x).replace(/[^0-9.,\-]/g,''); s = s.replace(/\./g,'').replace(',', '.'); const n = Number(s); return isFinite(n)?n:0; }  // formato AR: "." miles, "," decimal
+  function _envNorm(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim(); }
+  function _envSortByName(arr){ return (arr||[]).slice().sort((a,b)=>String(a.nombre||'').localeCompare(String(b.nombre||''),'es',{sensitivity:'base'})); }
+  function _envSortStr(arr){ return (arr||[]).slice().sort((a,b)=>String(a).localeCompare(String(b),'es',{sensitivity:'base'})); }
+  async function enviosFetchConfig(force){
+    const now = Date.now();
+    if (!force && _enviosCfg && (now - _enviosCfgAt) < 60000) return _enviosCfg;
+    try {
+      const r = await fetch('/api/envios/config');
+      const d = await r.json();
+      if (d && d.ok) { _enviosCfg = { transportes: d.transportes||[], destinos: d.destinos||[], can_edit: !!d.can_edit, updated: d.updated||'' }; _enviosCfgAt = now; }
+    } catch(e){}
+    return _enviosCfg || { transportes: [], destinos: [], can_edit: false, updated: '' };
+  }
+  function _envDestName(cfg, id){ const d=(cfg.destinos||[]).find(x=>x.id===id); return d?(d.nombre+(d.provincia?(', '+d.provincia):'')):''; }
+  // ¿El transporte t llega al destino d? (provincia entera O ciudad puntual)
+  function _envReaches(t, d){
+    if(!t || !d) return false;
+    if(d.provincia && (t.provincias||[]).indexOf(d.provincia)>=0) return true;
+    return (t.destinos||[]).indexOf(d.id)>=0;
+  }
+  // Transportes que llegan a un destino (ordenados A-Z).
+  function _envTransportsFor(cfg, destinoId){
+    const d=(cfg.destinos||[]).find(x=>x.id===destinoId); if(!d) return [];
+    const out=[];
+    for(const t of (cfg.transportes||[])){ if(_envReaches(t,d)) out.push(t); }
+    return _envSortByName(out);
+  }
+  // Opciones de ciudades agrupadas por provincia (optgroup), para los desplegables.
+  function _envCityOptionsHTML(cfg, selectedId){
+    const groups={}; (cfg.destinos||[]).forEach(d=>{ const p=d.provincia||'(sin provincia)'; (groups[p]=groups[p]||[]).push(d); });
+    return _envSortStr(Object.keys(groups)).map(p=>{
+      const cities=_envSortByName(groups[p]);
+      return `<optgroup label="${escapeHtml(p)}">`+cities.map(d=>`<option value="${escapeHtml(d.id)}" ${d.id===selectedId?'selected':''}>${escapeHtml(d.nombre)}</option>`).join('')+`</optgroup>`;
+    }).join('');
+  }
+  function _envProvOptionsHTML(sel){ return ['<option value="">— Provincia —</option>'].concat(PROV_AR.map(p=>`<option value="${p}" ${p===sel?'selected':''}>${p}</option>`)).join(''); }
+  // Adivina el destino (ciudad) desde texto libre (pregunta) o desde localidad/provincia/cp.
+  function _envGuessDestino(cfg, text){
+    const raw = String(text||'');
+    const Tn = ' ' + _envNorm(raw) + ' ';
+    const cps = (raw.match(/\b\d{4}\b/g)) || [];
+    for(const d of (cfg.destinos||[])){ if((d.cps||[]).some(c=>cps.indexOf(String(c))>=0)) return d.id; }
+    let best='', bestLen=0;
+    for(const d of (cfg.destinos||[])){ const nn=_envNorm(d.nombre); if(nn && nn.length>bestLen && Tn.indexOf(' '+nn) >= 0){ best=d.id; bestLen=nn.length; } }
+    return best;
+  }
+  // Arma el texto de respuesta para un destino (transportes + costo estimado + demora).
+  function _envComposeRespuesta(cfg, destinoId){
+    const d=(cfg.destinos||[]).find(x=>x.id===destinoId); if(!d) return '';
+    const lugar = d.nombre + (d.provincia?(', '+d.provincia):'');
+    const list=_envTransportsFor(cfg, destinoId);
+    if(!list.length) return `Consultanos por el envío a ${lugar} y lo coordinamos a la brevedad.`;
+    if(list.length===1){
+      const t=list[0]; const extra=[];
+      if(t.costo_estimado) extra.push(`costo estimado ${_envMoney(t.costo_estimado)}`);
+      if(t.demora) extra.push(`demora ${t.demora}`);
+      return `¡Sí! Hacemos envíos a ${lugar} con ${t.nombre}${extra.length?(' ('+extra.join(', ')+')'):''}.`;
+    }
+    let s=`¡Sí! Hacemos envíos a ${lugar}. Opciones disponibles:\n`;
+    for(const t of list){ const extra=[]; if(t.costo_estimado) extra.push(_envMoney(t.costo_estimado)); if(t.demora) extra.push(t.demora); s+=`• ${t.nombre}${extra.length?(' — '+extra.join(' · ')):''}\n`; }
+    return s.trim();
+  }
+
+  // ---------- EDITOR (Configuración, solo admin) ----------
+  async function loadEnvios(){
+    const content = document.getElementById('content');
+    if (!(currentUser && currentUser.role === 'admin')) {
+      content.innerHTML = '<div class="empty"><p>Solo el administrador puede configurar Envíos.</p></div>';
+      return;
+    }
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando Envíos...</p></div>';
+    const cfg = await enviosFetchConfig(true);
+    _envEdit = {
+      destinos: (cfg.destinos||[]).map(d=>({ id:d.id, nombre:d.nombre||'', provincia:d.provincia||'', cpsStr:(d.cps||[]).join(', ') })),
+      transportes: (cfg.transportes||[]).map(t=>{ const cov={}; for(const id of (t.destinos||[])) cov[id]=true; const prov={}; for(const p of (t.provincias||[])) prov[p]=true; return { id:t.id, nombre:t.nombre||'', costoStr: t.costo_estimado?String(t.costo_estimado):'', demora:t.demora||'', contacto:t.contacto||'', notas:t.notas||'', cov, prov }; })
+    };
+    envRender();
+  }
+  function envRender(){
+    const content = document.getElementById('content');
+    // Destinos agrupados por provincia (A-Z), y ciudades A-Z dentro de cada una.
+    const groups={};
+    _envEdit.destinos.forEach((d,i)=>{ const p=d.provincia||'(sin provincia)'; (groups[p]=groups[p]||[]).push({d,i}); });
+    let destGroups='';
+    for(const p of _envSortStr(Object.keys(groups))){
+      const rows=groups[p].slice().sort((x,y)=>String(x.d.nombre).localeCompare(String(y.d.nombre),'es',{sensitivity:'base'}));
+      destGroups += `<div style="margin-bottom:12px">
+        <div style="font-weight:700;color:#2d3277;font-size:13px;margin:2px 0 6px">📍 ${escapeHtml(p)} <span style="color:#999;font-weight:500">(${rows.length})</span></div>`;
+      for(const {d,i} of rows){
+        destGroups += `
+          <div style="display:grid;grid-template-columns:1.4fr 1.4fr auto;gap:8px;align-items:center;margin-bottom:6px;padding-left:8px">
+            <input value="${escapeHtml(d.nombre)}" oninput="_envEdit.destinos[${i}].nombre=this.value" placeholder="Ciudad / Localidad" style="padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+            <input value="${escapeHtml(d.cpsStr)}" oninput="_envEdit.destinos[${i}].cpsStr=this.value" placeholder="CP (opc., ej: 1763, 1754)" style="padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+            <button onclick="envDelDestino(${i})" title="Borrar ciudad" style="border:none;background:#fdecea;color:#c0392b;border-radius:7px;width:34px;height:34px;cursor:pointer;font-size:15px">🗑</button>
+          </div>`;
+      }
+      destGroups += `</div>`;
+    }
+    if(!_envEdit.destinos.length) destGroups = '<p style="color:#999;font-size:13px;margin:4px 0 8px">Todavía no cargaste destinos. Elegí una provincia, escribí la ciudad y agregala.</p>';
+
+    // Provincias que tienen al menos una ciudad (para la cobertura de los transportes).
+    const provsWithCities={};
+    _envEdit.destinos.forEach(d=>{ if(d.provincia){ (provsWithCities[d.provincia]=provsWithCities[d.provincia]||[]).push(d); } });
+    const provList=_envSortStr(Object.keys(provsWithCities));
+
+    let transCards = '';
+    _envEdit.transportes.forEach((t,ti)=>{
+      let cobertura='';
+      if(!provList.length){
+        cobertura = '<p style="color:#999;font-size:12px;margin:6px 0 0">Cargá destinos arriba (provincia y ciudad) para marcar a dónde llega.</p>';
+      } else {
+        cobertura = provList.map(p=>{
+          const provOn = !!t.prov[p];
+          const cities=_envSortByName(provsWithCities[p]);
+          const cityChecks = cities.map(c=>{
+            const on = provOn || !!t.cov[c.id];
+            return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;background:${on?'#eafaf1':'#f5f6f8'};border:1px solid ${on?'#a7e0c1':'#e2e5ea'};border-radius:20px;padding:3px 9px;cursor:${provOn?'default':'pointer'};opacity:${provOn?'0.6':'1'}">
+              <input type="checkbox" ${on?'checked':''} ${provOn?'disabled':''} onchange="envToggleCov(${ti},'${c.id}',this.checked)" style="cursor:pointer">
+              ${escapeHtml(c.nombre)}</label>`;
+          }).join('');
+          return `<div style="border:1px solid #eef0f4;border-radius:9px;padding:8px 10px;margin-top:6px;background:#fcfdff">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12px;color:${provOn?'#1e8e4e':'#2d3277'};cursor:pointer">
+              <input type="checkbox" ${provOn?'checked':''} onchange="envToggleProv(${ti},'${p.replace(/'/g,"\\'")}',this.checked)" style="cursor:pointer"> Toda ${escapeHtml(p)}
+            </label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${cityChecks}</div>
+          </div>`;
+        }).join('');
+      }
+      let reached=0; _envEdit.destinos.forEach(d=>{ if((d.provincia&&t.prov[d.provincia])||t.cov[d.id]) reached++; });
+      transCards += `
+        <div style="border:1px solid #e6e8ee;border-radius:12px;padding:14px 16px;margin-bottom:12px;background:#fff">
+          <div style="display:grid;grid-template-columns:1.6fr 1fr 1fr auto;gap:8px;align-items:end">
+            <div>
+              <label style="font-size:11px;font-weight:600;color:#666;display:block;margin-bottom:3px">Transporte</label>
+              <input value="${escapeHtml(t.nombre)}" oninput="_envEdit.transportes[${ti}].nombre=this.value" placeholder="Nombre del transporte" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;color:#666;display:block;margin-bottom:3px">Costo estimado</label>
+              <input value="${escapeHtml(t.costoStr)}" oninput="_envEdit.transportes[${ti}].costoStr=this.value" placeholder="$" inputmode="decimal" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;font-weight:600;color:#666;display:block;margin-bottom:3px">Demora (opc.)</label>
+              <input value="${escapeHtml(t.demora)}" oninput="_envEdit.transportes[${ti}].demora=this.value" placeholder="ej: 2 a 4 días" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+            </div>
+            <button onclick="envDelTransporte(${ti})" title="Borrar transporte" style="border:none;background:#fdecea;color:#c0392b;border-radius:7px;width:34px;height:34px;cursor:pointer;font-size:15px">🗑</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:8px;margin-top:8px">
+            <input value="${escapeHtml(t.contacto)}" oninput="_envEdit.transportes[${ti}].contacto=this.value" placeholder="Contacto / teléfono (opc.)" style="padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+            <input value="${escapeHtml(t.notas)}" oninput="_envEdit.transportes[${ti}].notas=this.value" placeholder="Notas (opc.)" style="padding:8px 10px;border:1px solid #ddd;border-radius:7px;font-size:13px">
+          </div>
+          <div style="margin-top:10px;font-size:11px;font-weight:600;color:#666">Cobertura <span style="color:#999;font-weight:500">— tildá "Toda la provincia" o ciudades sueltas (${reached} destino${reached===1?'':'s'})</span>:</div>
+          ${cobertura}
+        </div>`;
+    });
+    if(!_envEdit.transportes.length) transCards = '<p style="color:#999;font-size:13px;margin:4px 0 8px">Todavía no cargaste transportes.</p>';
+
+    content.innerHTML = `
+      <div style="max-width:980px">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+          <h2 style="color:#2d3277;margin:0">🚚 Envíos</h2>
+          <button onclick="envSave()" id="env-save-btn" style="margin-left:auto;background:var(--ac-brand,#2d3277);color:#fff;border:none;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer">💾 Guardar cambios</button>
+        </div>
+        <p style="color:#777;font-size:13px;margin:0 0 18px">Cargá los <b>destinos</b> por provincia y ciudad, los <b>transportes</b> con su costo estimado, y marcá a dónde llega cada uno (provincia entera o ciudades sueltas). Se usa para <b>pre-cargar respuestas en Preguntas</b> y para <b>elegir el transporte en Preparación</b>.</p>
+
+        <div style="background:#fafbfc;border:1px solid #eceef2;border-radius:14px;padding:16px 18px;margin-bottom:20px">
+          <h3 style="margin:0 0 12px;font-size:15px;color:#2d3277">📍 Destinos (por provincia → ciudad)</h3>
+          <div style="display:grid;grid-template-columns:1fr 1.2fr 1.2fr auto;gap:8px;align-items:center;background:#eef1ff;border:1px solid #d6ddff;border-radius:9px;padding:8px 10px;margin-bottom:14px">
+            <select id="env-add-prov" style="padding:8px 10px;border:1px solid #cdd6f5;border-radius:7px;font-size:13px;background:#fff;cursor:pointer">${_envProvOptionsHTML('')}</select>
+            <input id="env-add-city" placeholder="Ciudad / Localidad" onkeydown="if(event.key==='Enter')envAddDestino()" style="padding:8px 10px;border:1px solid #cdd6f5;border-radius:7px;font-size:13px">
+            <input id="env-add-cps" placeholder="CP (opc., ej: 1763, 1754)" onkeydown="if(event.key==='Enter')envAddDestino()" style="padding:8px 10px;border:1px solid #cdd6f5;border-radius:7px;font-size:13px">
+            <button onclick="envAddDestino()" style="background:#2d3277;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">+ Agregar</button>
+          </div>
+          ${destGroups}
+        </div>
+
+        <div style="background:#fafbfc;border:1px solid #eceef2;border-radius:14px;padding:16px 18px">
+          <div style="display:flex;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0;font-size:15px;color:#2d3277">🚚 Transportes</h3>
+            <button onclick="envAddTransporte()" style="margin-left:auto;background:#eef1ff;color:#2d3277;border:1px solid #d6ddff;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer">+ Agregar transporte</button>
+          </div>
+          ${transCards}
+        </div>
+        <div style="height:40px"></div>
+      </div>`;
+  }
+  function envAddDestino(){
+    const provEl=document.getElementById('env-add-prov'), cityEl=document.getElementById('env-add-city'), cpsEl=document.getElementById('env-add-cps');
+    const prov=(provEl&&provEl.value)||'', city=((cityEl&&cityEl.value)||'').trim(), cps=((cpsEl&&cpsEl.value)||'').trim();
+    if(!prov){ showToast('Elegí una provincia', 'error'); if(provEl) provEl.focus(); return; }
+    if(!city){ showToast('Escribí la ciudad / localidad', 'error'); if(cityEl) cityEl.focus(); return; }
+    _envEdit.destinos.push({ id:_envNewId('d'), nombre:city, provincia:prov, cpsStr:cps });
+    envRender();
+    // Deja la provincia elegida para cargar varias ciudades seguidas.
+    const p2=document.getElementById('env-add-prov'); if(p2) p2.value=prov;
+    const c2=document.getElementById('env-add-city'); if(c2) c2.focus();
+  }
+  function envDelDestino(i){
+    const d = _envEdit.destinos[i]; if(!d) return;
+    if(!confirm('¿Borrar esta ciudad? Se quitará de la cobertura de todos los transportes.')) return;
+    for(const t of _envEdit.transportes){ delete t.cov[d.id]; }
+    _envEdit.destinos.splice(i,1); envRender();
+  }
+  function envAddTransporte(){ _envEdit.transportes.push({ id:_envNewId('t'), nombre:'', costoStr:'', demora:'', contacto:'', notas:'', cov:{}, prov:{} }); envRender(); }
+  function envDelTransporte(i){ if(!confirm('¿Borrar este transporte?')) return; _envEdit.transportes.splice(i,1); envRender(); }
+  function envToggleCov(ti, destId, on){ const t=_envEdit.transportes[ti]; if(!t) return; if(on) t.cov[destId]=true; else delete t.cov[destId]; envRender(); }
+  function envToggleProv(ti, prov, on){ const t=_envEdit.transportes[ti]; if(!t) return; if(on) t.prov[prov]=true; else delete t.prov[prov]; envRender(); }
+  async function envSave(){
+    for(const d of _envEdit.destinos){ if(!String(d.nombre||'').trim()){ showToast('Hay una ciudad sin nombre. Completala o borrala.', 'error'); return; } }
+    for(const t of _envEdit.transportes){ if(!String(t.nombre||'').trim()){ showToast('Hay un transporte sin nombre. Completalo o borralo.', 'error'); return; } }
+    const payload = {
+      destinos: _envEdit.destinos.map(d=>({ id:d.id, nombre:d.nombre, provincia:d.provincia, cps:d.cpsStr })),
+      transportes: _envEdit.transportes.map(t=>({ id:t.id, nombre:t.nombre, costo_estimado:_envNumClean(t.costoStr), demora:t.demora, contacto:t.contacto, notas:t.notas, provincias:Object.keys(t.prov).filter(k=>t.prov[k]), destinos:Object.keys(t.cov).filter(k=>t.cov[k]) }))
+    };
+    const btn = document.getElementById('env-save-btn'); if(btn){ btn.disabled=true; btn.textContent='Guardando...'; }
+    try{
+      const r = await fetch('/api/envios/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+      const d = await r.json().catch(()=>({}));
+      if(r.ok && d.ok){
+        _enviosCfg = { transportes:d.transportes||[], destinos:d.destinos||[], can_edit:true, updated:d.updated||'' }; _enviosCfgAt = Date.now();
+        showToast('Envíos guardado', 'success');
+        loadEnvios();   // recarga con los ids ya normalizados por el server
+      } else {
+        showToast(d.error || ('Error al guardar ('+r.status+')'), 'error');
+        if(btn){ btn.disabled=false; btn.textContent='💾 Guardar cambios'; }
+      }
+    }catch(e){ showToast('Error de red al guardar', 'error'); if(btn){ btn.disabled=false; btn.textContent='💾 Guardar cambios'; } }
+  }
+
+  // ---------- PREGUNTAS: pre-cargar respuesta por destino ----------
+  async function envDecorateQuestions(){
+    const wraps = document.querySelectorAll('.env-qhelp[data-envready="0"]');
+    if(!wraps.length) return;
+    const cfg = await enviosFetchConfig();
+    if(!(cfg.destinos||[]).length){ wraps.forEach(w=>{ w.dataset.envready='1'; w.style.display='none'; }); return; }
+    wraps.forEach(w=>{
+      w.dataset.envready = '1';
+      const qid = w.dataset.qid || '';
+      const qtext = w.dataset.qtext || '';
+      const guess = _envGuessDestino(cfg, qtext);
+      const opts = '<option value="">— Elegí destino para pre-cargar el envío —</option>' + _envCityOptionsHTML(cfg, guess);
+      w.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#f6f8ff;border:1px solid #e3e8ff;border-radius:9px;padding:8px 10px">
+          <span style="font-size:12px">📦</span>
+          <select id="envq-${qid}" style="flex:1;min-width:160px;padding:7px 9px;border:1px solid #cdd6f5;border-radius:7px;font-size:12.5px;background:#fff;cursor:pointer">${opts}</select>
+          <button type="button" onclick="envPrecargar('${qid}')" style="background:#2d3277;color:#fff;border:none;border-radius:7px;padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">Pre-cargar respuesta</button>
+        </div>`;
+    });
+  }
+  async function envPrecargar(qid){
+    const sel = document.getElementById('envq-'+qid);
+    const ta = document.getElementById('reply-'+qid);
+    if(!sel || !ta) return;
+    const destinoId = sel.value;
+    if(!destinoId){ showToast('Elegí un destino primero', 'error'); return; }
+    const cfg = await enviosFetchConfig();
+    const texto = _envComposeRespuesta(cfg, destinoId);
+    if(!texto){ showToast('No pude armar la respuesta', 'error'); return; }
+    ta.value = texto;
+    ta.focus();
+    try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch(e){}
+  }
+
+  // ---------- PREPARACIÓN (ACORDAR): elegir transporte + ver si llega ----------
+  async function envFillAcordarSelects(sd){
+    const cfg = await enviosFetchConfig();
+    const destSel = document.getElementById('acordar-destino');
+    const transSel = document.getElementById('acordar-transporte');
+    if(!destSel || !transSel) return;
+    destSel.dataset.manual = '';   // al abrir/poblar, la detección automática vuelve a mandar
+    const box = document.getElementById('acordar-envios-box');
+    if(!(cfg.destinos||[]).length && !(cfg.transportes||[]).length){ if(box) box.style.display='none'; return; }
+    if(box) box.style.display='';
+    const hint = [ (sd&&sd.localidad)||'', (sd&&sd.provincia)||'', (sd&&sd.cp)||'' ].join(' ');
+    const guess = _envGuessDestino(cfg, hint);
+    destSel.innerHTML = '<option value="">— (auto) elegí destino —</option>' + _envCityOptionsHTML(cfg, guess);
+    transSel.innerHTML = ['<option value="">— elegí transporte —</option>']
+      .concat(_envSortByName(cfg.transportes||[]).map(t=>`<option value="${escapeHtml(t.id)}" ${ (sd&&sd.transporte_id)===t.id?'selected':'' }>${escapeHtml(t.nombre)}${t.costo_estimado?(' — '+_envMoney(t.costo_estimado)):''}</option>`)).join('');
+    envAcordarCoverage();
+  }
+  async function envAcordarCoverage(){
+    const cfg = await enviosFetchConfig();
+    const destSel = document.getElementById('acordar-destino');
+    const transSel = document.getElementById('acordar-transporte');
+    const badge = document.getElementById('acordar-cov-badge');
+    if(!destSel || !transSel || !badge) return;
+    const destId = destSel.value, transId = transSel.value;
+    const t = (cfg.transportes||[]).find(x=>x.id===transId);
+    if(!transId){ badge.innerHTML=''; return; }
+    const extra=[]; if(t&&t.costo_estimado) extra.push('costo estimado '+_envMoney(t.costo_estimado)); if(t&&t.demora) extra.push('demora '+t.demora);
+    const extraTxt = extra.length?(' · '+extra.join(' · ')):'';
+    if(!destId){ badge.innerHTML = `<span style="color:#777">Elegí un destino para verificar la cobertura.${extraTxt?('<br>'+escapeHtml(t.nombre)+extraTxt):''}</span>`; return; }
+    const d = (cfg.destinos||[]).find(x=>x.id===destId);
+    const llega = _envReaches(t, d);
+    if(llega){ badge.innerHTML = `<span style="color:#1e8e4e;font-weight:600">✓ ${escapeHtml(t.nombre)} llega a ${escapeHtml(_envDestName(cfg,destId))}${extraTxt}</span>`; }
+    else { badge.innerHTML = `<span style="color:#c0392b;font-weight:600">✗ ${escapeHtml(t.nombre)} NO figura con cobertura a ${escapeHtml(_envDestName(cfg,destId))}.</span> <span style="color:#777">Podés elegirlo igual, es solo un aviso.</span>`; }
+  }
+
   // ==================== ACORDAR MODAL ====================
   function openAcordarModal(saleKey, btn) {
     acordarPendingData = { saleKey, btn };
@@ -7523,7 +7849,22 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (modal) {
       modal.style.display = 'flex';
       modal.querySelector('form')?.reset();
+      const badge = document.getElementById('acordar-cov-badge'); if (badge) badge.innerHTML = '';
+      envFillAcordarSelects({});   // pobla Destino/Transporte (Envíos)
     }
+  }
+  // Re-adivina el destino desde Localidad/Provincia/CP mientras se escribe (sin pisar una elección manual).
+  function envAcordarReguess(){
+    const form = document.getElementById('acordar-form'); if(!form) return;
+    const destSel = document.getElementById('acordar-destino'); if(!destSel) return;
+    if(destSel.dataset.manual === '1') { envAcordarCoverage(); return; }
+    enviosFetchConfig().then(cfg=>{
+      const get = n => form.querySelector('[name="'+n+'"]')?.value || '';
+      const hint = [get('localidad'), get('provincia'), get('cp')].join(' ');
+      const guess = _envGuessDestino(cfg, hint);
+      if(guess && destSel.value !== guess){ destSel.value = guess; }
+      envAcordarCoverage();
+    });
   }
   function closeAcordarModal() {
     const modal = document.getElementById('acordar-modal');
@@ -7539,6 +7880,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       direccion: get('direccion'), localidad: get('localidad'),
       provincia: get('provincia'), cp: get('cp'), observaciones: get('observaciones')
     };
+    // Transporte elegido (Envíos): se guarda en la etiqueta.
+    const transId = document.getElementById('acordar-transporte')?.value || '';
+    if (transId) {
+      try {
+        const cfg = await enviosFetchConfig();
+        const t = (cfg.transportes || []).find(x => x.id === transId);
+        if (t) { shipping_data.transporte = t.nombre; shipping_data.transporte_id = t.id; shipping_data.transporte_costo = t.costo_estimado || 0; shipping_data.transporte_demora = t.demora || ''; }
+      } catch (e) {}
+    }
     const { saleKey, btn } = acordarPendingData;
     closeAcordarModal();
     if (saleKey && btn) await pasarAPreparacion(saleKey, btn, { shipping_data });
@@ -7560,7 +7910,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const fields = [
       ['Nombre', sd.nombre], ['DNI', sd.dni], ['Teléfono', sd.telefono],
       ['Dirección', sd.direccion], ['Localidad', sd.localidad],
-      ['Provincia', sd.provincia], ['CP', sd.cp], ['Obs.', sd.observaciones]
+      ['Provincia', sd.provincia], ['CP', sd.cp], ['Transporte', sd.transporte], ['Obs.', sd.observaciones]
     ];
     const destRows = fields
       .filter(([,v]) => v)
@@ -8973,19 +9323,33 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         </div>
         <div>
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Localidad</label>
-          <input name="localidad" type="text" placeholder="Ciudad / Localidad" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+          <input name="localidad" type="text" placeholder="Ciudad / Localidad" oninput="envAcordarReguess()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div>
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Provincia</label>
-          <input name="provincia" type="text" placeholder="Buenos Aires" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+          <input name="provincia" type="text" placeholder="Buenos Aires" oninput="envAcordarReguess()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div>
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Código Postal</label>
-          <input name="cp" type="text" placeholder="1234" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
+          <input name="cp" type="text" placeholder="1234" oninput="envAcordarReguess()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div style="grid-column:1/-1">
           <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Observaciones</label>
           <textarea name="observaciones" placeholder="Notas adicionales para el envío..." rows="2" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;resize:vertical;font-family:inherit"></textarea>
+        </div>
+        <div style="grid-column:1/-1;margin-top:4px;border-top:1px dashed #e3e3e3;padding-top:12px" id="acordar-envios-box">
+          <div style="font-size:12px;font-weight:700;color:#2d3277;margin-bottom:8px">🚚 Transporte (Envíos)</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Destino</label>
+              <select id="acordar-destino" onchange="this.dataset.manual='1';envAcordarCoverage()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer"></select>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:600;color:#555;display:block;margin-bottom:4px">Transporte</label>
+              <select id="acordar-transporte" onchange="envAcordarCoverage()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer"></select>
+            </div>
+          </div>
+          <div id="acordar-cov-badge" style="font-size:12.5px;margin-top:8px;min-height:16px"></div>
         </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:20px">
