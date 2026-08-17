@@ -7848,6 +7848,146 @@ route('POST', '/api/envios/config', async (req, res) => {
   sendJSON(res, 200, { ok: true, transportes: clean.transportes, destinos: clean.destinos, updated: db.envios_config.updated });
 });
 
+// ===========================================================================
+// ENVÍOS — AUTO-RESPUESTA DE PREGUNTAS (server-side, 24/7).
+// El server revisa las preguntas sin responder; si son de envío arma la respuesta
+// y la envía sola tras un margen (para poder cancelar si estás mirando). Registra
+// cada respuesta automática (pestaña "Automático" + contador diario).
+// ===========================================================================
+const ENV_MSG_CABAGBA = 'Realizamos envíos, la demora es de aproximadamente 2 a 4 días hábiles y el envío cuesta aproximadamente $25.000.';
+const ENV_MSG_PAIS = 'Realizamos envíos a todo el país, enviamos sin problemas a la terminal más cercana a tu localidad.';
+const ENV_PROV_AR = ['Buenos Aires','CABA','Catamarca','Chaco','Chubut','Córdoba','Corrientes','Entre Ríos','Formosa','Jujuy','La Pampa','La Rioja','Mendoza','Misiones','Neuquén','Río Negro','Salta','San Juan','San Luis','Santa Cruz','Santa Fe','Santiago del Estero','Tierra del Fuego','Tucumán'];
+const ENV_CABA_BARRIOS = new Set(['agronomia','almagro','balvanera','barracas','belgrano','boedo','caballito','chacarita','coghlan','cohglan','colegiales','constitucion','flores','floresta','la boca','paternal','la paternal','liniers','mataderos','monserrat','montserrat','monte castro','nueva pompeya','pompeya','nunez','palermo','parque avellaneda','parque chacabuco','parque chas','parque patricios','puerto madero','recoleta','retiro','saavedra','san cristobal','san nicolas','san telmo','velez sarsfield','versalles','villa crespo','villa del parque','villa general mitre','villa lugano','villa luro','villa ortuzar','villa pueyrredon','villa real','villa riachuelo','villa santa rita','villa soldati','villa urquiza','villa devoto','once','microcentro','barrio norte','abasto','tribunales','caballito norte']);
+const ENV_GBA_NAMES = new Set(['avellaneda','lanus','lanus oeste','lomas de zamora','quilmes','berazategui','florencio varela','almirante brown','esteban echeverria','ezeiza','la matanza','san justo','ramos mejia','isidro casanova','gonzalez catan','gregorio de laferrere','laferrere','rafael castillo','ciudadela','villa madero','tapiales','moron','haedo','castelar','el palomar','ituzaingo','hurlingham','tres de febrero','caseros','ciudad jardin','santos lugares','san martin','villa ballester','jose leon suarez','vicente lopez','olivos','florida','munro','villa martelli','villa lynch','san isidro','martinez','beccar','boulogne','san fernando','tigre','general pacheco','pacheco','don torcuato','benavidez','escobar','garin','ingeniero maschwitz','maschwitz','pilar','del viso','malvinas argentinas','los polvorines','grand bourg','tortuguitas','jose c paz','jose clemente paz','san miguel','bella vista','muniz','moreno','paso del rey','merlo','san antonio de padua','padua','libertad','marcos paz','berisso','ensenada','la plata','temperley','banfield','adrogue','burzaco','longchamps','glew','rafael calzada','san francisco solano','solano','bernal','wilde','sarandi','gerli','valentin alsina','villa dominico','monte grande','luis guillon','canning','pontevedra','villa luzuriaga','lomas del mirador','claypole','jose marmol','turdera','lavallol','llavallol','remedios de escalada','villa fiorito','dock sud','pineyro','loma hermosa','ballester','william morris','villa bosch','saenz peña','el talar','general rodriguez','canuelas','guernica','presidente peron','villa celina','tablada','la tablada','villa sarmiento','hudson']);
+function envNorm(s){ return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim(); }
+function envSimp(s){ return envNorm(s).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); }
+function envCanonProv(raw){ const n=envNorm(raw); if(!n) return ''; if(/capital federal|ciudad autonoma|ciudad de buenos aires|^caba$/.test(n)) return 'CABA'; for(const p of ENV_PROV_AR){ if(envNorm(p)===n) return p; } const map={'cordoba':'Córdoba','entre rios':'Entre Ríos','rio negro':'Río Negro','neuquen':'Neuquén','tucuman':'Tucumán'}; return map[n]||''; }
+function envMoneyS(n){ n=Number(n)||0; return n?('$'+n.toLocaleString('es-AR')):''; }
+function envCpNum(cp){ const n=parseInt(String(cp||'').replace(/\D/g,'').slice(0,4),10); return isNaN(n)?0:n; }
+function envParseQuestion(text){ const t=String(text||''); let m=t.match(/env[ií]os?\s+a\s+([^,(]+?)\s*,\s*([^,(]+?)\s*\(\s*c\.?\s*p\.?\s*:?\s*(\d{3,5})\s*\)/i); if(m) return {loc:m[1].trim(),prov:m[2].trim(),cp:m[3].trim()}; m=t.match(/env[ií]os?\s+a\s+([^,(]+?)\s*,\s*([^,(?.\n]+)/i); if(m) return {loc:m[1].trim(),prov:m[2].trim(),cp:''}; return null; }
+function envIsCabaGba(parsed){ if(!parsed) return false; const prov=envCanonProv(parsed.prov); if(prov==='CABA') return true; const cp=envCpNum(parsed.cp); if(cp>=1000&&cp<=1900) return true; const s=envSimp(parsed.loc); if(ENV_CABA_BARRIOS.has(s)) return true; if((prov==='Buenos Aires'||prov==='')&&ENV_GBA_NAMES.has(s)) return true; return false; }
+function envMatchDestino(cfg, parsed){ if(!parsed) return ''; const prov=envCanonProv(parsed.prov); const locS=envSimp(parsed.loc); const inProv=(cfg.destinos||[]).filter(d=>!prov||d.provincia===prov); let best='',bestScore=-1; for(const d of inProv){ const ds=envSimp(d.nombre); if(!ds) continue; let sc=-1; if(ds===locS) sc=100000; else if((' '+locS+' ').indexOf(' '+ds+' ')>=0) sc=50000+ds.length; else if((' '+ds+' ').indexOf(' '+locS+' ')>=0) sc=10000-(ds.length-locS.length); if(sc>bestScore){bestScore=sc;best=d.id;} } if(best) return best; if(parsed.cp){ for(const d of inProv){ if((d.cps||[]).indexOf(parsed.cp)>=0) return d.id; } } return ''; }
+function envReaches(t,d){ if(!t||!d) return false; if(d.provincia&&(t.provincias||[]).indexOf(d.provincia)>=0) return true; return (t.destinos||[]).indexOf(d.id)>=0; }
+function envTransportsFor(cfg, id){ const d=(cfg.destinos||[]).find(x=>x.id===id); if(!d) return []; const out=[]; for(const t of (cfg.transportes||[])) if(envReaches(t,d)) out.push(t); return out.sort((a,b)=>String(a.nombre).localeCompare(String(b.nombre),'es',{sensitivity:'base'})); }
+function envComposeAuto(cfg, id){ const d=(cfg.destinos||[]).find(x=>x.id===id); if(!d) return ''; const lugar=d.nombre+(d.provincia?(', '+d.provincia):''); const list=envTransportsFor(cfg,id); const fin=' Podés realizar la compra directamente en la publicación y comenzamos a prepararlo para el envío. ¡Quedamos a la espera!'; if(!list.length) return `Sí, realizamos envíos a ${lugar}. Escribinos y coordinamos el costo y la demora.`+fin; const nombres=list.map(t=>t.nombre); const nomTxt=nombres.length===1?nombres[0]:(nombres.slice(0,-1).join(', ')+' o '+nombres[nombres.length-1]); let s=`Sí, realizamos envíos a ${lugar} por ${nomTxt}.`; const conCosto=list.filter(t=>t.costo_estimado>0).sort((a,b)=>a.costo_estimado-b.costo_estimado); const ref=conCosto[0]||list[0]; const ex=[]; if(ref.demora) ex.push(`la demora estimada es de ${ref.demora}`); if(ref.costo_estimado>0) ex.push(`el costo aproximado es de ${envMoneyS(ref.costo_estimado)}`); if(ex.length) s+=` ${ex.join(' y ')}.`; return s+fin; }
+function envComposeForDest(cfg, id){ const d=(cfg.destinos||[]).find(x=>x.id===id); if(!d) return ''; const esAmba = d.provincia==='CABA' || (d.cps||[]).some(c=>{const n=envCpNum(c);return n>=1000&&n<=1900;}) || (d.provincia==='Buenos Aires' && ENV_GBA_NAMES.has(envSimp(d.nombre))); return esAmba ? ENV_MSG_CABAGBA : envComposeAuto(cfg, id); }
+function envComposeResponse(cfg, parsed){ if(!parsed) return ''; if(envIsCabaGba(parsed)) return ENV_MSG_CABAGBA; const id=envMatchDestino(cfg,parsed); if(id) return envComposeForDest(cfg,id); return ENV_MSG_PAIS; }
+function envArgDate(d){ try{ return new Date(d).toLocaleDateString('en-CA',{timeZone:'America/Argentina/Buenos_Aires'}); }catch(e){ return ''; } }
+function envLogAnswer(entry){
+  const d=loadDB();
+  if(!Array.isArray(d.envios_auto_log)) d.envios_auto_log=[];
+  if(d.envios_auto_log.some(e=>String(e.qid)===String(entry.qid))) return;
+  d.envios_auto_log.push(entry);
+  if(d.envios_auto_log.length>3000) d.envios_auto_log=d.envios_auto_log.slice(-3000);
+  saveDB(d);
+}
+const ENV_GRACE_MS = 60000;          // margen sin panel abierto (1 min)
+const _envPending = {};              // qid -> { due, account_id, item_id, qtext }  (en memoria)
+const _envSending = {};              // qid -> true mientras se está enviando (anti-doble)
+let _envTickBusy = false;
+// Envía la respuesta automática de UNA pregunta (usado por el tick y por "responder ya").
+async function envSendAuto(qid, account_id, qtext){
+  qid = String(qid);
+  if(_envSending[qid]) return { skipped:'inflight' };
+  const db = loadDB();
+  if(!(db.envios_config && db.envios_config.auto_reply)) return { skipped:'off' };
+  if((db.envios_auto_cancelled||[]).map(String).includes(qid)){ delete _envPending[qid]; return { skipped:'cancelled' }; }
+  if((db.envios_auto_log||[]).some(e=>String(e.qid)===qid)){ delete _envPending[qid]; return { skipped:'done' }; }
+  const cfg = loadEnviosConfig();
+  const p = _envPending[qid] || {};
+  const txt = String(qtext || p.qtext || '');
+  const parsed = envParseQuestion(txt); if(!parsed){ delete _envPending[qid]; return { skipped:'noparse' }; }
+  const body = envComposeResponse(cfg, parsed); if(!body) return { skipped:'nobody' };
+  const accId = (account_id != null ? parseInt(account_id) : p.account_id);
+  const account = (db.ml_accounts||[]).find(a=>a.id===accId); if(!account) return { skipped:'noaccount' };
+  const token = await getValidToken(account); if(!token) return { skipped:'notoken' };
+  const saludo = String(db.saludo_inicial == null ? 'Hola, Gracias por tu consulta,' : db.saludo_inicial).trim();
+  const adminU = (db.users||[]).find(u=>u.role==='admin'); const firma=(adminU&&adminU.firma)?String(adminU.firma).trim():'';
+  let finalText = body; if(saludo) finalText=saludo+'\n\n'+finalText; if(firma) finalText=finalText+'\n\n'+firma;
+  _envSending[qid]=true;
+  try{
+    await mlPost('https://api.mercadolibre.com/answers',{question_id:parseInt(qid),text:finalText},token);
+    recentlyAnsweredQuestions[qid]=Date.now();
+    envLogAnswer({ qid, ts:new Date().toISOString(), account_id:account.id, account_name:account.name, item_id:p.item_id||'', question:txt.slice(0,400), answer:finalText.slice(0,700) });
+    delete _envPending[qid];
+    return { sent:true };
+  }catch(e){ const em=String((e&&(e.response&&e.response.data&&e.response.data.message||e.message))||'').toLowerCase(); if(/already|answered|has an answer/.test(em)){ recentlyAnsweredQuestions[qid]=Date.now(); delete _envPending[qid]; return {skipped:'already'}; } return { error:String(em||'error') }; }
+  finally{ delete _envSending[qid]; }
+}
+async function envAutoReplyTick(){
+  if(_envTickBusy) return; _envTickBusy=true;
+  try{
+    const db=loadDB();
+    if(!(db.envios_config && db.envios_config.auto_reply)){ for(const k of Object.keys(_envPending)) delete _envPending[k]; return; }
+    const cfg=loadEnviosConfig(); if(!(cfg.destinos||[]).length) return;
+    const done=new Set((db.envios_auto_log||[]).map(e=>String(e.qid)));
+    const cancelled=new Set((db.envios_auto_cancelled||[]).map(String));
+    const saludo=String(db.saludo_inicial == null ? 'Hola, Gracias por tu consulta,' : db.saludo_inicial).trim();
+    const adminU=(db.users||[]).find(u=>u.role==='admin'); const firma=(adminU&&adminU.firma)?String(adminU.firma).trim():'';
+    const now=Date.now(); const seen=new Set();
+    for(const account of (db.ml_accounts||[])){
+      const token=await getValidToken(account); if(!token) continue;
+      let data; try{ data=await mlGet('https://api.mercadolibre.com/questions/search', token, {seller_id:account.seller_id,status:'UNANSWERED',sort_fields:'date_created',sort_types:'DESC',limit:50}); }catch(e){ continue; }
+      for(const q of (data.questions||[])){
+        const qid=String(q.id);
+        if(done.has(qid)||cancelled.has(qid)){ delete _envPending[qid]; continue; }
+        const parsed=envParseQuestion(q.text||''); if(!parsed) continue;   // no es de envío
+        seen.add(qid);
+        if(!_envPending[qid]){ _envPending[qid]={ due:now+ENV_GRACE_MS, account_id:account.id, account_name:account.name, item_id:q.item_id, qtext:String(q.text||'') }; continue; }
+        if(now < _envPending[qid].due) continue;      // todavía en el margen (cancelable)
+        const r = await envSendAuto(qid, account.id, q.text||'');
+        if(r && r.sent){ done.add(qid); await new Promise(x=>setTimeout(x,1200)); }
+      }
+    }
+    for(const qid of Object.keys(_envPending)){ if(!seen.has(qid)) delete _envPending[qid]; }
+  }catch(e){ console.error('[ENVIOS] auto-reply tick error:', e&&e.message); }
+  finally{ _envTickBusy=false; }
+}
+setInterval(envAutoReplyTick, 30*1000);
+// Primer corrida a los 20s del arranque.
+setTimeout(()=>{ try{ envAutoReplyTick(); }catch(e){} }, 20000);
+
+// Pendientes (para el contador/cancelar cuando el panel está abierto). Cualquier usuario.
+route('GET', '/api/envios/auto-pending', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  const db = loadDB(); const on=!!(db.envios_config && db.envios_config.auto_reply);
+  const now=Date.now(); const pending={};
+  for(const qid of Object.keys(_envPending)){ pending[qid]=Math.max(0, _envPending[qid].due-now); }
+  sendJSON(res, 200, { ok:true, on, pending, grace_ms: ENV_GRACE_MS });
+});
+// Responder YA una pregunta (lo pide el panel abierto a los 30s). Cualquier usuario logueado.
+route('POST', '/api/envios/auto-send-now', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  const b = await parseBody(req); const qid = String((b && b.qid) || '');
+  if(!qid) return sendJSON(res, 400, { error: 'Falta qid' });
+  try { const r = await envSendAuto(qid, (b && b.account_id), (b && b.qtext)); sendJSON(res, 200, { ok:true, result:r }); }
+  catch(e){ sendJSON(res, 200, { ok:true, result:{ error:String((e&&e.message)||e) } }); }
+});
+// Cancelar la auto-respuesta de una pregunta (solo admin).
+route('POST', '/api/envios/auto-cancel', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req); const qid = String((b && b.qid) || '');
+  if(!qid) return sendJSON(res, 400, { error: 'Falta qid' });
+  const db = loadDB();
+  if(!Array.isArray(db.envios_auto_cancelled)) db.envios_auto_cancelled=[];
+  if(!db.envios_auto_cancelled.map(String).includes(qid)) db.envios_auto_cancelled.push(qid);
+  if(db.envios_auto_cancelled.length>3000) db.envios_auto_cancelled=db.envios_auto_cancelled.slice(-3000);
+  saveDB(db);
+  delete _envPending[qid];
+  sendJSON(res, 200, { ok:true });
+});
+// Registro + contador diario de auto-respuestas (solo admin). Hora Argentina.
+route('GET', '/api/envios/auto-stats', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const db = loadDB(); const log=(db.envios_auto_log||[]);
+  const today=envArgDate(new Date());
+  let today_count=0; for(const e of log){ if(envArgDate(e.ts)===today) today_count++; }
+  const entries = log.slice(-200).reverse();
+  sendJSON(res, 200, { ok:true, today_count, total:log.length, entries });
+});
+
 // SUBIR ADJUNTO a Drive (orden o foto) vía el puente. Devuelve la URL. can_parabrisas.
 route('POST', '/api/parabrisas/upload', async (req, res) => {
   const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
