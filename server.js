@@ -212,13 +212,62 @@ for (const u of dbMigrate12.users) {
 if (!Array.isArray(dbMigrate12.tracking_orders)) { dbMigrate12.tracking_orders = []; migrated12 = true; }
 if (!dbMigrate12.tracking_config || typeof dbMigrate12.tracking_config !== 'object') {
   dbMigrate12.tracking_config = {
-    transportes: {},   // { "Nombre Transporte": { track_url: "https://..." } }
+    // Link de seguimiento por transporte. {guia} se reemplaza por el N° real. Vía Cargo ya viene precargado.
+    transportes: { 'Vía Cargo': { track_url: 'https://viacargo.com.ar/seguimiento-de-envio/{guia}/' } },
     msg_envio: '¡Hola! Tu pedido ya fue despachado por {transporte}. N° de guía: {guia}. Podés seguir el envío acá: {link} . ¡Gracias por tu compra!',
     msg_aviso: '¡Hola! Tu pedido ya se encuentra en la sucursal de {transporte} listo para retirar (guía {guia}). Te esperamos. {link}'
   };
   migrated12 = true;
 }
 if (migrated12) saveDB(dbMigrate12);
+// Migrate: dejar el link de Vía Cargo precargado UNA vez, aunque tracking_config ya existiera vacío
+// (por si se deployó una versión previa de Tracking con transportes:{}). No pisa lo que el admin cargue después.
+const dbMigrate13 = loadDB();
+let migrated13 = false;
+if (!dbMigrate13.tracking_viacargo_seeded) {
+  if (!dbMigrate13.tracking_config || typeof dbMigrate13.tracking_config !== 'object') dbMigrate13.tracking_config = { transportes: {}, msg_envio: '', msg_aviso: '' };
+  if (!dbMigrate13.tracking_config.transportes || typeof dbMigrate13.tracking_config.transportes !== 'object') dbMigrate13.tracking_config.transportes = {};
+  const vc = dbMigrate13.tracking_config.transportes['Vía Cargo'];
+  if (!vc || !vc.track_url) {
+    dbMigrate13.tracking_config.transportes['Vía Cargo'] = { track_url: 'https://viacargo.com.ar/seguimiento-de-envio/{guia}/' };
+  }
+  dbMigrate13.tracking_viacargo_seeded = true;
+  migrated13 = true;
+}
+if (migrated13) saveDB(dbMigrate13);
+// Migrate: formato de guía por transporte (simple vs serie/tipo/numero) + MD Cargas precargado (link + API).
+const dbMigrate14 = loadDB();
+let migrated14 = false;
+if (!dbMigrate14.tracking_seed_carriers_v2) {
+  if (!dbMigrate14.tracking_config || typeof dbMigrate14.tracking_config !== 'object') dbMigrate14.tracking_config = { transportes: {}, msg_envio: '', msg_aviso: '' };
+  if (!dbMigrate14.tracking_config.transportes || typeof dbMigrate14.tracking_config.transportes !== 'object') dbMigrate14.tracking_config.transportes = {};
+  const T = dbMigrate14.tracking_config.transportes;
+  // Vía Cargo: un solo campo de guía.
+  if (!T['Vía Cargo'] || !T['Vía Cargo'].track_url) T['Vía Cargo'] = { track_url: 'https://viacargo.com.ar/seguimiento-de-envio/{guia}/', formato: 'simple' };
+  if (!T['Vía Cargo'].formato) T['Vía Cargo'].formato = 'simple';
+  // MD Cargas: guía por Serie/Tipo/Número. Link que precarga + API pública para el automático.
+  if (!T['MD Cargas'] || !T['MD Cargas'].track_url) T['MD Cargas'] = { track_url: 'https://mdcargasoficial.com/tracking?serie={serie}&tipo={tipo}&numero={numero}', formato: 'serie_tipo_numero' };
+  if (!T['MD Cargas'].formato) T['MD Cargas'].formato = 'serie_tipo_numero';
+  // Asegurar que todo transporte tenga un formato definido.
+  for (const k of Object.keys(T)) { if (!T[k].formato) T[k].formato = 'simple'; }
+  dbMigrate14.tracking_seed_carriers_v2 = true;
+  migrated14 = true;
+}
+if (migrated14) saveDB(dbMigrate14);
+// Migrate: Correo Argentino precargado con formato 'prefijo' (HC fijo + número + AR). Se usa si el transporte existe en Envíos.
+const dbMigrate15 = loadDB();
+let migrated15 = false;
+if (!dbMigrate15.tracking_seed_correo_ar) {
+  if (!dbMigrate15.tracking_config || typeof dbMigrate15.tracking_config !== 'object') dbMigrate15.tracking_config = { transportes: {}, msg_envio: '', msg_aviso: '' };
+  if (!dbMigrate15.tracking_config.transportes || typeof dbMigrate15.tracking_config.transportes !== 'object') dbMigrate15.tracking_config.transportes = {};
+  const T = dbMigrate15.tracking_config.transportes;
+  if (!T['Correo Argentino'] || !T['Correo Argentino'].track_url) {
+    T['Correo Argentino'] = { track_url: 'https://www.correoargentino.com.ar/formularios/ondnc', formato: 'prefijo', guia_prefijo: 'HC', guia_sufijo: 'AR' };
+  }
+  dbMigrate15.tracking_seed_correo_ar = true;
+  migrated15 = true;
+}
+if (migrated15) saveDB(dbMigrate15);
 // ==================== SESSION STORE (persistent) ====================
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 function loadSessions() {
@@ -10634,7 +10683,7 @@ function trackIntakeFromOrder(db, order) {
     items: order.items || [], total_amount: order.total_amount || 0, date_created: order.date_created || '',
     shipping_data: order.shipping_data || null,
     estado: 'iniciada', sub: '',
-    fecha_envio: '', transporte: '', guia: '',
+    fecha_envio: '', transporte: '', guia: '', guia_serie: '', guia_tipo: '', guia_numero: '',
     msg_envio_at: '', msg_aviso_at: '', entregada_at: '', entregada_ml: false,
     manual: false,
     created_at: new Date().toISOString(), updated_at: new Date().toISOString()
@@ -10652,13 +10701,21 @@ function trackTpl(tpl, vars) {
        .replace(/\{nombre\}/g, v.nombre || '');
   return s.replace(/\s+/g, ' ').trim();
 }
-// Arma el link de seguimiento del transporte (si hay track_url configurada). {guia} en la URL se reemplaza.
-function trackLink(cfg, transporte, guia) {
+// Variables de guía de un seguimiento (para plantillas de link y mensaje).
+function trackGuiaVars(t) {
+  return { guia: (t && t.guia) || '', serie: (t && t.guia_serie) || '', tipo: (t && t.guia_tipo) || '', numero: (t && t.guia_numero) || '' };
+}
+// Arma el link de seguimiento del transporte. Reemplaza {guia} y/o {serie}{tipo}{numero} según la track_url.
+function trackLink(cfg, transporte, parts) {
   try {
     const t = cfg && cfg.transportes && cfg.transportes[transporte];
-    const url = t && t.track_url ? String(t.track_url).trim() : '';
+    let url = t && t.track_url ? String(t.track_url).trim() : '';
     if (!url) return '';
-    if (url.indexOf('{guia}') >= 0) return url.replace(/\{guia\}/g, encodeURIComponent(guia || ''));
+    const p = parts || {};
+    url = url.replace(/\{guia\}/g, encodeURIComponent(p.guia || ''))
+             .replace(/\{serie\}/g, encodeURIComponent(p.serie || ''))
+             .replace(/\{tipo\}/g, encodeURIComponent(p.tipo || ''))
+             .replace(/\{numero\}/g, encodeURIComponent(p.numero || ''));
     return url;
   } catch (e) { return ''; }
 }
@@ -10702,7 +10759,7 @@ route('GET', '/api/tracking/list', async (req, res) => {
   const en_camino = all.filter(t => t.estado === 'en_camino').sort((x, y) => String(y.updated_at).localeCompare(String(x.updated_at)));
   const entregadas = all.filter(t => t.estado === 'entregada').sort((x, y) => String(y.entregada_at).localeCompare(String(x.entregada_at)));
   const cfg = db.tracking_config || {};
-  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, entregadas, config: cfg });
+  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, entregadas, config: cfg, auto_on: db.tracking_auto_on !== false, auto_transportes: Object.keys(TRACK_DRIVERS) });
 });
 // DESPACHAR: guarda fecha/transporte/guía, envía el mensaje al comprador y pasa a EN CAMINO.
 route('POST', '/api/tracking/ship', async (req, res) => {
@@ -10711,41 +10768,56 @@ route('POST', '/api/tracking/ship', async (req, res) => {
   const id = String((b && b.id) || '');
   const fecha_envio = String((b && b.fecha_envio) || '').trim().slice(0, 20);
   const transporte = String((b && b.transporte) || '').trim().slice(0, 80);
-  const guia = String((b && b.guia) || '').trim().slice(0, 60);
   if (!id) return sendJSON(res, 400, { error: 'Falta id' });
   if (!transporte) return sendJSON(res, 400, { error: 'Elegí el transporte' });
-  if (!guia) return sendJSON(res, 400, { error: 'Cargá el N° de guía' });
   const db = loadDB();
   const t = (db.tracking_orders || []).find(x => x.id === id);
   if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
   const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
   const cfg = db.tracking_config || {};
-  const link = trackLink(cfg, transporte, guia);
+  const tcfg = (cfg.transportes && cfg.transportes[transporte]) || {};
+  const formato = (tcfg.formato === 'serie_tipo_numero' || tcfg.formato === 'prefijo') ? tcfg.formato : 'simple';
+  let guia = '', serie = '', tipo = '', numero = '';
+  if (formato === 'serie_tipo_numero') {
+    serie = String((b && b.serie) || '').trim().slice(0, 20);
+    tipo = String((b && b.tipo) || '').trim().slice(0, 10);
+    numero = String((b && b.numero) || '').trim().slice(0, 20);
+    if (!serie || !tipo || !numero) return sendJSON(res, 400, { error: 'Cargá Serie, Tipo y Número de la guía' });
+    guia = serie + '-' + tipo + '-' + numero;   // guía "legible" para mostrar y para el mensaje
+  } else if (formato === 'prefijo') {
+    numero = String((b && b.numero) || '').trim().slice(0, 40);
+    if (!numero) return sendJSON(res, 400, { error: 'Completá el número de guía' });
+    const pfx = String(tcfg.guia_prefijo || '').trim();
+    const sfx = String(tcfg.guia_sufijo || '').trim();
+    guia = [pfx, numero, sfx].filter(Boolean).join('-');   // ej "HC-484809524-AR"
+  } else {
+    guia = String((b && b.guia) || '').trim().slice(0, 60);
+    if (!guia) return sendJSON(res, 400, { error: 'Cargá el N° de guía' });
+  }
+  const parts = { guia, serie, tipo, numero };
+  const link = trackLink(cfg, transporte, parts);
   const text = trackTpl(cfg.msg_envio, { transporte, guia, link, nombre: t.buyer_name || '' });
   let sent = false, sendErr = '';
   try { await trackSendMsg(account, t.order_id, text); sent = true; }
   catch (e) { sendErr = String((e && e.message) || e); }
-  t.fecha_envio = fecha_envio; t.transporte = transporte; t.guia = guia;
+  t.fecha_envio = fecha_envio; t.transporte = transporte;
+  t.guia = guia; t.guia_serie = serie; t.guia_tipo = tipo; t.guia_numero = numero;
   t.estado = 'en_camino'; t.sub = '';
   if (sent) t.msg_envio_at = new Date().toISOString();
   t.updated_at = new Date().toISOString();
   saveDB(db);
   sendJSON(res, 200, { ok: true, sent, send_error: sendErr, sent_text: text });
 });
-// AVISO EN SUCURSAL: envía el mensaje "listo para retirar" y marca sub='con_aviso'.
-route('POST', '/api/tracking/aviso', async (req, res) => {
-  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
-  const b = await parseBody(req);
-  const id = String((b && b.id) || '');
-  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+// AVISO EN SUCURSAL: envía el mensaje "listo para retirar" y marca sub='con_aviso'. (Lo usan el botón y el automático.)
+async function trackDoAviso(id) {
   const db = loadDB();
   const t = (db.tracking_orders || []).find(x => x.id === id);
-  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  if (!t) return { ok: false, error: 'Seguimiento no encontrado' };
   const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
-  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  if (!account) return { ok: false, error: 'Cuenta no encontrada' };
   const cfg = db.tracking_config || {};
-  const link = trackLink(cfg, t.transporte, t.guia);
+  const link = trackLink(cfg, t.transporte, trackGuiaVars(t));
   const text = trackTpl(cfg.msg_aviso, { transporte: t.transporte, guia: t.guia, link, nombre: t.buyer_name || '' });
   let sent = false, sendErr = '';
   try { await trackSendMsg(account, t.order_id, text); sent = true; }
@@ -10753,18 +10825,22 @@ route('POST', '/api/tracking/aviso', async (req, res) => {
   if (sent) { t.sub = 'con_aviso'; t.msg_aviso_at = new Date().toISOString(); }
   t.updated_at = new Date().toISOString();
   saveDB(db);
-  sendJSON(res, 200, { ok: true, sent, send_error: sendErr, sent_text: text });
-});
-// ENTREGADO: marca entregada + entregada_at, opcionalmente marca la entrega en ML, y pasa a ENTREGADAS.
-route('POST', '/api/tracking/entregado', async (req, res) => {
+  return { ok: true, sent, send_error: sendErr, sent_text: text };
+}
+route('POST', '/api/tracking/aviso', async (req, res) => {
   const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const b = await parseBody(req);
   const id = String((b && b.id) || '');
-  const doMl = !!(b && b.ml);
   if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const r = await trackDoAviso(id);
+  if (!r.ok) return sendJSON(res, 404, { error: r.error });
+  sendJSON(res, 200, r);
+});
+// ENTREGADO: marca entregada + entregada_at, opcionalmente marca la entrega en ML, y pasa a ENTREGADAS. (Botón y automático.)
+async function trackDoEntregado(id, doMl) {
   const db = loadDB();
   const t = (db.tracking_orders || []).find(x => x.id === id);
-  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  if (!t) return { ok: false, error: 'Seguimiento no encontrado' };
   let ml_ok = false, ml_err = '';
   if (doMl) {
     const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
@@ -10789,7 +10865,17 @@ route('POST', '/api/tracking/entregado', async (req, res) => {
   if (ml_ok) t.entregada_ml = true;
   t.updated_at = new Date().toISOString();
   saveDB(db);
-  sendJSON(res, 200, { ok: true, ml_requested: doMl, ml_ok, ml_error: ml_err });
+  return { ok: true, ml_requested: !!doMl, ml_ok, ml_error: ml_err };
+}
+route('POST', '/api/tracking/entregado', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  const doMl = !!(b && b.ml);
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const r = await trackDoEntregado(id, doMl);
+  if (!r.ok) return sendJSON(res, 404, { error: r.error });
+  sendJSON(res, 200, r);
 });
 // PASAR A TRACKING MANUALMENTE una venta finalizada de Preparación (botón "TRACKING" en Finalizadas).
 route('POST', '/api/tracking/intake', async (req, res) => {
@@ -10826,11 +10912,21 @@ route('POST', '/api/tracking/config', async (req, res) => {
   const cur = (db.tracking_config && typeof db.tracking_config === 'object') ? db.tracking_config : { transportes: {}, msg_envio: '', msg_aviso: '' };
   const transportes = {};
   const src = (b && b.transportes && typeof b.transportes === 'object') ? b.transportes : {};
+  const curT = (cur.transportes && typeof cur.transportes === 'object') ? cur.transportes : {};
   for (const k of Object.keys(src).slice(0, 400)) {
     const name = String(k).trim().slice(0, 80);
     if (!name) continue;
     const url = String((src[k] && src[k].track_url) || '').trim().slice(0, 400);
-    transportes[name] = { track_url: url };
+    // formato: 'simple' (un campo), 'serie_tipo_numero' o 'prefijo' (prefijo fijo + número). Si el modal no lo manda, preservamos el actual.
+    let fmt = String((src[k] && src[k].formato) || '').trim();
+    if (fmt !== 'simple' && fmt !== 'serie_tipo_numero' && fmt !== 'prefijo') fmt = (curT[name] && curT[name].formato) || 'simple';
+    const entry = { track_url: url, formato: fmt };
+    // Para formato 'prefijo': prefijo fijo (ej "HC") y sufijo fijo (ej "AR"). Se preservan si el modal no los manda.
+    const pfx = (src[k] && src[k].guia_prefijo != null) ? String(src[k].guia_prefijo).trim().slice(0, 12) : ((curT[name] && curT[name].guia_prefijo) || '');
+    const sfx = (src[k] && src[k].guia_sufijo != null) ? String(src[k].guia_sufijo).trim().slice(0, 12) : ((curT[name] && curT[name].guia_sufijo) || '');
+    if (pfx) entry.guia_prefijo = pfx;
+    if (sfx) entry.guia_sufijo = sfx;
+    transportes[name] = entry;
   }
   db.tracking_config = {
     transportes,
@@ -10839,6 +10935,112 @@ route('POST', '/api/tracking/config', async (req, res) => {
   };
   saveDB(db);
   sendJSON(res, 200, { ok: true, config: db.tracking_config });
+});
+
+// ==================== TRACKING AUTOMÁTICO (lee la API del transporte y actúa solo) ====================
+const FLECHA_TOKEN = 'DB1347515B35A29E391339D7F41AD05DB5E27CD0';   // token fijo embebido en la web de Flecha Carga
+const TRACK_POLL_MS = 6 * 3600 * 1000;   // cada 6 horas (elegido con el cliente)
+async function trackFetchJson(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AutochapTracking/1.0)', 'Accept': 'application/json,text/plain,*/*' }, signal: ctrl.signal });
+    if (!r.ok) return { _httpError: r.status };
+    const txt = await r.text();
+    try { return JSON.parse(txt); } catch (e) { return { _parseError: true, _raw: txt.slice(0, 200) }; }
+  } catch (e) { return { _netError: String((e && e.message) || e) }; }
+  finally { clearTimeout(to); }
+}
+// Driver MD Cargas — estado por serie/tipo/numero. API pública sin token.
+async function trackDriverMD(rec) {
+  const serie = String(rec.guia_serie || '').trim(), tipo = String(rec.guia_tipo || '').trim(), numero = String(rec.guia_numero || '').trim();
+  if (!serie || !tipo || !numero) return { found: false, reason: 'sin serie/tipo/numero' };
+  const url = `https://mdcargasoficial.com/tracking_api.php?serie=${encodeURIComponent(serie)}&tipo=${encodeURIComponent(tipo)}&numero=${encodeURIComponent(numero)}`;
+  const j = await trackFetchJson(url);
+  if (!j || j._netError || j._httpError || !j.data || !j.data.header) return { found: false, reason: (j && (j._netError || ('http ' + j._httpError))) || 'sin datos' };
+  const h = j.data.header;
+  const nombre = String(h.estadoActualNombre || '');
+  const code = Number(h.estadoActualCodigo || 0);
+  const domicilio = h.esEntregaADomicilio === true;
+  const entregada = code >= 4 || /entregad/i.test(nombre);
+  const enDestino = !entregada && (code === 3 || /en\s*destino/i.test(nombre) || /en\s*agencia/i.test(nombre));
+  return { found: true, estadoTxt: nombre, entregada, enDestino, domicilio };
+}
+// Driver Flecha Carga — estado por Nº de guía (sin guiones, minúscula) + token fijo.
+async function trackDriverFlecha(rec) {
+  const raw = String(rec.guia || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!raw) return { found: false, reason: 'sin guía' };
+  const url = `https://api.flechacarga.com/FlcInterface/api/Guia/ObtenerSegunGuia?NroGuia=${encodeURIComponent(raw)}&Token=${FLECHA_TOKEN}`;
+  const j = await trackFetchJson(url);
+  const r = j && j.resultado;
+  if (!r) return { found: false, reason: (j && (j._netError || ('http ' + j._httpError))) || 'sin datos' };
+  const ev = Array.isArray(r.bultosEstadoTracking) ? r.bultosEstadoTracking : [];
+  if (!ev.length) return { found: false, reason: 'sin eventos' };
+  let last = null; for (const e of ev) { if (!last || String(e.fecha || '') > String(last.fecha || '')) last = e; }
+  const op = String((last && last.operacion) || '');
+  const entregada = /entregad/i.test(op);
+  const enDestino = !entregada && /(recibido en agencia|en agencia|disponible|para retiro|arrib)/i.test(op);
+  return { found: true, estadoTxt: op, entregada, enDestino, domicilio: false };
+}
+// Transporte → driver. Solo estos se siguen automáticamente; el resto queda manual/semi-automático.
+const TRACK_DRIVERS = { 'MD Cargas': trackDriverMD, 'Flecha Carga (Buspack)': trackDriverFlecha };
+function trackAutoLog(db, entry) {
+  if (!Array.isArray(db.tracking_auto_log)) db.tracking_auto_log = [];
+  db.tracking_auto_log.push(Object.assign({ ts: new Date().toISOString() }, entry));
+  if (db.tracking_auto_log.length > 2000) db.tracking_auto_log = db.tracking_auto_log.slice(-2000);
+}
+let _trackTickBusy = false;
+async function trackAutoTick() {
+  if (_trackTickBusy) return; _trackTickBusy = true;
+  try {
+    const db0 = loadDB();
+    if (db0.tracking_auto_on === false) { _trackTickBusy = false; return; }   // pausado por el admin
+    const pend = (db0.tracking_orders || []).filter(t => t.estado === 'en_camino' && TRACK_DRIVERS[t.transporte]);
+    for (const t of pend) {
+      try {
+        const st = await TRACK_DRIVERS[t.transporte](t);
+        // Guardar último chequeo/estado leído (transparencia en el panel).
+        { const d = loadDB(); const r = (d.tracking_orders || []).find(x => x.id === t.id); if (r) { r.auto_check_at = new Date().toISOString(); if (st && st.found) r.auto_estado = st.estadoTxt || ''; saveDB(d); } }
+        if (!st || !st.found) continue;
+        if (st.entregada) {
+          const r = await trackDoEntregado(t.id, true);
+          const d = loadDB(); trackAutoLog(d, { id: t.id, order_id: t.order_id, transporte: t.transporte, accion: 'entregado', estado: st.estadoTxt, ml_ok: r && r.ml_ok, ml_error: r && r.ml_error }); saveDB(d);
+          console.log('[TRACK-AUTO] entregado', t.transporte, t.guia, '->', st.estadoTxt);
+        } else if (st.enDestino && t.sub !== 'con_aviso' && !st.domicilio) {
+          const r = await trackDoAviso(t.id);
+          const d = loadDB(); trackAutoLog(d, { id: t.id, order_id: t.order_id, transporte: t.transporte, accion: 'aviso', estado: st.estadoTxt, sent: r && r.sent, send_error: r && r.send_error }); saveDB(d);
+          console.log('[TRACK-AUTO] aviso', t.transporte, t.guia, '->', st.estadoTxt);
+        }
+      } catch (e) { console.error('[TRACK-AUTO] item', t.id, e && e.message); }
+    }
+  } catch (e) { console.error('[TRACK-AUTO] tick', e && e.message); }
+  finally { _trackTickBusy = false; }
+}
+setTimeout(() => { trackAutoTick().catch(() => {}); }, 90000);            // primera corrida ~90s post-arranque
+setInterval(() => { trackAutoTick().catch(() => {}); }, TRACK_POLL_MS);   // cada 6 horas
+// REVISAR YA (admin): corre el chequeo de inmediato y devuelve lo leído por cada envío con driver.
+route('POST', '/api/tracking/check-now', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  if (!a.admin) return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const db = loadDB();
+  const pend = (db.tracking_orders || []).filter(t => t.estado === 'en_camino' && TRACK_DRIVERS[t.transporte]);
+  const results = [];
+  for (const t of pend) {
+    try { const st = await TRACK_DRIVERS[t.transporte](t); results.push(Object.assign({ id: t.id, transporte: t.transporte, guia: t.guia }, st)); }
+    catch (e) { results.push({ id: t.id, transporte: t.transporte, guia: t.guia, found: false, reason: String(e && e.message) }); }
+  }
+  trackAutoTick().catch(() => {});   // dispara el tick real (aplica acciones) en segundo plano
+  sendJSON(res, 200, { ok: true, checked: results.length, results });
+});
+// ENCENDER/APAGAR el tracking automático (admin).
+route('POST', '/api/tracking/auto-toggle', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  if (!a.admin) return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req);
+  const db = loadDB();
+  db.tracking_auto_on = !!(b && b.on);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, on: db.tracking_auto_on });
 });
 
 
