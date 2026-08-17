@@ -7872,6 +7872,31 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return s;
   }
 
+  // Respuestas fijas (fallback) para CABA/GBA y para localidades no encontradas.
+  const ENV_MSG_CABAGBA = 'Realizamos envíos, la demora es de aproximadamente 2 a 4 días hábiles y el envío cuesta aproximadamente $25.000.';
+  const ENV_MSG_PAIS = 'Realizamos envíos a todo el país, enviamos sin problemas a la terminal más cercana a tu localidad.';
+  const CABA_BARRIOS = new Set(['agronomia','almagro','balvanera','barracas','belgrano','boedo','caballito','chacarita','coghlan','cohglan','colegiales','constitucion','flores','floresta','la boca','paternal','la paternal','liniers','mataderos','monserrat','montserrat','monte castro','nueva pompeya','pompeya','nunez','palermo','parque avellaneda','parque chacabuco','parque chas','parque patricios','puerto madero','recoleta','retiro','saavedra','san cristobal','san nicolas','san telmo','velez sarsfield','versalles','villa crespo','villa del parque','villa general mitre','villa lugano','villa luro','villa ortuzar','villa pueyrredon','villa real','villa riachuelo','villa santa rita','villa soldati','villa urquiza','villa devoto','once','microcentro','barrio norte','abasto','tribunales','caballito norte']);
+  const GBA_NAMES = new Set(['avellaneda','lanus','lanus oeste','lomas de zamora','quilmes','berazategui','florencio varela','almirante brown','esteban echeverria','ezeiza','la matanza','san justo','ramos mejia','isidro casanova','gonzalez catan','gregorio de laferrere','laferrere','rafael castillo','ciudadela','villa madero','tapiales','moron','haedo','castelar','el palomar','ituzaingo','hurlingham','tres de febrero','caseros','ciudad jardin','santos lugares','san martin','villa ballester','jose leon suarez','vicente lopez','olivos','florida','munro','villa martelli','villa lynch','san isidro','martinez','beccar','boulogne','san fernando','tigre','general pacheco','pacheco','don torcuato','benavidez','escobar','garin','ingeniero maschwitz','maschwitz','pilar','del viso','malvinas argentinas','los polvorines','grand bourg','tortuguitas','jose c paz','jose clemente paz','san miguel','bella vista','muniz','moreno','paso del rey','merlo','san antonio de padua','padua','libertad','marcos paz','berisso','ensenada','la plata','temperley','banfield','adrogue','burzaco','longchamps','glew','rafael calzada','san francisco solano','solano','bernal','wilde','sarandi','gerli','valentin alsina','villa dominico','monte grande','luis guillon','canning','pontevedra','villa luzuriaga','lomas del mirador','claypole','jose marmol','turdera','lavallol','llavallol','remedios de escalada','villa fiorito','dock sud','pineyro','loma hermosa','ballester','william morris','villa bosch','saenz peña','santos lugares','el talar','general rodriguez','canuelas','guernica','presidente peron','villa celina','tablada','la tablada','villa sarmiento','hudson','berazategui']);
+  function _envCpNum(cp){ const n=parseInt(String(cp||'').replace(/\D/g,'').slice(0,4),10); return isNaN(n)?0:n; }
+  // ¿La consulta apunta a CABA o GBA? (CP 1000-1900, o provincia CABA, o nombre en las listas)
+  function _envIsCabaGba(parsed){
+    if(!parsed) return false;
+    const prov=_envCanonProvJs(parsed.prov);
+    if(prov==='CABA') return true;
+    const cp=_envCpNum(parsed.cp);
+    if(cp>=1000 && cp<=1900) return true;
+    const s=_envSimpJs(parsed.loc);
+    if(CABA_BARRIOS.has(s)) return true;
+    if((prov==='Buenos Aires'||prov==='') && GBA_NAMES.has(s)) return true;
+    return false;
+  }
+  // Texto para un destino elegido a mano: si es CABA/GBA usa la tarifa plana, si no el detalle.
+  function _envComposeForDest(cfg, destId){
+    const d=(cfg.destinos||[]).find(x=>x.id===destId); if(!d) return '';
+    const esAmba = d.provincia==='CABA' || (d.cps||[]).some(c=>{const n=_envCpNum(c); return n>=1000&&n<=1900;}) || (d.provincia==='Buenos Aires' && GBA_NAMES.has(_envSimpJs(d.nombre)));
+    return esAmba ? ENV_MSG_CABAGBA : _envComposeAuto(cfg, destId);
+  }
+
   async function envDecorateQuestions(){
     const wraps=document.querySelectorAll('.env-qhelp[data-envready="0"]');
     const cfg=await enviosFetchConfig();
@@ -7896,13 +7921,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <div id="envauto-${qid}" style="font-size:12px;margin-top:4px"></div>
         </div>`;
       envLocChange(qid, true);
-      if(destId){
+      // Decidir el texto automático: CABA/GBA (tarifa plana) → match puntual → resto del país.
+      let autoText='';
+      if(parsed && _envIsCabaGba(parsed)) autoText=ENV_MSG_CABAGBA;
+      else if(destId) autoText=_envComposeForDest(cfg, destId);
+      else if(parsed) autoText=ENV_MSG_PAIS;
+      if(autoText){
         if(_envAuto[qid]){ envAutoRenderCountdown(qid); }
-        else if(_envAutoReplyOn && !_envHandled[qid]){ envPrecargar(qid, true); envStartAuto(qid, account); }
-        else if(!_envHandled[qid]){ /* auto OFF: dejamos elegido pero sin precargar ni enviar */ }
+        else if(_envAutoReplyOn && !_envHandled[qid]){ _envFillReply(qid, autoText); envStartAuto(qid, account); }
       }
     });
   }
+  function _envFillReply(qid, text){ const ta=document.getElementById('reply-'+qid); if(ta && text) ta.value=text; }
   function envRenderAutoBar(){
     const content=document.getElementById('content'); if(!content) return;
     if(!(currentUser && currentUser.role==='admin')){ const ex=document.getElementById('env-autoreply-bar'); if(ex) ex.remove(); return; }
@@ -7956,7 +7986,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const destinoId=sel.value;
     if(!destinoId){ if(!auto) showToast('Elegí una localidad primero','error'); return; }
     const cfg=await enviosFetchConfig();
-    const texto = auto ? _envComposeAuto(cfg,destinoId) : _envComposeRespuesta(cfg,destinoId);
+    const texto = _envComposeForDest(cfg,destinoId);
     if(!texto){ if(!auto) showToast('No pude armar la respuesta','error'); return; }
     ta.value=texto;
     if(!auto){ ta.focus(); try{ ta.setSelectionRange(ta.value.length,ta.value.length); }catch(e){} }
