@@ -203,6 +203,22 @@ if (dbMigrate11.envios_seeded !== true) {
   migrated11 = true;
 }
 if (migrated11) saveDB(dbMigrate11);
+// Migrate: TRACKING — permiso can_tracking, almacén de seguimientos y configuración.
+const dbMigrate12 = loadDB();
+let migrated12 = false;
+for (const u of dbMigrate12.users) {
+  if (u.can_tracking === undefined) { u.can_tracking = false; migrated12 = true; }
+}
+if (!Array.isArray(dbMigrate12.tracking_orders)) { dbMigrate12.tracking_orders = []; migrated12 = true; }
+if (!dbMigrate12.tracking_config || typeof dbMigrate12.tracking_config !== 'object') {
+  dbMigrate12.tracking_config = {
+    transportes: {},   // { "Nombre Transporte": { track_url: "https://..." } }
+    msg_envio: '¡Hola! Tu pedido ya fue despachado por {transporte}. N° de guía: {guia}. Podés seguir el envío acá: {link} . ¡Gracias por tu compra!',
+    msg_aviso: '¡Hola! Tu pedido ya se encuentra en la sucursal de {transporte} listo para retirar (guía {guia}). Te esperamos. {link}'
+  };
+  migrated12 = true;
+}
+if (migrated12) saveDB(dbMigrate12);
 // ==================== SESSION STORE (persistent) ====================
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 function loadSessions() {
@@ -582,6 +598,7 @@ route('GET', '/api/me', async (req, res) => {
     can_local: isAdmin || user?.can_local === true,
     can_parabrisas: isAdmin || user?.can_parabrisas === true,
     can_envios: isAdmin || user?.can_envios === true,
+    can_tracking: isAdmin || user?.can_tracking === true,
     // Compras (cuenta corriente proveedores): cargar comprobantes/pagos, y ver saldos/resúmenes.
     can_compras_cargar: isAdmin || user?.can_compras_cargar === true || user?.can_compras_saldos === true,
     can_compras_saldos: isAdmin || user?.can_compras_saldos === true
@@ -610,6 +627,7 @@ route('GET', '/api/users', async (req, res) => {
     can_local: u.role === 'admin' || u.can_local === true,
     can_parabrisas: u.role === 'admin' || u.can_parabrisas === true,
     can_envios: u.role === 'admin' || u.can_envios === true,
+    can_tracking: u.role === 'admin' || u.can_tracking === true,
     can_compras_cargar: u.role === 'admin' || u.can_compras_cargar === true || u.can_compras_saldos === true,
     can_compras_saldos: u.role === 'admin' || u.can_compras_saldos === true,
     created_at: u.created_at
@@ -618,7 +636,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_envios, can_compras_cargar, can_compras_saldos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -638,6 +656,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_local !== undefined) user.can_local = !!can_local;
   if (can_parabrisas !== undefined) user.can_parabrisas = !!can_parabrisas;
   if (can_envios !== undefined) user.can_envios = !!can_envios;
+  if (can_tracking !== undefined) user.can_tracking = !!can_tracking;
   if (can_compras_cargar !== undefined) user.can_compras_cargar = !!can_compras_cargar;
   if (can_compras_saldos !== undefined) user.can_compras_saldos = !!can_compras_saldos;
   saveDB(db);
@@ -5073,6 +5092,10 @@ route('POST', '/api/prep/finish', async (req, res) => {
   order.status = 'done';
   order.done_at = new Date().toISOString();
   order.done_by = sess.username;
+  // TRACKING: si la venta es "acordar con el vendedor" (agreement), entra sola a Tracking → INICIADAS.
+  try {
+    if (String(order.shipping_type || '') === 'agreement') trackIntakeFromOrder(db, order);
+  } catch (e) { console.error('[TRACKING] intake error:', e && e.message); }
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
@@ -7987,7 +8010,6 @@ route('GET', '/api/envios/auto-stats', async (req, res) => {
   const entries = log.slice(-200).reverse();
   sendJSON(res, 200, { ok:true, today_count, total:log.length, entries });
 });
-
 // SUBIR ADJUNTO a Drive (orden o foto) vía el puente. Devuelve la URL. can_parabrisas.
 route('POST', '/api/parabrisas/upload', async (req, res) => {
   const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
@@ -10589,6 +10611,236 @@ route('GET', '/gestion', async (req, res) => servePanel('gestion', req, res));
 registerAds({ route, mlGet, mlPut, getValidToken, refreshToken, loadDB, saveDB, sendJSON, requireAuth, parseBody, ML_CLIENT_ID });
 registerStock({ route, sendJSON, requireAuth, parseBody, loadDB, saveDB, checkApiToken, DATA_DIR });
 })();
+
+// ==================== TRACKING (seguimiento de envíos "acordar con el vendedor") ====================
+// Permiso: admin, o usuario con can_tracking. Devuelve la sesión + si puede editar config (admin).
+function trackAuth(req) {
+  const s = requireAuth(req); if (!s) return { err: [401, 'No autenticado'] };
+  if (s.role === 'admin') return { s, admin: true };
+  const db = loadDB(); const u = (db.users || []).find(x => x.id === s.userId);
+  if (u && u.can_tracking === true) return { s, admin: false };
+  return { err: [403, 'Sin permiso de Tracking'] };
+}
+// Crea (si no existe) el registro de seguimiento a partir de una orden de Preparación. Idempotente por order_id.
+function trackIntakeFromOrder(db, order) {
+  if (!Array.isArray(db.tracking_orders)) db.tracking_orders = [];
+  const exists = db.tracking_orders.find(t => String(t.order_id) === String(order.order_id));
+  if (exists) return { record: exists, created: false };
+  const rec = {
+    id: 'tk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    order_id: order.order_id, pack_id: order.pack_id || '', account_id: order.account_id,
+    account_name: order.account_name || '', seller_id: order.seller_id || '',
+    buyer_name: order.buyer_name || '', buyer_id: order.buyer_id || '',
+    items: order.items || [], total_amount: order.total_amount || 0, date_created: order.date_created || '',
+    shipping_data: order.shipping_data || null,
+    estado: 'iniciada', sub: '',
+    fecha_envio: '', transporte: '', guia: '',
+    msg_envio_at: '', msg_aviso_at: '', entregada_at: '', entregada_ml: false,
+    manual: false,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+  };
+  db.tracking_orders.push(rec);
+  return { record: rec, created: true };
+}
+// Reemplaza los placeholders de las plantillas de mensaje.
+function trackTpl(tpl, vars) {
+  let s = String(tpl == null ? '' : tpl);
+  const v = vars || {};
+  s = s.replace(/\{transporte\}/g, v.transporte || '')
+       .replace(/\{guia\}/g, v.guia || '')
+       .replace(/\{link\}/g, v.link || '')
+       .replace(/\{nombre\}/g, v.nombre || '');
+  return s.replace(/\s+/g, ' ').trim();
+}
+// Arma el link de seguimiento del transporte (si hay track_url configurada). {guia} en la URL se reemplaza.
+function trackLink(cfg, transporte, guia) {
+  try {
+    const t = cfg && cfg.transportes && cfg.transportes[transporte];
+    const url = t && t.track_url ? String(t.track_url).trim() : '';
+    if (!url) return '';
+    if (url.indexOf('{guia}') >= 0) return url.replace(/\{guia\}/g, encodeURIComponent(guia || ''));
+    return url;
+  } catch (e) { return ''; }
+}
+// Envía un mensaje al comprador por la API de mensajería de ML (mismo patrón que /api/messages/reply).
+async function trackSendMsg(account, order_id, text) {
+  const token = await getValidToken(account);
+  if (!token) throw new Error('Token inválido');
+  const orderData = await mlGet(`https://api.mercadolibre.com/orders/${order_id}`, token);
+  const buyerId = orderData.buyer.id;
+  const packId = orderData.pack_id || order_id;
+  const sellerId = parseInt(account.seller_id);
+  const msgUrl = `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&application_id=${ML_CLIENT_ID}`;
+  const msgBody = { from: { user_id: String(sellerId) }, to: { user_id: String(buyerId) }, text: text };
+  const msgRes = await fetch(msgUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(msgBody) });
+  const msgData = await msgRes.text();
+  if (!msgRes.ok) { let p = {}; try { p = JSON.parse(msgData); } catch (e) {} throw new Error(p.message || p.error || ('Error de ML: ' + msgRes.status)); }
+  return true;
+}
+// Purga de ENTREGADAS: borra las entregadas con más de 90 días (3 meses) por espacio. Devuelve cuántas quitó.
+function trackPurge(db) {
+  if (!Array.isArray(db.tracking_orders)) return 0;
+  const LIMIT = 90 * 24 * 3600 * 1000;
+  const now = Date.now();
+  const before = db.tracking_orders.length;
+  db.tracking_orders = db.tracking_orders.filter(t => {
+    if (t.estado !== 'entregada') return true;
+    const at = t.entregada_at ? Date.parse(t.entregada_at) : 0;
+    if (!at) return true;
+    return (now - at) < LIMIT;
+  });
+  return before - db.tracking_orders.length;
+}
+// LISTA de seguimientos, agrupados por estado. Corre la purga de 3 meses en cada consulta.
+route('GET', '/api/tracking/list', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const db = loadDB();
+  const purged = trackPurge(db);
+  if (purged > 0) saveDB(db);
+  const all = Array.isArray(db.tracking_orders) ? db.tracking_orders : [];
+  const iniciadas = all.filter(t => t.estado === 'iniciada').sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)));
+  const en_camino = all.filter(t => t.estado === 'en_camino').sort((x, y) => String(y.updated_at).localeCompare(String(x.updated_at)));
+  const entregadas = all.filter(t => t.estado === 'entregada').sort((x, y) => String(y.entregada_at).localeCompare(String(x.entregada_at)));
+  const cfg = db.tracking_config || {};
+  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, entregadas, config: cfg });
+});
+// DESPACHAR: guarda fecha/transporte/guía, envía el mensaje al comprador y pasa a EN CAMINO.
+route('POST', '/api/tracking/ship', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  const fecha_envio = String((b && b.fecha_envio) || '').trim().slice(0, 20);
+  const transporte = String((b && b.transporte) || '').trim().slice(0, 80);
+  const guia = String((b && b.guia) || '').trim().slice(0, 60);
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  if (!transporte) return sendJSON(res, 400, { error: 'Elegí el transporte' });
+  if (!guia) return sendJSON(res, 400, { error: 'Cargá el N° de guía' });
+  const db = loadDB();
+  const t = (db.tracking_orders || []).find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const cfg = db.tracking_config || {};
+  const link = trackLink(cfg, transporte, guia);
+  const text = trackTpl(cfg.msg_envio, { transporte, guia, link, nombre: t.buyer_name || '' });
+  let sent = false, sendErr = '';
+  try { await trackSendMsg(account, t.order_id, text); sent = true; }
+  catch (e) { sendErr = String((e && e.message) || e); }
+  t.fecha_envio = fecha_envio; t.transporte = transporte; t.guia = guia;
+  t.estado = 'en_camino'; t.sub = '';
+  if (sent) t.msg_envio_at = new Date().toISOString();
+  t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, sent, send_error: sendErr, sent_text: text });
+});
+// AVISO EN SUCURSAL: envía el mensaje "listo para retirar" y marca sub='con_aviso'.
+route('POST', '/api/tracking/aviso', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const db = loadDB();
+  const t = (db.tracking_orders || []).find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
+  const cfg = db.tracking_config || {};
+  const link = trackLink(cfg, t.transporte, t.guia);
+  const text = trackTpl(cfg.msg_aviso, { transporte: t.transporte, guia: t.guia, link, nombre: t.buyer_name || '' });
+  let sent = false, sendErr = '';
+  try { await trackSendMsg(account, t.order_id, text); sent = true; }
+  catch (e) { sendErr = String((e && e.message) || e); }
+  if (sent) { t.sub = 'con_aviso'; t.msg_aviso_at = new Date().toISOString(); }
+  t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, sent, send_error: sendErr, sent_text: text });
+});
+// ENTREGADO: marca entregada + entregada_at, opcionalmente marca la entrega en ML, y pasa a ENTREGADAS.
+route('POST', '/api/tracking/entregado', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  const doMl = !!(b && b.ml);
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const db = loadDB();
+  const t = (db.tracking_orders || []).find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  let ml_ok = false, ml_err = '';
+  if (doMl) {
+    const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
+    if (!account) { ml_err = 'Cuenta no encontrada'; }
+    else {
+      try {
+        const token = await getValidToken(account);
+        if (!token) throw new Error('Token inválido');
+        // Marcar el envío "acordar con el vendedor" como entregado en ML.
+        const sid = t.shipping_data && (t.shipping_data.id || t.shipping_data.shipping_id);
+        if (!sid) throw new Error('Sin shipping_id para marcar en ML');
+        const url = `https://api.mercadolibre.com/shipments/${sid}`;
+        const r = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'delivered' }) });
+        const txt = await r.text();
+        if (!r.ok) { let p = {}; try { p = JSON.parse(txt); } catch (e) {} throw new Error(p.message || p.error || ('ML HTTP ' + r.status)); }
+        ml_ok = true;
+      } catch (e) { ml_err = String((e && e.message) || e); }
+    }
+  }
+  t.estado = 'entregada'; t.sub = '';
+  t.entregada_at = new Date().toISOString();
+  if (ml_ok) t.entregada_ml = true;
+  t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, ml_requested: doMl, ml_ok, ml_error: ml_err });
+});
+// PASAR A TRACKING MANUALMENTE una venta finalizada de Preparación (botón "TRACKING" en Finalizadas).
+route('POST', '/api/tracking/intake', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const order_id = String((b && b.order_id) || '');
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const order = (db.prep_orders || []).find(o => String(o.order_id) === order_id);
+  if (!order) return sendJSON(res, 404, { error: 'Venta no encontrada en Preparación' });
+  const r = trackIntakeFromOrder(db, order);
+  if (r.record) r.record.manual = true;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, created: r.created, id: r.record ? r.record.id : '' });
+});
+// GUARDAR TRACKING (borrar de la lista, no de ML) — quita un seguimiento del panel.
+route('POST', '/api/tracking/delete', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const db = loadDB();
+  const before = (db.tracking_orders || []).length;
+  db.tracking_orders = (db.tracking_orders || []).filter(x => x.id !== id);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, removed: before - db.tracking_orders.length });
+});
+// CONFIGURACIÓN de Tracking (solo admin): URL de seguimiento por transporte + plantillas de mensaje.
+route('POST', '/api/tracking/config', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  if (!a.admin) return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req);
+  const db = loadDB();
+  const cur = (db.tracking_config && typeof db.tracking_config === 'object') ? db.tracking_config : { transportes: {}, msg_envio: '', msg_aviso: '' };
+  const transportes = {};
+  const src = (b && b.transportes && typeof b.transportes === 'object') ? b.transportes : {};
+  for (const k of Object.keys(src).slice(0, 400)) {
+    const name = String(k).trim().slice(0, 80);
+    if (!name) continue;
+    const url = String((src[k] && src[k].track_url) || '').trim().slice(0, 400);
+    transportes[name] = { track_url: url };
+  }
+  db.tracking_config = {
+    transportes,
+    msg_envio: (b && typeof b.msg_envio === 'string') ? b.msg_envio.slice(0, 800) : (cur.msg_envio || ''),
+    msg_aviso: (b && typeof b.msg_aviso === 'string') ? b.msg_aviso.slice(0, 800) : (cur.msg_aviso || '')
+  };
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, config: db.tracking_config });
+});
+
 
 
 // ============================================================================
