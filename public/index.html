@@ -7317,6 +7317,41 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let _trackData = null;
   let _trackTab = 'iniciadas';
   let _trackCfg = { transportes: {}, msg_envio: '', msg_aviso: '' };
+  let _trackFilter = { q: '', transporte: '', localidad: '' };
+  function _trackNorm(s){ return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim(); }
+  function _trackReco(t){ return (t.transporte || (t.shipping_data && t.shipping_data.transporte) || ''); }
+  function _trackLoc(t){ return (t.shipping_data && t.shipping_data.localidad) || ''; }
+  function _trackFilterActive(){ return !!(_trackFilter.q || _trackFilter.transporte || _trackFilter.localidad); }
+  function _trackApplyFilter(list){
+    const q=_trackNorm(_trackFilter.q), tr=_trackFilter.transporte, lo=_trackFilter.localidad;
+    return (list||[]).filter(t=>{
+      if(tr && _trackReco(t)!==tr) return false;
+      if(lo && _trackLoc(t)!==lo) return false;
+      if(q){
+        const hay=_trackNorm(t.buyer_name)+' '+_trackNorm(t.order_id)+' '+_trackNorm(_trackLoc(t))+' '+_trackNorm(t.guia)+' '+_trackNorm((t.shipping_data&&t.shipping_data.provincia)||'');
+        if(hay.indexOf(q)<0) return false;
+      }
+      return true;
+    });
+  }
+  function _trackTransFilterOptions(){
+    const set={}; const d=_trackData;
+    if(d){ [].concat(d.iniciadas,d.en_camino,d.entregadas).forEach(t=>{const n=_trackReco(t); if(n) set[n]=1;}); }
+    const cfg=_enviosCfg||{transportes:[]};
+    (cfg.transportes||[]).forEach(t=>{ if(t.nombre) set[t.nombre]=1; });
+    const names=Object.keys(set).sort((a,b)=>a.localeCompare(b,'es'));
+    return ['<option value="">Todos los transportes</option>'].concat(names.map(n=>`<option value="${escapeHtml(n)}" ${n===_trackFilter.transporte?'selected':''}>${escapeHtml(n)}</option>`)).join('');
+  }
+  function _trackLocFilterOptions(){
+    const set={}; const d=_trackData;
+    if(d){ [].concat(d.iniciadas,d.en_camino,d.entregadas).forEach(t=>{const l=_trackLoc(t); if(l) set[l]=1;}); }
+    const names=Object.keys(set).sort((a,b)=>a.localeCompare(b,'es'));
+    return ['<option value="">Todas las localidades</option>'].concat(names.map(n=>`<option value="${escapeHtml(n)}" ${n===_trackFilter.localidad?'selected':''}>${escapeHtml(n)}</option>`)).join('');
+  }
+  function trackFilterInput(v){ _trackFilter.q=v; trackRenderList(); }
+  function trackFilterTransporte(v){ _trackFilter.transporte=v; trackRenderList(); }
+  function trackFilterLocalidad(v){ _trackFilter.localidad=v; trackRenderList(); }
+  function trackClearFilter(){ _trackFilter={q:'',transporte:'',localidad:''}; trackRender(); }
   // Pasar manualmente una venta finalizada al panel de Tracking (botón en Finalizadas).
   async function pasarATracking(orderId, btn){
     if(!confirm('¿Pasar esta venta al panel de Tracking?\n\nQuedará en la pestaña INICIADAS para cargar el envío.')) return;
@@ -7364,10 +7399,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         ${d.can_config?`<button onclick="openTrackConfig()" style="padding:8px 16px;background:white;border:1.5px solid #8e44ad;color:#8e44ad;border-radius:8px;font-weight:600;cursor:pointer">⚙️ Configuración</button>`:''}
       </div>
       <p style="color:#999;font-size:13px;margin:0 0 10px">Seguimiento de las ventas "acordar con el vendedor". Las entregadas se guardan 3 meses y luego se borran automáticamente.</p>
-      <div style="display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:16px;flex-wrap:wrap">
+      <div style="display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:12px;flex-wrap:wrap">
         ${tab('iniciadas','🕓 Iniciadas',nI)}
         ${tab('en_camino','🚚 En camino',nC)}
         ${tab('entregadas','✅ Entregadas',nE)}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <input id="track-search" value="${escapeHtml(_trackFilter.q)}" oninput="trackFilterInput(this.value)" placeholder="🔎 Buscar nombre y apellido, N° de venta o localidad..." style="flex:1;min-width:240px;padding:8px 12px;border:1px solid #ccc;border-radius:8px;font-size:13px">
+        <select onchange="trackFilterTransporte(this.value)" style="padding:8px;border:1px solid #ccc;border-radius:8px;font-size:13px;max-width:200px">${_trackTransFilterOptions()}</select>
+        <select onchange="trackFilterLocalidad(this.value)" style="padding:8px;border:1px solid #ccc;border-radius:8px;font-size:13px;max-width:200px">${_trackLocFilterOptions()}</select>
+        <button onclick="trackClearFilter()" style="padding:8px 12px;background:white;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer">✕ Limpiar</button>
+        <span id="track-count" style="font-size:12px;color:#999;margin-left:auto"></span>
       </div>
       <div id="track-list"></div>`;
     trackRenderList();
@@ -7376,8 +7418,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function trackRenderList(){
     const box = document.getElementById('track-list'); if(!box) return;
     const d = _trackData;
-    const list = _trackTab==='iniciadas'?d.iniciadas:(_trackTab==='en_camino'?d.en_camino:d.entregadas);
-    if(!list.length){ box.innerHTML='<div class="empty"><p>No hay envíos en esta etapa.</p></div>'; return; }
+    const full = _trackTab==='iniciadas'?d.iniciadas:(_trackTab==='en_camino'?d.en_camino:d.entregadas);
+    const list = _trackApplyFilter(full);
+    const cntEl = document.getElementById('track-count');
+    if(cntEl) cntEl.textContent = (_trackFilterActive() ? (list.length+' de '+full.length) : String(full.length)) + ' envío'+(full.length===1?'':'s');
+    if(!full.length){ box.innerHTML='<div class="empty"><p>No hay envíos en esta etapa.</p></div>'; return; }
+    if(!list.length){ box.innerHTML='<div class="empty"><p>Ningún envío coincide con la búsqueda o el filtro.</p></div>'; return; }
     box.innerHTML = list.map(trackCard).join('');
   }
   function trackCard(t){
