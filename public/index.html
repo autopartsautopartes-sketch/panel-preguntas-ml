@@ -7377,10 +7377,77 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }catch(e){ content.innerHTML = '<div class="empty"><p>Error al cargar Tracking</p></div>'; }
   }
   function _trackFind(id){ const d=_trackData; if(!d) return null; return [].concat(d.iniciadas,d.en_camino,d.entregadas).find(x=>x.id===id); }
+  async function trackToggleAuto(){
+    const on = !(_trackData && _trackData.auto_on!==false);
+    if(!confirm(on?'¿Activar el seguimiento automático (cada 6 hs) para MD Cargas y Flecha Carga?':'¿Apagar el seguimiento automático? Vas a tener que avisar y marcar entregado a mano.')) return;
+    try{
+      const r=await fetch('/api/tracking/auto-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); return; }
+      showToast(d.on?'Automático activado 🤖':'Automático apagado');
+      loadTracking();
+    }catch(e){ showToast('Error de red','error'); }
+  }
+  async function trackCheckNow(btn){
+    if(btn){ btn.disabled=true; btn.textContent='Revisando...'; }
+    try{
+      const r=await fetch('/api/tracking/check-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); if(btn){btn.disabled=false;btn.textContent='🔄 Revisar ahora';} return; }
+      const leidos=(d.results||[]).filter(x=>x.found).length;
+      showToast('Revisados '+d.checked+' envíos (con datos: '+leidos+'). Aplicando cambios...');
+      setTimeout(loadTracking, 1500);
+    }catch(e){ showToast('Error de red','error'); if(btn){btn.disabled=false;btn.textContent='🔄 Revisar ahora';} }
+  }
   function _trackTransOptions(sel){
     const cfg = _enviosCfg || { transportes:[] };
     const list = _envSortByName(cfg.transportes||[]);
     return ['<option value="">— Transporte —</option>'].concat(list.map(t=>`<option value="${escapeHtml(t.nombre)}" ${t.nombre===sel?'selected':''}>${escapeHtml(t.nombre)}</option>`)).join('');
+  }
+  // Formato de guía del transporte según la config ('simple' = un campo; 'serie_tipo_numero' = 3 campos; 'prefijo' = prefijo fijo + número).
+  function _trackFmt(nombre){ const t=(_trackCfg && _trackCfg.transportes && _trackCfg.transportes[nombre]); const f=t&&t.formato; return (f==='serie_tipo_numero'||f==='prefijo')?f:'simple'; }
+  function _trackFixParts(nombre){ const t=(_trackCfg && _trackCfg.transportes && _trackCfg.transportes[nombre])||{}; return {pfx:t.guia_prefijo||'',sfx:t.guia_sufijo||''}; }
+  // Arma el link de seguimiento de un registro reemplazando {guia}/{serie}/{tipo}/{numero}.
+  function _trackBuildLink(t){
+    const tc=(_trackCfg && _trackCfg.transportes && _trackCfg.transportes[t.transporte]);
+    let url=tc&&tc.track_url?String(tc.track_url):''; if(!url) return '';
+    return url.replace(/\{guia\}/g,encodeURIComponent(t.guia||''))
+              .replace(/\{serie\}/g,encodeURIComponent(t.guia_serie||''))
+              .replace(/\{tipo\}/g,encodeURIComponent(t.guia_tipo||''))
+              .replace(/\{numero\}/g,encodeURIComponent(t.guia_numero||''));
+  }
+  // Campos de guía del formulario de despacho según el formato del transporte elegido.
+  function _trackGuiaFields(t, transporte){
+    const fmt=_trackFmt(transporte);
+    if(fmt==='prefijo'){
+      const {pfx,sfx}=_trackFixParts(transporte);
+      return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end">
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Guía</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            ${pfx?`<span style="padding:7px 10px;background:#eee;border:1px solid #ccc;border-radius:6px;font-size:13px;font-weight:700;color:#555">${escapeHtml(pfx)}</span>`:''}
+            <input type="text" id="tk-numero-${t.id}" value="${escapeHtml(t.guia_numero||'')}" placeholder="484809524" style="width:180px;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+            ${sfx?`<span style="padding:7px 10px;background:#eee;border:1px solid #ccc;border-radius:6px;font-size:13px;font-weight:700;color:#555">${escapeHtml(sfx)}</span>`:''}
+          </div></div>
+      </div>`;
+    }
+    if(fmt==='serie_tipo_numero'){
+      return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Serie</label>
+          <input type="text" id="tk-serie-${t.id}" value="${escapeHtml(t.guia_serie||'')}" placeholder="0315" style="width:90px;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"></div>
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Tipo</label>
+          <input type="text" id="tk-tipo-${t.id}" value="${escapeHtml(t.guia_tipo||'')}" placeholder="R" style="width:70px;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"></div>
+        <div style="flex:1;min-width:130px"><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Número</label>
+          <input type="text" id="tk-numero-${t.id}" value="${escapeHtml(t.guia_numero||'')}" placeholder="8899" style="width:100%;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box"></div>
+      </div>`;
+    }
+    return `<div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">N° de guía</label>
+      <input type="text" id="tk-guia-${t.id}" value="${escapeHtml(t.guia||'')}" placeholder="N° de seguimiento" style="width:100%;max-width:340px;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box"></div>`;
+  }
+  // Cuando cambia el transporte en el formulario, re-dibuja los campos de guía (1 campo vs serie/tipo/número).
+  function trackShipTransChange(id){
+    const sel=document.getElementById('tk-trans-'+id); const area=document.getElementById('tk-guia-area-'+id);
+    const t=_trackFind(id); if(!area||!t) return;
+    area.innerHTML=_trackGuiaFields(t, sel?sel.value:'');
   }
   function _trackShipHtml(sd){
     if(!sd) return '<span style="color:#bbb;font-size:12px">Sin datos de envío</span>';
@@ -7396,9 +7463,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     content.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px">
         <h2 style="margin:0;font-size:20px">📍 Tracking de envíos</h2>
-        ${d.can_config?`<button onclick="openTrackConfig()" style="padding:8px 16px;background:white;border:1.5px solid #8e44ad;color:#8e44ad;border-radius:8px;font-weight:600;cursor:pointer">⚙️ Configuración</button>`:''}
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${d.can_config?`<button onclick="trackToggleAuto()" title="Seguimiento automático cada 6 hs para MD Cargas y Flecha Carga" style="padding:8px 12px;background:${d.auto_on?'#e8f8ef':'#f4f4f4'};border:1.5px solid ${d.auto_on?'#27ae60':'#bbb'};color:${d.auto_on?'#1e824c':'#888'};border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🤖 Automático: ${d.auto_on?'ON':'OFF'}</button>`:''}
+          ${d.can_config?`<button onclick="trackCheckNow(this)" style="padding:8px 12px;background:white;border:1.5px solid #3483fa;color:#3483fa;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🔄 Revisar ahora</button>`:''}
+          ${d.can_config?`<button onclick="openTrackConfig()" style="padding:8px 16px;background:white;border:1.5px solid #8e44ad;color:#8e44ad;border-radius:8px;font-weight:600;cursor:pointer">⚙️ Configuración</button>`:''}
+        </div>
       </div>
-      <p style="color:#999;font-size:13px;margin:0 0 10px">Seguimiento de las ventas "acordar con el vendedor". Las entregadas se guardan 3 meses y luego se borran automáticamente.</p>
+      <p style="color:#999;font-size:13px;margin:0 0 10px">Seguimiento de las ventas "acordar con el vendedor". MD Cargas y Flecha Carga se siguen solos cada 6 hs; Vía Cargo y otros, con un clic. Las entregadas se guardan 3 meses y luego se borran.</p>
       <div style="display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:12px;flex-wrap:wrap">
         ${tab('iniciadas','🕓 Iniciadas',nI)}
         ${tab('en_camino','🚚 En camino',nC)}
@@ -7446,35 +7517,36 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function trackFooterIniciada(t){
     const pre = (t.shipping_data && t.shipping_data.transporte) ? t.shipping_data.transporte : '';
+    const selTrans = t.transporte || pre || '';
     return `
      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
       <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Fecha de envío</label>
         <input type="date" id="tk-fecha-${t.id}" value="${escapeHtml(t.fecha_envio||'')}" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"></div>
       <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Transporte</label>
-        <select id="tk-trans-${t.id}" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:170px">${_trackTransOptions(t.transporte||pre)}</select></div>
-      <div style="flex:1;min-width:150px"><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">N° de guía</label>
-        <input type="text" id="tk-guia-${t.id}" value="${escapeHtml(t.guia||'')}" placeholder="N° de seguimiento" style="width:100%;padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box"></div>
+        <select id="tk-trans-${t.id}" onchange="trackShipTransChange('${t.id}')" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:170px">${_trackTransOptions(selTrans)}</select></div>
      </div>
+     <div id="tk-guia-area-${t.id}" style="margin-top:8px">${_trackGuiaFields(t, selTrans)}</div>
      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
        <button onclick="trackPrint('${t.id}')" style="padding:8px 14px;background:white;border:1px solid #ccc;border-radius:7px;font-size:13px;cursor:pointer">🖨️ Imprimir etiqueta</button>
        <button onclick="trackShip('${t.id}',this)" style="padding:8px 18px;background:#8e44ad;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">📦 Despachar y avisar al comprador</button>
      </div>
      <div style="font-size:11px;color:#999;margin-top:6px">Al despachar se le envía un mensaje al comprador con el N° de guía y el link de seguimiento, y pasa a "En camino".</div>`;
   }
+  function _trackIsAuto(transporte){ return !!(_trackData && Array.isArray(_trackData.auto_transportes) && _trackData.auto_transportes.indexOf(transporte)>=0); }
   function trackFooterEnCamino(t){
-    const cfg = _trackCfg||{};
-    const tc = (cfg.transportes||{})[t.transporte];
-    let link='';
-    if(tc && tc.track_url){ link = tc.track_url.indexOf('{guia}')>=0 ? tc.track_url.replace(/\{guia\}/g, encodeURIComponent(t.guia||'')) : tc.track_url; }
+    const link = _trackBuildLink(t);
     const avisado = t.sub==='con_aviso';
+    const isAuto = _trackIsAuto(t.transporte) && (_trackData.auto_on!==false);
     return `
      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px;margin-bottom:10px">
        <span>🚚 <b>${escapeHtml(t.transporte||'-')}</b></span>
        <span>Guía: <b>${escapeHtml(t.guia||'-')}</b></span>
        ${t.fecha_envio?`<span>Envío: ${escapeHtml(t.fecha_envio)}</span>`:''}
        ${link?`<a href="${escapeHtml(link)}" target="_blank" rel="noopener" style="color:#3483fa;text-decoration:underline">Ver seguimiento ↗</a>`:''}
+       ${isAuto?'<span title="Se sigue solo cada 6 hs" style="font-size:11px;background:#e8f8ef;color:#1e824c;border-radius:10px;padding:2px 8px;font-weight:600">🤖 automático</span>':''}
        ${avisado?'<span style="font-size:11px;background:#fff4e0;color:#c67b00;border-radius:10px;padding:2px 8px;font-weight:600">🔔 Avisado en sucursal</span>':''}
      </div>
+     ${t.auto_estado?`<div style="font-size:12px;color:#888;margin:-4px 0 8px">Último estado leído: <b style="color:#555">${escapeHtml(t.auto_estado)}</b>${t.auto_check_at?` · ${formatDateTime(t.auto_check_at)}`:''}</div>`:''}
      <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button onclick="trackAviso('${t.id}',this)" style="padding:8px 14px;background:white;border:1.5px solid #c67b00;color:#c67b00;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">🔔 Avisar "en sucursal"</button>
        <button onclick="trackEntregado('${t.id}',true,this)" style="padding:8px 14px;background:#27ae60;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">✅ Entregado + avisar a ML</button>
@@ -7503,13 +7575,28 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function trackShip(id, btn){
     const fecha = (document.getElementById('tk-fecha-'+id)||{}).value||'';
     const trans = (document.getElementById('tk-trans-'+id)||{}).value||'';
-    const guia = (document.getElementById('tk-guia-'+id)||{}).value||'';
     if(!trans){ showToast('Elegí el transporte','error'); return; }
-    if(!guia.trim()){ showToast('Cargá el N° de guía','error'); return; }
+    const payload = { id, fecha_envio:fecha, transporte:trans };
+    const fmt=_trackFmt(trans);
+    if(fmt==='serie_tipo_numero'){
+      const serie=((document.getElementById('tk-serie-'+id)||{}).value||'').trim();
+      const tipo=((document.getElementById('tk-tipo-'+id)||{}).value||'').trim();
+      const numero=((document.getElementById('tk-numero-'+id)||{}).value||'').trim();
+      if(!serie||!tipo||!numero){ showToast('Cargá Serie, Tipo y Número','error'); return; }
+      payload.serie=serie; payload.tipo=tipo; payload.numero=numero;
+    } else if(fmt==='prefijo'){
+      const numero=((document.getElementById('tk-numero-'+id)||{}).value||'').trim();
+      if(!numero){ showToast('Completá el número de guía','error'); return; }
+      payload.numero=numero;
+    } else {
+      const guia=((document.getElementById('tk-guia-'+id)||{}).value||'').trim();
+      if(!guia){ showToast('Cargá el N° de guía','error'); return; }
+      payload.guia=guia;
+    }
     if(!confirm('¿Despachar y enviar el mensaje al comprador con el seguimiento?')) return;
     btn.disabled=true; const old=btn.textContent; btn.textContent='Enviando...';
     try{
-      const r = await fetch('/api/tracking/ship',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,fecha_envio:fecha,transporte:trans,guia:guia.trim()})});
+      const r = await fetch('/api/tracking/ship',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const d = await r.json();
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
       if(d.sent) showToast('Despachado. Mensaje enviado al comprador ✅');
@@ -7555,9 +7642,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const trs = _envSortByName(envCfg.transportes||[]);
     const rows = trs.map(t=>{
       const cur = (cfg.transportes||{})[t.nombre]||{};
-      return `<div style="margin-bottom:10px">
+      const fmt = (cur.formato==='serie_tipo_numero'||cur.formato==='prefijo')?cur.formato:'simple';
+      return `<div style="margin-bottom:12px;border-bottom:1px solid #f2f2f2;padding-bottom:10px">
         <label style="font-size:12px;font-weight:600;color:#333;display:block;margin-bottom:3px">${escapeHtml(t.nombre)}</label>
-        <input type="text" data-trans="${escapeHtml(t.nombre)}" value="${escapeHtml(cur.track_url||'')}" placeholder="https://...seguimiento...{guia}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box">
+        <input type="text" data-trans="${escapeHtml(t.nombre)}" data-field="track_url" value="${escapeHtml(cur.track_url||'')}" placeholder="https://...seguimiento...{guia}" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box">
+        <div style="display:flex;align-items:center;gap:8px;margin-top:5px;font-size:12px;color:#666;flex-wrap:wrap">
+          <span>Formato de guía:</span>
+          <select data-trans="${escapeHtml(t.nombre)}" data-field="formato" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:12px">
+            <option value="simple" ${fmt==='simple'?'selected':''}>Un solo campo (N° de guía)</option>
+            <option value="serie_tipo_numero" ${fmt==='serie_tipo_numero'?'selected':''}>Serie / Tipo / Número</option>
+            <option value="prefijo" ${fmt==='prefijo'?'selected':''}>Prefijo fijo + número</option>
+          </select>
+          <span style="color:#aaa">|</span>
+          <span title="Solo para formato 'Prefijo fijo': letras fijas antes (ej HC) y después (ej AR) del número">Prefijo:</span>
+          <input type="text" data-trans="${escapeHtml(t.nombre)}" data-field="guia_prefijo" value="${escapeHtml(cur.guia_prefijo||'')}" placeholder="HC" style="width:52px;padding:5px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px">
+          <span>Sufijo:</span>
+          <input type="text" data-trans="${escapeHtml(t.nombre)}" data-field="guia_sufijo" value="${escapeHtml(cur.guia_sufijo||'')}" placeholder="AR" style="width:52px;padding:5px 6px;border:1px solid #ccc;border-radius:6px;font-size:12px">
+        </div>
       </div>`;
     }).join('') || '<p style="color:#999;font-size:13px">No hay transportes cargados en Envíos.</p>';
     const ov=document.createElement('div');
@@ -7568,7 +7669,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <h3 style="margin:0">⚙️ Configuración de Tracking</h3>
         <button onclick="document.getElementById('trackCfgOverlay').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#999">×</button>
       </div>
-      <p style="font-size:12px;color:#777;margin:0 0 12px">Link de seguimiento por transporte. Usá <code>{guia}</code> donde el link lleva el número de guía.</p>
+      <p style="font-size:12px;color:#777;margin:0 0 12px">Link de seguimiento por transporte. Usá <code>{guia}</code> (formato simple) o <code>{serie}</code>/<code>{tipo}</code>/<code>{numero}</code> (formato Serie/Tipo/Número), y elegí abajo qué formato usa cada transporte.</p>
       <div id="trackCfgTrans">${rows}</div>
       <hr style="border:none;border-top:1px solid #eee;margin:16px 0">
       <label style="font-size:12px;font-weight:600;display:block;margin-bottom:3px">Mensaje al despachar</label>
@@ -7585,8 +7686,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   async function saveTrackConfig(btn){
     const transportes={};
-    document.querySelectorAll('#trackCfgTrans input[data-trans]').forEach(inp=>{
-      transportes[inp.getAttribute('data-trans')] = { track_url: inp.value.trim() };
+    document.querySelectorAll('#trackCfgTrans [data-trans]').forEach(el=>{
+      const name=el.getAttribute('data-trans'), field=el.getAttribute('data-field');
+      if(!transportes[name]) transportes[name]={};
+      transportes[name][field] = (field==='track_url') ? el.value.trim() : el.value;
     });
     const msg_envio = (document.getElementById('trackMsgEnvio')||{}).value||'';
     const msg_aviso = (document.getElementById('trackMsgAviso')||{}).value||'';
