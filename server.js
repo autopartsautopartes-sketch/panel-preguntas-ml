@@ -3455,10 +3455,23 @@ route('GET', '/api/questions', async (req, res) => {
   allQuestions.sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
   sendJSON(res, 200, allQuestions);
 });
+// Registra una respuesta de envío en el log automático. Definida a nivel módulo para poder usarse
+// desde /api/questions/answer (que está FUERA del módulo de envíos). Sólo depende de loadDB/saveDB.
+function envAutoLogPush(entry) {
+  try {
+    const d = loadDB();
+    if (!Array.isArray(d.envios_auto_log)) d.envios_auto_log = [];
+    if (d.envios_auto_log.some(e => String(e.qid) === String(entry.qid))) return false;   // ya registrada (por el timer o por otra vía)
+    d.envios_auto_log.push(entry);
+    if (d.envios_auto_log.length > 3000) d.envios_auto_log = d.envios_auto_log.slice(-3000);
+    saveDB(d);
+    return true;
+  } catch (e) { return false; }
+}
 route('POST', '/api/questions/answer', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
-  const { question_id, text, account_id } = await parseBody(req);
+  const { question_id, text, account_id, envio_auto } = await parseBody(req);
   const db = loadDB();
   const account = db.ml_accounts.find(a => a.id === parseInt(account_id));
   if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada' });
@@ -3469,6 +3482,11 @@ route('POST', '/api/questions/answer', async (req, res) => {
     // Marcamos la pregunta como respondida hace poco para que NO reaparezca en "sin responder"
     // mientras el índice de ML todavía la sigue listando como UNANSWERED (lag de unos segundos).
     recentlyAnsweredQuestions[String(question_id)] = Date.now();
+    // Si era una pregunta de envío (respondida desde el panel con la pre-carga), la registramos en el
+    // log automático para que aparezca en el tab "Automático" aunque no la haya mandado el temporizador.
+    if (envio_auto) {
+      envAutoLogPush({ qid: String(question_id), ts: new Date().toISOString(), account_id: account.id, account_name: account.name, item_id: '', question: String((envio_auto && envio_auto.qtext) || '').slice(0, 400), answer: String(text || '').slice(0, 700), via: (envio_auto && envio_auto.via) || 'panel' });
+    }
     sendJSON(res, 200, { ok: true });
   } catch (err) {
     console.error('Error answering:', err.response?.data || err.message || err);
