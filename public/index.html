@@ -8361,8 +8361,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let _envClientDue={};        // qid -> deadline 30s (panel abierto)
   let _envSentTrigger={};      // qid -> true (ya pedí "responder ya")
   let _envQMeta={};            // qid -> {account, qtext}
+  let _envRemovedCards={};     // qid -> true (ya saqué la tarjeta del listado)
   const ENV_OPEN_SECS=30;
   let _envPendTimer=null;
+  let _envPendTick=0;
   async function envFetchServerPending(){
     try{
       const r=await fetch('/api/envios/auto-pending'); const d=await r.json();
@@ -8370,6 +8372,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         _envAutoReplyOn=!!d.on; if(_enviosCfg) _enviosCfg.auto_reply=_envAutoReplyOn;
         const now=Date.now(); const nn={};
         for(const qid of Object.keys(d.pending||{})){ nn[qid]=now + (d.pending[qid]||0); }
+        // Si una pregunta ESTABA pendiente y ya no lo está (la respondió el server), sacamos su tarjeta.
+        // Cubre también al operador no-admin, que no dispara el "responder ya" desde el panel.
+        if(_envAutoReplyOn){
+          for(const qid of Object.keys(_envServerPending)){
+            if(!(qid in nn) && !_envCancelledLocal[qid] && document.querySelector('.env-qhelp[data-qid="'+qid+'"]')){
+              _envRemoveAnsweredCard(qid);
+            }
+          }
+        }
         _envServerPending=nn;
       }
     }catch(e){}
@@ -8413,7 +8424,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       // Panel abierto: contador de 30s. Al llegar a 0 le pido al server que responda ya.
       if(!_envClientDue[qid]) _envClientDue[qid]=now+ENV_OPEN_SECS*1000;
       const rem=Math.max(0, Math.ceil((_envClientDue[qid]-now)/1000));
-      const cancelBtn = ` <button type="button" onclick="envCancelServerAuto('${qid}')" style="background:#fff;border:1px solid #e0a0a0;color:#c0392b;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;font-weight:600">Cancelar</button>`;
+      const cancelBtn = ` <button type="button" onclick="envCancelServerAuto('${qid}')" style="background:#c0392b;border:none;color:#ffffff;border-radius:6px;padding:3px 12px;font-size:11px;min-width:0;cursor:pointer;font-weight:700">Cancelar</button>`;
       if(rem>0){ el.innerHTML=`<span style="background:#fff4e5;border:1px solid #ffd9a8;color:#b25e00;border-radius:6px;padding:2px 8px;font-weight:600">⏱️ Se responderá solo en ${rem}s</span>`+cancelBtn; }
       else {
         el.innerHTML=`<span style="color:#1e8e4e;font-weight:600">Respondiendo…</span>`;
@@ -8421,14 +8432,31 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
     });
   }
+  // Saca del listado la tarjeta de una pregunta ya respondida por el auto, sin recargar toda la lista
+  // (recargar borraría la pre-carga de las OTRAS tarjetas, porque no se vuelve a rellenar).
+  function _envRemoveAnsweredCard(qid){
+    try{
+      qid=String(qid);
+      if(_envRemovedCards[qid]) return; _envRemovedCards[qid]=true;
+      answeredQuestionIds.add(qid);
+      knownQuestionIds.delete(qid); knownQuestionIds.delete(Number(qid));
+      const help=document.querySelector('.env-qhelp[data-qid="'+qid+'"]');
+      const ta=document.getElementById('reply-'+qid);
+      const card=(help&&help.closest('.card'))||(ta&&ta.closest('.card'))||null;
+      if(card){ card.style.transition='opacity 0.25s'; card.style.opacity='0'; setTimeout(()=>{ if(card&&card.parentNode) card.remove(); }, 250); }
+    }catch(e){}
+  }
   async function envTriggerSendNow(qid){
     const m=_envQMeta[qid]||{};
     try{
-      await fetch('/api/envios/auto-send-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid, account_id:m.account, qtext:m.qtext})});
+      const r=await fetch('/api/envios/auto-send-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid, account_id:m.account, qtext:m.qtext})});
+      let ok=false;
+      try{ const j=await r.json(); const res=j&&j.result; ok=!!(res&&(res.sent||res.skipped==='already'||res.skipped==='done')); }catch(e){ ok=true; }
+      if(ok) _envRemoveAnsweredCard(qid);   // ya respondida → la sacamos de "Sin responder" sola
       setTimeout(()=>{ envUpdateAutoCounter(); }, 1500);
     }catch(e){}
   }
-  function envEnsurePendTimer(){ if(_envPendTimer) return; _envPendTimer=setInterval(()=>{ if(!document.querySelector('.env-autostatus')){ clearInterval(_envPendTimer); _envPendTimer=null; return; } envRenderAutoStatuses(); }, 1000); }
+  function envEnsurePendTimer(){ if(_envPendTimer) return; _envPendTimer=setInterval(async()=>{ if(!document.querySelector('.env-autostatus')){ clearInterval(_envPendTimer); _envPendTimer=null; return; } if((++_envPendTick % 5)===0){ await envFetchServerPending(); } envRenderAutoStatuses(); }, 1000); }
   async function envCancelServerAuto(qid){
     try{
       const r=await fetch('/api/envios/auto-cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid})});
