@@ -1403,10 +1403,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   var _localData = { is_admin: false, next_n: 1, orders: [], resumen: {} };
   var _localForm = null;
   var _localBusy = false;
+  var _localTab = 'ventas';            // ventas | senas | salida | resumen
+  var _localSalidaForm = null;
+  var _localCajaFrom = '', _localCajaTo = '';   // filtro de fechas del resumen/caja
+  const LOCAL_SALIDA_CATS = ['Servicio', 'Embalaje', 'Envío', 'Sueldo', 'Otro'];
+  const LOCAL_MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
+  function _localMedioLabel(m) { return String(m || '').charAt(0) + String(m || '').slice(1).toLowerCase(); }
   function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, precio_venta: '', _looked: false, _notfound: false }; }
   function _localNewForm() {
-    return { editN: null, fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, transfer_link: '', _transferBusy: false, items: [_localNewItem()] };
+    return { editN: null, tipo: (_localTab === 'senas' ? 'sena' : 'venta'), fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, transfer_link: '', _transferBusy: false, items: [_localNewItem()] };
   }
+  function _localNewSalida() { return { editN: null, fecha: new Date().toISOString().slice(0, 10), categoria: 'Servicio', monto: '', forma_pago: 'EFECTIVO', sucursal: 'Rufino', notas: '' }; }
   function _localM(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
   function _localIsAdm() { return !!(_localData.is_admin || (currentUser && currentUser.role === 'admin')); }
 
@@ -1420,7 +1427,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
     try {
-      const r = await fetch('/api/local/data', { credentials: 'same-origin' });
+      const qs = [];
+      if (_localCajaFrom) qs.push('from=' + encodeURIComponent(_localCajaFrom));
+      if (_localCajaTo) qs.push('to=' + encodeURIComponent(_localCajaTo));
+      const r = await fetch('/api/local/data' + (qs.length ? ('?' + qs.join('&')) : ''), { credentials: 'same-origin' });
       const d = await r.json();
       if (myNav !== navToken) return;
       if (!r.ok) { content.innerHTML = '<div class="empty"><p>' + escapeHtml(d.error || 'Error') + '</p></div>'; return; }
@@ -1429,23 +1439,41 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch (e) { content.innerHTML = '<div class="empty"><p>Error de red al cargar Ventas local.</p></div>'; }
   }
 
+  function localTabsHTML() {
+    const tab = (k, label) => '<button onclick="localSwitchTab(\'' + k + '\')" style="padding:9px 18px;border:none;border-bottom:3px solid ' + (_localTab === k ? '#3483fa' : 'transparent') + ';background:none;font-size:14px;font-weight:' + (_localTab === k ? '800' : '600') + ';color:' + (_localTab === k ? '#2d3277' : '#8a94a6') + ';cursor:pointer">' + label + '</button>';
+    return '<div style="display:flex;gap:2px;border-bottom:1px solid #e6ebf5;margin-bottom:18px;flex-wrap:wrap">' +
+      tab('ventas', '🏪 Ventas') + tab('senas', '🔖 Señas') + tab('salida', '📤 Salida') + tab('resumen', '📊 Resumen / Caja') + '</div>';
+  }
+  function localSwitchTab(k) {
+    _localTab = k;
+    if ((k === 'ventas' || k === 'senas') && _localForm && _localForm.editN == null) _localForm.tipo = (k === 'senas' ? 'sena' : 'venta');
+    localRender();
+    window.scrollTo(0, 0);
+  }
   function localRender() {
     const content = document.getElementById('content');
     if (!content) return;
-    content.innerHTML = localFormHTML() + '<div id="loc_msg"></div>' + localSummaryHTML() + localOrdersHTML();
-    localRecalcTotals();
+    let body = '';
+    if (_localTab === 'salida') body = localSalidaFormHTML() + '<div id="loc_msg"></div>' + localSalidasListHTML();
+    else if (_localTab === 'resumen') body = localCajaHTML();
+    else if (_localTab === 'senas') body = localFormHTML() + '<div id="loc_msg"></div>' + localSenasSummaryHTML() + localOrdersHTML('sena');
+    else body = localFormHTML() + '<div id="loc_msg"></div>' + localSummaryHTML() + localOrdersHTML('venta');
+    content.innerHTML = localTabsHTML() + body;
+    if (_localTab === 'ventas' || _localTab === 'senas') localRecalcTotals();
   }
 
   function localFormHTML() {
     const isAdm = _localIsAdm();
     const f = _localForm;
+    const esSena = (f.tipo === 'sena');
     const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
     const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
     const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
     let h = '';
     h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">';
-    h += '<div style="font-weight:800;color:#2d3277;font-size:18px">🏪 ' + (f.editN != null ? ('Editar orden N° ' + f.editN) : 'Nueva venta local') + '</div>';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:18px">' + (esSena ? ('🔖 ' + (f.editN != null ? ('Editar seña N° ' + f.editN) : 'Nueva seña')) : ('🏪 ' + (f.editN != null ? ('Editar orden N° ' + f.editN) : 'Nueva venta local'))) + '</div>';
+    if (esSena) h += '<div style="width:100%;font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-bottom:8px">🔖 Las señas se registran aparte y <b>no suman a la caja de ventas</b>; se muestran como total de señas en el Resumen.</div>';
     h += '<div style="font-size:13px;color:#3483fa;font-weight:700;background:#eef4ff;border-radius:20px;padding:5px 14px">N° de orden: ' + nOrden + '</div>';
     h += '</div>';
     // Cabecera
@@ -1508,7 +1536,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</div>';
     // Acciones
     h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">';
-    h += '<button id="loc_save_btn" onclick="localSave()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar orden') + '</button>';
+    h += '<button id="loc_save_btn" onclick="localSave()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : (esSena ? 'Guardar seña' : 'Guardar orden')) + '</button>';
     if (f.editN != null) h += '<button onclick="localNewOrder()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">Cancelar edición</button>';
     else h += '<button onclick="localNewOrder()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">🧹 Limpiar</button>';
     h += '</div>';
@@ -1647,8 +1675,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function localEditOrder(n) {
     const o = (_localData.orders || []).find(x => Number(x.n) === Number(n));
     if (!o) return;
+    _localTab = (o.tipo === 'sena') ? 'senas' : 'ventas';
     _localForm = {
-      editN: o.n, fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || 'Rufino',
+      editN: o.n, tipo: (o.tipo === 'sena' ? 'sena' : 'venta'), fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || 'Rufino',
       entrega: o.entrega || 'retiro', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '',
       cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, o.cheque || {}),
       transfer_link: o.transfer_link || '', _transferBusy: false,
@@ -1672,8 +1701,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
       .map(it => ({ cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }));
     if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
+    const esSena = (f.tipo === 'sena');
     const payload = {
-      n: f.editN, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
+      n: f.editN, tipo: (esSena ? 'sena' : 'venta'), fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
       entrega: f.entrega, forma_pago: f.forma_pago, notas: f.notas,
       cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, transfer_link: (f.forma_pago === 'TRANSFERENCIA') ? f.transfer_link : '', items,
     };
@@ -1683,12 +1713,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
       const d = await r.json();
       _localBusy = false;
-      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar orden'; } localMsg(d.error || 'Error al guardar', true); return; }
+      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; } localMsg(d.error || 'Error al guardar', true); return; }
       const savedN = d.n;
       _localForm = _localNewForm();
       await loadLocal();
-      localMsg('✔ Orden N° ' + savedN + ' guardada. Ya impacta en Gestión, Histórico y Dashboard.', false);
-    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar orden'; } localMsg('Error de red al guardar.', true); }
+      localMsg(esSena ? ('✔ Seña N° ' + savedN + ' guardada (no suma a la caja de ventas).') : ('✔ Orden N° ' + savedN + ' guardada. Ya impacta en Gestión, Histórico y Dashboard.'), false);
+    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; } localMsg('Error de red al guardar.', true); }
   }
   function localMsg(text, isErr) {
     const el = document.getElementById('loc_msg'); if (!el) return;
@@ -1713,11 +1743,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return h;
   }
 
-  function localOrdersHTML() {
+  function localOrdersHTML(tipoFilter) {
     const isAdm = _localIsAdm();
-    const orders = _localData.orders || [];
-    let h = '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">Órdenes cargadas</div>';
-    if (!orders.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">Todavía no cargaste ventas locales.</div>';
+    const tf = tipoFilter || 'venta';
+    const orders = (_localData.orders || []).filter(o => (o.tipo || 'venta') === tf);
+    let h = '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">' + (tf === 'sena' ? 'Señas cargadas' : 'Órdenes cargadas') + '</div>';
+    if (!orders.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">' + (tf === 'sena' ? 'Todavía no cargaste señas.' : 'Todavía no cargaste ventas locales.') + '</div>';
     for (const o of orders) {
       const entrega = (o.entrega === 'envio') ? 'Envío' : 'Retira en local';
       const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
@@ -1752,6 +1783,132 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return h;
   }
 
+  function localSenasSummaryHTML() {
+    const senas = (_localData.orders || []).filter(o => (o.tipo || 'venta') === 'sena');
+    let total = 0; for (const o of senas) total += Number(o.total_venta) || 0;
+    const card = (label, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:12px 16px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + label + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
+    return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">' + card('Señas', Number(senas.length).toLocaleString('es-AR')) + card('Total en señas', _localM(total), '#8a6d1a') + '</div>';
+  }
+  // ===== SALIDA (egreso de caja) =====
+  function localSalidaFormHTML() {
+    if (!_localSalidaForm) _localSalidaForm = _localNewSalida();
+    const f = _localSalidaForm;
+    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
+    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
+    h += '<div style="font-weight:800;color:#b0562a;font-size:18px;margin-bottom:6px">📤 ' + (f.editN != null ? ('Editar salida N° ' + f.editN) : 'Nueva salida de caja') + '</div>';
+    h += '<div style="font-size:12px;color:#777;margin-bottom:12px">Egresos: pago de servicio, embalaje, envío, sueldo, etc. Resta de la caja de la sucursal.</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px">';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localSalidaSet(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Categoría</label><select onchange="localSalidaSet(\'categoria\',this.value)" style="' + inp + '">' + LOCAL_SALIDA_CATS.map(c => '<option value="' + c + '"' + (f.categoria === c ? ' selected' : '') + '>' + c + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(f.monto)) + '" oninput="localSalidaSet(\'monto\',this.value)" placeholder="0.00" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Medio de pago</label><select onchange="localSalidaSet(\'forma_pago\',this.value)" style="' + inp + '">' + LOCAL_MEDIOS.map(m => '<option value="' + m + '"' + (f.forma_pago === m ? ' selected' : '') + '>' + _localMedioLabel(m) + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Sucursal</label><select onchange="localSalidaSet(\'sucursal\',this.value)" style="' + inp + '">' + ['Rufino', 'San Martin'].map(x => '<option value="' + x + '"' + (f.sucursal === x ? ' selected' : '') + '>' + x + '</option>').join('') + '</select></div>';
+    h += '</div>';
+    h += '<div style="margin-bottom:12px"><label style="' + lbl + '">Nota (opcional)</label><input type="text" value="' + escapeHtml(f.notas || '') + '" oninput="localSalidaSet(\'notas\',this.value)" placeholder="Detalle del egreso..." style="' + inp + '"></div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
+    h += '<button id="loc_sal_btn" onclick="localSalidaSave()" style="background:#b0562a;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar salida') + '</button>';
+    if (f.editN != null) h += '<button onclick="localSalidaNew()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">Cancelar edición</button>';
+    h += '</div></div>';
+    return h;
+  }
+  function localSalidaSet(field, val) { if (_localSalidaForm) _localSalidaForm[field] = val; }
+  function localSalidaNew() { _localSalidaForm = _localNewSalida(); localRender(); window.scrollTo(0, 0); }
+  async function localSalidaSave() {
+    if (_localBusy) return;
+    const f = _localSalidaForm;
+    const monto = Number(f.monto) || 0;
+    if (monto <= 0) { localMsg('Cargá un importe mayor a 0.', true); return; }
+    const payload = { n: f.editN, tipo: 'salida', fecha: f.fecha, categoria: f.categoria, monto: monto, forma_pago: f.forma_pago, sucursal: f.sucursal, notas: f.notas };
+    _localBusy = true;
+    const btn = document.getElementById('loc_sal_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+    try {
+      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const d = await r.json(); _localBusy = false;
+      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar salida'; } localMsg(d.error || 'Error al guardar', true); return; }
+      const savedN = d.n; _localSalidaForm = _localNewSalida();
+      await loadLocal();
+      localMsg('✔ Salida N° ' + savedN + ' guardada. Restó de la caja de ' + payload.sucursal + '.', false);
+    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar salida'; } localMsg('Error de red al guardar.', true); }
+  }
+  function localSalidaEdit(n) {
+    const o = (_localData.orders || []).find(x => Number(x.n) === Number(n) && (x.tipo || '') === 'salida');
+    if (!o) return;
+    _localTab = 'salida';
+    _localSalidaForm = { editN: o.n, fecha: o.fecha, categoria: o.categoria || 'Otro', monto: o.monto || '', forma_pago: o.forma_pago || 'EFECTIVO', sucursal: o.sucursal || 'Rufino', notas: o.notas || '' };
+    localRender(); window.scrollTo(0, 0);
+  }
+  function localSalidasListHTML() {
+    const isAdm = _localIsAdm();
+    const sal = (_localData.orders || []).filter(o => (o.tipo || '') === 'salida');
+    let totalSal = 0; for (const o of sal) totalSal += Number(o.monto) || 0;
+    const card = (label, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:12px 16px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + label + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
+    let h = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">' + card('Salidas', Number(sal.length).toLocaleString('es-AR')) + card('Total egresos', _localM(totalSal), '#b0562a') + '</div>';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">Salidas cargadas</div>';
+    if (!sal.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">Todavía no cargaste salidas de caja.</div>';
+    const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
+    for (const o of sal) {
+      h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+      h += '<div><div style="font-weight:800;color:#b0562a;font-size:15px">N° ' + o.n + ' · ' + escapeHtml(o.categoria || 'Otro') + '</div>';
+      h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(o.fecha || '') + (o.created_by ? (' · por ' + escapeHtml(o.created_by)) : '') + '</div>';
+      h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🏪 ' + escapeHtml(o.sucursal || 'Rufino'), '#eef4ff', '#3466c9') + chip('💳 ' + _localMedioLabel(o.forma_pago), '#f6f0ff', '#7a4fc9') + '</div>';
+      if (o.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(o.notas) + '</div>';
+      h += '</div>';
+      h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Egreso</div><div style="font-size:20px;font-weight:800;color:#b0562a">− ' + _localM(o.monto) + '</div></div>';
+      h += '</div>';
+      if (isAdm) h += '<div style="margin-top:9px;display:flex;gap:8px"><button onclick="localSalidaEdit(' + o.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button><button onclick="localDeleteOrder(' + o.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button></div>';
+      h += '</div>';
+    }
+    return h;
+  }
+  // ===== RESUMEN / CAJA =====
+  function localCajaSetPeriod(p) {
+    const today = new Date(); const ymd = d => d.toISOString().slice(0, 10);
+    if (p === 'hoy') { _localCajaFrom = ymd(today); _localCajaTo = ymd(today); }
+    else if (p === 'mes') { const first = new Date(today.getFullYear(), today.getMonth(), 1); _localCajaFrom = ymd(first); _localCajaTo = ymd(today); }
+    else { _localCajaFrom = ''; _localCajaTo = ''; }
+    loadLocal();
+  }
+  function localCajaSetFrom(v) { _localCajaFrom = v; }
+  function localCajaSetTo(v) { _localCajaTo = v; }
+  function localCajaHTML() {
+    const caja = _localData.caja || {};
+    const medios = _localData.medios || LOCAL_MEDIOS;
+    const sucs = Object.keys(caja).sort();
+    const isTodo = !_localCajaFrom && !_localCajaTo;
+    const isHoy = _localCajaFrom && _localCajaFrom === _localCajaTo && _localCajaFrom === new Date().toISOString().slice(0, 10);
+    const perBtn = (k, label, active) => '<button onclick="localCajaSetPeriod(\'' + k + '\')" style="padding:6px 14px;border:1px solid ' + (active ? '#3483fa' : '#d7dee8') + ';background:' + (active ? '#eef4ff' : '#fff') + ';color:' + (active ? '#2d3277' : '#556') + ';border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">' + label + '</button>';
+    let h = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">';
+    h += '<span style="font-size:13px;color:#888;font-weight:600">Período:</span>' + perBtn('hoy', 'Hoy', isHoy) + perBtn('mes', 'Este mes', false) + perBtn('todo', 'Todo', isTodo);
+    h += '<span style="margin-left:8px;font-size:13px;color:#888">o rango:</span>';
+    h += '<input type="date" value="' + escapeHtml(_localCajaFrom) + '" onchange="localCajaSetFrom(this.value)" style="padding:6px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:13px">';
+    h += '<input type="date" value="' + escapeHtml(_localCajaTo) + '" onchange="localCajaSetTo(this.value)" style="padding:6px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:13px">';
+    h += '<button onclick="loadLocal()" style="padding:6px 14px;border:none;background:#3483fa;color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">Aplicar</button>';
+    h += '</div>';
+    if (!sucs.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en el período elegido.</div>';
+    const mediosRow = (obj, color) => {
+      const parts = medios.map(m => { const v = Number(obj.medios && obj.medios[m]) || 0; return v ? ('<span style="font-size:12px;color:#666">' + _localMedioLabel(m) + ': <b style="color:' + (color || '#333') + '">' + _localM(v) + '</b></span>') : ''; }).filter(Boolean);
+      return '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px">' + (parts.length ? parts.join('') : '<span style="font-size:12px;color:#bbb">—</span>') + '</div>';
+    };
+    for (const s of sucs) {
+      const c = caja[s];
+      h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:14px;padding:16px 18px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05)">';
+      h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:12px">🏪 ' + escapeHtml(s) + '</div>';
+      h += '<div style="background:' + (c.saldo.total >= 0 ? '#eafaf1' : '#fdecec') + ';border:1px solid ' + (c.saldo.total >= 0 ? '#b6e6ca' : '#f5c6c6') + ';border-radius:11px;padding:12px 16px;margin-bottom:12px">';
+      h += '<div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.4px;font-weight:600">Saldo en caja (ventas − salidas)</div>';
+      h += '<div style="font-size:28px;font-weight:800;color:' + (c.saldo.total >= 0 ? '#1a7d47' : '#c0392b') + '">' + _localM(c.saldo.total) + '</div>';
+      h += mediosRow(c.saldo, c.saldo.total >= 0 ? '#1a7d47' : '#c0392b');
+      h += '</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">';
+      const block = (title, obj, color) => '<div style="border:1px solid #eef1f6;border-radius:10px;padding:10px 12px"><div style="font-size:12px;color:#888;text-transform:uppercase;font-weight:600">' + title + '</div><div style="font-size:20px;font-weight:800;color:' + color + '">' + _localM(obj.total) + '</div>' + mediosRow(obj, color) + '</div>';
+      h += block('Ingresos (ventas)', c.ventas, '#2d3277');
+      h += block('Señas recibidas (aparte)', c.senas, '#8a6d1a');
+      h += block('Egresos (salidas)', c.salidas, '#b0562a');
+      h += '</div></div>';
+    }
+    return h;
+  }
   // ==================== COTIZADOR ====================
   // Buscador de cotización (código → precio de venta). Va ARRIBA del panel de Preguntas y lo usan
   // todos los usuarios. La configuración de costos/parámetros vive aparte, en Configuración (solo admin).
@@ -4816,6 +4973,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                   <input type="checkbox" ${u.can_prep_operate ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'can_prep_operate', this.checked)" style="width:16px;height:16px;cursor:pointer">
                   Operario embalaje
                 </label>
+                ${u.role !== 'admin' ? `<label style="display:flex;align-items:center;gap:5px;font-size:13px" title="Sucursal asignada: en 'En preparación' solo verá las órdenes de esa sucursal. Vacío = ve todas.">🏪 Sucursal:
+                  <select onchange="setUserPrepSucursal(${u.id}, this.value)" style="padding:4px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px;cursor:pointer">
+                    <option value=""${!u.prep_sucursal ? ' selected' : ''}>Todas</option>
+                    <option value="Rufino"${u.prep_sucursal === 'Rufino' ? ' selected' : ''}>Rufino</option>
+                    <option value="San Martin"${u.prep_sucursal === 'San Martin' ? ' selected' : ''}>San Martin</option>
+                  </select></label>` : ''}
                 <button onclick="openChangePassword(${u.id}, '${escapeHtml(u.username)}')" style="padding:5px 10px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">🔑 Contraseña</button>
                 ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:5px 10px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
               </div>
@@ -4828,6 +4991,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (navToken !== myNav) return;
       document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar usuarios</p></div>';
     }
+  }
+  async function setUserPrepSucursal(userId, value) {
+    try {
+      const res = await fetch('/api/users/alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: userId, prep_sucursal: value }) });
+      if (res.ok) showToast(value ? ('Sucursal asignada: ' + value) : 'Sin sucursal (ve todas)', 'success');
+      else showToast('Error al asignar sucursal', 'error');
+    } catch (e) { showToast('Error de conexión', 'error'); }
   }
   async function toggleAlert(userId, field, value) {
     try {
@@ -6814,7 +6984,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               <div style="font-weight:700;color:#2d3277;font-size:16px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR',{minimumFractionDigits:2})}</div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px;background:#f8f9fa;border-radius:8px;flex-wrap:wrap">
-              <span style="font-size:13px;color:#666;font-weight:600">Prioridad:</span>
+              <span style="font-size:13px;color:#666;font-weight:600">Sucursal:</span>
+              <select class="prep-sucursal-sel" style="padding:6px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:13px;font-weight:600;color:#2d3277;background:#fff">${['Rufino','San Martin'].map(x=>`<option value="${x}"${(currentUser&&currentUser.prep_sucursal===x)||(!(currentUser&&currentUser.prep_sucursal)&&x==='Rufino')?' selected':''}>${x}</option>`).join('')}</select>
+              <span style="font-size:13px;color:#666;font-weight:600;margin-left:6px">Prioridad:</span>
               ${[1,2,3,4,5].map(n => `<button onclick="selectPriority(this,${n})" data-priority="${n}" style="width:32px;height:32px;border-radius:50%;border:2px solid ${n===3?'#f5a623':'#ddd'};background:${n===3?(['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'][n]):'white'};color:${n===3?'white':'#333'};font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">${n}</button>`).join('')}
               <button class="btn-preparar" onclick="pasarAPreparacion('${saleKey}', this)" data-sale-json="${saleDataJson}">📦 Pasar a Preparación</button>
               ${sale.shipping_type !== 'flex' && sale.shipping_type !== 'drop_off' ? `<button class="btn-preparar" onclick="openAcordarModal('${saleKey}', this)" data-sale-json="${saleDataJson}" style="background:#e67e22">📋 ACORDAR</button>` : ''}
@@ -6944,9 +7116,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const saleCard = btn.closest('.sale-card');
     let noteText = '';
     let noteId = null;
+    let sucursal = '';
     if (saleCard) {
       const noteEl = saleCard.querySelector('[id^="prep-note-display-"]');
       if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
+      const sucEl = saleCard.querySelector('.prep-sucursal-sel');
+      if (sucEl) sucursal = sucEl.value || '';
     }
     btn.disabled = true;
     btn.textContent = 'Procesando...';
@@ -6954,7 +7129,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const res = await fetch('/api/prep/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...saleData, priority, notes: noteText, note_id: noteId, ...extraData })
+        body: JSON.stringify({ ...saleData, priority, notes: noteText, note_id: noteId, sucursal, ...extraData })
       });
       if (res.ok) {
         showToast('Orden pasada a Preparación', 'success');
@@ -6972,6 +7147,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       btn.textContent = '📦 Pasar a Preparación';
     }
   }
+  async function updatePrepSucursal(orderId, sucursal, sel) {
+    const prev = sel ? sel.value : sucursal;
+    try {
+      const res = await fetch('/api/prep/sucursal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order_id: orderId, sucursal }) });
+      const d = await res.json();
+      if (!res.ok || !d.ok) { showToast(d.error || 'No se pudo cambiar la sucursal', 'error'); return; }
+      showToast('Sucursal cambiada a ' + sucursal, 'success');
+      // Refrescar el chip del encabezado sin recargar todo.
+      const card = document.getElementById('prep-card-' + orderId);
+      const chip = card ? card.querySelector('span[title="Sucursal que prepara"]') : null;
+      if (chip) chip.innerHTML = '🏪 ' + sucursal;
+      prepOrdersCache = null;
+    } catch (e) { showToast('Error de red', 'error'); }
+  }
   async function finalizarDirecto(saleKey, finishType, btn) {
     const labels = { dropshipping: 'Dropshipping', puerta: 'Puerta' };
     const label = labels[finishType] || finishType;
@@ -6981,9 +7170,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const saleCard = btn.closest('.sale-card');
     let noteText = '';
     let noteId = null;
+    let sucursal = '';
     if (saleCard) {
       const noteEl = saleCard.querySelector('[id^="prep-note-display-"]');
       if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
+      const sucEl = saleCard.querySelector('.prep-sucursal-sel');
+      if (sucEl) sucursal = sucEl.value || '';
     }
     btn.disabled = true;
     btn.textContent = 'Procesando...';
@@ -6991,7 +7183,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const res = await fetch('/api/prep/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...saleData, notes: noteText, note_id: noteId, finish_type: finishType })
+        body: JSON.stringify({ ...saleData, notes: noteText, note_id: noteId, sucursal, finish_type: finishType })
       });
       if (res.ok) {
         showToast(`Orden marcada como ${label}`, 'success');
@@ -7107,6 +7299,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           ${(currentUser?.role === 'admin' || currentUser?.can_view_sales) ? `<a href="/?section=sales&order_id=${encodeURIComponent(oid)}&account_id=${encodeURIComponent(order.account_id)}" target="_blank" onclick="event.stopPropagation()" style="font-size:12px;color:#3483fa;text-decoration:none;font-weight:600" title="Ver venta">#${oid}</a>` : `<span style="font-size:12px;color:#999">#${oid}</span>`}
           <span id="prep-sale-status-badge-${oid}" style="font-size:11px"></span>
           ${order.shipping_data && order.shipping_data.transporte ? `<span title="Transporte asignado" style="font-size:11px;font-weight:600;color:#1e6091;background:#e7f1fb;border:1px solid #cfe3f7;border-radius:20px;padding:2px 9px">🚚 ${escapeHtml(order.shipping_data.transporte)}</span>` : ''}
+          <span title="Sucursal que prepara" style="font-size:11px;font-weight:700;color:#2d6a4f;background:#e7f6ee;border:1px solid #c3e8d4;border-radius:20px;padding:2px 9px">🏪 ${escapeHtml(order.sucursal || 'San Martin')}</span>
           <span id="prep-toggle-icon-${oid}" style="margin-left:auto;font-size:12px;color:#3483fa;font-weight:600">${expanded ? '▲ Contraer' : '▼ Ver detalle'}</span>
         </div>
         <div id="prep-body-${oid}" style="display:${expanded?'block':'none'}">
@@ -7114,6 +7307,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             <div style="display:flex;gap:4px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
               <span style="font-size:12px;color:#666">Prioridad:</span>
               ${[1,2,3,4,5].map(n => `<button onclick="event.stopPropagation();updatePriority('${oid}',${n},this)" style="width:26px;height:26px;border-radius:50%;border:2px solid ${n===order.priority?colors[n]:'#ddd'};background:${n===order.priority?colors[n]:'white'};color:${n===order.priority?'white':'#333'};font-weight:700;cursor:pointer;font-size:11px">${n}</button>`).join('')}
+              <span style="font-size:12px;color:#666;margin-left:10px">Sucursal:</span>
+              <select onclick="event.stopPropagation()" onchange="updatePrepSucursal('${oid}',this.value,this)" style="padding:5px 8px;border:1px solid #d7dee8;border-radius:7px;font-size:12px;font-weight:600;color:#2d6a4f">${['Rufino','San Martin'].map(x=>`<option value="${x}"${(order.sucursal||'San Martin')===x?' selected':''}>${x}</option>`).join('')}</select>
             </div>
           ` : ''}
           ${order.items.map(item => `
@@ -7276,6 +7471,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               <span class="priority-badge priority-${order.priority||3}" style="width:22px;height:22px;font-size:11px">${order.priority||3}</span>
               <span class="card-account">${escapeHtml(order.account_name)}</span>
               <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(order.buyer_name)}</span>
+              <span title="Sucursal" style="font-size:11px;font-weight:700;color:#2d6a4f;background:#e7f6ee;border:1px solid #c3e8d4;border-radius:20px;padding:2px 9px">🏪 ${escapeHtml(order.sucursal || 'San Martin')}</span>
             </div>
             ${order.items.map(item => `
               <div class="sale-item">
@@ -7337,7 +7533,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if(tr && _trackReco(t)!==tr) return false;
       if(lo && _trackLoc(t)!==lo) return false;
       if(q){
-        const hay=_trackNorm(t.buyer_name)+' '+_trackNorm(t.order_id)+' '+_trackNorm(_trackLoc(t))+' '+_trackNorm(t.guia)+' '+_trackNorm((t.shipping_data&&t.shipping_data.provincia)||'');
+        const sd=t.shipping_data||{};
+        const hay=_trackNorm(t.buyer_name)+' '+_trackNorm(t.order_id)+' '+_trackNorm(_trackLoc(t))+' '+_trackNorm(t.guia)+' '
+          +_trackNorm(sd.nombre)+' '+_trackNorm(sd.provincia)+' '+_trackNorm(sd.telefono)+' '+_trackNorm(sd.direccion)+' '+_trackNorm(sd.dni);
         if(hay.indexOf(q)<0) return false;
       }
       return true;
@@ -7420,10 +7618,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function _trackBuildLink(t){
     const tc=(_trackCfg && _trackCfg.transportes && _trackCfg.transportes[t.transporte]);
     let url=tc&&tc.track_url?String(tc.track_url):''; if(!url) return '';
-    return url.replace(/\{guia\}/g,encodeURIComponent(t.guia||''))
-              .replace(/\{serie\}/g,encodeURIComponent(t.guia_serie||''))
-              .replace(/\{tipo\}/g,encodeURIComponent(t.guia_tipo||''))
-              .replace(/\{numero\}/g,encodeURIComponent(t.guia_numero||''));
+    const hadPlaceholder = /\{(guia|serie|tipo|numero)\}/.test(url);
+    url = url.replace(/\{guia\}/g,encodeURIComponent(t.guia||''))
+             .replace(/\{serie\}/g,encodeURIComponent(t.guia_serie||''))
+             .replace(/\{tipo\}/g,encodeURIComponent(t.guia_tipo||''))
+             .replace(/\{numero\}/g,encodeURIComponent(t.guia_numero||''));
+    // Red de seguridad: si el link de Vía Cargo quedó sin {guia}, igual lo armamos con la guía.
+    if(!hadPlaceholder && t.guia && /seguimiento-de-envio/.test(url)){
+      url = url.replace(/\/+$/,'') + '/' + encodeURIComponent(t.guia) + '/';
+    }
+    return url;
   }
   // Campos de guía del formulario de despacho según el formato del transporte elegido.
   function _trackGuiaFields(t, transporte){
@@ -7513,7 +7717,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <span class="card-account">${escapeHtml(t.account_name||'')}</span>
         <span style="font-weight:600">${escapeHtml(t.buyer_name||'')}</span>
         ${t.manual?'<span style="font-size:11px;background:#f0e6ff;color:#8e44ad;border-radius:10px;padding:2px 8px;font-weight:600">manual</span>':''}
-        <span style="margin-left:auto;font-size:12px;color:#999">#${escapeHtml(t.order_id)}</span>
+        <a href="/?section=sales&order_id=${encodeURIComponent(t.order_id)}&account_id=${encodeURIComponent(t.account_id)}" target="_blank" rel="noopener" title="Ver la venta" style="margin-left:auto;font-size:12px;color:#3483fa;text-decoration:none;font-weight:700">🧾 Ver venta #${escapeHtml(t.order_id)}</a>
       </div>
       <div style="margin-bottom:8px">${items}</div>
       <div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:2">${_trackShipHtml(t.shipping_data)}</div>`;
@@ -7767,17 +7971,25 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <label style="font-size:12px;color:#666;display:flex;align-items:center;gap:4px">Hasta <input type="date" id="statsTo" value="${statsTo}" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"></label>
           <button onclick="aplicarStatsFecha()" style="padding:6px 16px;background:#3483fa;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">Aplicar</button>
         </div>
-        <div class="filter-row" style="gap:8px;margin-top:8px">
+        <div class="filter-row" style="gap:8px;margin-top:8px;align-items:center">
           <button onclick="statsShortcut('hoy')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Hoy</button>
           <button onclick="statsShortcut('ayer')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Ayer</button>
           <button onclick="statsShortcut('7')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Últimos 7 días</button>
           <button onclick="statsShortcut('30')" style="padding:6px 14px;background:white;border:1px solid #ddd;border-radius:8px;font-size:12px;cursor:pointer">Últimos 30 días</button>
+          <span style="margin-left:10px;font-size:12px;color:#666;font-weight:600">🏪 Sucursal:</span>
+          <select onchange="setStatsSucursal(this.value)" style="padding:6px 10px;border:1px solid #ddd;border-radius:8px;font-size:12px;font-weight:600;color:#2d6a4f">
+            <option value=""${!statsSucursal ? ' selected' : ''}>Todas</option>
+            <option value="Rufino"${statsSucursal === 'Rufino' ? ' selected' : ''}>Rufino</option>
+            <option value="San Martin"${statsSucursal === 'San Martin' ? ' selected' : ''}>San Martin</option>
+          </select>
         </div>
       </div>
       <div id="stats-body"><div class="loading"><div class="spinner"></div><p>Cargando estadísticas...</p></div></div>
     `;
     fetchEstadisticas();
   }
+  var statsSucursal = '';
+  function setStatsSucursal(v) { statsSucursal = v || ''; fetchEstadisticas(); }
   async function fetchEstadisticas() {
     const body = document.getElementById('stats-body');
     if (!body) return;
@@ -7786,6 +7998,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const qs = [];
       if (statsFrom) qs.push('from=' + encodeURIComponent(statsFrom));
       if (statsTo) qs.push('to=' + encodeURIComponent(statsTo));
+      if (statsSucursal) qs.push('sucursal=' + encodeURIComponent(statsSucursal));
       const res = await fetch('/api/prep/stats' + (qs.length ? '?' + qs.join('&') : ''));
       if (res.status === 403) { body.innerHTML = '<div class="empty"><p>Acceso denegado</p></div>'; return; }
       const d = await res.json();
@@ -7819,6 +8032,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <div class="stat-card"><div class="label">Ventana (primer → último)</div><div class="value" style="font-size:18px">${ventana}</div></div>
       </div>
     `;
+    // Desglose por sucursal (sobre el período; independiente del filtro elegido)
+    const bsuc = d.by_sucursal || {};
+    const sucNames = Object.keys(bsuc).length ? Object.keys(bsuc).sort() : ['Rufino', 'San Martin'];
+    html += '<div style="margin:6px 0 14px"><div style="font-size:13px;color:#666;font-weight:700;margin-bottom:8px">🏪 Pedidos por sucursal' + (d.sucursal ? (' · filtrando: <span style="color:#2d6a4f">' + escapeHtml(d.sucursal) + '</span>') : '') + '</div><div class="stats">';
+    for (const s of sucNames) html += '<div class="stat-card" style="' + (d.sucursal === s ? 'outline:2px solid #2d6a4f;' : '') + '"><div class="label">🏪 ' + escapeHtml(s) + '</div><div class="value">' + (bsuc[s] || 0) + '</div></div>';
+    html += '</div></div>';
     if (d.primer && d.ultimo) {
       html += `<p style="color:#94a3b8;font-size:12px;margin:-8px 0 20px">Desde el primer pedido (${escapeHtml(d.primer)}) hasta el último (${escapeHtml(d.ultimo)}). El promedio de embalaje se calcula como la ventana total del día ÷ cantidad de pedidos.</p>`;
     }
@@ -8595,6 +8814,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const badge=document.getElementById('acordar-cov-badge'); if(badge) badge.innerHTML='';
     const sug=document.getElementById('acordar-sugg'); if(sug){ sug.style.display='none'; sug.innerHTML=''; }
     const se=document.getElementById('acordar-search'); if(se) se.value='';
+    const suc=document.getElementById('acordar-sucursal'); if(suc) suc.value = (currentUser && currentUser.prep_sucursal) || 'Rufino';
     envAcordarModo();      // modo vacío → oculta Localidad/Provincia/CP/Observaciones
     enviosFetchConfig();   // precache
   }
@@ -8687,9 +8907,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (t) { shipping_data.transporte = t.nombre; shipping_data.transporte_id = t.id; shipping_data.transporte_costo = t.costo_estimado || 0; shipping_data.transporte_demora = t.demora || ''; }
       } catch (e) {}
     }
+    const sucursal = (document.getElementById('acordar-sucursal') || {}).value || 'Rufino';
     const { saleKey, btn } = acordarPendingData;
     closeAcordarModal();
-    if (saleKey && btn) await pasarAPreparacion(saleKey, btn, { shipping_data });
+    if (saleKey && btn) await pasarAPreparacion(saleKey, btn, { shipping_data, sucursal });
   }
   // ==================== PRINT LABEL PDF ====================
   function imprimirEtiquetaEnvio(orderId) {
@@ -10120,6 +10341,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <input name="direccion" type="text" placeholder="Calle y número" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;outline:none;font-family:inherit">
         </div>
         <div style="grid-column:1/-1;border-top:1px dashed #e3e3e3;padding-top:12px;margin-top:2px">
+          <label style="font-size:12px;font-weight:700;color:#2d6a4f;display:block;margin-bottom:4px">🏪 Sucursal que embala *</label>
+          <select id="acordar-sucursal" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer">
+            <option value="Rufino">Rufino</option>
+            <option value="San Martin">San Martin</option>
+          </select>
+        </div>
+        <div style="grid-column:1/-1">
           <label style="font-size:12px;font-weight:700;color:#2d3277;display:block;margin-bottom:4px">🚚 Modo de envío *</label>
           <select id="acordar-modo" onchange="envAcordarModo()" style="width:100%;padding:9px 12px;border:1px solid #ddd;border-radius:7px;font-size:14px;background:#fff;cursor:pointer">
             <option value="">— Elegí una opción —</option>
