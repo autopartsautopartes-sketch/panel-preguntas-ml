@@ -268,6 +268,29 @@ if (!dbMigrate15.tracking_seed_correo_ar) {
   migrated15 = true;
 }
 if (migrated15) saveDB(dbMigrate15);
+// Migrate: SUCURSAL en Preparación. Usuarios con prep_sucursal ('' = ve todas); órdenes ya existentes -> 'San Martin'.
+const dbMigrate16 = loadDB();
+let migrated16 = false;
+for (const u of dbMigrate16.users) { if (u.prep_sucursal === undefined) { u.prep_sucursal = ''; migrated16 = true; } }
+if (!dbMigrate16.prep_sucursal_seeded) {
+  for (const o of (dbMigrate16.prep_orders || [])) { if (!o.sucursal) { o.sucursal = 'San Martin'; migrated16 = true; } }
+  dbMigrate16.prep_sucursal_seeded = true;
+  migrated16 = true;
+}
+if (migrated16) saveDB(dbMigrate16);
+// Migrate: corregir el link de seguimiento de Vía Cargo si quedó sin {guia} (iba a la página genérica).
+const dbMigrate17 = loadDB();
+let migrated17 = false;
+if (!dbMigrate17.tracking_viacargo_url_fixed) {
+  const T = dbMigrate17.tracking_config && dbMigrate17.tracking_config.transportes;
+  if (T && T['Vía Cargo'] && String((T['Vía Cargo'].track_url) || '').indexOf('{guia}') < 0) {
+    T['Vía Cargo'].track_url = 'https://viacargo.com.ar/seguimiento-de-envio/{guia}/';
+    if (!T['Vía Cargo'].formato) T['Vía Cargo'].formato = 'simple';
+  }
+  dbMigrate17.tracking_viacargo_url_fixed = true;
+  migrated17 = true;
+}
+if (migrated17) saveDB(dbMigrate17);
 // ==================== SESSION STORE (persistent) ====================
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 function loadSessions() {
@@ -640,6 +663,7 @@ route('GET', '/api/me', async (req, res) => {
     can_view_sales: isAdmin || user?.can_view_sales !== false,
     can_prep_manage: user?.can_prep_manage === true,
     can_prep_operate: user?.can_prep_operate === true,
+    prep_sucursal: user?.prep_sucursal || '',
     can_search_update: isAdmin || user?.can_search_update === true,
     can_bulk_update: isAdmin || user?.can_bulk_update === true,
     can_view_promos: isAdmin || user?.can_view_promos === true,
@@ -669,6 +693,7 @@ route('GET', '/api/users', async (req, res) => {
     can_view_sales: u.role === 'admin' || u.can_view_sales !== false,
     can_prep_manage: u.can_prep_manage === true,
     can_prep_operate: u.can_prep_operate === true,
+    prep_sucursal: u.prep_sucursal || '',
     can_search_update: u.role === 'admin' || u.can_search_update === true,
     can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
     can_view_promos: u.role === 'admin' || u.can_view_promos === true,
@@ -685,10 +710,11 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, prep_sucursal, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
+  if (prep_sucursal !== undefined) user.prep_sucursal = ['Rufino', 'San Martin'].includes(String(prep_sucursal)) ? String(prep_sucursal) : '';
   if (alerts_questions !== undefined) user.alerts_questions = !!alerts_questions;
   if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
   if (view_dashboard !== undefined) user.view_dashboard = !!view_dashboard;
@@ -5073,6 +5099,10 @@ route('GET', '/api/prep/list', async (req, res) => {
   const db = loadDB();
   let orders = db.prep_orders || [];
   if (statusFilter) orders = orders.filter(o => o.status === statusFilter);
+  // Si el usuario tiene una sucursal asignada (y no es admin), solo ve las órdenes de su sucursal.
+  const u = (db.users || []).find(x => x.id === sess.userId);
+  const mySuc = (u && u.prep_sucursal) ? String(u.prep_sucursal) : '';
+  if (mySuc && sess.role !== 'admin') orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
   sendJSON(res, 200, orders);
 });
 route('POST', '/api/prep/add', async (req, res) => {
@@ -5081,6 +5111,7 @@ route('POST', '/api/prep/add', async (req, res) => {
   const body = await parseBody(req);
   const { order_id, order_ids, pack_id, account_id, account_name, seller_id, buyer_name, buyer_id, items, shipping_id, shipping_type, total_amount, date_created, priority, notes, note_id, finish_type, shipping_data } = body;
   if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const sucursal = ['Rufino', 'San Martin'].includes(String(body.sucursal || '')) ? String(body.sucursal) : 'Rufino';
   const validFinishTypes = ['dropshipping', 'puerta'];
   const isDirectDone = validFinishTypes.includes(finish_type);
   const db = loadDB();
@@ -5095,6 +5126,7 @@ route('POST', '/api/prep/add', async (req, res) => {
     } else {
       existing.priority = priority || existing.priority;
     }
+    if (body.sucursal) existing.sucursal = sucursal;
     saveDB(db);
     return sendJSON(res, 200, { ok: true, updated: true });
   }
@@ -5105,6 +5137,7 @@ route('POST', '/api/prep/add', async (req, res) => {
     pack_id: pack_id || null,
     account_id, account_name, seller_id,
     buyer_name, buyer_id: String(buyer_id || ''),
+    sucursal,
     items: items || [],
     shipping_id: shipping_id ? String(shipping_id) : null,
     shipping_type: shipping_type || 'drop_off',
@@ -5148,6 +5181,21 @@ route('POST', '/api/prep/priority', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
+// Reasignar la sucursal de una orden en preparación (solo manager/admin).
+route('POST', '/api/prep/sucursal', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id, sucursal } = await parseBody(req);
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const suc = ['Rufino', 'San Martin'].includes(String(sucursal || '')) ? String(sucursal) : null;
+  if (!suc) return sendJSON(res, 400, { error: 'Sucursal inválida' });
+  const db = loadDB();
+  const order = (db.prep_orders || []).find(o => o.order_id === String(order_id));
+  if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
+  order.sucursal = suc;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, sucursal: suc });
+});
 route('POST', '/api/prep/finish', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -5178,14 +5226,19 @@ route('GET', '/api/prep/stats', async (req, res) => {
   const localDate = iso => new Date(new Date(iso).getTime() - ARG).toISOString().slice(0, 10);
   const localHM = ms => new Date(ms - ARG).toISOString().slice(11, 16);
   const localDT = ms => new Date(ms - ARG).toISOString().replace('T', ' ').slice(0, 16);
+  const sucFilter = ['Rufino', 'San Martin'].includes(String(url.searchParams.get('sucursal') || '')) ? String(url.searchParams.get('sucursal')) : '';
   const db = loadDB();
   const done = (db.prep_orders || []).filter(o => o.status === 'done' && o.done_at);
-  const inRange = done.filter(o => {
+  const inRangeAll = done.filter(o => {
     const d = localDate(o.done_at);
     if (from && d < from) return false;
     if (to && d > to) return false;
     return true;
   });
+  // Conteo por sucursal (sobre todo el rango, para el selector) y filtro por sucursal si se pidió.
+  const by_sucursal = {};
+  for (const o of inRangeAll) { const s = o.sucursal || 'San Martin'; by_sucursal[s] = (by_sucursal[s] || 0) + 1; }
+  const inRange = sucFilter ? inRangeAll.filter(o => String(o.sucursal || 'San Martin') === sucFilter) : inRangeAll;
   const shipKey = t => (t === 'flex') ? 'flex' : (t === 'drop_off') ? 'drop_off' : 'agreement';
   const by_shipping = { flex: 0, drop_off: 0, agreement: 0 };
   const by_user = {};
@@ -5215,7 +5268,7 @@ route('GET', '/api/prep/stats', async (req, res) => {
   const allMs = inRange.map(o => new Date(o.done_at).getTime());
   const by_user_arr = Object.keys(by_user).map(u => ({ user: u, count: by_user[u] })).sort((a, b) => b.count - a.count);
   sendJSON(res, 200, {
-    from, to, total, by_shipping, by_user: by_user_arr, avg_pack_min,
+    from, to, sucursal: sucFilter, total, by_shipping, by_sucursal, by_user: by_user_arr, avg_pack_min,
     primer: allMs.length ? localDT(Math.min.apply(null, allMs)) : null,
     ultimo: allMs.length ? localDT(Math.max.apply(null, allMs)) : null,
     por_dia
@@ -7513,9 +7566,10 @@ function _localCostFor(codRaw, wantProv) {
 function _stripLocalForRole(o, isAdm) {
   if (isAdm) return o;
   return {
-    n: o.n, fecha: o.fecha, cliente: o.cliente, telefono: o.telefono, notas: o.notas, sucursal: o.sucursal,
+    n: o.n, tipo: o.tipo || 'venta', fecha: o.fecha, cliente: o.cliente, telefono: o.telefono, notas: o.notas, sucursal: o.sucursal,
     entrega: o.entrega, forma_pago: o.forma_pago, cheque: o.cheque, transfer_link: o.transfer_link,
     created_at: o.created_at, created_by: o.created_by, total_venta: o.total_venta,
+    categoria: o.categoria, monto: o.monto,   // salidas (egresos)
     items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: it.precio_venta, subtotal_venta: it.subtotal_venta })),
   };
 }
@@ -7586,11 +7640,40 @@ route('GET', '/api/local/desc-cache-clear', async (req, res) => {
   sendJSON(res, 200, { ok: true, mensaje: 'Caché de descripción/proveedor vaciado. Al recargar un código se vuelve a consultar el listado.' });
 });
 // GUARDAR / EDITAR orden. El servidor recalcula costos/ganancia (nunca confía en el cliente) y asigna el N°.
+// Categorías válidas para una SALIDA de caja (egreso).
+const LOCAL_SALIDA_CATS = ['Servicio', 'Embalaje', 'Envío', 'Sueldo', 'Otro'];
 route('POST', '/api/local/save', async (req, res) => {
   const a = _localAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const b = await parseBody(req);
   const editN = (b.n != null && !isNaN(Number(b.n))) ? Number(b.n) : null;
+  const tipo = ['venta', 'sena', 'salida'].includes(String(b.tipo || '')) ? String(b.tipo) : 'venta';
   const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha || '')) ? String(b.fecha) : new Date().toISOString().slice(0, 10);
+  const FP2 = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
+  // ===== SALIDA (egreso de caja): categoría + monto + medio + sucursal + nota =====
+  if (tipo === 'salida') {
+    const categoria = LOCAL_SALIDA_CATS.includes(String(b.categoria || '')) ? String(b.categoria) : 'Otro';
+    const monto = Math.max(0, Number(b.monto) || 0);
+    if (monto <= 0) return sendJSON(res, 400, { error: 'Cargá un importe mayor a 0' });
+    const medio = FP2.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
+    const sucursalS = String(b.sucursal || '').trim().slice(0, 60) || 'Rufino';
+    const notaS = String(b.notas || '').trim().slice(0, 1000);
+    const dbS = loadDB();
+    dbS.local_sales = Array.isArray(dbS.local_sales) ? dbS.local_sales : [];
+    let ord;
+    if (editN != null) {
+      if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar' });
+      ord = dbS.local_sales.find(o => Number(o.n) === editN);
+      if (!ord) return sendJSON(res, 404, { error: 'Salida no encontrada' });
+      Object.assign(ord, { tipo: 'salida', fecha, categoria, monto, forma_pago: medio, sucursal: sucursalS, notas: notaS, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+    } else {
+      dbS.local_seq = (Number(dbS.local_seq) || 0) + 1;
+      ord = { n: dbS.local_seq, tipo: 'salida', fecha, categoria, monto, forma_pago: medio, sucursal: sucursalS, notas: notaS, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+      dbS.local_sales.push(ord);
+    }
+    saveDB(dbS);
+    return sendJSON(res, 200, { ok: true, n: ord.n, order: _stripLocalForRole(ord, a.isAdm) });
+  }
+  // ===== VENTA / SEÑA (mismo formulario, distinto tipo) =====
   const cliente = String(b.cliente || '').trim().slice(0, 120);
   const telefono = String(b.telefono || '').trim().slice(0, 60);
   const notas = String(b.notas || '').trim().slice(0, 1000);
@@ -7635,10 +7718,10 @@ route('POST', '/api/local/save', async (req, res) => {
     if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar una orden' });
     order = db.local_sales.find(o => Number(o.n) === editN);
     if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
-    Object.assign(order, { fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+    Object.assign(order, { tipo, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
   } else {
     db.local_seq = (Number(db.local_seq) || 0) + 1;
-    order = { n: db.local_seq, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+    order = { n: db.local_seq, tipo, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
     db.local_sales.push(order);
   }
   // Auto-sumar proveedores nuevos a la lista maestra (así el desplegable se completa solo con el uso).
@@ -7657,16 +7740,38 @@ route('GET', '/api/local/data', async (req, res) => {
   if (from) orders = orders.filter(o => String(o.fecha || '') >= from);
   if (to) orders = orders.filter(o => String(o.fecha || '') <= to);
   orders.sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
-  const resumen = { count: orders.length, total_venta: 0, unidades: 0 };
+  // Resumen de VENTAS (solapa Ventas): cuenta solo tipo 'venta' (las señas y salidas no van acá).
+  const resumen = { count: 0, total_venta: 0, unidades: 0 };
   if (a.isAdm) { resumen.total_costo = 0; resumen.total_ganancia = 0; }
   for (const o of orders) {
+    if ((o.tipo || 'venta') !== 'venta') continue;
+    resumen.count++;
     resumen.total_venta += Number(o.total_venta) || 0;
     for (const it of (o.items || [])) resumen.unidades += Number(it.cantidad) || 0;
     if (a.isAdm) { resumen.total_costo += Number(o.total_costo) || 0; resumen.total_ganancia += Number(o.total_ganancia) || 0; }
   }
   resumen.margin = (a.isAdm && resumen.total_venta > 0) ? (resumen.total_ganancia / resumen.total_venta * 100) : null;
+  // CAJA por sucursal: ingresos (ventas), señas aparte, egresos (salidas) y saldo, con total + desglose por medio.
+  const MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
+  const blank = () => ({ total: 0, medios: { EFECTIVO: 0, TRANSFERENCIA: 0, CHEQUE: 0, TARJETA: 0 } });
+  const caja = {};
+  const ensureSuc = s => { if (!caja[s]) caja[s] = { ventas: blank(), senas: blank(), salidas: blank(), saldo: blank() }; return caja[s]; };
+  for (const o of orders) {
+    const suc = String(o.sucursal || 'Rufino');
+    const medio = MEDIOS.includes(String(o.forma_pago || '').toUpperCase()) ? String(o.forma_pago).toUpperCase() : 'EFECTIVO';
+    const t = o.tipo || 'venta';
+    const c = ensureSuc(suc);
+    if (t === 'salida') { const m = Number(o.monto) || 0; c.salidas.total += m; c.salidas.medios[medio] += m; }
+    else if (t === 'sena') { const m = Number(o.total_venta) || 0; c.senas.total += m; c.senas.medios[medio] += m; }
+    else { const m = Number(o.total_venta) || 0; c.ventas.total += m; c.ventas.medios[medio] += m; }
+  }
+  for (const s of Object.keys(caja)) {
+    const c = caja[s];
+    c.saldo.total = c.ventas.total - c.salidas.total;   // las señas NO entran al saldo (van aparte)
+    for (const m of MEDIOS) c.saldo.medios[m] = c.ventas.medios[m] - c.salidas.medios[m];
+  }
   const proveedores = (Array.isArray(db.local_proveedores) ? db.local_proveedores : []).slice();
-  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, proveedores, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, caja, medios: MEDIOS, proveedores, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
 });
 // GESTIONAR la lista maestra de proveedores del desplegable (solo admin).
 route('POST', '/api/local/proveedores', async (req, res) => {
@@ -7702,6 +7807,7 @@ function localSalesRows(from, to) {
   const rows = [];
   const T = { facturacion: 0, unidades: 0, quedaTotal: 0, costTotal: 0, costStockTotal: 0, ganancia: 0, gananciaSinFlex: 0, conocidas: 0, factConocida: 0, orders: 0, count: 0, perdida: 0, perdidaMonto: 0 };
   for (const o of orders) {
+    if ((o.tipo || 'venta') !== 'venta') continue;   // señas y salidas NO cuentan como ventas
     const d = String(o.fecha || '').slice(0, 10);
     if (!d) continue;
     if (from && d < from) continue;
