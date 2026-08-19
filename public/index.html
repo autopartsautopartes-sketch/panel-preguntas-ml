@@ -6985,7 +6985,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             </div>
             <div style="display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px;background:#f8f9fa;border-radius:8px;flex-wrap:wrap">
               <span style="font-size:13px;color:#666;font-weight:600">Sucursal:</span>
-              <select class="prep-sucursal-sel" style="padding:6px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:13px;font-weight:600;color:#2d3277;background:#fff">${['Rufino','San Martin'].map(x=>`<option value="${x}"${(currentUser&&currentUser.prep_sucursal===x)||(!(currentUser&&currentUser.prep_sucursal)&&x==='Rufino')?' selected':''}>${x}</option>`).join('')}</select>
+              <select class="prep-sucursal-sel" style="padding:6px 10px;border:1px solid ${(currentUser&&currentUser.prep_sucursal)?'#d7dee8':'#e0a800'};border-radius:8px;font-size:13px;font-weight:600;color:#2d3277;background:#fff">${(currentUser&&currentUser.prep_sucursal)?'':'<option value="" selected disabled>Elegí sucursal…</option>'}${['Rufino','San Martin'].map(x=>`<option value="${x}"${(currentUser&&currentUser.prep_sucursal===x)?' selected':''}>${x}</option>`).join('')}</select>
               <span style="font-size:13px;color:#666;font-weight:600;margin-left:6px">Prioridad:</span>
               ${[1,2,3,4,5].map(n => `<button onclick="selectPriority(this,${n})" data-priority="${n}" style="width:32px;height:32px;border-radius:50%;border:2px solid ${n===3?'#f5a623':'#ddd'};background:${n===3?(['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'][n]):'white'};color:${n===3?'white':'#333'};font-weight:700;cursor:pointer;font-size:13px;transition:all 0.2s">${n}</button>`).join('')}
               <button class="btn-preparar" onclick="pasarAPreparacion('${saleKey}', this)" data-sale-json="${saleDataJson}">📦 Pasar a Preparación</button>
@@ -7123,6 +7123,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const sucEl = saleCard.querySelector('.prep-sucursal-sel');
       if (sucEl) sucursal = sucEl.value || '';
     }
+    if (!sucursal) {
+      showToast('Elegí la sucursal (Rufino o San Martín) antes de pasar a Preparación', 'error');
+      const sel = saleCard && saleCard.querySelector('.prep-sucursal-sel');
+      if (sel) { sel.style.borderColor = '#e74c3c'; sel.focus(); }
+      return;
+    }
     btn.disabled = true;
     btn.textContent = 'Procesando...';
     try {
@@ -7176,6 +7182,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (noteEl && noteEl.dataset.noteText) { noteText = noteEl.dataset.noteText; noteId = noteEl.dataset.noteId || null; }
       const sucEl = saleCard.querySelector('.prep-sucursal-sel');
       if (sucEl) sucursal = sucEl.value || '';
+    }
+    if (!sucursal) {
+      showToast('Elegí la sucursal (Rufino o San Martín) antes de continuar', 'error');
+      const sel = saleCard && saleCard.querySelector('.prep-sucursal-sel');
+      if (sel) { sel.style.borderColor = '#e74c3c'; sel.focus(); }
+      return;
     }
     btn.disabled = true;
     btn.textContent = 'Procesando...';
@@ -7717,6 +7729,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <span class="card-account">${escapeHtml(t.account_name||'')}</span>
         <span style="font-weight:600">${escapeHtml(t.buyer_name||'')}</span>
         ${t.manual?'<span style="font-size:11px;background:#f0e6ff;color:#8e44ad;border-radius:10px;padding:2px 8px;font-weight:600">manual</span>':''}
+        ${t.sucursal?`<span title="Sucursal donde se embaló" style="font-size:11px;font-weight:700;color:#5a3d8a;background:#efe7ff;border:1px solid #d9c8f5;border-radius:10px;padding:2px 9px">📦 EMBALADO: ${escapeHtml(String(t.sucursal).toUpperCase())}</span>`:''}
         <a href="/?section=sales&order_id=${encodeURIComponent(t.order_id)}&account_id=${encodeURIComponent(t.account_id)}" target="_blank" rel="noopener" title="Ver la venta" style="margin-left:auto;font-size:12px;color:#3483fa;text-decoration:none;font-weight:700">🧾 Ver venta #${escapeHtml(t.order_id)}</a>
       </div>
       <div style="margin-bottom:8px">${items}</div>
