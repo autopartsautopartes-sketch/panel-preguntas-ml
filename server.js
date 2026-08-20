@@ -11026,10 +11026,12 @@ route('GET', '/api/tracking/list', async (req, res) => {
   if (purged > 0) saveDB(db);
   const all = Array.isArray(db.tracking_orders) ? db.tracking_orders : [];
   const iniciadas = all.filter(t => t.estado === 'iniciada').sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)));
-  const en_camino = all.filter(t => t.estado === 'en_camino').sort((x, y) => String(y.updated_at).localeCompare(String(x.updated_at)));
+  // "En camino" = despachados sin avisar todavía. "En sucursal" = ya avisados que llegó a la agencia.
+  const en_camino = all.filter(t => t.estado === 'en_camino' && t.sub !== 'con_aviso').sort((x, y) => String(y.updated_at).localeCompare(String(x.updated_at)));
+  const en_sucursal = all.filter(t => t.estado === 'en_camino' && t.sub === 'con_aviso').sort((x, y) => String(y.msg_aviso_at || y.updated_at).localeCompare(String(x.msg_aviso_at || x.updated_at)));
   const entregadas = all.filter(t => t.estado === 'entregada').sort((x, y) => String(y.entregada_at).localeCompare(String(x.entregada_at)));
   const cfg = db.tracking_config || {};
-  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, entregadas, config: cfg, auto_on: db.tracking_auto_on !== false, auto_transportes: Object.keys(TRACK_DRIVERS) });
+  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, en_sucursal, entregadas, config: cfg, auto_on: db.tracking_auto_on !== false, auto_transportes: Object.keys(TRACK_DRIVERS) });
 });
 // DESPACHAR: guarda fecha/transporte/guía, envía el mensaje al comprador y pasa a EN CAMINO.
 route('POST', '/api/tracking/ship', async (req, res) => {
