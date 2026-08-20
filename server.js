@@ -415,6 +415,21 @@ if (!dbMigrate21.cruzdelsur_seeded_v1) {
   migrated21 = true;
 }
 if (migrated21) saveDB(dbMigrate21);
+// Migrate: Andesmar — link directo de seguimiento por guía (un solo campo). Formato simple.
+const dbMigrate22 = loadDB();
+let migrated22 = false;
+if (!dbMigrate22.tracking_andesmar_url) {
+  if (!dbMigrate22.tracking_config || typeof dbMigrate22.tracking_config !== 'object') dbMigrate22.tracking_config = { transportes: {}, msg_envio: '', msg_aviso: '' };
+  if (!dbMigrate22.tracking_config.transportes || typeof dbMigrate22.tracking_config.transportes !== 'object') dbMigrate22.tracking_config.transportes = {};
+  const T = dbMigrate22.tracking_config.transportes;
+  if (!T['Andesmar'] || !T['Andesmar'].track_url || String(T['Andesmar'].track_url).indexOf('{guia}') < 0) {
+    T['Andesmar'] = Object.assign({}, T['Andesmar'], { track_url: 'https://andesmarcargas.com/seguimiento?numero={guia}&tipo=guia', formato: 'simple' });
+  }
+  if (!T['Andesmar'].formato) T['Andesmar'].formato = 'simple';
+  dbMigrate22.tracking_andesmar_url = true;
+  migrated22 = true;
+}
+if (migrated22) saveDB(dbMigrate22);
 // ==================== SESSION STORE (persistent) ====================
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 function loadSessions() {
@@ -11098,14 +11113,21 @@ async function trackDoEntregado(id, doMl) {
       try {
         const token = await getValidToken(account);
         if (!token) throw new Error('Token inválido');
-        // Marcar el envío "acordar con el vendedor" como entregado en ML.
-        const sid = t.shipping_data && (t.shipping_data.id || t.shipping_data.shipping_id);
-        if (!sid) throw new Error('Sin shipping_id para marcar en ML');
-        const url = `https://api.mercadolibre.com/shipments/${sid}`;
-        const r = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: 'delivered' }) });
+        // Envío "acuerdo con el comprador": la entrega se confirma con el feedback del vendedor
+        // (fulfilled:true) sobre la ORDEN — es lo que dispara el "Entregué el producto" de ML.
+        const oid = t.order_id;
+        if (!oid) throw new Error('Sin N° de orden para confirmar en ML');
+        const url = `https://api.mercadolibre.com/orders/${oid}/feedback`;
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ fulfilled: true, rating: 'positive' }) });
         const txt = await r.text();
-        if (!r.ok) { let p = {}; try { p = JSON.parse(txt); } catch (e) {} throw new Error(p.message || p.error || ('ML HTTP ' + r.status)); }
-        ml_ok = true;
+        if (r.ok) { ml_ok = true; }
+        else {
+          let p = {}; try { p = JSON.parse(txt); } catch (e) {}
+          const msg = String(p.message || p.error || txt || ('ML HTTP ' + r.status));
+          // Si ya se había dado el feedback/entrega antes, tomarlo como confirmado.
+          if (r.status === 409 || /already|exist|duplicat|registrad|ya\s|dado/i.test(msg)) { ml_ok = true; }
+          else throw new Error(msg);
+        }
       } catch (e) { ml_err = String((e && e.message) || e); }
     }
   }
@@ -11125,6 +11147,25 @@ route('POST', '/api/tracking/entregado', async (req, res) => {
   const r = await trackDoEntregado(id, doMl);
   if (!r.ok) return sendJSON(res, 404, { error: r.error });
   sendJSON(res, 200, r);
+});
+// CAMBIAR EL ESTADO de un seguimiento (solo admin). Ej: volver de "Entregadas" a "Iniciadas" o "En camino".
+route('POST', '/api/tracking/set-estado', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  if (!a.admin) return sendJSON(res, 403, { error: 'Solo el administrador puede cambiar el estado' });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  const estado = String((b && b.estado) || '');
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  if (!['iniciada', 'en_camino', 'entregada'].includes(estado)) return sendJSON(res, 400, { error: 'Estado inválido' });
+  const db = loadDB();
+  const t = (db.tracking_orders || []).find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  t.estado = estado;
+  if (estado !== 'entregada') { t.entregada_at = ''; t.entregada_ml = false; }
+  if (estado === 'iniciada') { t.sub = ''; }   // vuelve al inicio: sin aviso en sucursal
+  t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, estado });
 });
 // PASAR A TRACKING MANUALMENTE una venta finalizada de Preparación (botón "TRACKING" en Finalizadas).
 route('POST', '/api/tracking/intake', async (req, res) => {
