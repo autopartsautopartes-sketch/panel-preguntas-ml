@@ -4565,7 +4565,13 @@ route('GET', '/api/sales', async (req, res) => {
       const orders = ordersData.results || [];
       // Step 1: Fetch all unique shipments in parallel
       const uniqueShipIds = [...new Set(orders.map(o => o.shipping?.id).filter(Boolean))];
-      const newShipIds = uniqueShipIds.filter(id => !shipmentCacheGlobal[id]);
+      // Refrescar los envíos cuyo estado NO es terminal (para captar cambios como pending → delivered).
+      // Los terminales (delivered/not_delivered/cancelled) ya no cambian: se dejan cacheados.
+      const TERMINAL_SHIP = new Set(['delivered', 'not_delivered', 'cancelled']);
+      const newShipIds = uniqueShipIds.filter(id => {
+        const c = shipmentCacheGlobal[id];
+        return !c || !TERMINAL_SHIP.has(String((c && c.status) || '').toLowerCase());
+      });
       if (newShipIds.length > 0) {
         const shipResults = await Promise.allSettled(newShipIds.map(async (sid) => {
           const shipment = await mlGet(`https://api.mercadolibre.com/shipments/${sid}`, token);
@@ -11102,41 +11108,18 @@ route('POST', '/api/tracking/aviso', async (req, res) => {
 });
 // ENTREGADO: marca entregada + entregada_at, opcionalmente marca la entrega en ML, y pasa a ENTREGADAS. (Botón y automático.)
 async function trackDoEntregado(id, doMl) {
+  // NOTA: la confirmación de entrega de "acuerdo con el comprador" es una acción de la web de
+  // vendedores de ML (con sesión del navegador) y NO está expuesta en la API pública. Por eso el
+  // panel solo marca la entrega internamente; el aviso a ML se hace con un clic desde el botón
+  // "Confirmar en ML" (que abre la venta). No intentamos endpoints que no confirman de verdad.
   const db = loadDB();
   const t = (db.tracking_orders || []).find(x => x.id === id);
   if (!t) return { ok: false, error: 'Seguimiento no encontrado' };
-  let ml_ok = false, ml_err = '';
-  if (doMl) {
-    const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
-    if (!account) { ml_err = 'Cuenta no encontrada'; }
-    else {
-      try {
-        const token = await getValidToken(account);
-        if (!token) throw new Error('Token inválido');
-        // Envío "acuerdo con el comprador": la entrega se confirma con el feedback del vendedor
-        // (fulfilled:true) sobre la ORDEN — es lo que dispara el "Entregué el producto" de ML.
-        const oid = t.order_id;
-        if (!oid) throw new Error('Sin N° de orden para confirmar en ML');
-        const url = `https://api.mercadolibre.com/orders/${oid}/feedback`;
-        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ fulfilled: true, rating: 'positive' }) });
-        const txt = await r.text();
-        if (r.ok) { ml_ok = true; }
-        else {
-          let p = {}; try { p = JSON.parse(txt); } catch (e) {}
-          const msg = String(p.message || p.error || txt || ('ML HTTP ' + r.status));
-          // Si ya se había dado el feedback/entrega antes, tomarlo como confirmado.
-          if (r.status === 409 || /already|exist|duplicat|registrad|ya\s|dado/i.test(msg)) { ml_ok = true; }
-          else throw new Error(msg);
-        }
-      } catch (e) { ml_err = String((e && e.message) || e); }
-    }
-  }
   t.estado = 'entregada'; t.sub = '';
   t.entregada_at = new Date().toISOString();
-  if (ml_ok) t.entregada_ml = true;
   t.updated_at = new Date().toISOString();
   saveDB(db);
-  return { ok: true, ml_requested: !!doMl, ml_ok, ml_error: ml_err };
+  return { ok: true };
 }
 route('POST', '/api/tracking/entregado', async (req, res) => {
   const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
@@ -11279,13 +11262,40 @@ function trackAutoLog(db, entry) {
   db.tracking_auto_log.push(Object.assign({ ts: new Date().toISOString() }, entry));
   if (db.tracking_auto_log.length > 2000) db.tracking_auto_log = db.tracking_auto_log.slice(-2000);
 }
+// Lee el estado del envío en Mercado Libre. Devuelve true si ML ya lo marcó "delivered" (entregado).
+// Sirve para reflejar en el panel la entrega que el vendedor confirma en la web de ML.
+async function trackMlDelivered(t) {
+  try {
+    const db = loadDB();
+    const sid = t && t.shipping_data && (t.shipping_data.id || t.shipping_data.shipping_id);
+    if (!sid) return false;
+    const account = (db.ml_accounts || []).find(x => x.id === parseInt(t.account_id));
+    if (!account) return false;
+    const token = await getValidToken(account);
+    if (!token) return false;
+    const sh = await mlGet(`https://api.mercadolibre.com/shipments/${sid}`, token);
+    return String((sh && sh.status) || '').toLowerCase() === 'delivered';
+  } catch (e) { return false; }
+}
 let _trackTickBusy = false;
 async function trackAutoTick() {
   if (_trackTickBusy) return; _trackTickBusy = true;
   try {
     const db0 = loadDB();
     if (db0.tracking_auto_on === false) { _trackTickBusy = false; return; }   // pausado por el admin
-    const pend = (db0.tracking_orders || []).filter(t => t.estado === 'en_camino' && TRACK_DRIVERS[t.transporte]);
+    // Paso ML: para CUALQUIER envío no entregado, si ML ya lo marcó entregado (el vendedor lo
+    // confirmó en la web de ML), reflejarlo en Tracking → Entregadas. No depende del transporte.
+    const pendMl = (db0.tracking_orders || []).filter(t => t.estado !== 'entregada');
+    for (const t of pendMl) {
+      try {
+        if (await trackMlDelivered(t)) {
+          await trackDoEntregado(t.id, false);
+          const d = loadDB(); trackAutoLog(d, { id: t.id, order_id: t.order_id, transporte: t.transporte, accion: 'entregado', estado: 'ML: delivered', fuente: 'ml' }); saveDB(d);
+          console.log('[TRACK-AUTO] ML delivered ->', t.order_id);
+        }
+      } catch (e) { console.error('[TRACK-AUTO] ml', t.id, e && e.message); }
+    }
+    const pend = (loadDB().tracking_orders || []).filter(t => t.estado === 'en_camino' && TRACK_DRIVERS[t.transporte]);
     for (const t of pend) {
       try {
         const st = await TRACK_DRIVERS[t.transporte](t);
