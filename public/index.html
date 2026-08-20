@@ -7759,6 +7759,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
      <div style="font-size:11px;color:#999;margin-top:6px">Al despachar se le envía un mensaje al comprador con el N° de guía y el link de seguimiento, y pasa a "En camino".</div>`;
   }
   function _trackIsAuto(transporte){ return !!(_trackData && Array.isArray(_trackData.auto_transportes) && _trackData.auto_transportes.indexOf(transporte)>=0); }
+  // Link a la venta en la web de vendedores de ML, para confirmar la entrega ("Avisar entrega").
+  function trackMlUrl(t){ return 'https://vendedores.mercadolibre.com.ar/ventas/omni/listado?search='+encodeURIComponent((t&&t.order_id)||''); }
+  function trackCopyMl(id, btn){
+    const t=_trackFind(id); if(!t){ showToast('No encontrado','error'); return; }
+    const url=trackMlUrl(t);
+    const ok=()=>{ showToast('Link de ML copiado 📋'); if(btn){ const o=btn.textContent; btn.textContent='✅ Copiado'; setTimeout(()=>{ if(btn) btn.textContent=o; },1500); } };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(url).then(ok).catch(()=>_trackCopyFallback(url,ok));
+    } else { _trackCopyFallback(url,ok); }
+  }
+  function _trackCopyFallback(text, ok){
+    try{ const ta=document.createElement('textarea'); ta.value=text; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); ok(); }
+    catch(e){ showToast('No se pudo copiar el link','error'); }
+  }
   function trackFooterEnCamino(t){
     const link = _trackBuildLink(t);
     const avisado = t.sub==='con_aviso';
@@ -7775,9 +7789,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
      ${t.auto_estado?`<div style="font-size:12px;color:#888;margin:-4px 0 8px">Último estado leído: <b style="color:#555">${escapeHtml(t.auto_estado)}</b>${t.auto_check_at?` · ${formatDateTime(t.auto_check_at)}`:''}</div>`:''}
      <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button onclick="trackAviso('${t.id}',this)" style="padding:8px 14px;background:white;border:1.5px solid #c67b00;color:#c67b00;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">${avisado?'🔔 Volver a avisar en sucursal':'🔔 Avisar "en sucursal"'}</button>
-       <button onclick="trackEntregado('${t.id}',true,this)" style="padding:8px 14px;background:#27ae60;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">✅ Entregado + avisar a ML</button>
-       <button onclick="trackEntregado('${t.id}',false,this)" style="padding:8px 14px;background:white;border:1.5px solid #27ae60;color:#27ae60;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">✅ Entregado (solo panel)</button>
-     </div>`;
+       <button onclick="trackCopyMl('${t.id}',this)" title="Copia el link de la venta en Mercado Libre para confirmar la entrega ('Avisar entrega')" style="padding:8px 14px;background:#fff159;color:#2d3277;border:1px solid #e6d200;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;margin-left:auto">📋 Copiar link de ML</button>
+       <button onclick="trackEntregado('${t.id}',false,this)" title="Marca la entrega en el panel (tu seguimiento interno)" style="padding:8px 14px;background:#27ae60;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">✅ Marcar entregado</button>
+     </div>
+     <div style="font-size:11px;color:#999;margin-top:6px">Cuando confirmes la entrega en Mercado Libre, el panel la pasa solo a "Entregadas". También podés marcarla acá a mano.</div>`;
   }
   function trackFooterEntregada(t){
     return `
@@ -7785,7 +7800,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
        <span>🚚 <b>${escapeHtml(t.transporte||'-')}</b></span>
        <span>Guía: <b>${escapeHtml(t.guia||'-')}</b></span>
        <span style="color:#27ae60;font-weight:600">✅ Entregado ${t.entregada_at?formatDateTime(t.entregada_at):''}</span>
-       ${t.entregada_ml?'<span style="font-size:11px;background:#e8f8ef;color:#1e824c;border-radius:10px;padding:2px 8px;font-weight:600">avisado a ML</span>':`<span style="font-size:11px;background:#fdecea;color:#c0392b;border-radius:10px;padding:2px 8px;font-weight:600">sin avisar a ML</span> <button onclick="trackEntregado('${t.id}',true,this)" title="Reintentar la confirmación de entrega en Mercado Libre" style="padding:5px 10px;background:#27ae60;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">🔔 Reintentar aviso a ML</button>`}
+       <button onclick="trackCopyMl('${t.id}',this)" title="Copiar el link de la venta en Mercado Libre" style="font-size:12px;color:#2d3277;background:#fff159;border:1px solid #e6d200;border-radius:8px;padding:3px 10px;font-weight:700;cursor:pointer">📋 Copiar link de ML</button>
        <button onclick="trackDelete('${t.id}',this)" title="Quitar del panel" style="margin-left:auto;padding:6px 12px;background:white;border:1px solid #ddd;color:#e74c3c;border-radius:7px;font-size:12px;cursor:pointer">🗑️ Quitar</button>
      </div>
      ${(_trackData&&_trackData.can_config)?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
@@ -7847,15 +7862,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
   }
   async function trackEntregado(id, ml, btn){
-    if(!confirm(ml?'¿Marcar como entregado y avisar la entrega a Mercado Libre?':'¿Marcar como entregado (solo en el panel)?')) return;
+    if(!confirm('¿Marcar esta venta como entregada en el panel?\n\n(El aviso de entrega a Mercado Libre se confirma aparte, desde el botón amarillo "Confirmar en ML".)')) return;
     btn.disabled=true; const old=btn.textContent; btn.textContent='...';
     try{
-      const r=await fetch('/api/tracking/entregado',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,ml})});
+      const r=await fetch('/api/tracking/entregado',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,ml:false})});
       const d=await r.json();
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
-      if(ml && !d.ml_ok) showToast('Marcado entregado. En ML no se pudo: '+(d.ml_error||''),'error');
-      else if(ml && d.ml_ok) showToast('✅ Entregado y confirmado en Mercado Libre');
-      else showToast('Marcado como entregado ✅ (solo panel)');
+      showToast('Marcado como entregado ✅');
       loadTracking();
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
   }
