@@ -7555,7 +7555,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function _trackTransFilterOptions(){
     const set={}; const d=_trackData;
-    if(d){ [].concat(d.iniciadas,d.en_camino,d.entregadas).forEach(t=>{const n=_trackReco(t); if(n) set[n]=1;}); }
+    if(d){ [].concat(d.iniciadas||[],d.en_camino||[],d.en_sucursal||[],d.entregadas||[]).forEach(t=>{const n=_trackReco(t); if(n) set[n]=1;}); }
     const cfg=_enviosCfg||{transportes:[]};
     (cfg.transportes||[]).forEach(t=>{ if(t.nombre) set[t.nombre]=1; });
     const names=Object.keys(set).sort((a,b)=>a.localeCompare(b,'es'));
@@ -7563,7 +7563,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function _trackLocFilterOptions(){
     const set={}; const d=_trackData;
-    if(d){ [].concat(d.iniciadas,d.en_camino,d.entregadas).forEach(t=>{const l=_trackLoc(t); if(l) set[l]=1;}); }
+    if(d){ [].concat(d.iniciadas||[],d.en_camino||[],d.en_sucursal||[],d.entregadas||[]).forEach(t=>{const l=_trackLoc(t); if(l) set[l]=1;}); }
     const names=Object.keys(set).sort((a,b)=>a.localeCompare(b,'es'));
     return ['<option value="">Todas las localidades</option>'].concat(names.map(n=>`<option value="${escapeHtml(n)}" ${n===_trackFilter.localidad?'selected':''}>${escapeHtml(n)}</option>`)).join('');
   }
@@ -7595,7 +7595,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       trackRender();
     }catch(e){ content.innerHTML = '<div class="empty"><p>Error al cargar Tracking</p></div>'; }
   }
-  function _trackFind(id){ const d=_trackData; if(!d) return null; return [].concat(d.iniciadas,d.en_camino,d.entregadas).find(x=>x.id===id); }
+  function _trackFind(id){ const d=_trackData; if(!d) return null; return [].concat(d.iniciadas||[],d.en_camino||[],d.en_sucursal||[],d.entregadas||[]).find(x=>x.id===id); }
   async function trackToggleAuto(){
     const on = !(_trackData && _trackData.auto_on!==false);
     if(!confirm(on?'¿Activar el seguimiento automático (cada 6 hs) para MD Cargas y Flecha Carga?':'¿Apagar el seguimiento automático? Vas a tener que avisar y marcar entregado a mano.')) return;
@@ -7683,8 +7683,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function trackRender(){
     const content = document.getElementById('content');
     const d = _trackData; if(!d) return;
-    const nI = d.iniciadas.length, nC = d.en_camino.length, nE = d.entregadas.length;
-    const tab = (k,label,n)=>`<button onclick="switchTrackTab('${k}')" style="padding:8px 16px;border:none;border-bottom:3px solid ${_trackTab===k?'#8e44ad':'transparent'};background:none;font-size:14px;font-weight:${_trackTab===k?'700':'500'};color:${_trackTab===k?'#8e44ad':'#666'};cursor:pointer">${label} <span style="background:${_trackTab===k?'#8e44ad':'#ccc'};color:white;border-radius:10px;padding:1px 8px;font-size:12px;margin-left:2px">${n}</span></button>`;
+    const nI = d.iniciadas.length, nC = d.en_camino.length, nS = (d.en_sucursal||[]).length, nE = d.entregadas.length;
+    const tab = (k,label,n)=>`<button onclick="switchTrackTab('${k}')" style="padding:8px 16px;border:none;border-bottom:3px solid ${_trackTab===k?'#8e44ad':'transparent'};background:none;font-size:14px;font-weight:${_trackTab===k?'700':'500'};color:${_trackTab===k?'#8e44ad':'#666'};cursor:pointer">${label} <span id="trk-tc-${k}" style="background:${_trackTab===k?'#8e44ad':'#ccc'};color:white;border-radius:10px;padding:1px 8px;font-size:12px;margin-left:2px">${n}</span></button>`;
     content.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px">
         <h2 style="margin:0;font-size:20px">📍 Tracking de envíos</h2>
@@ -7698,6 +7698,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <div style="display:flex;gap:4px;border-bottom:1px solid #eee;margin-bottom:12px;flex-wrap:wrap">
         ${tab('iniciadas','🕓 Iniciadas',nI)}
         ${tab('en_camino','🚚 En camino',nC)}
+        ${tab('en_sucursal','🏪 En sucursal',nS)}
         ${tab('entregadas','✅ Entregadas',nE)}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
@@ -7711,16 +7712,47 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     trackRenderList();
   }
   function switchTrackTab(k){ _trackTab = k; trackRender(); }
+  const _TRACK_TABS = ['iniciadas','en_camino','en_sucursal','entregadas'];
+  function _trackCurrentFull(){ const d=_trackData||{}; return (d[_trackTab]||[]); }
   function trackRenderList(){
     const box = document.getElementById('track-list'); if(!box) return;
-    const d = _trackData;
-    const full = _trackTab==='iniciadas'?d.iniciadas:(_trackTab==='en_camino'?d.en_camino:d.entregadas);
+    const full = _trackCurrentFull();
     const list = _trackApplyFilter(full);
     const cntEl = document.getElementById('track-count');
     if(cntEl) cntEl.textContent = (_trackFilterActive() ? (list.length+' de '+full.length) : String(full.length)) + ' envío'+(full.length===1?'':'s');
     if(!full.length){ box.innerHTML='<div class="empty"><p>No hay envíos en esta etapa.</p></div>'; return; }
     if(!list.length){ box.innerHTML='<div class="empty"><p>Ningún envío coincide con la búsqueda o el filtro.</p></div>'; return; }
     box.innerHTML = list.map(trackCard).join('');
+  }
+  // Mueve un envío de una etapa a otra en memoria, saca la tarjeta con una animación y actualiza los
+  // contadores, SIN recargar toda la lista. toKey=null solo la quita (ej: borrar).
+  function _trackFindIn(id){ for(const k of _TRACK_TABS){ const arr=(_trackData&&_trackData[k])||[]; const i=arr.findIndex(x=>x.id===id); if(i>=0) return {key:k,idx:i,item:arr[i]}; } return null; }
+  function _trackRefreshCounts(){
+    for(const k of _TRACK_TABS){ const b=document.getElementById('trk-tc-'+k); if(b) b.textContent=String(((_trackData&&_trackData[k])||[]).length); }
+    const cntEl=document.getElementById('track-count'); const full=_trackCurrentFull()||[];
+    if(cntEl) cntEl.textContent=(_trackFilterActive()?(_trackApplyFilter(full).length+' de '+full.length):String(full.length))+' envío'+(full.length===1?'':'s');
+  }
+  function _trackCardLeave(id, toKey, mutate){
+    const loc=_trackFindIn(id); if(!loc){ loadTracking(); return; }
+    const [item]=_trackData[loc.key].splice(loc.idx,1);
+    if(typeof mutate==='function') mutate(item);
+    if(toKey && Array.isArray(_trackData[toKey])) _trackData[toKey].unshift(item);
+    const el=document.getElementById('track-'+id);
+    const done=()=>{
+      const box=document.getElementById('track-list');
+      if(box && !box.querySelector('.sale-card')){
+        const full=_trackCurrentFull();
+        box.innerHTML = full.length? '<div class="empty"><p>Ningún envío coincide con la búsqueda o el filtro.</p></div>' : '<div class="empty"><p>No hay envíos en esta etapa.</p></div>';
+      }
+      _trackRefreshCounts();
+    };
+    if(el){
+      const h=el.offsetHeight;
+      el.style.overflow='hidden'; el.style.maxHeight=h+'px';
+      el.style.transition='opacity .22s ease, transform .22s ease, max-height .3s ease, margin .3s ease, padding .3s ease';
+      requestAnimationFrame(()=>{ el.style.opacity='0'; el.style.transform='translateX(40px)'; el.style.maxHeight='0'; el.style.marginTop='0'; el.style.marginBottom='0'; el.style.paddingTop='0'; el.style.paddingBottom='0'; });
+      setTimeout(()=>{ if(el&&el.parentNode) el.parentNode.removeChild(el); done(); }, 320);
+    } else { done(); }
   }
   function trackCard(t){
     const items = (t.items||[]).map(it=>`<div style="font-size:13px;color:#333">• ${escapeHtml(it.title||'')} <span style="color:#999">x${it.quantity||1}</span></div>`).join('');
@@ -7847,18 +7879,25 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
       if(d.sent) showToast('Despachado. Mensaje enviado al comprador ✅');
       else showToast('Despachado, pero el mensaje no salió: '+(d.send_error||''),'error');
-      loadTracking();
+      _trackCardLeave(id,'en_camino', it=>{ it.estado='en_camino'; it.sub=''; it.fecha_envio=fecha; it.transporte=trans; it.guia=payload.guia||''; it.guia_serie=payload.serie||''; it.guia_tipo=payload.tipo||''; it.guia_numero=payload.numero||''; });
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
   }
   async function trackAviso(id, btn){
-    if(!confirm('¿Avisar al comprador que el envío está en la sucursal para retirar?')) return;
+    const loc=_trackFindIn(id); const yaEnSucursal = !!(loc && loc.key==='en_sucursal');
+    if(!confirm(yaEnSucursal?'¿Volver a avisar al comprador que el envío está en la sucursal para retirar?':'¿Avisar al comprador que el envío está en la sucursal para retirar?')) return;
     btn.disabled=true; const old=btn.textContent; btn.textContent='Enviando...';
     try{
       const r=await fetch('/api/tracking/aviso',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
       const d=await r.json();
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
-      if(d.sent) showToast('Aviso enviado al comprador ✅'); else showToast('No se pudo enviar: '+(d.send_error||''),'error');
-      loadTracking();
+      if(yaEnSucursal){
+        // Re-aviso: ya está en "En sucursal", la tarjeta se queda; solo confirmamos.
+        if(d.sent) showToast('Aviso reenviado al comprador ✅'); else showToast('No se pudo enviar: '+(d.send_error||''),'error');
+        btn.disabled=false; btn.textContent='🔔 Volver a avisar en sucursal';
+      } else {
+        if(d.sent) showToast('Aviso enviado. Pasó a "En sucursal" 🏪'); else showToast('No se pudo enviar: '+(d.send_error||''),'error');
+        _trackCardLeave(id,'en_sucursal', it=>{ it.sub='con_aviso'; it.msg_aviso_at=new Date().toISOString(); });
+      }
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
   }
   async function trackEntregado(id, ml, btn){
@@ -7869,7 +7908,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const d=await r.json();
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
       showToast('Marcado como entregado ✅');
-      loadTracking();
+      _trackCardLeave(id,'entregadas', it=>{ it.estado='entregada'; it.sub=''; it.entregada_at=new Date().toISOString(); });
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
   }
   async function trackDelete(id, btn){
@@ -7878,7 +7917,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const r=await fetch('/api/tracking/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
       const d=await r.json();
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); return; }
-      showToast('Quitado'); loadTracking();
+      showToast('Quitado'); _trackCardLeave(id,null);
     }catch(e){ showToast('Error de red','error'); }
   }
   async function trackSetEstado(id, estado, btn){
@@ -7889,7 +7928,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const r=await fetch('/api/tracking/set-estado',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,estado})});
       const d=await r.json();
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
-      showToast('Movido a "'+label+'"'); loadTracking();
+      showToast('Movido a "'+label+'"'); _trackCardLeave(id, estado==='iniciada'?'iniciadas':'en_camino', it=>{ it.estado=estado; it.sub=''; });
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
   }
   function openTrackConfig(){
