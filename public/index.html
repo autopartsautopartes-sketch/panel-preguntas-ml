@@ -5188,7 +5188,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <option value="ambos">Ambos (ML + Drive)</option>
               </select>
               <button onclick="applySelected()" id="btnApplySearch" style="padding:9px 22px;background:#27ae60;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">✅ Aplicar a seleccionados</button>
-              <button onclick="openDeleteConfirm()" id="btnDeleteSearch" style="padding:9px 20px;background:#c0392b;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🗑️ Eliminar seleccionadas</button>
+              <button onclick="openDeleteConfirm()" id="btnDeleteSearch" style="padding:9px 20px;background:#c0392b;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">🗑️ Eliminar seleccionadas (ML + Drive)</button>
             </div>
           </div>
           <div style="overflow-x:auto;margin-bottom:14px">
@@ -6593,7 +6593,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         </div>
         <div style="padding:16px 22px;overflow-y:auto">
           <div style="background:#fff4f4;border:1px solid #f3c6c6;border-radius:10px;padding:12px 14px;font-size:13px;color:#7a2020;margin-bottom:14px;line-height:1.5">
-            Estas publicaciones se <b>cerrarán y luego se borrarán definitivamente</b> de la cuenta en ML. Esta operación <b>no tiene vuelta atrás</b>. Revisá bien la lista antes de confirmar.
+            Estas publicaciones se <b>cerrarán y luego se borrarán definitivamente</b> de la cuenta en ML, y además se <b>quitan del listado de Drive</b>. Esta operación <b>no tiene vuelta atrás</b>. Revisá bien la lista antes de confirmar.
           </div>
           <div style="overflow:auto;max-height:34vh;border:1px solid #f0e0e0;border-radius:10px;margin-bottom:16px">
             <table style="border-collapse:collapse;width:100%">
@@ -6652,6 +6652,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       byAccount[r.account_id].ids.push(r.item_id);
     }
     let totalOk = 0, totalErr = 0, totalFinal = 0;
+    const removedMlas = [];   // MLAs que se cerraron/borraron en ML → también se quitan de Drive
     for (const [accId, group] of Object.entries(byAccount)) {
       try {
         const res = await fetch('/api/bulk-delete', {
@@ -6679,8 +6680,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             try {
               const msg = JSON.parse(line);
               if (msg.type === 'result') {
-                if (msg.ok && msg.finalized) { totalFinal++; if (dlog) dlog.innerHTML += `<div style="color:#e67e22">🏁 ${escapeHtml(msg.item_id)} finalizada (cerrada — ML no permite borrado definitivo)</div>`; }
-                else if (msg.ok) { totalOk++; if (dlog) dlog.innerHTML += `<div style="color:#27ae60">🗑️ ${escapeHtml(msg.item_id)} eliminada</div>`; }
+                if (msg.ok && msg.finalized) { totalFinal++; if (msg.item_id) removedMlas.push(String(msg.item_id)); if (dlog) dlog.innerHTML += `<div style="color:#e67e22">🏁 ${escapeHtml(msg.item_id)} finalizada (cerrada — ML no permite borrado definitivo)</div>`; }
+                else if (msg.ok) { totalOk++; if (msg.item_id) removedMlas.push(String(msg.item_id)); if (dlog) dlog.innerHTML += `<div style="color:#27ae60">🗑️ ${escapeHtml(msg.item_id)} eliminada</div>`; }
                 else { totalErr++; if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(msg.item_id)} — ${escapeHtml(msg.error || 'Error')}</div>`; }
                 if (dlog) dlog.scrollTop = dlog.scrollHeight;
               }
@@ -6692,10 +6693,30 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">❌ ${escapeHtml(group.name)}: ${escapeHtml(e.message)}</div>`;
       }
     }
+    // También quitar de Drive (planilla) las MLAs que se cerraron/borraron en ML.
+    let driveDeleted = 0;
+    const uniqRemoved = Array.from(new Set(removedMlas));
+    if (uniqRemoved.length) {
+      if (dlog) dlog.innerHTML += `<div style="color:#2d3277;margin-top:4px">🗂️ Quitando ${uniqRemoved.length} fila(s) del listado de Drive…</div>`;
+      try {
+        for (let j = 0; j < uniqRemoved.length; j += 400) {
+          const part = uniqRemoved.slice(j, j + 400);
+          const dr = await fetch('/api/drive-listado-deleterows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ mlas: part }) });
+          const dd = await dr.json().catch(() => ({}));
+          if (!dr.ok || (dd && dd.ok === false)) throw new Error((dd && dd.error) || ('deleterows HTTP ' + dr.status));
+          driveDeleted += Number(dd && dd.deleted) || 0;
+        }
+        try { await fetch('/api/drive-listado-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: '{}' }); } catch(_) {}
+        if (dlog) dlog.innerHTML += `<div style="color:#27ae60">✅ Drive: ${driveDeleted} fila(s) quitada(s) del listado.</div>`;
+      } catch(e) {
+        if (dlog) dlog.innerHTML += `<div style="color:#e74c3c">⚠️ No se pudieron quitar de Drive: ${escapeHtml((e && e.message) || 'error')}. En ML sí se eliminaron.</div>`;
+      }
+    }
     const okTot = totalOk + totalFinal;
     const parts = [];
     if (totalOk) parts.push(`${totalOk} eliminada${totalOk !== 1 ? 's' : ''}`);
     if (totalFinal) parts.push(`${totalFinal} finalizada${totalFinal !== 1 ? 's' : ''} (cerradas)`);
+    if (driveDeleted) parts.push(`${driveDeleted} quitada${driveDeleted !== 1 ? 's' : ''} de Drive`);
     if (totalErr) parts.push(`${totalErr} con error`);
     const resumen = parts.join(', ') || '0 procesadas';
     if (prog) prog.innerHTML += `<div style="background:${totalErr ? '#fff8f8' : '#f0fff4'};border:1px solid ${totalErr ? '#f8d7da' : '#c3e6cb'};border-radius:8px;padding:10px 12px;font-size:13px;margin-top:10px"><b>${totalErr ? '⚠️' : '✅'} ${resumen}</b>${totalFinal ? '<div style="color:#7a5230;font-size:12px;margin-top:5px">Las "finalizadas" ya no se muestran ni se pueden comprar. ML no las borra del todo porque tienen historial de ventas.</div>' : ''}</div>`;
