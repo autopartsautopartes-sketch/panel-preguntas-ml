@@ -7591,7 +7591,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function trackFilterInput(v){ _trackFilter.q=v; trackRenderList(); }
   function trackFilterTransporte(v){ _trackFilter.transporte=v; trackRenderList(); }
   function trackFilterLocalidad(v){ _trackFilter.localidad=v; trackRenderList(); }
-  function trackClearFilter(){ _trackFilter={q:'',transporte:'',localidad:''}; trackRender(); }
+  function trackClearFilter(){ _trackFilter={q:'',transporte:'',localidad:''}; _trackDevEstadoFilter=''; trackRender(); }
   // Pasar manualmente una venta finalizada al panel de Tracking (botón en Finalizadas).
   async function pasarATracking(orderId, btn){
     if(!confirm('¿Pasar esta venta al panel de Tracking?\n\nQuedará en la pestaña INICIADAS para cargar el envío.')) return;
@@ -7704,7 +7704,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function trackRender(){
     const content = document.getElementById('content');
     const d = _trackData; if(!d) return;
-    const nI = d.iniciadas.length, nC = d.en_camino.length, nS = (d.en_sucursal||[]).length, nE = d.entregadas.length;
+    const nI = d.iniciadas.length, nC = d.en_camino.length, nS = (d.en_sucursal||[]).length, nE = d.entregadas.length, nD = (d.devoluciones||[]).length;
     const tab = (k,label,n)=>`<button onclick="switchTrackTab('${k}')" style="padding:8px 16px;border:none;border-bottom:3px solid ${_trackTab===k?'#8e44ad':'transparent'};background:none;font-size:14px;font-weight:${_trackTab===k?'700':'500'};color:${_trackTab===k?'#8e44ad':'#666'};cursor:pointer">${label} <span id="trk-tc-${k}" style="background:${_trackTab===k?'#8e44ad':'#ccc'};color:white;border-radius:10px;padding:1px 8px;font-size:12px;margin-left:2px">${n}</span></button>`;
     content.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px">
@@ -7721,11 +7721,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         ${tab('en_camino','🚚 En camino',nC)}
         ${tab('en_sucursal','🏪 En sucursal',nS)}
         ${tab('entregadas','✅ Entregadas',nE)}
+        ${tab('devoluciones','↩️ Devoluciones',nD)}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
         <input id="track-search" value="${escapeHtml(_trackFilter.q)}" oninput="trackFilterInput(this.value)" placeholder="🔎 Buscar nombre y apellido, N° de venta o localidad..." style="flex:1;min-width:240px;padding:8px 12px;border:1px solid #ccc;border-radius:8px;font-size:13px">
         <select onchange="trackFilterTransporte(this.value)" style="padding:8px;border:1px solid #ccc;border-radius:8px;font-size:13px;max-width:200px">${_trackTransFilterOptions()}</select>
         <select onchange="trackFilterLocalidad(this.value)" style="padding:8px;border:1px solid #ccc;border-radius:8px;font-size:13px;max-width:200px">${_trackLocFilterOptions()}</select>
+        ${_trackTab==='devoluciones'?`<select onchange="trackDevFilterEstado(this.value)" style="padding:8px;border:1px solid #ccc;border-radius:8px;font-size:13px;max-width:180px"><option value="">Todos los estados</option><option value="en_camino"${_trackDevEstadoFilter==='en_camino'?' selected':''}>🚚 En camino</option><option value="entregada"${_trackDevEstadoFilter==='entregada'?' selected':''}>✅ Entregadas</option></select>`:''}
         <button onclick="trackClearFilter()" style="padding:8px 12px;background:white;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer">✕ Limpiar</button>
         <span id="track-count" style="font-size:12px;color:#999;margin-left:auto"></span>
       </div>
@@ -7733,17 +7735,25 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     trackRenderList();
   }
   function switchTrackTab(k){ _trackTab = k; trackRender(); }
-  const _TRACK_TABS = ['iniciadas','en_camino','en_sucursal','entregadas'];
+  const _TRACK_TABS = ['iniciadas','en_camino','en_sucursal','entregadas','devoluciones'];
+  let _trackDevEstadoFilter = '';   // filtro de estado dentro de Devoluciones ('' = todos)
+  let _trackDevPreview = null;       // venta encontrada para cargar una devolución manual
   function _trackCurrentFull(){ const d=_trackData||{}; return (d[_trackTab]||[]); }
   function trackRenderList(){
     const box = document.getElementById('track-list'); if(!box) return;
+    const isDev = _trackTab==='devoluciones';
     const full = _trackCurrentFull();
-    const list = _trackApplyFilter(full);
+    let list = _trackApplyFilter(full);
+    if(isDev && _trackDevEstadoFilter) list = list.filter(t=>(t.dev_estado||'en_camino')===_trackDevEstadoFilter);
     const cntEl = document.getElementById('track-count');
-    if(cntEl) cntEl.textContent = (_trackFilterActive() ? (list.length+' de '+full.length) : String(full.length)) + ' envío'+(full.length===1?'':'s');
-    if(!full.length){ box.innerHTML='<div class="empty"><p>No hay envíos en esta etapa.</p></div>'; return; }
-    if(!list.length){ box.innerHTML='<div class="empty"><p>Ningún envío coincide con la búsqueda o el filtro.</p></div>'; return; }
-    box.innerHTML = list.map(trackCard).join('');
+    const filtered = _trackFilterActive() || (isDev && _trackDevEstadoFilter);
+    if(cntEl) cntEl.textContent = (filtered ? (list.length+' de '+full.length) : String(full.length)) + ' envío'+(full.length===1?'':'s');
+    const panel = isDev ? _trackDevPanelHTML() : '';
+    let listHtml;
+    if(!full.length) listHtml='<div class="empty"><p>'+(isDev?'No hay devoluciones cargadas. Cargá una con el N° de venta, o usá el botón "Pedido devolución" en un envío.':'No hay envíos en esta etapa.')+'</p></div>';
+    else if(!list.length) listHtml='<div class="empty"><p>Ningún envío coincide con la búsqueda o el filtro.</p></div>';
+    else listHtml = list.map(trackCard).join('');
+    box.innerHTML = panel + listHtml;
   }
   // Mueve un envío de una etapa a otra en memoria, saca la tarjeta con una animación y actualiza los
   // contadores, SIN recargar toda la lista. toKey=null solo la quita (ej: borrar).
@@ -7761,10 +7771,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const el=document.getElementById('track-'+id);
     const done=()=>{
       const box=document.getElementById('track-list');
-      if(box && !box.querySelector('.sale-card')){
-        const full=_trackCurrentFull();
-        box.innerHTML = full.length? '<div class="empty"><p>Ningún envío coincide con la búsqueda o el filtro.</p></div>' : '<div class="empty"><p>No hay envíos en esta etapa.</p></div>';
-      }
+      if(box && !box.querySelector('.sale-card')) trackRenderList();   // re-arma panel + estado vacío correcto
       _trackRefreshCounts();
     };
     if(el){
@@ -7788,10 +7795,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <div style="margin-bottom:8px">${items}</div>
       <div style="background:#f8f9fa;border:1px solid #eee;border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:2">${_trackShipHtml(t.shipping_data)}</div>`;
     let footer='';
-    if(t.estado==='iniciada') footer = trackFooterIniciada(t);
+    if(t.estado==='devolucion') footer = trackFooterDevolucion(t);
+    else if(t.estado==='iniciada') footer = trackFooterIniciada(t);
     else if(t.estado==='en_camino') footer = trackFooterEnCamino(t);
     else footer = trackFooterEntregada(t);
-    const border = t.estado==='entregada'?'#27ae60':(t.estado==='en_camino'?'#3483fa':'#f5a623');
+    const border = t.estado==='devolucion'?'#c0392b':(t.estado==='entregada'?'#27ae60':(t.estado==='en_camino'?'#3483fa':'#f5a623'));
     return `<div class="sale-card" id="track-${t.id}" style="border-left:4px solid ${border}">${head}${footer}</div>`;
   }
   function trackFooterIniciada(t){
@@ -7807,6 +7815,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
      <div id="tk-guia-area-${t.id}" style="margin-top:8px">${_trackGuiaFields(t, selTrans)}</div>
      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
        <button onclick="trackPrint('${t.id}')" style="padding:8px 14px;background:white;border:1px solid #ccc;border-radius:7px;font-size:13px;cursor:pointer">🖨️ Imprimir etiqueta</button>
+       <button onclick="trackPedidoDevolucion('${t.id}',this)" title="Pasar este envío a Devoluciones" style="padding:8px 14px;background:white;border:1.5px solid #c0392b;color:#c0392b;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">↩️ Pedido devolución</button>
        <button onclick="trackShip('${t.id}',this)" style="padding:8px 18px;background:#8e44ad;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">📦 Despachar y avisar al comprador</button>
      </div>
      <div style="font-size:11px;color:#999;margin-top:6px">Al despachar se le envía un mensaje al comprador con el N° de guía y el link de seguimiento, y pasa a "En camino".</div>`;
@@ -7842,6 +7851,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
      ${t.auto_estado?`<div style="font-size:12px;color:#888;margin:-4px 0 8px">Último estado leído: <b style="color:#555">${escapeHtml(t.auto_estado)}</b>${t.auto_check_at?` · ${formatDateTime(t.auto_check_at)}`:''}</div>`:''}
      <div style="display:flex;gap:8px;flex-wrap:wrap">
        <button onclick="trackAviso('${t.id}',this)" style="padding:8px 14px;background:white;border:1.5px solid #c67b00;color:#c67b00;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">${avisado?'🔔 Volver a avisar en sucursal':'🔔 Avisar "en sucursal"'}</button>
+       <button onclick="trackPedidoDevolucion('${t.id}',this)" title="Pasar este envío a Devoluciones" style="padding:8px 14px;background:white;border:1.5px solid #c0392b;color:#c0392b;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">↩️ Pedido devolución</button>
        <button onclick="trackCopyMl('${t.id}',this)" title="Copia el link de la venta en Mercado Libre para confirmar la entrega ('Avisar entrega')" style="padding:8px 14px;background:#fff159;color:#2d3277;border:1px solid #e6d200;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;margin-left:auto">📋 Copiar link de ML</button>
        <button onclick="trackEntregado('${t.id}',false,this)" title="Marca la entrega en el panel (tu seguimiento interno)" style="padding:8px 14px;background:#27ae60;color:white;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">✅ Marcar entregado</button>
      </div>
@@ -7951,6 +7961,133 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); btn.disabled=false; btn.textContent=old; return; }
       showToast('Movido a "'+label+'"'); _trackCardLeave(id, estado==='iniciada'?'iniciadas':'en_camino', it=>{ it.estado=estado; it.sub=''; });
     }catch(e){ showToast('Error de red','error'); btn.disabled=false; btn.textContent=old; }
+  }
+  // ---------------- DEVOLUCIONES ----------------
+  function trackDevFilterEstado(v){ _trackDevEstadoFilter=v; trackRenderList(); }
+  async function trackPedidoDevolucion(id, btn){
+    if(!confirm('¿Pasar este envío a "Devoluciones"? Queda como devolución en camino y lo podés editar en esa solapa.')) return;
+    if(btn) btn.disabled=true;
+    try{
+      const r=await fetch('/api/tracking/devolucion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); if(btn) btn.disabled=false; return; }
+      showToast('Pasado a Devoluciones ↩️');
+      _trackCardLeave(id,'devoluciones', it=>{ it.estado='devolucion'; it.sub=''; it.dev_estado=it.dev_estado||'en_camino'; it.dev_fecha_envio=it.dev_fecha_envio||''; it.dev_transporte=it.dev_transporte||''; it.dev_guia=it.dev_guia||''; });
+    }catch(e){ showToast('Error de red','error'); if(btn) btn.disabled=false; }
+  }
+  function _trackDevPanelHTML(){
+    const p=_trackDevPreview;
+    return `<div style="background:#fff8f0;border:1px solid #ffd9b3;border-radius:12px;padding:14px 16px;margin-bottom:14px">
+      <div style="font-weight:700;color:#c0392b;margin-bottom:8px">↩️ Cargar una devolución</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">N° de venta</label>
+          <input id="dev-order" value="${p?escapeHtml(p.order_id):''}" placeholder="Ej: 2000012345678" onkeydown="if(event.key==='Enter')trackDevLookup()" style="padding:8px 10px;border:1px solid #ccc;border-radius:7px;font-size:13px;min-width:220px"></div>
+        <button onclick="trackDevLookup()" id="dev-lookup-btn" style="padding:8px 16px;background:#2d3277;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">🔎 Buscar venta</button>
+      </div>
+      <div id="dev-preview" style="margin-top:10px">${p?_trackDevFormHTML(p):''}</div>
+    </div>`;
+  }
+  function _trackDevTransOptions(sel){
+    const trs=_envSortByName((_enviosCfg||{transportes:[]}).transportes||[]);
+    return ['<option value="">— Transporte —</option>'].concat(trs.map(x=>`<option value="${escapeHtml(x.nombre)}"${(sel||'')===x.nombre?' selected':''}>${escapeHtml(x.nombre)}</option>`)).join('');
+  }
+  function _trackDevFormHTML(p){
+    const items=(p.items||[]).map(it=>`<div style="font-size:12px;color:#444">• ${escapeHtml(it.title||'')} <span style="color:#999">x${it.quantity||1}</span></div>`).join('');
+    return `<div style="border-top:1px dashed #ffd9b3;padding-top:10px">
+      <div style="font-size:13px;margin-bottom:4px"><b>${escapeHtml(p.buyer_name||'')}</b> <span style="color:#999">· venta #${escapeHtml(p.order_id)} · ${escapeHtml(p.account_name||'')}</span></div>
+      ${items}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Fecha de envío (vuelta)</label>
+          <input type="date" id="dev-f-fecha" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"></div>
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Transporte</label>
+          <select id="dev-f-trans" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:160px">${_trackDevTransOptions('')}</select></div>
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">N° de guía</label>
+          <input id="dev-f-guia" placeholder="Guía" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:140px"></div>
+        <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Estado</label>
+          <select id="dev-f-estado" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"><option value="en_camino">🚚 En camino</option><option value="entregada">✅ Entregada</option></select></div>
+        <button onclick="trackDevAdd()" style="padding:8px 16px;background:#c0392b;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">↩️ Cargar devolución</button>
+      </div>
+    </div>`;
+  }
+  async function trackDevLookup(){
+    const inp=document.getElementById('dev-order'); const oid=((inp?inp.value:'')||'').replace(/\D/g,'');
+    if(!oid){ showToast('Escribí el N° de venta','error'); return; }
+    const btn=document.getElementById('dev-lookup-btn'); if(btn){ btn.disabled=true; btn.textContent='Buscando...'; }
+    try{
+      const r=await fetch('/api/tracking/dev-lookup?order_id='+encodeURIComponent(oid));
+      const d=await r.json();
+      if(!r.ok){ showToast(d.error||'Error','error'); }
+      else if(!d.found){ showToast('No encontré esa venta en tus cuentas ML','error'); _trackDevPreview=null; }
+      else { _trackDevPreview=d; }
+      const pv=document.getElementById('dev-preview'); if(pv) pv.innerHTML=_trackDevPreview?_trackDevFormHTML(_trackDevPreview):'<div style="color:#c0392b;font-size:12px">No se encontró la venta.</div>';
+    }catch(e){ showToast('Error de red','error'); }
+    if(btn){ btn.disabled=false; btn.textContent='🔎 Buscar venta'; }
+  }
+  async function trackDevAdd(){
+    const p=_trackDevPreview; if(!p){ showToast('Buscá primero la venta','error'); return; }
+    const fecha=(document.getElementById('dev-f-fecha')||{}).value||'';
+    const trans=(document.getElementById('dev-f-trans')||{}).value||'';
+    const guia=((document.getElementById('dev-f-guia')||{}).value||'').trim();
+    const estado=(document.getElementById('dev-f-estado')||{}).value||'en_camino';
+    try{
+      const r=await fetch('/api/tracking/dev-add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ order_id:p.order_id, pack_id:p.pack_id, account_id:p.account_id, account_name:p.account_name, buyer_name:p.buyer_name, buyer_id:p.buyer_id, items:p.items, shipping_data:p.shipping_data, dev_fecha_envio:fecha, dev_transporte:trans, dev_guia:guia, dev_estado:estado })});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); return; }
+      showToast('Devolución cargada ↩️'); _trackDevPreview=null; loadTracking();
+    }catch(e){ showToast('Error de red','error'); }
+  }
+  async function trackDevSetEstado(id, estado, btn){
+    if(btn) btn.disabled=true;
+    try{
+      const r=await fetch('/api/tracking/dev-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,dev_estado:estado})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); if(btn) btn.disabled=false; return; }
+      const it=_trackFind(id); if(it) it.dev_estado=estado;
+      showToast(estado==='entregada'?'Marcada como entregada ✅':'Marcada en camino 🚚'); trackRenderList();
+    }catch(e){ showToast('Error de red','error'); if(btn) btn.disabled=false; }
+  }
+  function trackDevEditToggle(id){ const el=document.getElementById('dev-edit-'+id); if(el) el.style.display = (el.style.display==='none'||!el.style.display)?'block':'none'; }
+  async function trackDevSaveDatos(id){
+    const fecha=(document.getElementById('dev-e-fecha-'+id)||{}).value||'';
+    const trans=(document.getElementById('dev-e-trans-'+id)||{}).value||'';
+    const guia=((document.getElementById('dev-e-guia-'+id)||{}).value||'').trim();
+    try{
+      const r=await fetch('/api/tracking/dev-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,dev_fecha_envio:fecha,dev_transporte:trans,dev_guia:guia})});
+      const d=await r.json();
+      if(!r.ok||!d.ok){ showToast(d.error||'Error','error'); return; }
+      const it=_trackFind(id); if(it){ it.dev_fecha_envio=fecha; it.dev_transporte=trans; it.dev_guia=guia; }
+      showToast('Datos guardados ✅'); trackRenderList();
+    }catch(e){ showToast('Error de red','error'); }
+  }
+  function trackFooterDevolucion(t){
+    const tc=(_trackCfg&&_trackCfg.transportes&&_trackCfg.transportes[t.dev_transporte]);
+    let devLink=''; if(tc&&tc.track_url&&t.dev_guia){ devLink=String(tc.track_url).replace(/\{guia\}/g,encodeURIComponent(t.dev_guia)); }
+    const enCamino=(t.dev_estado||'en_camino')!=='entregada';
+    return `
+     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px;margin-bottom:8px">
+       <span>🔁 <b>${escapeHtml(t.dev_transporte||'—')}</b></span>
+       <span>Guía: <b>${escapeHtml(t.dev_guia||'—')}</b></span>
+       ${t.dev_fecha_envio?`<span>Enviado: ${escapeHtml(t.dev_fecha_envio)}</span>`:''}
+       ${devLink?`<a href="${escapeHtml(devLink)}" target="_blank" rel="noopener" style="color:#3483fa;text-decoration:underline">Ver seguimiento ↗</a>`:''}
+       <span style="font-size:11px;border-radius:10px;padding:2px 9px;font-weight:700;${enCamino?'background:#e7f1fb;color:#1e6091':'background:#eafaf1;color:#1e824c'}">${enCamino?'🚚 En camino':'✅ Entregada'}</span>
+     </div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+       <button onclick="trackDevSetEstado('${t.id}','en_camino',this)" style="padding:7px 12px;border:1.5px solid ${enCamino?'#3483fa':'#ccc'};background:${enCamino?'#eaf2ff':'#fff'};color:#1e6091;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">🚚 En camino</button>
+       <button onclick="trackDevSetEstado('${t.id}','entregada',this)" style="padding:7px 12px;border:1.5px solid ${!enCamino?'#27ae60':'#ccc'};background:${!enCamino?'#eafaf1':'#fff'};color:#1e824c;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">✅ Entregada</button>
+       <button onclick="trackDevEditToggle('${t.id}')" style="padding:7px 12px;border:1px solid #ddd;background:#fff;border-radius:7px;font-size:12px;cursor:pointer">✏️ Editar datos</button>
+       <button onclick="trackDelete('${t.id}',this)" title="Quitar del panel" style="margin-left:auto;padding:6px 12px;background:white;border:1px solid #ddd;color:#e74c3c;border-radius:7px;font-size:12px;cursor:pointer">🗑️ Quitar</button>
+     </div>
+     <div id="dev-edit-${t.id}" style="display:none;margin-top:10px;background:#fafbfc;border:1px solid #eee;border-radius:8px;padding:10px">
+       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+         <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Fecha de envío</label>
+           <input type="date" id="dev-e-fecha-${t.id}" value="${escapeHtml(t.dev_fecha_envio||'')}" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"></div>
+         <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">Transporte</label>
+           <select id="dev-e-trans-${t.id}" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:160px">${_trackDevTransOptions(t.dev_transporte)}</select></div>
+         <div><label style="font-size:11px;color:#666;display:block;margin-bottom:2px">N° de guía</label>
+           <input id="dev-e-guia-${t.id}" value="${escapeHtml(t.dev_guia||'')}" placeholder="Guía" style="padding:7px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:140px"></div>
+         <button onclick="trackDevSaveDatos('${t.id}')" style="padding:8px 14px;background:#2d3277;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">💾 Guardar</button>
+       </div>
+     </div>`;
   }
   function openTrackConfig(){
     const cfg = _trackCfg||{transportes:{},msg_envio:'',msg_aviso:''};
