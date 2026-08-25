@@ -11030,8 +11030,9 @@ route('GET', '/api/tracking/list', async (req, res) => {
   const en_camino = all.filter(t => t.estado === 'en_camino' && t.sub !== 'con_aviso').sort((x, y) => String(y.updated_at).localeCompare(String(x.updated_at)));
   const en_sucursal = all.filter(t => t.estado === 'en_camino' && t.sub === 'con_aviso').sort((x, y) => String(y.msg_aviso_at || y.updated_at).localeCompare(String(x.msg_aviso_at || x.updated_at)));
   const entregadas = all.filter(t => t.estado === 'entregada').sort((x, y) => String(y.entregada_at).localeCompare(String(x.entregada_at)));
+  const devoluciones = all.filter(t => t.estado === 'devolucion').sort((x, y) => String(y.dev_at || y.updated_at).localeCompare(String(x.dev_at || x.updated_at)));
   const cfg = db.tracking_config || {};
-  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, en_sucursal, entregadas, config: cfg, auto_on: db.tracking_auto_on !== false, auto_transportes: Object.keys(TRACK_DRIVERS) });
+  sendJSON(res, 200, { ok: true, can_config: a.admin, iniciadas, en_camino, en_sucursal, entregadas, devoluciones, config: cfg, auto_on: db.tracking_auto_on !== false, auto_transportes: Object.keys(TRACK_DRIVERS) });
 });
 // DESPACHAR: guarda fecha/transporte/guía, envía el mensaje al comprador y pasa a EN CAMINO.
 route('POST', '/api/tracking/ship', async (req, res) => {
@@ -11178,6 +11179,92 @@ route('POST', '/api/tracking/delete', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, removed: before - db.tracking_orders.length });
 });
+// ==================== DEVOLUCIONES ====================
+// Mueve un seguimiento existente (iniciada / en camino / en sucursal) a la solapa "Devoluciones".
+route('POST', '/api/tracking/devolucion', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const db = loadDB();
+  const t = (db.tracking_orders || []).find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Seguimiento no encontrado' });
+  t.estado = 'devolucion'; t.sub = '';
+  if (!t.dev_estado) t.dev_estado = 'en_camino';
+  if (t.dev_fecha_envio === undefined) t.dev_fecha_envio = '';
+  if (t.dev_transporte === undefined) t.dev_transporte = '';
+  if (t.dev_guia === undefined) t.dev_guia = '';
+  t.dev_at = new Date().toISOString(); t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+// Busca una venta por N° de orden en todas las cuentas ML y devuelve sus datos para cargar una devolución.
+route('GET', '/api/tracking/dev-lookup', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const url = new URL(req.url, 'http://localhost');
+  const orderId = String(url.searchParams.get('order_id') || '').replace(/\D/g, '');
+  if (!orderId) return sendJSON(res, 400, { error: 'Falta el N° de venta' });
+  const db = loadDB();
+  const accounts = Array.isArray(db.ml_accounts) ? db.ml_accounts : [];
+  for (const account of accounts) {
+    try {
+      const token = await getValidToken(account); if (!token) continue;
+      let order;
+      try { order = await mlGet(`https://api.mercadolibre.com/orders/${orderId}`, token); } catch (e) { continue; }
+      if (!order || !order.id) continue;
+      const items = (order.order_items || []).map(oi => ({ id: oi.item && oi.item.id, title: (oi.item && oi.item.title) || 'Producto', quantity: oi.quantity || 1, unit_price: oi.unit_price || 0 }));
+      let shipping_data = null;
+      const sid = order.shipping && order.shipping.id;
+      if (sid) {
+        try {
+          const sh = await mlGet(`https://api.mercadolibre.com/shipments/${sid}`, token);
+          const ra = (sh && sh.receiver_address) || {};
+          shipping_data = { id: sid, nombre: ra.receiver_name || '', telefono: ra.receiver_phone || '', direccion: [ra.street_name, ra.street_number].filter(Boolean).join(' ') || ra.address_line || '', localidad: (ra.city && ra.city.name) || '', provincia: (ra.state && ra.state.name) || '', cp: ra.zip_code || '' };
+        } catch (e) {}
+      }
+      return sendJSON(res, 200, { ok: true, found: true, order_id: String(order.id), pack_id: order.pack_id || '', account_id: account.id, account_name: account.name || '', buyer_name: (order.buyer && order.buyer.nickname) || 'Comprador', buyer_id: (order.buyer && order.buyer.id) || '', items, shipping_data });
+    } catch (e) { continue; }
+  }
+  return sendJSON(res, 200, { ok: true, found: false });
+});
+// Crea (o actualiza) un seguimiento en "Devoluciones" con los datos de la venta + envío de vuelta.
+route('POST', '/api/tracking/dev-add', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const order_id = String((b && b.order_id) || '').trim();
+  if (!order_id) return sendJSON(res, 400, { error: 'Falta el N° de venta' });
+  const db = loadDB();
+  if (!Array.isArray(db.tracking_orders)) db.tracking_orders = [];
+  let t = db.tracking_orders.find(x => String(x.order_id) === order_id && x.estado === 'devolucion');
+  if (!t) {
+    t = { id: 'tk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), order_id, pack_id: (b && b.pack_id) || '', account_id: (b && b.account_id) || '', account_name: (b && b.account_name) || '', buyer_name: (b && b.buyer_name) || '', buyer_id: (b && b.buyer_id) || '', items: Array.isArray(b && b.items) ? b.items : [], shipping_data: (b && b.shipping_data) || null, estado: 'devolucion', sub: '', manual: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    db.tracking_orders.push(t);
+  }
+  t.dev_estado = ['en_camino', 'entregada'].includes(String(b && b.dev_estado)) ? String(b.dev_estado) : 'en_camino';
+  t.dev_fecha_envio = String((b && b.dev_fecha_envio) || '').slice(0, 20);
+  t.dev_transporte = String((b && b.dev_transporte) || '').slice(0, 80);
+  t.dev_guia = String((b && b.dev_guia) || '').slice(0, 60);
+  t.dev_at = new Date().toISOString(); t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, id: t.id });
+});
+// Edita los datos del envío de vuelta y/o el estado (en camino / entregada) de una devolución.
+route('POST', '/api/tracking/dev-update', async (req, res) => {
+  const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const b = await parseBody(req);
+  const id = String((b && b.id) || '');
+  if (!id) return sendJSON(res, 400, { error: 'Falta id' });
+  const db = loadDB();
+  const t = (db.tracking_orders || []).find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Devolución no encontrada' });
+  if (b.dev_estado !== undefined && ['en_camino', 'entregada'].includes(String(b.dev_estado))) t.dev_estado = String(b.dev_estado);
+  if (b.dev_fecha_envio !== undefined) t.dev_fecha_envio = String(b.dev_fecha_envio || '').slice(0, 20);
+  if (b.dev_transporte !== undefined) t.dev_transporte = String(b.dev_transporte || '').slice(0, 80);
+  if (b.dev_guia !== undefined) t.dev_guia = String(b.dev_guia || '').slice(0, 60);
+  t.updated_at = new Date().toISOString();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
 // CONFIGURACIÓN de Tracking (solo admin): URL de seguimiento por transporte + plantillas de mensaje.
 route('POST', '/api/tracking/config', async (req, res) => {
   const a = trackAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
@@ -11287,7 +11374,7 @@ async function trackAutoTick() {
     if (db0.tracking_auto_on === false) { _trackTickBusy = false; return; }   // pausado por el admin
     // Paso ML: para CUALQUIER envío no entregado, si ML ya lo marcó entregado (el vendedor lo
     // confirmó en la web de ML), reflejarlo en Tracking → Entregadas. No depende del transporte.
-    const pendMl = (db0.tracking_orders || []).filter(t => t.estado !== 'entregada');
+    const pendMl = (db0.tracking_orders || []).filter(t => t.estado !== 'entregada' && t.estado !== 'devolucion');
     for (const t of pendMl) {
       try {
         if (await trackMlDelivered(t)) {
