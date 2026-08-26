@@ -8545,6 +8545,212 @@ function costsFilePath() { return _pathCosts.join(DATA_DIR, 'ads_costs.json'); }
 function accountCostsPath(sellerId) { return _pathCosts.join(DATA_DIR, 'ads_costs_' + String(sellerId) + '.json'); }
 function loadAccountCosts(sellerId) { try { return JSON.parse(_fsCosts.readFileSync(accountCostsPath(sellerId), 'utf8')) || { costs: {} }; } catch (e) { return { costs: {} }; } }
 function saveAccountCosts(sellerId, obj) { _fsCosts.writeFileSync(accountCostsPath(sellerId), JSON.stringify(obj)); try { _invalidateCostsCache(); } catch (e) {} }
+
+// ===========================================================================
+// RESET DE ENVÍO INFLADO (bug snowball) — consulta el envío REAL a ML y corrige
+// SOLO los items inflados en el archivo de costos del panel. Página de admin en
+// /admin/reset-envio (botones) + endpoint /api/ship/reset (por lotes, sin timeout).
+// Agregado: no reemplaza nada existente. Usa helpers globales del server.
+// ===========================================================================
+const SHIP_TECHO_DEFAULT = 16000;   // envío por encima = inflado (real de ML tope ~15.4k)
+
+// costo de envío REAL desde la respuesta de ML /items/{id}/shipping_options/free
+function _shipExtractEnvio(j) {
+  if (!j || typeof j !== 'object') return null;
+  const c = [];
+  if (j.coverage && j.coverage.all_country) c.push(j.coverage.all_country.list_cost, j.coverage.all_country.cost, j.coverage.all_country.base_cost);
+  if (Array.isArray(j.options)) for (const o of j.options) c.push(o.list_cost, o.cost, o.base_cost);
+  c.push(j.list_cost, j.cost, j.base_cost);
+  const v = c.find(x => typeof x === 'number' && isFinite(x) && x > 0);
+  return (typeof v === 'number') ? Math.round(v) : null;
+}
+async function _shipEnvioRealML(itemId, token, keepRaw) {
+  const url = 'https://api.mercadolibre.com/items/' + itemId + '/shipping_options/free';
+  let status = 0, json = null, text = '';
+  try {
+    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+    status = r.status; text = await r.text(); try { json = JSON.parse(text); } catch (e) {}
+  } catch (e) { return { envio: null, status: -1, err: String(e && e.message || e) }; }
+  return { envio: _shipExtractEnvio(json), status, raw: keepRaw ? (json || text) : undefined };
+}
+function _shipEnvioActual(it) {
+  const se = Number(it.simEnvio) || 0;
+  if (se > 0) return se;
+  return Math.max(0, (Number(it.costShip) || 0) - (Number(it.cost) || 0));
+}
+async function _shipMapLimited(items, limit, fn) {
+  const out = new Array(items.length); let i = 0;
+  async function w() { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length || 1) }, w));
+  return out;
+}
+// Junta {sellerId, account, itemId, it} de los items inflados (o de una lista de ids).
+function _shipCollect(techo, accountFilter, idsFilter) {
+  const db = loadDB() || {}; const accs = (db.ml_accounts || []);
+  const byName = accountFilter ? String(accountFilter).toUpperCase() : '';
+  const idsSet = (idsFilter && idsFilter.length) ? new Set(idsFilter) : null;
+  const list = []; const tokens = {};
+  for (const a of accs) {
+    if (byName && String(a.name || '').toUpperCase() !== byName) continue;
+    const data = loadAccountCosts(a.seller_id); const costs = (data && data.costs) || {};
+    tokens[a.seller_id] = a;
+    for (const id in costs) {
+      const it = costs[id];
+      if (idsSet) { if (!idsSet.has(id)) continue; }
+      else {
+        if (_shipEnvioActual(it) <= techo) continue;
+        if (it.envioNoML) continue;   // ML no devolvió envío para este ítem: no re-elegirlo en cada lote
+      }
+      list.push({ sellerId: a.seller_id, account: a.name, itemId: id });
+    }
+  }
+  return { list, accs };
+}
+
+// ---- endpoint principal: modo probe | dry | apply, por lotes ---------------
+route('GET', '/api/ship/reset', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin.' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const mode = q.get('mode') || 'dry';
+  const techo = Number(q.get('techo') || SHIP_TECHO_DEFAULT);
+  const batch = Math.min(500, Math.max(1, Number(q.get('batch') || 250)));
+  const offset = Math.max(0, Number(q.get('offset') || 0));
+  const account = q.get('account') || '';
+  const ids = (q.get('ids') || '').split(',').map(s => s.trim()).filter(Boolean);
+  const raw = q.get('raw') === '1';
+
+  const { list } = _shipCollect(techo, account, ids.length ? ids : null);
+  const total = list.length;
+
+  // PROBE: consulta unos pocos y devuelve el crudo (para confirmar el campo de ML).
+  if (mode === 'probe') {
+    const pick = (ids.length ? list : list.slice(0, Math.min(batch, 5)));
+    const db = loadDB() || {}; const accById = {}; for (const a of (db.ml_accounts || [])) accById[a.seller_id] = a;
+    const out = [];
+    let rawShown = false;
+    for (const row of pick) {
+      let token; try { token = await getValidToken(accById[row.sellerId]); } catch (e) { out.push({ ...row, err: 'token' }); continue; }
+      const keep = raw && !rawShown; const r = await _shipEnvioRealML(row.itemId, token, keep);
+      if (keep && r.raw !== undefined) { rawShown = true; row.raw = r.raw; }
+      const data = loadAccountCosts(row.sellerId); const it = (data.costs || {})[row.itemId] || {};
+      out.push({ account: row.account, itemId: row.itemId, envio_actual: _shipEnvioActual(it), envio_real_ml: r.envio, status: r.status, raw: row.raw });
+    }
+    return sendJSON(res, 200, { mode, total_inflados: total, muestras: out });
+  }
+
+  // DRY / APPLY: procesa 'batch' items empezando en 'offset' (dry) o siempre los primeros inflados (apply).
+  const slice = (mode === 'apply') ? list.slice(0, batch) : list.slice(offset, offset + batch);
+  const db = loadDB() || {}; const accById = {}; for (const a of (db.ml_accounts || [])) accById[a.seller_id] = a;
+
+  let ok = 0, sinDato = 0, bajaSum = 0; const muestras = [];
+  const touched = {};  // sellerId -> data (para escribir una vez por lote)
+  const results = await _shipMapLimited(slice, 5, async (row) => {
+    let token; try { token = await getValidToken(accById[row.sellerId]); } catch (e) { return { row, err: 'token' }; }
+    const r = await _shipEnvioRealML(row.itemId, token, false);
+    return { row, r };
+  });
+  for (const x of results) {
+    if (!x || !x.r || x.r.envio == null) {
+      sinDato++;
+      if (muestras.length < 12 && x) muestras.push({ item: x.row.itemId, real: x.err || ('ML ' + (x.r ? x.r.status : '?')) });
+      // en apply: marcar el ítem para no re-elegirlo eternamente (ML no dio envío)
+      if (mode === 'apply' && x) { const sid = x.row.sellerId; if (!touched[sid]) touched[sid] = loadAccountCosts(sid); const it2 = (touched[sid].costs || {})[x.row.itemId]; if (it2) it2.envioNoML = new Date().toISOString(); }
+      continue;
+    }
+    const sid = x.row.sellerId;
+    if (!touched[sid]) touched[sid] = loadAccountCosts(sid);
+    const it = (touched[sid].costs || {})[x.row.itemId]; if (!it) { sinDato++; continue; }
+    const antes = _shipEnvioActual(it); const real = x.r.envio;
+    ok++; bajaSum += (antes - real);
+    if (muestras.length < 12) muestras.push({ item: x.row.itemId, antes, real, baja: antes - real });
+    if (mode === 'apply') {
+      it.simEnvio = real; it.costShip = (Number(it.cost) || 0) + real;
+      it.envioResetAt = new Date().toISOString(); it.envioResetSrc = 'ml_shipping_options_free';
+    }
+  }
+  if (mode === 'apply') {
+    for (const sid in touched) { touched[sid].updated = new Date().toISOString(); saveAccountCosts(sid, touched[sid]); }
+  }
+  // recuento de inflados que quedan (para saber si terminó)
+  let remaining = total;
+  if (mode === 'apply') { remaining = _shipCollect(techo, account, ids.length ? ids : null).list.length; }
+
+  return sendJSON(res, 200, {
+    mode, total_inflados: total, procesados: slice.length, corregidos: ok, sin_dato: sinDato,
+    baja_promedio: ok ? Math.round(bajaSum / ok) : 0,
+    nextOffset: (mode === 'dry') ? (offset + batch) : 0,
+    remaining, done: (mode === 'apply') ? (remaining === 0 || slice.length === 0) : (offset + batch >= total),
+    muestras,
+  });
+});
+
+// ---- mini página de admin con botones -------------------------------------
+route('GET', '/admin/reset-envio', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Solo admin. Ingresá al panel como administrador.'); }
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reset de envío inflado</title><style>
+body{font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#1a1a1a}
+h1{font-size:20px}.card{border:1px solid #e2e2e2;border-radius:12px;padding:16px;margin:14px 0}
+button{font-size:15px;padding:10px 16px;border-radius:9px;border:1px solid #ccc;background:#f6f6f6;cursor:pointer;margin-right:8px}
+button.primary{background:#2b6cff;color:#fff;border-color:#2b6cff}button.danger{background:#e5484d;color:#fff;border-color:#e5484d}
+button:disabled{opacity:.5;cursor:not-allowed}
+#bar{height:14px;background:#eee;border-radius:8px;overflow:hidden;margin:10px 0}#barfill{height:100%;width:0;background:#2b6cff;transition:width .2s}
+pre{background:#0f1424;color:#d7e0ff;padding:12px;border-radius:8px;overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap}
+small{color:#666}
+</style></head><body>
+<h1>🔧 Reset de envío inflado</h1>
+<p><small>Consulta el envío <b>real</b> de Mercado Libre y corrige solo los ítems inflados en el archivo de costos del panel. No toca precios en ML: en la próxima corrida del automatizador esos ítems se re-precian solos.</small></p>
+<div class="card">
+  <b>Paso 1 · Probar (lectura pura)</b><br><small>Consulta ML para un ítem conocido y muestra el JSON crudo + el envío que extrae. Debería dar ~7470 para MLA1469190793.</small><br><br>
+  <button class="primary" onclick="probe()">Probar MLA1469190793</button>
+</div>
+<div class="card">
+  <b>Paso 2 · Dry-run (no escribe nada)</b><br><small>Recorre todos los inflados y muestra cuántos corregiría y una muestra.</small><br><br>
+  <button onclick="run('dry')">Correr dry-run</button>
+</div>
+<div class="card">
+  <b>Paso 3 · Aplicar</b><br><small>Escribe el envío real en el archivo de costos (irreversible en el archivo; los precios se recalculan en la próxima corrida).</small><br><br>
+  <button class="danger" onclick="if(confirm('¿Aplicar la corrección del envío a todos los ítems inflados?'))run('apply')">Aplicar corrección</button>
+</div>
+<div id="bar"><div id="barfill"></div></div>
+<div id="status"><small>Listo.</small></div>
+<pre id="log">—</pre>
+<script>
+const log=document.getElementById('log'),st=document.getElementById('status'),bf=document.getElementById('barfill');
+function setBar(p){bf.style.width=Math.max(0,Math.min(100,p))+'%'}
+function line(s){log.textContent=(log.textContent==='—'?'':log.textContent+'\\n')+s}
+function reset(){log.textContent='—';setBar(0)}
+async function api(params){const r=await fetch('/api/ship/reset?'+new URLSearchParams(params));if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+function btns(dis){document.querySelectorAll('button').forEach(b=>b.disabled=dis)}
+async function probe(){reset();btns(true);st.innerHTML='<small>Consultando ML…</small>';try{
+  const j=await api({mode:'probe',ids:'MLA1469190793',raw:'1'});
+  line('Inflados totales detectados: '+j.total_inflados);
+  for(const m of j.muestras){line(m.itemId+' : actual='+m.envio_actual+'  real_ML='+m.envio_real_ml+'  (ML status '+m.status+')');if(m.raw)line('\\nJSON CRUDO de ML:\\n'+JSON.stringify(m.raw,null,2));}
+  st.innerHTML='<small>Probe listo. Si real_ML ≈ 7470, el campo es correcto.</small>';
+}catch(e){line('ERROR: '+e.message)}btns(false)}
+async function run(mode){reset();btns(true);let off=0,corr=0,proc=0,rem=null,total=null,guard=0;
+  st.innerHTML='<small>'+(mode==='apply'?'Aplicando':'Dry-run')+'…</small>';
+  try{while(true){guard++;if(guard>500){line('corte de seguridad');break;}
+    const j=await api(Object.assign({mode,batch:'250'},mode==='dry'?{offset:String(off)}:{}));
+    if(total===null)total=j.total_inflados;
+    proc+=j.procesados;corr+=j.corregidos;rem=j.remaining;
+    if(mode==='dry'){off=j.nextOffset;setBar(total?100*Math.min(off,total)/total:100);}
+    else{setBar(total?100*(total-rem)/total:100);}
+    if(j.muestras&&j.muestras.length&&guard===1)for(const m of j.muestras.slice(0,10))line(m.item+' : '+(m.antes!=null?m.antes+' -> '+m.real+'  (baja '+m.baja+')':m.real));
+    st.innerHTML='<small>'+(mode==='apply'?'Aplicando':'Dry-run')+'… corregidos '+corr+' / '+total+(rem!=null?'  (quedan '+rem+')':'')+'</small>';
+    if(j.done)break;}
+    line('\\n== '+(mode==='apply'?'APLICADO':'DRY-RUN')+' == inflados:'+total+'  corregidos:'+corr+'  procesados:'+proc);
+    st.innerHTML='<small>'+(mode==='apply'?'✔ Aplicado. Se re-precian en la próxima corrida del automatizador.':'Dry-run terminado. Si la muestra tiene sentido, apretá Aplicar.')+'</small>';
+    setBar(100);
+  }catch(e){line('ERROR: '+e.message)}btns(false)}
+</script></body></html>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(html);
+});
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // DESCUBRIMIENTO DE PUBLICACIONES NUEVAS (Gatillo 1)
 // Marca de tiempo del último escaneo de ML por cuenta. Es SOLO un reloj (no guarda
