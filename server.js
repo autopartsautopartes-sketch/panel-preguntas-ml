@@ -8564,23 +8564,24 @@ async function _shipFetch(url, token) {
   } catch (e) { return { status: -1, err: String(e && e.message || e) }; }
   return { status, json, text };
 }
-// Camino del que sacamos el envío real (se fija tras confirmar con el probe).
-// Default: el mayor "cost/list_cost/base_cost" de las opciones de envío del item.
+// Envío real del vendedor = options[].list_cost (costo NETO tras bonificación de ML;
+// coincide con el simulador: MLA1469190793 -> 7470). base_cost es la tarifa llena (8620)
+// y cost=0 es lo que paga el comprador. Las opciones "flex/mismo día" traen un list_cost
+// más barato (outlier), así que tomamos el list_cost MÁS FRECUENTE entre las opciones.
 function _shipExtractEnvio(shipJson) {
   if (!shipJson || typeof shipJson !== 'object') return null;
   const opts = Array.isArray(shipJson.options) ? shipJson.options
              : (Array.isArray(shipJson) ? shipJson : []);
-  let best = null;
-  for (const o of opts) {
-    for (const k of ['list_cost', 'base_cost', 'cost']) {
-      const v = Number(o && o[k]);
-      if (isFinite(v) && v > 0) { if (best == null || v > best) best = v; }
-    }
+  const vals = [];
+  for (const o of opts) { const v = Number(o && o.list_cost); if (isFinite(v) && v > 0) vals.push(Math.round(v)); }
+  if (!vals.length) {  // fallback: alguna ruta suelta
+    for (const k of ['list_cost', 'base_cost', 'cost']) { const v = Number(shipJson[k]); if (isFinite(v) && v > 0) return Math.round(v); }
+    return null;
   }
-  if (best != null) return Math.round(best);
-  // fallback: rutas sueltas
-  for (const k of ['list_cost', 'base_cost', 'cost']) { const v = Number(shipJson[k]); if (isFinite(v) && v > 0) return Math.round(v); }
-  return null;
+  const freq = {}; for (const v of vals) freq[v] = (freq[v] || 0) + 1;
+  let bestV = null, bestF = -1;   // más frecuente; empate -> el mayor (para no subvaluar el envío)
+  for (const k in freq) { const v = Number(k), f = freq[k]; if (f > bestF || (f === bestF && v > bestV)) { bestF = f; bestV = v; } }
+  return bestV;
 }
 async function _shipEnvioRealML(itemId, token, zip) {
   const url = 'https://api.mercadolibre.com/items/' + itemId + '/shipping_options?zip_code=' + (zip || SHIP_ZIP_DEFAULT);
