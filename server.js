@@ -8785,6 +8785,66 @@ async function run(mode){reset();btns(true);let off=0,corr=0,proc=0,rem=null,tot
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);
 });
+
+// ---- página: ENRIQUECER TODO por tandas (recorre las 6 cuentas con el 🎯 completo) ----
+route('GET', '/admin/enriquecer-todo', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Solo admin.'); }
+  const accs = ((loadDB() || {}).ml_accounts || []).map(a => ({ id: a.id, name: a.name }));
+  const accsJson = JSON.stringify(accs);
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Enriquecer todo</title><style>
+body{font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#1a1a1a}
+h1{font-size:20px}.card{border:1px solid #e2e2e2;border-radius:12px;padding:16px;margin:14px 0}
+button{font-size:15px;padding:10px 16px;border-radius:9px;border:1px solid #ccc;background:#2b6cff;color:#fff;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee}
+.bar{height:12px;background:#eee;border-radius:8px;overflow:hidden;margin-top:4px}.fill{height:100%;width:0;background:#2b6cff;transition:width .3s}
+pre{background:#0f1424;color:#d7e0ff;padding:12px;border-radius:8px;overflow:auto;max-height:280px;font-size:12px;white-space:pre-wrap}
+small{color:#666}
+</style></head><body>
+<h1>🔄 Enriquecer todo (envío + comisión + impuestos reales)</h1>
+<p><small>Re-enriquece TODAS las publicaciones activas de las 6 cuentas trayendo el envío REAL de ML (además de comisión, cuotas e impuestos). Es pesado (muchas consultas a ML) y va por tandas — se puede cortar y retomar: lo ya hecho no se repite. No cambia precios en ML; solo actualiza los costos del panel.</small></p>
+<div class="card">
+  <label>Ítems por tanda: <input id="cap" type="number" value="50" min="10" max="300" style="width:70px"></label>
+  &nbsp;<button id="go" onclick="run()">Enriquecer todo</button>
+  &nbsp;<button id="stop" onclick="STOP=true" disabled style="background:#e5484d">Parar</button>
+</div>
+<div id="accs"></div>
+<div id="status"><small>Listo.</small></div>
+<pre id="log">—</pre>
+<script>
+const ACCS=${accsJson};
+let STOP=false;
+const log=document.getElementById('log'),st=document.getElementById('status'),accsDiv=document.getElementById('accs');
+function line(s){log.textContent=(log.textContent==='—'?'':log.textContent+'\\n')+s}
+const ui={};
+for(const a of ACCS){const d=document.createElement('div');d.className='card';d.innerHTML='<div class="row"><b>'+a.name+'</b><span id="t_'+a.id+'">esperando…</span></div><div class="bar"><div class="fill" id="f_'+a.id+'"></div></div>';accsDiv.appendChild(d);ui[a.id]={t:d.querySelector('#t_'+a.id),f:d.querySelector('#f_'+a.id)};}
+async function refinar(accId,cap){const r=await fetch('/api/ads/estrategia/refinar?account_id='+accId+'&cap='+cap);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+function setBtns(run){document.getElementById('go').disabled=run;document.getElementById('stop').disabled=!run;}
+async function run(){STOP=false;setBtns(true);log.textContent='—';
+  for(const a of ACCS){
+    if(STOP){line('DETENIDO.');break;}
+    const cap=Math.max(10,Math.min(300,Number(document.getElementById('cap').value)||50));
+    ui[a.id].t.textContent='enriqueciendo…';let guard=0,tot=null,done=0;
+    while(true){guard++;if(guard>5000){line(a.name+': corte de seguridad');break;}
+      let j;try{j=await refinar(a.id,cap);}catch(e){line(a.name+': ERROR '+e.message+' (reintento en 3s)');await new Promise(s=>setTimeout(s,3000));continue;}
+      if(j.busy){await new Promise(s=>setTimeout(s,2000));continue;}
+      if(j.error){line(a.name+': ERROR '+JSON.stringify(j.error));break;}
+      tot=j.account_total||j.activas||tot;done=j.enriched_total!=null?j.enriched_total:done;
+      const pct=tot?Math.round(100*done/tot):0;ui[a.id].f.style.width=pct+'%';ui[a.id].t.textContent=done+' / '+tot+' ('+pct+'%)';
+      st.innerHTML='<small>'+a.name+': '+done+'/'+tot+'</small>';
+      if(tot && done>=tot){line(a.name+': ✓ COMPLETO ('+tot+')');break;}
+      if((j.refined||0)<1 && !(tot&&done<tot)){line(a.name+': sin más para enriquecer');break;}
+      if(STOP){line(a.name+': DETENIDO');break;}
+    }
+  }
+  st.innerHTML='<small>'+(STOP?'Detenido.':'✔ Terminó el enriquecido de todas las cuentas.')+'</small>';setBtns(false);
+}
+</script></body></html>`;
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(html);
+});
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -9578,7 +9638,7 @@ function decideAction(it, cfg) {
 }
 // Versión del enriquecimiento. Subir este número fuerza un refresco de TODO lo enriquecido antes
 // (para propagar arreglos). v2 = fix visitas por ítem. v3 = precio real con promo desde /items/{id}/prices.
-const ENRICH_VER = 3;
+const ENRICH_VER = 4;   // v4: el envío ahora sale del valor REAL de ML (shipping_options list_cost), no de la col T. Fuerza re-enriquecido completo.
 const ACTION_META = {
   escalar: { pri: 1, label: '⭐ Escalar ADS', hint: 'Estrellas consolidadas: dale presupuesto, protegé margen' },
   promover: { pri: 2, label: '🎯 Promover ya', hint: 'Convierten y les falta empuje: ADS + promo, ROAS bajo (invertís en ranking)' },
@@ -10736,6 +10796,20 @@ function registerAds(deps) {
       const simMap = {};
       const simJobs = ids.filter(id => info[id]).map(id => { const it = info[id], c = table[id]; return { id, price: sellPriceOf(it, c), catId: it.category_id, lt: it.listing_type_id || c.listingType }; });
       await mapLimit(simJobs, 6, async (job) => { if (job.price > 0) { try { simMap[job.id] = await engine.simulateFee(account, job.price, job.catId, job.lt); } catch (e) {} } });
+      // ENVÍO REAL de ML (shipping_options → list_cost). Reemplaza el envío que antes se derivaba de la
+      // columna T (la que se ensuciaba con el snowball). Solo lo consultamos para las publicaciones cuyo
+      // precio queda por ENCIMA del umbral de envío gratis (debajo, el envío es 0 y no hace falta).
+      const _freeShipTh = cfg.freeShipThreshold != null ? cfg.freeShipThreshold : 33000;
+      const shipMap = {};
+      try {
+        const _shipTok = await getValidToken(account);
+        const _shipIds = ids.filter(id => info[id] && sellPriceOf(info[id], table[id]) >= _freeShipTh);
+        if (_shipIds.length && _shipTok) {
+          await mapLimit(_shipIds, 6, async (id) => {
+            try { const r = await _shipEnvioRealML(id, _shipTok, SHIP_ZIP_DEFAULT); if (r && r.envio != null && r.envio > 0) shipMap[id] = r.envio; } catch (e) {}
+          });
+        }
+      } catch (e) { /* si falla el envío, caemos al comportamiento previo (col T) */ }
       let refined = 0, failed = 0;
       const nowIso = new Date().toISOString();
       for (const id of ids) {
@@ -10749,6 +10823,10 @@ function registerAds(deps) {
         // TASA REAL de ML si la publicación vendió en 90 días (incluye comisión + cargo + CUOTAS). Fuente de verdad.
         const tk = takeMap[id];
         c.realTakeRate = (tk && tk.rev > 0) ? (tk.fee / tk.rev) : null;
+        // ENVÍO REAL de ML: lo metemos en costShip (= costo + envío) para que simNet lo tome como envío
+        // (simNet calcula envío = costShip - cost cuando el precio supera el umbral). Así el envío deja de
+        // depender de la columna T. Si ML no devolvió envío para este ítem, queda el costShip previo.
+        if (shipMap[id] != null && shipMap[id] > 0) { c.costShip = (Number(c.cost) || 0) + shipMap[id]; c.envioSrc = 'ml'; c.envioMlAt = nowIso; }
         if (price > 0 && (sim || c.realTakeRate != null)) {
           const nm = simNet(c, price, sim, cfg);   // simNet ya usa c.realTakeRate cuando existe
           if (nm) {
