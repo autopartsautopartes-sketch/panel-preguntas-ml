@@ -8553,25 +8553,48 @@ function saveAccountCosts(sellerId, obj) { _fsCosts.writeFileSync(accountCostsPa
 // Agregado: no reemplaza nada existente. Usa helpers globales del server.
 // ===========================================================================
 const SHIP_TECHO_DEFAULT = 16000;   // envío por encima = inflado (real de ML tope ~15.4k)
+const SHIP_ZIP_DEFAULT = '1414';    // zip de referencia para consultar el costo de envío
 
-// costo de envío REAL desde la respuesta de ML /items/{id}/shipping_options/free
-function _shipExtractEnvio(j) {
-  if (!j || typeof j !== 'object') return null;
-  const c = [];
-  if (j.coverage && j.coverage.all_country) c.push(j.coverage.all_country.list_cost, j.coverage.all_country.cost, j.coverage.all_country.base_cost);
-  if (Array.isArray(j.options)) for (const o of j.options) c.push(o.list_cost, o.cost, o.base_cost);
-  c.push(j.list_cost, j.cost, j.base_cost);
-  const v = c.find(x => typeof x === 'number' && isFinite(x) && x > 0);
-  return (typeof v === 'number') ? Math.round(v) : null;
-}
-async function _shipEnvioRealML(itemId, token, keepRaw) {
-  const url = 'https://api.mercadolibre.com/items/' + itemId + '/shipping_options/free';
+// --- traer envío real de ML: /items/{id}/shipping_options?zip_code=ZIP ------
+async function _shipFetch(url, token) {
   let status = 0, json = null, text = '';
   try {
     const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
     status = r.status; text = await r.text(); try { json = JSON.parse(text); } catch (e) {}
-  } catch (e) { return { envio: null, status: -1, err: String(e && e.message || e) }; }
-  return { envio: _shipExtractEnvio(json), status, raw: keepRaw ? (json || text) : undefined };
+  } catch (e) { return { status: -1, err: String(e && e.message || e) }; }
+  return { status, json, text };
+}
+// Camino del que sacamos el envío real (se fija tras confirmar con el probe).
+// Default: el mayor "cost/list_cost/base_cost" de las opciones de envío del item.
+function _shipExtractEnvio(shipJson) {
+  if (!shipJson || typeof shipJson !== 'object') return null;
+  const opts = Array.isArray(shipJson.options) ? shipJson.options
+             : (Array.isArray(shipJson) ? shipJson : []);
+  let best = null;
+  for (const o of opts) {
+    for (const k of ['list_cost', 'base_cost', 'cost']) {
+      const v = Number(o && o[k]);
+      if (isFinite(v) && v > 0) { if (best == null || v > best) best = v; }
+    }
+  }
+  if (best != null) return Math.round(best);
+  // fallback: rutas sueltas
+  for (const k of ['list_cost', 'base_cost', 'cost']) { const v = Number(shipJson[k]); if (isFinite(v) && v > 0) return Math.round(v); }
+  return null;
+}
+async function _shipEnvioRealML(itemId, token, zip) {
+  const url = 'https://api.mercadolibre.com/items/' + itemId + '/shipping_options?zip_code=' + (zip || SHIP_ZIP_DEFAULT);
+  const r = await _shipFetch(url, token);
+  return { envio: _shipExtractEnvio(r.json), status: r.status, json: r.json, text: r.text };
+}
+// walk: lista TODOS los números del JSON con su ruta (para el probe: ver cuál es el 7470)
+function _shipFlatNumbers(obj, prefix, out) {
+  out = out || []; prefix = prefix || '';
+  if (obj == null) return out;
+  if (typeof obj === 'number') { out.push(prefix + ' = ' + obj); return out; }
+  if (Array.isArray(obj)) { obj.forEach((v, i) => _shipFlatNumbers(v, prefix + '[' + i + ']', out)); return out; }
+  if (typeof obj === 'object') { for (const k in obj) _shipFlatNumbers(obj[k], prefix ? prefix + '.' + k : k, out); return out; }
+  return out;
 }
 function _shipEnvioActual(it) {
   const se = Number(it.simEnvio) || 0;
@@ -8584,22 +8607,20 @@ async function _shipMapLimited(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length || 1) }, w));
   return out;
 }
-// Junta {sellerId, account, itemId, it} de los items inflados (o de una lista de ids).
 function _shipCollect(techo, accountFilter, idsFilter) {
   const db = loadDB() || {}; const accs = (db.ml_accounts || []);
   const byName = accountFilter ? String(accountFilter).toUpperCase() : '';
   const idsSet = (idsFilter && idsFilter.length) ? new Set(idsFilter) : null;
-  const list = []; const tokens = {};
+  const list = [];
   for (const a of accs) {
     if (byName && String(a.name || '').toUpperCase() !== byName) continue;
     const data = loadAccountCosts(a.seller_id); const costs = (data && data.costs) || {};
-    tokens[a.seller_id] = a;
     for (const id in costs) {
       const it = costs[id];
       if (idsSet) { if (!idsSet.has(id)) continue; }
       else {
         if (_shipEnvioActual(it) <= techo) continue;
-        if (it.envioNoML) continue;   // ML no devolvió envío para este ítem: no re-elegirlo en cada lote
+        if (it.envioNoML) continue;   // ML no devolvió envío: no re-elegirlo en cada lote
       }
       list.push({ sellerId: a.seller_id, account: a.name, itemId: id });
     }
@@ -8607,7 +8628,7 @@ function _shipCollect(techo, accountFilter, idsFilter) {
   return { list, accs };
 }
 
-// ---- endpoint principal: modo probe | dry | apply, por lotes ---------------
+// ---- endpoint principal: modo probe | dry | apply --------------------------
 route('GET', '/api/ship/reset', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin.' });
@@ -8617,44 +8638,52 @@ route('GET', '/api/ship/reset', async (req, res) => {
   const batch = Math.min(500, Math.max(1, Number(q.get('batch') || 250)));
   const offset = Math.max(0, Number(q.get('offset') || 0));
   const account = q.get('account') || '';
+  const zip = q.get('zip') || SHIP_ZIP_DEFAULT;
   const ids = (q.get('ids') || '').split(',').map(s => s.trim()).filter(Boolean);
-  const raw = q.get('raw') === '1';
 
-  const { list } = _shipCollect(techo, account, ids.length ? ids : null);
-  const total = list.length;
-
-  // PROBE: consulta unos pocos y devuelve el crudo (para confirmar el campo de ML).
-  if (mode === 'probe') {
-    const pick = (ids.length ? list : list.slice(0, Math.min(batch, 5)));
-    const db = loadDB() || {}; const accById = {}; for (const a of (db.ml_accounts || [])) accById[a.seller_id] = a;
-    const out = [];
-    let rawShown = false;
-    for (const row of pick) {
-      let token; try { token = await getValidToken(accById[row.sellerId]); } catch (e) { out.push({ ...row, err: 'token' }); continue; }
-      const keep = raw && !rawShown; const r = await _shipEnvioRealML(row.itemId, token, keep);
-      if (keep && r.raw !== undefined) { rawShown = true; row.raw = r.raw; }
-      const data = loadAccountCosts(row.sellerId); const it = (data.costs || {})[row.itemId] || {};
-      out.push({ account: row.account, itemId: row.itemId, envio_actual: _shipEnvioActual(it), envio_real_ml: r.envio, status: r.status, raw: row.raw });
-    }
-    return sendJSON(res, 200, { mode, total_inflados: total, muestras: out });
-  }
-
-  // DRY / APPLY: procesa 'batch' items empezando en 'offset' (dry) o siempre los primeros inflados (apply).
-  const slice = (mode === 'apply') ? list.slice(0, batch) : list.slice(offset, offset + batch);
   const db = loadDB() || {}; const accById = {}; for (const a of (db.ml_accounts || [])) accById[a.seller_id] = a;
 
-  let ok = 0, sinDato = 0, bajaSum = 0; const muestras = [];
-  const touched = {};  // sellerId -> data (para escribir una vez por lote)
+  // PROBE (diagnóstico): para el/los item(s), trae el envío + DUMP de todos los números de ML.
+  if (mode === 'probe') {
+    const { list } = _shipCollect(techo, account, ids.length ? ids : null);
+    const pick = ids.length ? list : list.slice(0, 3);
+    const out = [];
+    for (const row of pick) {
+      let token; try { token = await getValidToken(accById[row.sellerId]); } catch (e) { out.push({ item: row.itemId, err: 'token' }); continue; }
+      const data = loadAccountCosts(row.sellerId); const it = (data.costs || {})[row.itemId] || {};
+      // endpoint principal
+      const main = await _shipEnvioRealML(row.itemId, token, zip);
+      // endpoints alternativos para diagnóstico
+      const alt1 = await _shipFetch('https://api.mercadolibre.com/items/' + row.itemId + '/shipping_options', token);
+      const item = await _shipFetch('https://api.mercadolibre.com/items/' + row.itemId + '?attributes=id,seller_id,price,shipping,dimensions', token);
+      out.push({
+        item: row.itemId,
+        envio_actual: _shipEnvioActual(it),
+        envio_real_extraido: main.envio,
+        zip,
+        shipping_options_zip: { status: main.status, numeros: _shipFlatNumbers(main.json), raw: main.json || main.text },
+        shipping_options_sinzip: { status: alt1.status, numeros: _shipFlatNumbers(alt1.json) },
+        item_info: { status: item.status, raw: item.json },
+      });
+    }
+    return sendJSON(res, 200, { mode, muestras: out });
+  }
+
+  // DRY / APPLY
+  const { list } = _shipCollect(techo, account, ids.length ? ids : null);
+  const total = list.length;
+  const slice = (mode === 'apply') ? list.slice(0, batch) : list.slice(offset, offset + batch);
+
+  let ok = 0, sinDato = 0, bajaSum = 0; const muestras = []; const touched = {};
   const results = await _shipMapLimited(slice, 5, async (row) => {
     let token; try { token = await getValidToken(accById[row.sellerId]); } catch (e) { return { row, err: 'token' }; }
-    const r = await _shipEnvioRealML(row.itemId, token, false);
+    const r = await _shipEnvioRealML(row.itemId, token, zip);
     return { row, r };
   });
   for (const x of results) {
     if (!x || !x.r || x.r.envio == null) {
       sinDato++;
       if (muestras.length < 12 && x) muestras.push({ item: x.row.itemId, real: x.err || ('ML ' + (x.r ? x.r.status : '?')) });
-      // en apply: marcar el ítem para no re-elegirlo eternamente (ML no dio envío)
       if (mode === 'apply' && x) { const sid = x.row.sellerId; if (!touched[sid]) touched[sid] = loadAccountCosts(sid); const it2 = (touched[sid].costs || {})[x.row.itemId]; if (it2) it2.envioNoML = new Date().toISOString(); }
       continue;
     }
@@ -8666,15 +8695,12 @@ route('GET', '/api/ship/reset', async (req, res) => {
     if (muestras.length < 12) muestras.push({ item: x.row.itemId, antes, real, baja: antes - real });
     if (mode === 'apply') {
       it.simEnvio = real; it.costShip = (Number(it.cost) || 0) + real;
-      it.envioResetAt = new Date().toISOString(); it.envioResetSrc = 'ml_shipping_options_free';
+      it.envioResetAt = new Date().toISOString(); it.envioResetSrc = 'ml_shipping_options';
     }
   }
-  if (mode === 'apply') {
-    for (const sid in touched) { touched[sid].updated = new Date().toISOString(); saveAccountCosts(sid, touched[sid]); }
-  }
-  // recuento de inflados que quedan (para saber si terminó)
+  if (mode === 'apply') { for (const sid in touched) { touched[sid].updated = new Date().toISOString(); saveAccountCosts(sid, touched[sid]); } }
   let remaining = total;
-  if (mode === 'apply') { remaining = _shipCollect(techo, account, ids.length ? ids : null).list.length; }
+  if (mode === 'apply') remaining = _shipCollect(techo, account, ids.length ? ids : null).list.length;
 
   return sendJSON(res, 200, {
     mode, total_inflados: total, procesados: slice.length, corregidos: ok, sin_dato: sinDato,
@@ -8697,13 +8723,13 @@ button{font-size:15px;padding:10px 16px;border-radius:9px;border:1px solid #ccc;
 button.primary{background:#2b6cff;color:#fff;border-color:#2b6cff}button.danger{background:#e5484d;color:#fff;border-color:#e5484d}
 button:disabled{opacity:.5;cursor:not-allowed}
 #bar{height:14px;background:#eee;border-radius:8px;overflow:hidden;margin:10px 0}#barfill{height:100%;width:0;background:#2b6cff;transition:width .2s}
-pre{background:#0f1424;color:#d7e0ff;padding:12px;border-radius:8px;overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap}
+pre{background:#0f1424;color:#d7e0ff;padding:12px;border-radius:8px;overflow:auto;max-height:420px;font-size:12px;white-space:pre-wrap}
 small{color:#666}
 </style></head><body>
 <h1>🔧 Reset de envío inflado</h1>
 <p><small>Consulta el envío <b>real</b> de Mercado Libre y corrige solo los ítems inflados en el archivo de costos del panel. No toca precios en ML: en la próxima corrida del automatizador esos ítems se re-precian solos.</small></p>
 <div class="card">
-  <b>Paso 1 · Probar (lectura pura)</b><br><small>Consulta ML para un ítem conocido y muestra el JSON crudo + el envío que extrae. Debería dar ~7470 para MLA1469190793.</small><br><br>
+  <b>Paso 1 · Probar (lectura pura)</b><br><small>Consulta ML para MLA1469190793 y lista TODOS los números que devuelve (con su ruta). Buscamos el ~7470.</small><br><br>
   <button class="primary" onclick="probe()">Probar MLA1469190793</button>
 </div>
 <div class="card">
@@ -8711,7 +8737,7 @@ small{color:#666}
   <button onclick="run('dry')">Correr dry-run</button>
 </div>
 <div class="card">
-  <b>Paso 3 · Aplicar</b><br><small>Escribe el envío real en el archivo de costos (irreversible en el archivo; los precios se recalculan en la próxima corrida).</small><br><br>
+  <b>Paso 3 · Aplicar</b><br><small>Escribe el envío real en el archivo de costos (los precios se recalculan en la próxima corrida).</small><br><br>
   <button class="danger" onclick="if(confirm('¿Aplicar la corrección del envío a todos los ítems inflados?'))run('apply')">Aplicar corrección</button>
 </div>
 <div id="bar"><div id="barfill"></div></div>
@@ -8725,10 +8751,18 @@ function reset(){log.textContent='—';setBar(0)}
 async function api(params){const r=await fetch('/api/ship/reset?'+new URLSearchParams(params));if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
 function btns(dis){document.querySelectorAll('button').forEach(b=>b.disabled=dis)}
 async function probe(){reset();btns(true);st.innerHTML='<small>Consultando ML…</small>';try{
-  const j=await api({mode:'probe',ids:'MLA1469190793',raw:'1'});
-  line('Inflados totales detectados: '+j.total_inflados);
-  for(const m of j.muestras){line(m.itemId+' : actual='+m.envio_actual+'  real_ML='+m.envio_real_ml+'  (ML status '+m.status+')');if(m.raw)line('\\nJSON CRUDO de ML:\\n'+JSON.stringify(m.raw,null,2));}
-  st.innerHTML='<small>Probe listo. Si real_ML ≈ 7470, el campo es correcto.</small>';
+  const j=await api({mode:'probe',ids:'MLA1469190793'});
+  for(const m of j.muestras){
+    line('ITEM '+m.item+'   envío_actual='+m.envio_actual+'   envío_extraído='+m.envio_real_extraido+'  (zip '+m.zip+')');
+    line('\\n--- shipping_options?zip status '+m.shipping_options_zip.status+' — TODOS los números: ---');
+    (m.shipping_options_zip.numeros||[]).forEach(n=>line('   '+n));
+    line('\\n--- shipping_options (sin zip) status '+m.shipping_options_sinzip.status+': ---');
+    (m.shipping_options_sinzip.numeros||[]).forEach(n=>line('   '+n));
+    line('\\n--- item_info (shipping/dimensions): ---');
+    line(JSON.stringify(m.item_info.raw&&m.item_info.raw.shipping,null,1));
+    line('dimensions: '+JSON.stringify(m.item_info.raw&&m.item_info.raw.dimensions));
+  }
+  st.innerHTML='<small>Probe listo. Buscá el número ≈7470 en la lista y decime cuál es su ruta.</small>';
 }catch(e){line('ERROR: '+e.message)}btns(false)}
 async function run(mode){reset();btns(true);let off=0,corr=0,proc=0,rem=null,total=null,guard=0;
   st.innerHTML='<small>'+(mode==='apply'?'Aplicando':'Dry-run')+'…</small>';
