@@ -8620,8 +8620,9 @@ function _shipCollect(techo, accountFilter, idsFilter) {
       const it = costs[id];
       if (idsSet) { if (!idsSet.has(id)) continue; }
       else {
+        if (it.envioResetAt) continue;  // YA corregido en esta campaña: no re-procesar (aunque su envío real sea alto, ej. items pesados)
+        if (it.envioNoML) continue;     // ML no devolvió envío: no re-elegirlo en cada lote
         if (_shipEnvioActual(it) <= techo) continue;
-        if (it.envioNoML) continue;   // ML no devolvió envío: no re-elegirlo en cada lote
       }
       list.push({ sellerId: a.seller_id, account: a.name, itemId: id });
     }
