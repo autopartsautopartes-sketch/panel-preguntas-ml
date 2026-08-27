@@ -8826,8 +8826,8 @@ async function run(){STOP=false;setBtns(true);log.textContent='—';
   for(const a of ACCS){
     if(STOP){line('DETENIDO.');break;}
     const cap=Math.max(10,Math.min(300,Number(document.getElementById('cap').value)||50));
-    ui[a.id].t.textContent='enriqueciendo…';let guard=0,tot=null,done=0;
-    while(true){guard++;if(guard>5000){line(a.name+': corte de seguridad');break;}
+    ui[a.id].t.textContent='enriqueciendo…';let guard=0,tot=null,done=0,prevDone=-1,stall=0;
+    while(true){guard++;if(guard>8000){line(a.name+': corte de seguridad');break;}
       let j;try{j=await refinar(a.id,cap);}catch(e){line(a.name+': ERROR '+e.message+' (reintento en 3s)');await new Promise(s=>setTimeout(s,3000));continue;}
       if(j.busy){await new Promise(s=>setTimeout(s,2000));continue;}
       if(j.error){line(a.name+': ERROR '+JSON.stringify(j.error));break;}
@@ -8835,7 +8835,10 @@ async function run(){STOP=false;setBtns(true);log.textContent='—';
       const pct=tot?Math.round(100*done/tot):0;ui[a.id].f.style.width=pct+'%';ui[a.id].t.textContent=done+' / '+tot+' ('+pct+'%)';
       st.innerHTML='<small>'+a.name+': '+done+'/'+tot+'</small>';
       if(tot && done>=tot){line(a.name+': ✓ COMPLETO ('+tot+')');break;}
-      if((j.refined||0)<1 && !(tot&&done<tot)){line(a.name+': sin más para enriquecer');break;}
+      // detección de estancamiento: si no avanza en 3 tandas seguidas, las que faltan ML no las cotiza → pasar a la siguiente
+      if(done<=prevDone){stall++;}else{stall=0;} prevDone=done;
+      if(stall>=3){line(a.name+': ✓ listo ('+done+'/'+tot+'; '+(tot-done)+' que ML no cotiza — pausadas/baja)');break;}
+      if((j.refined||0)<1){line(a.name+': sin más para enriquecer ('+done+'/'+tot+')');break;}
       if(STOP){line(a.name+': DETENIDO');break;}
     }
   }
@@ -10814,7 +10817,7 @@ function registerAds(deps) {
       const nowIso = new Date().toISOString();
       for (const id of ids) {
         const c = table[id]; const it = info[id];
-        if (!it) { failed++; continue; }
+        if (!it) { failed++; c.enrichVer = ENRICH_VER; c.enrichAt = nowIso; c.mlMissing = nowIso; continue; }  // ML no la devuelve (cerrada/baja): marcar para no bloquear el "completo"
         const price = sellPriceOf(it, c);                               // precio de VENTA (con promo/deal aplicado)
         const listP = listPriceOf(it, c);                               // precio de lista (sin deal)
         const orig = Number(it.original_price) || (price < listP ? listP : null); // precio tachado (antes de promo)
