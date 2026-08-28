@@ -8798,6 +8798,64 @@ route('GET', '/api/flex/test', async (req, res) => {
   });
 });
 
+// ---- DIAG: probar varias variantes del endpoint de flex en el server --------
+// Devuelve el status crudo de cada intento + qué envío ofrece realmente el ítem,
+// para saber por qué da 403 sin ciclos de prueba-error.
+async function _flexProbe(label, method, url, token, opts) {
+  opts = opts || {};
+  const headers = opts.raw ? { Authorization: `Bearer ${token}` } : _FLEX_HEADERS(token);
+  if (opts.ctype) headers['Content-Type'] = 'application/json';
+  const init = { method, headers };
+  if (opts.body !== undefined) init.body = opts.body;
+  let status = 0, body = '', ctype = '';
+  try {
+    const r = await fetch(url, init);
+    status = r.status; ctype = r.headers.get('content-type') || '';
+    try { body = await r.text(); } catch (e) {}
+  } catch (e) { body = 'FETCH_ERR ' + String(e && (e.message || e)); }
+  const isHtml = /<html|<!doctype html|403 forbidden/i.test(String(body));
+  return { label, method, url: url.replace('https://api.mercadolibre.com', ''), status, ctype, isHtml, body: String(body).slice(0, 160) };
+}
+route('GET', '/api/flex/diag', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin.' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const itemId = (q.get('item') || '').trim();
+  const sellerParam = (q.get('seller') || '').trim();
+  const accountName = (q.get('account') || '').trim().toLowerCase();
+  if (!itemId) return sendJSON(res, 400, { error: 'Falta ?item=MLA...' });
+  const db = loadDB() || {}; const accts = db.ml_accounts || [];
+  let account = null;
+  if (sellerParam) account = accts.find(a => String(a.seller_id) === sellerParam);
+  else if (accountName) account = accts.find(a => String(a.name || '').toLowerCase() === accountName);
+  if (!account) { for (const a of accts) { const d = loadAccountCosts(a.seller_id); if (d && d.costs && d.costs[itemId]) { account = a; break; } } }
+  if (!account) return sendJSON(res, 404, { error: 'No encontré la cuenta. Pasá ?seller=SELLER_ID o ?account=NOMBRE.' });
+  let token; try { token = await getValidToken(account); } catch (e) { return sendJSON(res, 500, { error: 'token: ' + String(e && e.message) }); }
+
+  const site = itemId.slice(0, 3).toUpperCase();
+  const base = 'https://api.mercadolibre.com';
+  const ssUrl = `${base}/sites/${site}/shipping/selfservice/items/${itemId}`;
+
+  // 1) Qué envío ofrece el ítem HOY (con el mlGet que YA funciona en el panel)
+  let envio = null;
+  try {
+    const it = await mlGet(`${base}/items/${itemId}?attributes=id,status,shipping`, token);
+    envio = { status: it.status, mode: it.shipping?.mode, logistic_type: it.shipping?.logistic_type,
+              tags: it.shipping?.tags, free: it.shipping?.free_shipping };
+  } catch (e) { envio = { error: String(e && (e.message || e)) }; }
+
+  // 2) Variantes del endpoint self-service
+  const pruebas = [];
+  pruebas.push(await _flexProbe('control_GET_item_raw', 'GET', `${base}/items/${itemId}?attributes=id`, token, { raw: true }));
+  pruebas.push(await _flexProbe('GET_status_selfservice', 'GET', ssUrl, token));
+  pruebas.push(await _flexProbe('POST_selfservice_UAheaders_nobody', 'POST', ssUrl, token));
+  pruebas.push(await _flexProbe('POST_selfservice_raw_nobody', 'POST', ssUrl, token, { raw: true }));
+  pruebas.push(await _flexProbe('POST_selfservice_ctype_emptyjson', 'POST', ssUrl, token, { ctype: true, body: '{}' }));
+  pruebas.push(await _flexProbe('POST_selfservice_sin_sites', 'POST', `${base}/shipping/selfservice/items/${itemId}`, token));
+
+  return sendJSON(res, 200, { item: itemId, cuenta: account.name, seller_id: account.seller_id, site, envio_actual: envio, pruebas });
+});
+
 // ---- mini página de admin con botones -------------------------------------
 route('GET', '/admin/reset-envio', async (req, res) => {
   const sess = requireAuth(req);
