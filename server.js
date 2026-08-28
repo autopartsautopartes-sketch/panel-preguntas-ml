@@ -6441,13 +6441,20 @@ route('GET', '/api/estado', async (req, res) => {
                   || (Array.isArray(it.attributes) ? (it.attributes.find(a => a.id === 'SELLER_SKU')?.value_name || '') : '')
                   || '';
                 exported++;
+                // PRECIO para comparar con el objetivo del motor: el precio REAL de venta (it.price).
+                // El 'original_price' (precio tachado) SOLO se usa cuando hay OFERTA de verdad (venta < tachado),
+                // para no pelearle a una promo de ML. Si no hay oferta, original_price puede quedar VIEJO
+                // (ML no lo actualiza al subir el precio) y generaría cambios fantasma en cada corrida.
+                const _op = Number(it.original_price), _pp = Number(it.price);
+                const _enOferta = isFinite(_op) && isFinite(_pp) && _op > 0 && _pp > 0 && _pp < _op;
+                const _precioCmp = _enOferta ? it.original_price : (it.price ?? it.original_price ?? '');
                 res.write(JSON.stringify({
                   type: 'item',
                   item_id: it.id, flex, local_pick_up: localPickup, shipping: shippingMode,
                   titulo: it.title || '',                       // título LARGO / asignado (con el atributo que ML agrega)
                   titulo_corto: it.family_name || it.title || '', // título CORTO / original (family_name de ML)
                   available_quantity: it.available_quantity ?? '',
-                  status: it.status ?? '', price: it.original_price ?? it.price ?? '', item_sku: sku
+                  status: it.status ?? '', price: _precioCmp, item_sku: sku
                 }) + '\n');
               }
             }
