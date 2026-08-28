@@ -969,30 +969,37 @@ function buildItemPayload(item) {
   if (attrs.length) payload.attributes = attrs;
   return payload;
 }
-// Helper: activar/desactivar flex via PUT /items/{id} con logistic_type
-// self_service = flex activado | not_specified = flex desactivado
+// Helper: activar/desactivar Envíos Flex (self_service) en un ítem.
+//
+// IMPORTANTE (fix 2026-08): logistic_type NO es editable via PUT /items/{id};
+// ML lo ignora en silencio (devuelve 200 pero NO cambia el envío). Por eso los
+// ~1780 cambios de flex del motor "no pegaban" nunca. El flujo correcto es el
+// endpoint dedicado de self-service, el mismo que usa el checkbox "Envíos Flex"
+// del panel de vendedor:
+//   activar:      POST   /sites/{SITE}/shipping/selfservice/items/{itemId}   -> 204
+//   desactivar:   DELETE /sites/{SITE}/shipping/selfservice/items/{itemId}   -> 204
+//   consultar:    GET    /sites/{SITE}/shipping/selfservice/items/{itemId}   -> 204 activo / 403-404 inactivo
+// Requisitos: Flex activo a nivel cuenta (zona de cobertura) e ítem en status active.
 async function updateFlexForItem(itemId, flexStr, token) {
   const enable = ['si', 'sí', 'yes', 'true', '1'].includes(flexStr);
   const disable = ['no', 'false', '0'].includes(flexStr);
   if (!enable && !disable) return null;
-  const payload = {
-    shipping: {
-      logistic_type: enable ? 'self_service' : 'not_specified'
-    }
-  };
-  const url = `https://api.mercadolibre.com/items/${itemId}`;
+  const site = String(itemId || '').slice(0, 3).toUpperCase() || 'MLA';
+  const url = `https://api.mercadolibre.com/sites/${site}/shipping/selfservice/items/${itemId}`;
+  const method = enable ? 'POST' : 'DELETE';
   const res = await fetch(url, {
-    method: 'PUT',
+    method,
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
+    }
   });
-  if (res.status === 200) return null; // ok
+  // 204 = ok. 200/2xx tolerado. 409/"already" = ya estaba en ese estado -> ok.
+  if (res.status === 204 || (res.status >= 200 && res.status < 300)) return null;
   let rawText = '';
   try { rawText = await res.text(); } catch(e) {}
-  console.log(`[FLEX ERROR] ${itemId} HTTP ${res.status}: ${rawText}`);
+  if (res.status === 409 || /already|ya\s+(esta|está|posee|tiene)/i.test(rawText)) return null;
+  console.log(`[FLEX ERROR] ${method} ${itemId} HTTP ${res.status}: ${rawText}`);
   let errMsg = `flex HTTP ${res.status}`;
   try {
     const d = JSON.parse(rawText);
@@ -8717,6 +8724,61 @@ route('GET', '/api/ship/reset', async (req, res) => {
     nextOffset: (mode === 'dry') ? (offset + batch) : 0,
     remaining, done: (mode === 'apply') ? (remaining === 0 || slice.length === 0) : (offset + batch >= total),
     muestras,
+  });
+});
+
+// ---- FLEX: consultar/activar/desactivar via endpoint dedicado self-service --
+// Diagnóstico de una sola publicación para confirmar que el fix de flex funciona
+// ANTES de correr los ~1780. logistic_type NO es editable via PUT /items (ML lo
+// ignora); el flujo correcto es /sites/{SITE}/shipping/selfservice/items/{id}.
+async function _flexStatus(itemId, token) {
+  const site = String(itemId || '').slice(0, 3).toUpperCase() || 'MLA';
+  const url = `https://api.mercadolibre.com/sites/${site}/shipping/selfservice/items/${itemId}`;
+  let status = 0, text = '';
+  try {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    status = r.status; try { text = await r.text(); } catch (e) {}
+  } catch (e) { text = String(e && (e.message || e)); }
+  // 204 = flex activo; 403/404 = inactivo
+  return { enabled: status === 204, status, text: text ? text.slice(0, 200) : '' };
+}
+route('GET', '/api/flex/test', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin.' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const itemId = (q.get('item') || '').trim();
+  const doAct = (q.get('do') || 'check').toLowerCase();   // check | on | off
+  const sellerParam = (q.get('seller') || '').trim();
+  const accountName = (q.get('account') || '').trim().toLowerCase();
+  if (!itemId) return sendJSON(res, 400, { error: 'Falta ?item=MLA...' });
+
+  const db = loadDB() || {}; const accts = db.ml_accounts || [];
+  let account = null;
+  if (sellerParam) account = accts.find(a => String(a.seller_id) === sellerParam);
+  else if (accountName) account = accts.find(a => String(a.name || '').toLowerCase() === accountName);
+  if (!account) {
+    // fallback: buscar el item en los costos guardados de cada cuenta
+    for (const a of accts) { const d = loadAccountCosts(a.seller_id); if (d && d.costs && d.costs[itemId]) { account = a; break; } }
+  }
+  if (!account) return sendJSON(res, 404, { error: 'No encontré la cuenta del item. Pasá ?seller=SELLER_ID o ?account=NOMBRE.' });
+
+  let token; try { token = await getValidToken(account); } catch (e) { return sendJSON(res, 500, { error: 'token: ' + String(e && e.message) }); }
+
+  const antes = await _flexStatus(itemId, token);
+  let accion = null, aplico = null;
+  if (doAct === 'on' || doAct === 'off') {
+    accion = await updateFlexForItem(itemId, doAct === 'on' ? 'si' : 'no', token);  // null = ok
+    await new Promise(r => setTimeout(r, 1500)); // dar tiempo a ML a propagar
+    aplico = await _flexStatus(itemId, token);
+  }
+  return sendJSON(res, 200, {
+    item: itemId, cuenta: account.name, seller_id: account.seller_id, accion_pedida: doAct,
+    flex_antes: antes.enabled, estado_http_antes: antes.status,
+    error_al_aplicar: accion,   // null si salió ok
+    flex_despues: aplico ? aplico.enabled : undefined,
+    estado_http_despues: aplico ? aplico.status : undefined,
+    cambio_efectivo: aplico ? (aplico.enabled !== antes.enabled) : undefined,
+    detalle_antes: antes.text, detalle_despues: aplico ? aplico.text : undefined,
   });
 });
 
