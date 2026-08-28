@@ -987,27 +987,42 @@ async function updateFlexForItem(itemId, flexStr, token) {
   const site = String(itemId || '').slice(0, 3).toUpperCase() || 'MLA';
   const url = `https://api.mercadolibre.com/sites/${site}/shipping/selfservice/items/${itemId}`;
   const method = enable ? 'POST' : 'DELETE';
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    }
-  });
+  // IMPORTANTE: sin User-Agent, CloudFront (borde de ML) bloquea ESTE endpoint con
+  // un 403 en HTML (no el JSON de la app). Sin body y sin Content-Type. Con headers
+  // de navegador el pedido llega a la API y ahí sí devuelve 204 o el JSON real.
+  const res = await fetch(url, { method, headers: _FLEX_HEADERS(token) });
   // 204 = ok. 200/2xx tolerado. 409/"already" = ya estaba en ese estado -> ok.
   if (res.status === 204 || (res.status >= 200 && res.status < 300)) return null;
   let rawText = '';
   try { rawText = await res.text(); } catch(e) {}
   if (res.status === 409 || /already|ya\s+(esta|está|posee|tiene)/i.test(rawText)) return null;
-  console.log(`[FLEX ERROR] ${method} ${itemId} HTTP ${res.status}: ${rawText}`);
-  let errMsg = `flex HTTP ${res.status}`;
-  try {
-    const d = JSON.parse(rawText);
-    errMsg = d.message || d.error || d.cause?.[0]?.description || errMsg;
-  } catch(e) {
-    if (rawText) errMsg = `flex ${res.status}: ${rawText.slice(0, 100)}`;
+  console.log(`[FLEX ERROR] ${method} ${itemId} HTTP ${res.status}: ${String(rawText).slice(0, 300)}`);
+  const esHtml = /<html|<!doctype html|403 forbidden/i.test(String(rawText));
+  let errMsg;
+  if (esHtml) {
+    // Borde/CloudFront: NO es respuesta de la app de ML. Casi siempre headers/UA o rate.
+    errMsg = `flex HTTP ${res.status} (bloqueo de borde/CloudFront, respuesta HTML — no es la API)`;
+  } else {
+    errMsg = `flex HTTP ${res.status}`;
+    try {
+      const d = JSON.parse(rawText);
+      errMsg = d.message || d.error || d.cause?.[0]?.description || errMsg;
+      // 403 JSON real de flex = el ítem no ofrece Envíos Flex (no elegible)
+      if (res.status === 403 && !d.message) errMsg = 'el ítem no ofrece Envíos Flex (no elegible)';
+    } catch(e) {
+      if (rawText) errMsg = `flex ${res.status}: ${String(rawText).slice(0, 120)}`;
+    }
   }
   return errMsg;
+}
+// Headers de navegador para los endpoints de ML detrás de CloudFront (flex/self-service).
+function _FLEX_HEADERS(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'es-AR,es;q=0.9',
+  };
 }
 // ==================== PROMO SAFETY BEFORE ITEM UPDATE ====================
 // ML no permite modificar algunos campos cuando la publicación participa en promociones.
@@ -8736,11 +8751,12 @@ async function _flexStatus(itemId, token) {
   const url = `https://api.mercadolibre.com/sites/${site}/shipping/selfservice/items/${itemId}`;
   let status = 0, text = '';
   try {
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(url, { headers: _FLEX_HEADERS(token) });
     status = r.status; try { text = await r.text(); } catch (e) {}
   } catch (e) { text = String(e && (e.message || e)); }
-  // 204 = flex activo; 403/404 = inactivo
-  return { enabled: status === 204, status, text: text ? text.slice(0, 200) : '' };
+  const esHtml = /<html|<!doctype html|403 forbidden/i.test(String(text));
+  // 204 = flex activo; 403/404 = inactivo. Si vuelve HTML = bloqueo de borde (no confiable).
+  return { enabled: status === 204, status, edge_html: esHtml, text: text ? String(text).slice(0, 200) : '' };
 }
 route('GET', '/api/flex/test', async (req, res) => {
   const sess = requireAuth(req);
