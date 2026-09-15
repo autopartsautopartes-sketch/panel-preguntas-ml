@@ -6476,6 +6476,91 @@ route('GET', '/api/mp/saldo-mp', async (req, res) => {
   return sendJSON(res, 200, { envVar, mp_user_id: mpUserId, pruebas });
 });
 
+// ======= EXPLORADOR INFORME DE LIBERACIONES MP (solo admin) =======
+// Reporte asincrónico: se configura, se genera, MP tarda, se lista y se descarga.
+// Uso paso a paso en el navegador (admin):
+//   /api/mp/lib?do=config            -> ve la config; si no existe, la crea (con saldo disponible)
+//   /api/mp/lib?do=gen&from=-15&to=3 -> pide generar reporte desde hoy-15d hasta hoy+3d
+//   /api/mp/lib?do=list              -> lista reportes generados (mirá cuál quedó "processed")
+//   /api/mp/lib?do=get&file=NOMBRE   -> descarga ese archivo y muestra columnas + filas
+route('GET', '/api/mp/lib', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const envVar = 'MP_TOKEN_' + nombre;
+  const token = process.env[envVar];
+  if (!token) return sendJSON(res, 404, { error: 'No hay token. Cargá ' + envVar + ' en Render.', envVar });
+  const BASE = 'https://api.mercadopago.com';
+  const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  const Hpost = { Authorization: `Bearer ${token}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  async function call(method, path, bodyObj) {
+    let status = 0, body = '';
+    try {
+      const opt = { method, headers: (method === 'GET' ? Hget : Hpost) };
+      if (bodyObj !== undefined) opt.body = JSON.stringify(bodyObj);
+      const r = await fetch(BASE + path, opt);
+      status = r.status;
+      try { body = await r.text(); } catch (e) {}
+    } catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { status, body };
+  }
+  const doWhat = (q.get('do') || 'config').trim();
+  const RP = '/v1/account/release_report';
+  try {
+    if (doWhat === 'config') {
+      const cur = await call('GET', RP + '/config');
+      if (cur.status === 200) return sendJSON(res, 200, { do: 'config', estado: 'ya_existe', config: cur.body.slice(0, 1500) });
+      // No existe -> la creamos con columnas útiles + saldo disponible
+      const cfg = {
+        file_name_prefix: 'release-report-' + (mpUserId || nombre.toLowerCase()),
+        check_available_balance: true,
+        columns: [
+          { key: 'DATE' }, { key: 'RELEASE_DATE' }, { key: 'RECORD_TYPE' }, { key: 'DESCRIPTION' },
+          { key: 'NET_CREDIT_AMOUNT' }, { key: 'NET_DEBIT_AMOUNT' }, { key: 'GROSS_AMOUNT' },
+          { key: 'MP_FEE_AMOUNT' }, { key: 'PAYMENT_METHOD' }, { key: 'BALANCE_AMOUNT' }
+        ],
+        display_timezone: 'GMT-03'
+      };
+      const created = await call('POST', RP + '/config', cfg);
+      return sendJSON(res, 200, { do: 'config', estado: 'creada', status: created.status, resp: created.body.slice(0, 1500) });
+    }
+    if (doWhat === 'gen') {
+      const fromD = parseInt(q.get('from') || '-15', 10);
+      const toD = parseInt(q.get('to') || '0', 10);
+      const now = Date.now();
+      const begin = new Date(now + fromD * 86400000).toISOString().slice(0, 19) + 'Z';
+      const end = new Date(now + toD * 86400000).toISOString().slice(0, 19) + 'Z';
+      const gen = await call('POST', RP, { begin_date: begin, end_date: end });
+      return sendJSON(res, 200, { do: 'gen', begin, end, status: gen.status, resp: gen.body.slice(0, 800) });
+    }
+    if (doWhat === 'list') {
+      const lst = await call('GET', RP + '/list');
+      return sendJSON(res, 200, { do: 'list', status: lst.status, resp: lst.body.slice(0, 3000) });
+    }
+    if (doWhat === 'get') {
+      const file = (q.get('file') || '').trim();
+      if (!file) return sendJSON(res, 400, { error: 'Falta ?file=NOMBRE_DEL_ARCHIVO' });
+      const dl = await call('GET', RP + '/' + encodeURIComponent(file));
+      const raw = dl.body || '';
+      if (raw.slice(0, 2) === 'PK') {
+        return sendJSON(res, 200, { do: 'get', formato: 'xlsx', nota: 'El reporte vino en XLSX (no CSV). Avisá y lo adapto.', status: dl.status });
+      }
+      // Parseo CSV simple (detecta ; o ,)
+      const lines = raw.split(/\r?\n/).filter(l => l.length > 0);
+      const sep = (lines[0] && lines[0].split(';').length > lines[0].split(',').length) ? ';' : ',';
+      const header = lines[0] ? lines[0].split(sep) : [];
+      const rows = lines.slice(1);
+      const sample = rows.slice(0, 6).map(l => l.split(sep));
+      const tail = rows.slice(-4).map(l => l.split(sep));
+      return sendJSON(res, 200, { do: 'get', status: dl.status, sep, total_filas: rows.length, header, primeras: sample, ultimas: tail });
+    }
+    return sendJSON(res, 400, { error: 'do inválido. Usá config | gen | list | get' });
+  } catch (e) {
+    return sendJSON(res, 500, { error: String(e && (e.message || e)) });
+  }
+});
+
 // ==================== API AUTOMATIZACIÓN (token) ====================
 // GET /api/estado?account=MARA   (o ?account_id=1)
 // Header:  x-api-token: <API_TOKEN>
