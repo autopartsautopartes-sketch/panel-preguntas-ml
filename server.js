@@ -6518,9 +6518,9 @@ route('GET', '/api/mp/lib', async (req, res) => {
         execute_after_withdrawal: false,
         frequency: { hour: 0, value: 1, type: 'monthly' },
         columns: [
-          { key: 'DATE' }, { key: 'RELEASE_DATE' }, { key: 'RECORD_TYPE' }, { key: 'DESCRIPTION' },
+          { key: 'DATE' }, { key: 'SOURCE_ID' }, { key: 'RECORD_TYPE' }, { key: 'DESCRIPTION' },
           { key: 'NET_CREDIT_AMOUNT' }, { key: 'NET_DEBIT_AMOUNT' }, { key: 'GROSS_AMOUNT' },
-          { key: 'MP_FEE_AMOUNT' }, { key: 'PAYMENT_METHOD' }, { key: 'BALANCE_AMOUNT' }
+          { key: 'MP_FEE_AMOUNT' }, { key: 'PAYMENT_METHOD' }
         ],
         display_timezone: 'GMT-03'
       };
