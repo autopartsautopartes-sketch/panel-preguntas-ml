@@ -6407,6 +6407,35 @@ function resolveApiAccount(db, url) {
   }
   return null;
 }
+// ======= DIAGNOSTICO SALDO MERCADO PAGO (solo admin) =======
+// Prueba si el token OAuth de la cuenta alcanza para leer el saldo de MP. Abrir en el navegador:
+//   /api/mp/saldo-test?cuenta=MARA     (o  ?seller=SELLER_ID)  — sin parametros usa la primera cuenta.
+route('GET', '/api/mp/saldo-test', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || '').trim().toLowerCase();
+  const seller = (q.get('seller') || '').trim();
+  const db = loadDB(); const accts = db.ml_accounts || [];
+  let account = null;
+  if (seller) account = accts.find(a => String(a.seller_id) === seller);
+  else if (nombre) account = accts.find(a => String(a.name || '').toLowerCase() === nombre);
+  if (!account) account = accts[0];
+  if (!account) return sendJSON(res, 404, { error: 'No hay cuentas cargadas. Pasá ?cuenta=NOMBRE o ?seller=SELLER_ID' });
+  let token; try { token = await getValidToken(account); } catch (e) { return sendJSON(res, 500, { error: 'token: ' + String(e && (e.message || e)) }); }
+  const H = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  async function probe(label, url) {
+    let status = 0, body = '';
+    try { const r = await fetch(url, { headers: H }); status = r.status; try { body = await r.text(); } catch (e) {} }
+    catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { label, url: url.replace('https://api.mercadopago.com', ''), status, body: String(body).slice(0, 500) };
+  }
+  const pruebas = [];
+  pruebas.push(await probe('users_mercadopago_account_balance', `https://api.mercadopago.com/users/${account.seller_id}/mercadopago_account/balance`));
+  pruebas.push(await probe('v1_account_balance', `https://api.mercadopago.com/v1/account/balance`));
+  return sendJSON(res, 200, { cuenta: account.name, seller_id: account.seller_id, pruebas });
+});
+
 // ==================== API AUTOMATIZACIÓN (token) ====================
 // GET /api/estado?account=MARA   (o ?account_id=1)
 // Header:  x-api-token: <API_TOKEN>
