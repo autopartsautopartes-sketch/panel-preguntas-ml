@@ -6652,6 +6652,105 @@ route('GET', '/api/mp/liq', async (req, res) => {
   }
 });
 
+// ======= SALDOS MP: disponible + a liberar + fechas (solo admin) =======
+// Lee los reportes ya generados (liberaciones + liquidaciones) y calcula los números.
+//   /api/mp/saldos?cuenta=MARA            -> devuelve disponible, a_liberar y el cronograma
+//   /api/mp/saldos?cuenta=MARA&do=refresh -> dispara la generación de reportes frescos (tarda 1-2 min)
+route('GET', '/api/mp/saldos', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const envVar = 'MP_TOKEN_' + nombre;
+  const token = process.env[envVar];
+  if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre + '. Cargá ' + envVar + ' en Render.', envVar });
+  const BASE = 'https://api.mercadopago.com';
+  const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  const Hpost = { Authorization: `Bearer ${token}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  const REL = '/v1/account/release_report';
+  const SET = '/v1/account/settlement_report';
+  async function call(method, path, bodyObj) {
+    let status = 0, body = '';
+    try {
+      const opt = { method, headers: (method === 'GET' ? Hget : Hpost) };
+      if (bodyObj !== undefined) opt.body = JSON.stringify(bodyObj);
+      const r = await fetch(BASE + path, opt);
+      status = r.status; try { body = await r.text(); } catch (e) {}
+    } catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { status, body };
+  }
+  const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; };
+  const isoDay = new Date(Date.now() - 60000).toISOString().slice(0, 19) + 'Z';
+  function beginIso(days) { return new Date(Date.now() - days * 86400000).toISOString().slice(0, 19) + 'Z'; }
+  try {
+    if ((q.get('do') || '') === 'refresh') {
+      const gRel = await call('POST', REL, { begin_date: beginIso(18), end_date: isoDay });
+      const gSet = await call('POST', SET, { begin_date: beginIso(35), end_date: isoDay });
+      return sendJSON(res, 200, { do: 'refresh', release_status: gRel.status, settlement_status: gSet.status, nota: 'Reportes pidiéndose. Esperá ~1-2 min y volvé a leer sin do=refresh.' });
+    }
+    // Buscar el archivo CSV procesado más reciente de cada reporte
+    async function newestCsv(basePath) {
+      const r = await call('GET', basePath + '/list');
+      let arr = []; try { arr = JSON.parse(r.body); } catch (e) {}
+      if (!Array.isArray(arr)) return null;
+      const cand = arr.filter(x => x && (x.status === 'processed' || x.status === 'enabled') &&
+        String(x.format || '').toUpperCase() === 'CSV' && /\.csv$/i.test(String(x.file_name || '')));
+      cand.sort((a, b) => String(b.date_created || '').localeCompare(String(a.date_created || '')));
+      return cand.length ? cand[0].file_name : null;
+    }
+    async function download(basePath, file) {
+      const dl = await call('GET', basePath + '/' + encodeURIComponent(file));
+      return dl.body || '';
+    }
+    // 1) DISPONIBLE (informe de liberaciones): saldo = Σ créditos − Σ débitos (ledger corriente)
+    let disponible = null, initial = null, relFile = await newestCsv(REL);
+    if (relFile) {
+      const csv = await download(REL, relFile);
+      const lines = csv.split(/\r?\n/).filter(l => l.length);
+      const H = (lines[0] || '').split(',');
+      const iC = H.indexOf('NET_CREDIT_AMOUNT'), iD = H.indexOf('NET_DEBIT_AMOUNT'), iT = H.indexOf('RECORD_TYPE');
+      let bal = 0;
+      for (let k = 1; k < lines.length; k++) {
+        const c = lines[k].split(',');
+        const t = (c[iT] || '').trim();
+        if (t === 'total') continue;
+        if (t === 'initial_available_balance') initial = num(c[iC]);
+        bal += num(c[iC]) - num(c[iD]);
+      }
+      disponible = Math.round(bal * 100) / 100;
+    }
+    // 2) A LIBERAR (informe de liquidaciones): Σ REAL_AMOUNT con fecha de liberación futura, por fecha
+    let aLiberar = null, schedule = [], setFile = await newestCsv(SET);
+    if (setFile) {
+      const csv = await download(SET, setFile);
+      const lines = csv.split(/\r?\n/).filter(l => l.length);
+      const H = (lines[0] || '').split(',');
+      const iRD = H.indexOf('MONEY_RELEASE_DATE'), iReal = H.indexOf('REAL_AMOUNT');
+      const now = Date.now(); let total = 0; const byDate = {};
+      for (let k = 1; k < lines.length; k++) {
+        const c = lines[k].split(',');
+        const rd = (c[iRD] || '').trim();
+        if (!rd) continue;
+        const t = Date.parse(rd);
+        if (!(t > now)) continue;
+        const amt = num(c[iReal]);
+        total += amt;
+        const day = rd.slice(0, 10);
+        byDate[day] = (byDate[day] || 0) + amt;
+      }
+      aLiberar = Math.round(total * 100) / 100;
+      schedule = Object.keys(byDate).sort().map(d => ({ fecha: d, monto: Math.round(byDate[d] * 100) / 100 }));
+    }
+    return sendJSON(res, 200, {
+      cuenta: nombre, disponible, a_liberar: aLiberar, saldo_inicial_periodo: initial,
+      cronograma: schedule, archivos: { liberaciones: relFile, liquidaciones: setFile },
+      leido: new Date().toISOString()
+    });
+  } catch (e) {
+    return sendJSON(res, 500, { error: String(e && (e.message || e)) });
+  }
+});
+
 // ==================== API AUTOMATIZACIÓN (token) ====================
 // GET /api/estado?account=MARA   (o ?account_id=1)
 // Header:  x-api-token: <API_TOKEN>
