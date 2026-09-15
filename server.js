@@ -6455,14 +6455,20 @@ route('GET', '/api/mp/saldo-mp', async (req, res) => {
     catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
     return { label, url: url.replace('https://api.mercadopago.com', ''), status, body: String(body).slice(0, 600) };
   }
-  // 1) Identidad del token (nos da el user id del dueño de la app MP)
-  const me = await probe('users_me', 'https://api.mercadopago.com/users/me');
+  // 1) Identidad del token (nos da el user id del dueño de la app MP).
+  //    Ojo: parseamos el body COMPLETO antes de truncar, si no el id se pierde.
   let mpUserId = '';
-  try { const j = JSON.parse(me.body); if (j && j.id) mpUserId = String(j.id); } catch (e) {}
-  const pruebas = [me];
+  try {
+    const rMe = await fetch('https://api.mercadopago.com/users/me', { headers: H });
+    const txtMe = await rMe.text();
+    try { const j = JSON.parse(txtMe); if (j && j.id) mpUserId = String(j.id); } catch (e) {}
+  } catch (e) {}
+  const pruebas = [];
+  pruebas.push({ label: 'users_me', url: '/users/me', status: 200, body: 'user_id=' + (mpUserId || '(no se pudo leer)') });
   // 2) Endpoints de saldo, ahora con token propio de MP
   if (mpUserId) {
     pruebas.push(await probe('mercadopago_account_balance', `https://api.mercadopago.com/users/${mpUserId}/mercadopago_account/balance`));
+    pruebas.push(await probe('balance_v1', `https://api.mercadopago.com/v1/users/${mpUserId}/mercadopago_account/balance`));
   }
   pruebas.push(await probe('v1_account_balance', 'https://api.mercadopago.com/v1/account/balance'));
   return sendJSON(res, 200, { envVar, mp_user_id: mpUserId, pruebas });
