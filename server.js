@@ -6702,22 +6702,22 @@ route('GET', '/api/mp/saldos', async (req, res) => {
       const dl = await call('GET', basePath + '/' + encodeURIComponent(file));
       return dl.body || '';
     }
-    // 1) DISPONIBLE (informe de liberaciones): saldo = Σ créditos − Σ débitos (ledger corriente)
+    // 1) DISPONIBLE (informe de liberaciones): el saldo final ya viene calculado en la fila RECORD_TYPE='total'.
     let disponible = null, initial = null, relFile = await newestCsv(REL);
     if (relFile) {
       const csv = await download(REL, relFile);
       const lines = csv.split(/\r?\n/).filter(l => l.length);
       const H = (lines[0] || '').split(',');
       const iC = H.indexOf('NET_CREDIT_AMOUNT'), iD = H.indexOf('NET_DEBIT_AMOUNT'), iT = H.indexOf('RECORD_TYPE');
-      let bal = 0;
       for (let k = 1; k < lines.length; k++) {
         const c = lines[k].split(',');
         const t = (c[iT] || '').trim();
-        if (t === 'total') continue;
         if (t === 'initial_available_balance') initial = num(c[iC]);
-        bal += num(c[iC]) - num(c[iD]);
+        if (t === 'total') {
+          // El saldo disponible final = crédito − débito de la fila total
+          disponible = Math.round((num(c[iC]) - num(c[iD])) * 100) / 100;
+        }
       }
-      disponible = Math.round(bal * 100) / 100;
     }
     // 2) A LIBERAR (informe de liquidaciones): Σ REAL_AMOUNT con fecha de liberación futura, por fecha
     let aLiberar = null, schedule = [], setFile = await newestCsv(SET);
