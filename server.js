@@ -6513,7 +6513,7 @@ route('GET', '/api/mp/lib', async (req, res) => {
       if (cur.status === 200) return sendJSON(res, 200, { do: 'config', estado: 'ya_existe', config: cur.body.slice(0, 1500) });
       // No existe -> la creamos con columnas útiles + saldo disponible
       const cfg = {
-        file_name_prefix: 'release-report-' + (mpUserId || nombre.toLowerCase()),
+        file_name_prefix: 'release-report-' + nombre.toLowerCase(),
         check_available_balance: true,
         columns: [
           { key: 'DATE' }, { key: 'RELEASE_DATE' }, { key: 'RECORD_TYPE' }, { key: 'DESCRIPTION' },
