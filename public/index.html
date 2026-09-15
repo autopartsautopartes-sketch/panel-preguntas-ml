@@ -1409,7 +1409,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   const LOCAL_SALIDA_CATS = ['Servicio', 'Embalaje', 'Envío', 'Sueldo', 'Otro'];
   const LOCAL_MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
   function _localMedioLabel(m) { return String(m || '').charAt(0) + String(m || '').slice(1).toLowerCase(); }
-  function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, precio_venta: '', _looked: false, _notfound: false }; }
+  function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, costo_manual: false, precio_venta: '', _looked: false, _notfound: false }; }
   function _localNewForm() {
     return { editN: null, tipo: (_localTab === 'senas' ? 'sena' : 'venta'), fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, transfer_link: '', _transferBusy: false, items: [_localNewItem()] };
   }
@@ -1575,7 +1575,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<td style="padding:5px 6px">' + provCell + '</td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
     if (isAdm) {
-      h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_cu_' + i + '">' + _localM(it.costo_unit) + '</td>';
+      // COSTO editable por admin. Vacío = usa el automático de la lista. Si lo escribe, pisa el costo (queda naranja).
+      const cuVal = (it.costo_manual && it.costo_unit != null && it.costo_unit !== '') ? String(it.costo_unit) : (it.costo_unit ? String(it.costo_unit) : '');
+      h += '<td style="padding:5px 6px"><input type="number" min="0" step="0.01" value="' + escapeHtml(cuVal) + '" oninput="localCostoInput(' + i + ',this.value)" id="li_cu_' + i + '" title="Costo unitario (editable). Dejalo vacío para el costo automático de la lista." style="' + cellInp + ';color:#b0562a' + (it.costo_manual ? ';border-color:#e07b39;background:#fff6ef' : '') + '"></td>';
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_ct_' + i + '">$ 0</td>';
     }
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="0.01" value="' + escapeHtml(String(pv)) + '" oninput="localItemInput(' + i + ',\'precio_venta\',this.value)" id="li_pv_' + i + '" placeholder="0" style="' + cellInp + '"></td>';
@@ -1602,8 +1604,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (field === 'cantidad' || field === 'precio_venta') it[field] = (val === '' ? '' : Number(val));
     else it[field] = val;
     // Si cambian el código, se invalida el proveedor/costo hasta que se vuelva a buscar (en blur/Enter).
-    if (field === 'codigo') { it.proveedor = ''; it.costo_unit = 0; it._opciones = []; it._provOk = null; it._looked = false; it._lastCodLooked = null; }
+    if (field === 'codigo') { it.proveedor = ''; it.costo_unit = 0; it.costo_manual = false; it._opciones = []; it._provOk = null; it._looked = false; it._lastCodLooked = null; }
     if (field === 'cantidad' || field === 'precio_venta') { localRecalcRow(i); localRecalcTotals(); }
+  }
+  // COSTO manual (solo admin): el admin pisa el costo del renglón. Vacío = vuelve al automático de la lista.
+  function localCostoInput(i, val) {
+    const it = _localForm.items[i]; if (!it) return;
+    const t = String(val == null ? '' : val).trim();
+    it.costo_manual = (t !== '');
+    it.costo_unit = (t === '' ? 0 : (Number(val) || 0));
+    localRecalcTotals();   // recalcula costo total, ganancia y totales SIN re-render (no pierde el foco)
   }
   function localAddItem() { _localForm.items.push(_localNewItem()); localRender(); }
   function localRemoveItem(i) { _localForm.items.splice(i, 1); if (!_localForm.items.length) _localForm.items.push(_localNewItem()); localRender(); }
@@ -1614,7 +1624,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const ct = cu * cant, gan = pv * cant - ct;
     const ctEl = document.getElementById('li_ct_' + i); if (ctEl) ctEl.textContent = _localM(ct);
     const gEl = document.getElementById('li_gan_' + i); if (gEl) { gEl.textContent = _localM(gan); gEl.style.color = gan < 0 ? '#d43d3d' : '#1a9c53'; }
-    const cuEl = document.getElementById('li_cu_' + i); if (cuEl) cuEl.textContent = _localM(cu);
+    const cuEl = document.getElementById('li_cu_' + i); if (cuEl && cuEl.tagName !== 'INPUT') cuEl.textContent = _localM(cu);
   }
   function localRecalcTotals() {
     const isAdm = _localIsAdm();
@@ -1638,6 +1648,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!cod) return;
     if (it._lastCodLooked === cod) return;   // evita re-consultar el mismo código (blur + enter)
     it._lastCodLooked = cod;
+    it.costo_manual = false;   // un lookup nuevo trae el costo automático → deja de ser manual
     try {
       const r = await fetch('/api/local/lookup?codigo=' + encodeURIComponent(cod), { credentials: 'same-origin' });
       const d = await r.json();
@@ -1667,7 +1678,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const it = _localForm.items[i]; if (!it) return;
     it.proveedor = val;
     const opt = (it._opciones || []).find(o => String(o.proveedor).toUpperCase() === String(val || '').toUpperCase());
-    if (opt && opt.costo != null) it.costo_unit = Number(opt.costo) || 0;
+    if (opt && opt.costo != null) { it.costo_unit = Number(opt.costo) || 0; it.costo_manual = false; }
     localRender();
     const el = document.getElementById('li_pv_' + i); if (el && val) el.focus();
   }
@@ -1681,7 +1692,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       entrega: o.entrega || 'retiro', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '',
       cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, o.cheque || {}),
       transfer_link: o.transfer_link || '', _transferBusy: false,
-      items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, precio_venta: it.precio_venta, _looked: true, _lastCodLooked: it.codigo, _provOk: true, _opciones: [{ proveedor: it.proveedor, costo: (it.costo_unit != null ? it.costo_unit : null) }] })),
+      items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, costo_manual: !!it.costo_manual, precio_venta: it.precio_venta, _looked: true, _lastCodLooked: it.codigo, _provOk: true, _opciones: [{ proveedor: it.proveedor, costo: (it.costo_unit != null ? it.costo_unit : null) }] })),
     };
     if (!_localForm.items.length) _localForm.items = [_localNewItem()];
     localRender(); window.scrollTo(0, 0);
@@ -1699,7 +1710,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (_localBusy) return;
     const f = _localForm;
     const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
-      .map(it => ({ cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }));
+      .map(it => { const o = { cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }; if (it.costo_manual) o.costo_unit_manual = Number(it.costo_unit) || 0; return o; });
     if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
     const esSena = (f.tipo === 'sena');
     const payload = {
