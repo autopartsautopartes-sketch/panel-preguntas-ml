@@ -6529,10 +6529,11 @@ route('GET', '/api/mp/lib', async (req, res) => {
     }
     if (doWhat === 'gen') {
       const fromD = parseInt(q.get('from') || '-15', 10);
-      const toD = parseInt(q.get('to') || '0', 10);
+      // MP no permite end_date futuro: clampeamos a como máximo "ahora".
+      const toD = Math.min(0, parseInt(q.get('to') || '0', 10));
       const now = Date.now();
       const begin = new Date(now + fromD * 86400000).toISOString().slice(0, 19) + 'Z';
-      const end = new Date(now + toD * 86400000).toISOString().slice(0, 19) + 'Z';
+      const end = new Date(now + (toD * 86400000) - 60000).toISOString().slice(0, 19) + 'Z';
       const gen = await call('POST', RP, { begin_date: begin, end_date: end });
       return sendJSON(res, 200, { do: 'gen', begin, end, status: gen.status, resp: gen.body.slice(0, 800) });
     }
@@ -6558,6 +6559,93 @@ route('GET', '/api/mp/lib', async (req, res) => {
       return sendJSON(res, 200, { do: 'get', status: dl.status, sep, total_filas: rows.length, header, primeras: sample, ultimas: tail });
     }
     return sendJSON(res, 400, { error: 'do inválido. Usá config | gen | list | get' });
+  } catch (e) {
+    return sendJSON(res, 500, { error: String(e && (e.message || e)) });
+  }
+});
+
+// ======= EXPLORADOR INFORME DE LIQUIDACIONES / SETTLEMENT MP (solo admin) =======
+// Trae la fecha de liberación (MONEY_RELEASE_DATE) de cada pago -> con eso calculamos "a liberar".
+//   /api/mp/liq?do=config   -> ve la config completa del settlement report
+//   /api/mp/liq?do=setcsv   -> fuerza CSV + columnas con fecha de liberación
+//   /api/mp/liq?do=gen&from=-20  -> genera el reporte (desde hoy-20d hasta hoy)
+//   /api/mp/liq?do=list     -> lista reportes
+//   /api/mp/liq?do=get&file=NOMBRE -> descarga y muestra columnas + filas
+route('GET', '/api/mp/liq', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const envVar = 'MP_TOKEN_' + nombre;
+  const token = process.env[envVar];
+  if (!token) return sendJSON(res, 404, { error: 'No hay token. Cargá ' + envVar + ' en Render.', envVar });
+  const BASE = 'https://api.mercadopago.com';
+  const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  const Hpost = { Authorization: `Bearer ${token}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  async function call(method, path, bodyObj) {
+    let status = 0, body = '';
+    try {
+      const opt = { method, headers: (method === 'GET' ? Hget : Hpost) };
+      if (bodyObj !== undefined) opt.body = JSON.stringify(bodyObj);
+      const r = await fetch(BASE + path, opt);
+      status = r.status;
+      try { body = await r.text(); } catch (e) {}
+    } catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { status, body };
+  }
+  const doWhat = (q.get('do') || 'config').trim();
+  const RP = '/v1/account/settlement_report';
+  try {
+    if (doWhat === 'config') {
+      const cur = await call('GET', RP + '/config');
+      return sendJSON(res, 200, { do: 'config', status: cur.status, config: cur.body.slice(0, 3000) });
+    }
+    if (doWhat === 'setcsv') {
+      const cfg = {
+        file_name_prefix: 'settlement-report-' + nombre.toLowerCase(),
+        include_withdraw: false,
+        show_chargeback_cancel: true,
+        scheduled: false,
+        coupon_detailed: true,
+        separator: ',',
+        columns: [
+          { key: 'TRANSACTION_DATE' }, { key: 'MONEY_RELEASE_DATE' }, { key: 'TRANSACTION_TYPE' },
+          { key: 'TRANSACTION_AMOUNT' }, { key: 'FEE_AMOUNT' }, { key: 'REAL_AMOUNT' },
+          { key: 'PAYMENT_METHOD_TYPE' }, { key: 'SOURCE_ID' }
+        ]
+      };
+      const put = await call('PUT', RP + '/config', cfg);
+      return sendJSON(res, 200, { do: 'setcsv', status: put.status, resp: put.body.slice(0, 1500) });
+    }
+    if (doWhat === 'gen') {
+      const fromD = parseInt(q.get('from') || '-20', 10);
+      const now = Date.now();
+      const begin = new Date(now + fromD * 86400000).toISOString().slice(0, 19) + 'Z';
+      const end = new Date(now - 60000).toISOString().slice(0, 19) + 'Z';
+      const gen = await call('POST', RP, { begin_date: begin, end_date: end });
+      return sendJSON(res, 200, { do: 'gen', begin, end, status: gen.status, resp: gen.body.slice(0, 800) });
+    }
+    if (doWhat === 'list') {
+      const lst = await call('GET', RP + '/list');
+      return sendJSON(res, 200, { do: 'list', status: lst.status, resp: lst.body.slice(0, 3000) });
+    }
+    if (doWhat === 'get') {
+      const file = (q.get('file') || '').trim();
+      if (!file) return sendJSON(res, 400, { error: 'Falta ?file=NOMBRE_DEL_ARCHIVO' });
+      const dl = await call('GET', RP + '/' + encodeURIComponent(file));
+      const raw = dl.body || '';
+      if (raw.slice(0, 2) === 'PK') {
+        return sendJSON(res, 200, { do: 'get', formato: 'xlsx', nota: 'Vino en XLSX; hay que forzar CSV con do=setcsv y volver a generar.', status: dl.status });
+      }
+      const lines = raw.split(/\r?\n/).filter(l => l.length > 0);
+      const sep = (lines[0] && lines[0].split(';').length > lines[0].split(',').length) ? ';' : ',';
+      const header = lines[0] ? lines[0].split(sep) : [];
+      const rows = lines.slice(1);
+      const sample = rows.slice(0, 6).map(l => l.split(sep));
+      const tail = rows.slice(-4).map(l => l.split(sep));
+      return sendJSON(res, 200, { do: 'get', status: dl.status, sep, total_filas: rows.length, header, primeras: sample, ultimas: tail });
+    }
+    return sendJSON(res, 400, { error: 'do inválido. Usá config | setcsv | gen | list | get' });
   } catch (e) {
     return sendJSON(res, 500, { error: String(e && (e.message || e)) });
   }
