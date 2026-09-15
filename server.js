@@ -6726,24 +6726,32 @@ route('GET', '/api/mp/saldos', async (req, res) => {
       const lines = csv.split(/\r?\n/).filter(l => l.length);
       const H = (lines[0] || '').split(',');
       const iRD = H.indexOf('MONEY_RELEASE_DATE'), iReal = H.indexOf('REAL_AMOUNT');
-      const now = Date.now(); let total = 0; const byDate = {};
+      const now = Date.now(); let total = 0; const byDate = {}; const byRaw = {};
+      function diaAR(ts, rd) {
+        try { return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }); }
+        catch (e) { return rd.slice(0, 10); }
+      }
       for (let k = 1; k < lines.length; k++) {
         const c = lines[k].split(',');
         const rd = (c[iRD] || '').trim();
         if (!rd) continue;
         const t = Date.parse(rd);
-        if (!(t > now)) continue;
+        if (isNaN(t) || !(t > now)) continue;
         const amt = num(c[iReal]);
         total += amt;
-        const day = rd.slice(0, 10);
+        const day = diaAR(t, rd);       // fecha en hora de Argentina (como el calendario de MP)
         byDate[day] = (byDate[day] || 0) + amt;
+        const rawDay = rd.slice(0, 10);  // fecha cruda del reporte (GMT-04), solo para comparar
+        byRaw[rawDay] = (byRaw[rawDay] || 0) + amt;
       }
       aLiberar = Math.round(total * 100) / 100;
       schedule = Object.keys(byDate).sort().map(d => ({ fecha: d, monto: Math.round(byDate[d] * 100) / 100 }));
+      var _cronoRaw = Object.keys(byRaw).sort().map(d => ({ fecha: d, monto: Math.round(byRaw[d] * 100) / 100 }));
     }
     return sendJSON(res, 200, {
       cuenta: nombre, disponible, a_liberar: aLiberar, saldo_inicial_periodo: initial,
-      cronograma: schedule, archivos: { liberaciones: relFile, liquidaciones: setFile },
+      cronograma: schedule, cronograma_raw: (typeof _cronoRaw !== 'undefined' ? _cronoRaw : []),
+      archivos: { liberaciones: relFile, liquidaciones: setFile },
       leido: new Date().toISOString()
     });
   } catch (e) {
