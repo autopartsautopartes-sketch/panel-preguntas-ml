@@ -6436,6 +6436,38 @@ route('GET', '/api/mp/saldo-test', async (req, res) => {
   return sendJSON(res, 200, { cuenta: account.name, seller_id: account.seller_id, pruebas });
 });
 
+// ======= DIAGNOSTICO SALDO CON TOKEN PROPIO DE MERCADO PAGO (solo admin) =======
+// Usa el Access Token de la APP de Mercado Pago cargado como variable de entorno.
+// Por defecto lee MP_TOKEN_MARA; con ?cuenta=NOMBRE lee MP_TOKEN_<NOMBRE> (ej. ?cuenta=EXPRESS -> MP_TOKEN_EXPRESS).
+// Abrir en el navegador:  /api/mp/saldo-mp     (o  /api/mp/saldo-mp?cuenta=MARA )
+route('GET', '/api/mp/saldo-mp', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const envVar = 'MP_TOKEN_' + nombre;
+  const token = process.env[envVar];
+  if (!token) return sendJSON(res, 404, { error: 'No hay token. Cargá la variable de entorno ' + envVar + ' en Render.', envVar });
+  const H = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  async function probe(label, url) {
+    let status = 0, body = '';
+    try { const r = await fetch(url, { headers: H }); status = r.status; try { body = await r.text(); } catch (e) {} }
+    catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { label, url: url.replace('https://api.mercadopago.com', ''), status, body: String(body).slice(0, 600) };
+  }
+  // 1) Identidad del token (nos da el user id del dueño de la app MP)
+  const me = await probe('users_me', 'https://api.mercadopago.com/users/me');
+  let mpUserId = '';
+  try { const j = JSON.parse(me.body); if (j && j.id) mpUserId = String(j.id); } catch (e) {}
+  const pruebas = [me];
+  // 2) Endpoints de saldo, ahora con token propio de MP
+  if (mpUserId) {
+    pruebas.push(await probe('mercadopago_account_balance', `https://api.mercadopago.com/users/${mpUserId}/mercadopago_account/balance`));
+  }
+  pruebas.push(await probe('v1_account_balance', 'https://api.mercadopago.com/v1/account/balance'));
+  return sendJSON(res, 200, { envVar, mp_user_id: mpUserId, pruebas });
+});
+
 // ==================== API AUTOMATIZACIÓN (token) ====================
 // GET /api/estado?account=MARA   (o ?account_id=1)
 // Header:  x-api-token: <API_TOKEN>
