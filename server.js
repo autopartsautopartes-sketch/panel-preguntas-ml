@@ -7873,14 +7873,21 @@ route('POST', '/api/local/save', async (req, res) => {
     // El proveedor sale de la lista de costos por código. Si el cliente ya lo eligió, se respeta.
     const provPedido = String((it && it.proveedor) || '').trim();
     const cost = _localCostFor(codigo, provPedido);          // costo del código (matchea por nombre si puede)
-    const costo_unit = cost.costo;
+    // COSTO: por defecto el automático (lista de costos). El ADMIN puede pisarlo a mano por renglón
+    // mandando costo_unit_manual. Un usuario NO admin nunca puede fijar el costo (se ignora).
+    let costo_unit = cost.costo;
+    let costo_manual = false;
+    if (a.isAdm && it && it.costo_unit_manual != null && String(it.costo_unit_manual).trim() !== '' &&
+        !isNaN(Number(it.costo_unit_manual)) && Number(it.costo_unit_manual) >= 0) {
+      costo_unit = Number(it.costo_unit_manual); costo_manual = true;
+    }
     const proveedor = provPedido || cost.prov || '';
     const descripcion = String((it && it.descripcion) || '').trim();   // manual (no se autocompleta)
     const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
     const costo_total = costo_unit * cantidad;
     const subtotal_venta = precio_venta * cantidad;
     const ganancia = subtotal_venta - costo_total;
-    items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_total, precio_venta, subtotal_venta, ganancia });
+    items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_manual, costo_total, precio_venta, subtotal_venta, ganancia });
     total_venta += subtotal_venta; total_costo += costo_total;
   }
   if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código y cantidad' });
@@ -7975,6 +7982,9 @@ route('POST', '/api/local/delete', async (req, res) => {
 });
 // Filas sintéticas de VENTAS LOCALES para Gestión/Histórico/Dashboard: 1 orden = 1 fila.
 // Cuenta "Venta local", cantidad 1 (suma el total), sin comisión/envío/impuesto; queda = precio; costo = costo total.
+// Si es false, las VENTAS DE LOCAL (mostrador, carga manual) NO se suman al Dashboard ni a Gestión
+// (quedan solo en la sección "Local"). Poner true para volver a incluirlas en las estadísticas de ML.
+const LOCAL_EN_ESTADISTICAS = false;
 function localSalesRows(from, to) {
   const db = loadDB();
   const orders = Array.isArray(db.local_sales) ? db.local_sales : [];
@@ -10296,7 +10306,8 @@ function registerAds(deps) {
       if (!soloCanceladas && (fresh > 0 || taxFixed > 0 || costFixed > 0)) { hist.updated = new Date().toISOString(); saveHistFile(hist); }
       // ===== VENTAS LOCALES (cuenta sintética "Venta local"). Aditivo: NO toca el cálculo de ML.
       // En modo "solo canceladas" no aplica (las locales no se cancelan por ML).
-      if (!soloCanceladas) {
+      // LOCAL_EN_ESTADISTICAS=false → NO se suman a Gestión (quedan solo en la sección "Local").
+      if (LOCAL_EN_ESTADISTICAS && !soloCanceladas) {
         const L = localSalesRows(from, to);
         for (const r of L.rows) allRows.push(r);
         facturacion += L.T.facturacion; ganancia += L.T.ganancia; orders += L.T.orders;
@@ -10361,7 +10372,7 @@ function registerAds(deps) {
     hist.updated = new Date().toISOString(); saveHistFile(hist);   // guardamos costos congelados de las ventas nuevas
     // ===== VENTAS LOCALES del día (aditivo). Solo si el scope es "todas": la cuenta "Venta local"
     // no es una cuenta de ML, así que no aparece al filtrar por una cuenta ML puntual.
-    if (!accountId || accountId === 'all') {
+    if (LOCAL_EN_ESTADISTICAS && (!accountId || accountId === 'all')) {
       const L = localSalesRows(date, date);
       for (const r of L.rows) { r.account_id = 'local'; allRows.push(r); }
       T.facturacion += L.T.facturacion; T.unidades += L.T.unidades; T.quedaTotal += L.T.quedaTotal;
