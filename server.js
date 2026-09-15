@@ -6465,12 +6465,14 @@ route('GET', '/api/mp/saldo-mp', async (req, res) => {
   } catch (e) {}
   const pruebas = [];
   pruebas.push({ label: 'users_me', url: '/users/me', status: 200, body: 'user_id=' + (mpUserId || '(no se pudo leer)') });
-  // 2) Endpoints de saldo, ahora con token propio de MP
+  // 2) Endpoints de saldo directo (sabemos que dan 403/404, pero los dejamos por si MP los abre)
   if (mpUserId) {
     pruebas.push(await probe('mercadopago_account_balance', `https://api.mercadopago.com/users/${mpUserId}/mercadopago_account/balance`));
-    pruebas.push(await probe('balance_v1', `https://api.mercadopago.com/v1/users/${mpUserId}/mercadopago_account/balance`));
   }
-  pruebas.push(await probe('v1_account_balance', 'https://api.mercadopago.com/v1/account/balance'));
+  // 3) Reports API (via oficial). Si estos dan 200 (o 202/404-sin-config), el token SÍ puede leer reportes.
+  pruebas.push(await probe('settlement_report_config', 'https://api.mercadopago.com/v1/account/settlement_report/config'));
+  pruebas.push(await probe('settlement_report_list', 'https://api.mercadopago.com/v1/account/settlement_report/list'));
+  pruebas.push(await probe('release_report_config', 'https://api.mercadopago.com/v1/account/release_report/config'));
   return sendJSON(res, 200, { envVar, mp_user_id: mpUserId, pruebas });
 });
 
