@@ -6608,6 +6608,7 @@ route('GET', '/api/mp/liq', async (req, res) => {
         scheduled: false,
         coupon_detailed: true,
         separator: ',',
+        frequency: { hour: 0, value: 1, type: 'monthly' },
         columns: [
           { key: 'TRANSACTION_DATE' }, { key: 'MONEY_RELEASE_DATE' }, { key: 'TRANSACTION_TYPE' },
           { key: 'TRANSACTION_AMOUNT' }, { key: 'FEE_AMOUNT' }, { key: 'REAL_AMOUNT' },
