@@ -6769,6 +6769,47 @@ route('GET', '/api/mp/saldos', async (req, res) => {
   }
 });
 
+// ======= DIAGNOSTICO CALIDAD / EXPERIENCIA DE PUBLICACIONES (solo admin) =======
+// Prueba qué expone la API de ML para una publicación: calidad/salud y experiencia.
+//   /api/ml/calidad-test?cuenta=MARA            -> toma la 1ra publicación activa
+//   /api/ml/calidad-test?cuenta=MARA&item=MLA123 -> una publicación puntual
+route('GET', '/api/ml/calidad-test', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || '').trim().toLowerCase();
+  const db = loadDB(); const accts = db.ml_accounts || [];
+  let account = nombre ? accts.find(a => String(a.name || '').toLowerCase() === nombre) : accts[0];
+  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada. Usá ?cuenta=NOMBRE' });
+  let token; try { token = await getValidToken(account); } catch (e) { return sendJSON(res, 500, { error: 'token: ' + String(e && (e.message || e)) }); }
+  let itemId = (q.get('item') || '').trim();
+  try {
+    if (!itemId) {
+      const sr = await mlGet(`https://api.mercadolibre.com/users/${account.seller_id}/items/search`, token, { status: 'active', limit: 1 });
+      itemId = (sr.results && sr.results[0]) || '';
+    }
+  } catch (e) { return sendJSON(res, 500, { error: 'búsqueda de item: ' + String(e && (e.message || e)) }); }
+  if (!itemId) return sendJSON(res, 404, { error: 'No encontré publicaciones activas en esa cuenta.' });
+  const H = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  async function probe(label, url) {
+    let status = 0, body = '';
+    try { const r = await fetch(url, { headers: H }); status = r.status; try { body = await r.text(); } catch (e) {} }
+    catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { label, url: url.replace('https://api.mercadolibre.com', ''), status, body: String(body).slice(0, 900) };
+  }
+  const A = 'https://api.mercadolibre.com';
+  const pruebas = [];
+  // Calidad / salud
+  pruebas.push(await probe('item_health_field', `${A}/items/${itemId}?attributes=id,title,health,status`));
+  pruebas.push(await probe('item_health', `${A}/items/${itemId}/health`));
+  pruebas.push(await probe('item_quality_actions', `${A}/items/${itemId}/health/actions`));
+  pruebas.push(await probe('reputation_item', `${A}/reputation/items/${itemId}`));
+  // Experiencia (post-venta / compra)
+  pruebas.push(await probe('item_experience', `${A}/items/${itemId}/experience`));
+  pruebas.push(await probe('moderations', `${A}/items/${itemId}/moderations`));
+  return sendJSON(res, 200, { cuenta: account.name, item: itemId, pruebas });
+});
+
 // ==================== API AUTOMATIZACIÓN (token) ====================
 // GET /api/estado?account=MARA   (o ?account_id=1)
 // Header:  x-api-token: <API_TOKEN>
