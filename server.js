@@ -6779,8 +6779,10 @@ route('GET', '/api/ml/calidad-test', async (req, res) => {
   let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
   const nombre = (q.get('cuenta') || '').trim().toLowerCase();
   const db = loadDB(); const accts = db.ml_accounts || [];
-  let account = nombre ? accts.find(a => String(a.name || '').toLowerCase() === nombre) : accts[0];
-  if (!account) return sendJSON(res, 404, { error: 'Cuenta no encontrada. Usá ?cuenta=NOMBRE' });
+  let account = null;
+  if (nombre) account = accts.find(a => String(a.name || '').toLowerCase().includes(nombre) || String(a.nickname || '').toLowerCase().includes(nombre));
+  if (!account) account = accts[0];
+  if (!account) return sendJSON(res, 404, { error: 'No hay cuentas cargadas.', nombres: accts.map(a => a.name) });
   let token; try { token = await getValidToken(account); } catch (e) { return sendJSON(res, 500, { error: 'token: ' + String(e && (e.message || e)) }); }
   let itemId = (q.get('item') || '').trim();
   try {
