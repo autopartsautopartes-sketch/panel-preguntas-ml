@@ -6856,6 +6856,27 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
     // ordenar por fecha desc
     ops.sort((a, b) => String(b.fecha_full).localeCompare(String(a.fecha_full)));
     Object.keys(porTipo).forEach(t => { porTipo[t].monto = Math.round(porTipo[t].monto * 100) / 100; });
+    // Enriquecer con la VENTA de ML + producto, consultando cada pago (salvo ?ml=0)
+    if ((q.get('ml') || '1') !== '0' && ops.length) {
+      async function enrich(op) {
+        if (!op.source_id) return;
+        try {
+          const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(op.source_id), { headers: Hget });
+          if (!r.ok) return;
+          const p = await r.json();
+          op.venta_ml = p.external_reference || (p.order && p.order.id) || '';
+          const its = (p.additional_info && p.additional_info.items) || [];
+          if (its.length) {
+            op.producto = its[0].title || '';
+            op.item_id = its[0].id || '';
+            op.cantidad = its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length;
+          }
+        } catch (e) {}
+      }
+      const CONC = 6; let ei = 0;
+      async function ew() { while (ei < ops.length) { const op = ops[ei++]; await enrich(op); } }
+      await Promise.all(Array.from({ length: CONC }, ew));
+    }
     return sendJSON(res, 200, {
       cuenta: nombre,
       total: { cantidad: totCant, monto: Math.round(totMonto * 100) / 100 },
