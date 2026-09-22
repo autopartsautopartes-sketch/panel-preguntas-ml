@@ -6813,6 +6813,53 @@ route('GET', '/api/mp/saldos', async (req, res) => {
   }
 });
 
+// ======= RESUMEN DE SALDOS DE TODAS LAS CUENTAS (solo admin) =======
+// Junta lo que cada userscript pusheó y arma:
+//   - por cuenta: disponible, a_liberar, total (disponible + a_liberar)
+//   - totales generales: suma de disponibles, de a_liberar y de totales
+//   - cronograma consolidado: todas las fechas de todas las cuentas sumadas (como una sola cuenta)
+//   - ultima_lectura: el push más reciente entre todas las cuentas
+route('GET', '/api/mp/saldos-resumen', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const dbTop = loadDB();
+  const pushMap = dbTop.saldos_push || {};
+  const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+  const cuentas = [];
+  let totDisp = 0, totLib = 0;
+  const cronoMap = {};   // fecha -> monto acumulado de todas las cuentas
+  let ultimaLectura = null;
+  NOMBRES_MP.forEach(nombre => {
+    const p = pushMap[nombre];
+    const tieneToken = !!process.env['MP_TOKEN_' + nombre];
+    if (!p) {
+      cuentas.push({ cuenta: nombre, tiene_datos: false, disponible: null, a_liberar: null, total: null, ts: null, tiene_token: tieneToken });
+      return;
+    }
+    const disp = Number(p.disponible) || 0;
+    const alib = Number(p.a_liberar) || 0;
+    const total = r2(disp + alib);
+    totDisp += disp; totLib += alib;
+    if (p.ts && (!ultimaLectura || p.ts > ultimaLectura)) ultimaLectura = p.ts;
+    (p.cronograma || []).forEach(x => {
+      if (!x || !x.fecha) return;
+      const m = Number(x.monto) || 0;
+      cronoMap[x.fecha] = (cronoMap[x.fecha] || 0) + m;
+    });
+    cuentas.push({ cuenta: nombre, tiene_datos: true, disponible: r2(disp), a_liberar: r2(alib), total: total, ts: p.ts || null, tiene_token: tieneToken });
+  });
+  const cronograma = Object.keys(cronoMap).sort().map(f => ({ fecha: f, monto: r2(cronoMap[f]) }));
+  return sendJSON(res, 200, {
+    cuentas,
+    totales: { disponible: r2(totDisp), a_liberar: r2(totLib), total: r2(totDisp + totLib) },
+    cronograma,
+    con_datos: cuentas.filter(c => c.tiene_datos).length,
+    ultima_lectura: ultimaLectura,
+    leido: new Date().toISOString()
+  });
+});
+
 // ======= DEVOLUCIONES / CANCELACIONES MP (solo admin) =======
 // Lee el settlement report (mismo que usa Saldos) y filtra lo que RESTA dinero:
 // REFUND (devoluciones), DISPUTE (disputas/reclamos) y CASHBACK_CANCEL.
@@ -6874,36 +6921,60 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const H = (lines[0] || '').split(',');
       const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
       const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iReal = H.indexOf('REAL_AMOUNT');
+      // Pre-filtro AMPLIO por fecha de compra (solo para no traer pagos viejísimos).
+      // La fecha que importa (la de la devolución) se calcula después con el pago real.
+      function _minusDays(ymd, days) { const t = Date.parse(ymd + 'T00:00:00Z'); if (isNaN(t)) return ''; return new Date(t - days * 86400000).toISOString().slice(0, 10); }
+      const desdeLookback = desde ? _minusDays(desde, 120) : '';
       const ops = [];
       for (let k = 1; k < lines.length; k++) {
         const c = lines[k].split(',');
         const tipo = (c[iType] || '').trim();
         if (TIPOS.indexOf(tipo) === -1) continue;
         const fechaDia = (c[iDate] || '').slice(0, 10);
-        if (desde && fechaDia < desde) continue;
+        // descarta compras MUY anteriores al período (una devolución no suele tardar >120 días)
+        if (desdeLookback && fechaDia && fechaDia < desdeLookback) continue;
         ops.push({ fecha: fechaDia, fecha_full: (c[iDate] || ''), source_id: c[iSrc] || '', tipo, metodo: (c[iPm] || '') || '—', monto: num(c[iAmt]), real: num(c[iReal]) });
       }
-      if ((q.get('ml') || '1') !== '0' && ops.length) {
+      const enriquecer = (q.get('ml') || '1') !== '0';
+      if (enriquecer && ops.length) {
         const ids = Array.from(new Set(ops.map(o => o.source_id).filter(Boolean)));
         const cache = {};
         const Hget = { Authorization: 'Bearer ' + token, 'Accept': 'application/json' };
-        async function fp(id) { try { const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(id), { headers: Hget }); if (!r.ok) return; const p = await r.json(); const its = (p.additional_info && p.additional_info.items) || []; cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0 }; } catch (e) {} }
+        async function fp(id) {
+          try {
+            const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(id), { headers: Hget });
+            if (!r.ok) return;
+            const p = await r.json();
+            const its = (p.additional_info && p.additional_info.items) || [];
+            // Fecha REAL de la devolución del dinero: date_created del reembolso más reciente.
+            // Para disputas/contracargos (sin refunds) usamos la última actualización del pago.
+            let fdev = '';
+            const refs = Array.isArray(p.refunds) ? p.refunds : [];
+            if (refs.length) { const ds = refs.map(x => x && x.date_created).filter(Boolean).sort(); if (ds.length) fdev = ds[ds.length - 1]; }
+            if (!fdev) fdev = p.date_last_updated || '';
+            cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0, fecha_dev: fdev };
+          } catch (e) {}
+        }
         let ei = 0; const CONC = 6;
         async function ew() { while (ei < ids.length) { await fp(ids[ei++]); } }
         await Promise.all(Array.from({ length: CONC }, ew));
-        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; } });
+        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; o.fecha_dev_full = d.fecha_dev || o.fecha_full; } });
       }
+      // fecha_dev = fecha en que se devolvió la plata (real). Si no se pudo enriquecer, cae en la de compra.
+      ops.forEach(o => { if (!o.fecha_dev_full) o.fecha_dev_full = o.fecha_full; o.fecha_dev = (o.fecha_dev_full || '').slice(0, 10); });
+      // Recién ahora filtramos por la fecha real de la devolución
+      const opsFiltradas = ops.filter(o => !desde || (o.fecha_dev && o.fecha_dev >= desde));
       const grupos = {};
-      ops.forEach(o => {
+      opsFiltradas.forEach(o => {
         const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
-        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_full, fecha: o.fecha, source_id: o.source_id, estado_pago: o.estado_pago || '' };
+        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha, source_id: o.source_id, estado_pago: o.estado_pago || '' };
         const g = grupos[key];
         g.monto += o.monto; g.real += o.real; g.movimientos++;
         g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
         g.realPorTipo[o.tipo] = (g.realPorTipo[o.tipo] || 0) + o.real;
         if (o.estado_pago && !g.estado_pago) g.estado_pago = o.estado_pago;
         if (!g.producto && o.producto) { g.producto = o.producto; g.item_id = o.item_id; g.cantidad = o.cantidad; }
-        if (String(o.fecha_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_full; g.fecha = o.fecha; }
+        if (String(o.fecha_dev_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_dev_full; g.fecha = o.fecha_dev; }
       });
       return { grupos: Object.values(grupos), file };
     }
@@ -6921,7 +6992,7 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const seg = (((db.devoluciones_estado || {})[g.cuenta]) || {})[clave] || {};
       agrupadas.push({
         cuenta: g.cuenta, venta_ml: g.venta_ml, producto: g.producto, item_id: g.item_id, cantidad: g.cantidad,
-        source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full,
+        source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full, fecha_compra: g.fecha_compra || null,
         monto: Math.round(g.monto * 100) / 100, real: Math.round(g.real * 100) / 100,
         movimientos: g.movimientos, tipo: tks.length === 1 ? tks[0] : 'VARIOS', tipos_lista: tks,
         estado_pago: g.estado_pago, estado: seg.estado || 'abierta', estado_fecha: seg.fecha || null, estado_por: seg.por || null,
