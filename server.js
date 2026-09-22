@@ -6666,6 +6666,29 @@ route('GET', '/api/mp/liq', async (req, res) => {
   }
 });
 
+// ======= PUSH DE SALDO DESDE LA SESIÓN (userscript, protegido por token, sin sesión de panel) =======
+route('POST', '/api/mp/saldo-push', async (req, res) => {
+  let body; try { body = await parseBody(req); } catch (e) { body = {}; }
+  const PUSH_TOKEN = process.env.SALDO_PUSH_TOKEN || 'autochap-saldos-push';
+  if (String(body.token || '') !== PUSH_TOKEN) return sendJSON(res, 403, { error: 'token inválido' });
+  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const cuenta = String(body.cuenta || '').trim().toUpperCase();
+  if (NOMBRES_MP.indexOf(cuenta) === -1) return sendJSON(res, 400, { error: 'cuenta inválida' });
+  const nOrNull = v => (v == null || v === '' || isNaN(Number(v))) ? null : Math.round(Number(v) * 100) / 100;
+  const crono = Array.isArray(body.cronograma)
+    ? body.cronograma.filter(x => x && x.fecha).map(x => ({ fecha: String(x.fecha).slice(0, 10), monto: Math.round((Number(x.monto) || 0) * 100) / 100 }))
+    : [];
+  const db = loadDB();
+  if (!db.saldos_push) db.saldos_push = {};
+  db.saldos_push[cuenta] = {
+    disponible: nOrNull(body.disponible), a_liberar: nOrNull(body.a_liberar),
+    retenido: nOrNull(body.retenido), adelanto: nOrNull(body.adelanto),
+    cronograma: crono, ts: new Date().toISOString()
+  };
+  saveDB(db);
+  return sendJSON(res, 200, { ok: true, cuenta });
+});
+
 // ======= SALDOS MP: disponible + a liberar + fechas (solo admin) =======
 // Lee los reportes ya generados (liberaciones + liquidaciones) y calcula los números.
 //   /api/mp/saldos?cuenta=MARA            -> devuelve disponible, a_liberar y el cronograma
@@ -6675,9 +6698,23 @@ route('GET', '/api/mp/saldos', async (req, res) => {
   if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
   let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
   const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const dbTop = loadDB();
+  const pushMap = dbTop.saldos_push || {};
+  // Cuentas disponibles = las que tienen token de app O datos pusheados por el userscript
+  const cuentasConToken = NOMBRES_MP.filter(n => process.env['MP_TOKEN_' + n] || pushMap[n]);
+  // Preferir SIEMPRE los datos del userscript (son exactos, de tu sesión de MP)
+  const push = pushMap[nombre];
+  if (push && (q.get('do') || '') !== 'refresh' && q.get('fuente') !== 'reporte') {
+    return sendJSON(res, 200, {
+      cuenta: nombre, cuentas_con_token: cuentasConToken,
+      disponible: push.disponible, a_liberar: push.a_liberar, retenido: push.retenido, adelanto: push.adelanto,
+      cronograma: push.cronograma || [], fuente: 'sesion', pushed_ts: push.ts, leido: new Date().toISOString()
+    });
+  }
   const envVar = 'MP_TOKEN_' + nombre;
   const token = process.env[envVar];
-  if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre + '. Cargá ' + envVar + ' en Render.', envVar });
+  if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre + '. Cargá ' + envVar + ' en Render, o instalá el userscript de saldos.', envVar, cuentas_con_token: cuentasConToken });
   const BASE = 'https://api.mercadopago.com';
   const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
   const Hpost = { Authorization: `Bearer ${token}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
@@ -6766,7 +6803,7 @@ route('GET', '/api/mp/saldos', async (req, res) => {
       var _cronoRaw = Object.keys(byRaw).sort().map(d => ({ fecha: d, monto: Math.round(byRaw[d] * 100) / 100 }));
     }
     return sendJSON(res, 200, {
-      cuenta: nombre, disponible, a_liberar: aLiberar, saldo_inicial_periodo: initial,
+      cuenta: nombre, cuentas_con_token: cuentasConToken, fuente: 'reporte', disponible, a_liberar: aLiberar, saldo_inicial_periodo: initial,
       cronograma: schedule, cronograma_raw: (typeof _cronoRaw !== 'undefined' ? _cronoRaw : []),
       archivos: { liberaciones: relFile, liquidaciones: setFile },
       leido: new Date().toISOString()
