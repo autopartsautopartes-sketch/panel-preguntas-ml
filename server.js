@@ -6740,20 +6740,23 @@ route('GET', '/api/mp/saldos', async (req, res) => {
       const lines = csv.split(/\r?\n/).filter(l => l.length);
       const H = (lines[0] || '').split(',');
       const iRD = H.indexOf('MONEY_RELEASE_DATE'), iReal = H.indexOf('REAL_AMOUNT');
-      const now = Date.now(); let total = 0; const byDate = {}; const byRaw = {};
+      let total = 0; const byDate = {}; const byRaw = {};
       function diaAR(ts, rd) {
         try { return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }); }
         catch (e) { return rd.slice(0, 10); }
       }
+      // MP cuenta "a liberar" desde MAÑANA (hoy ya no es "próximo cobro"). Alineamos igual.
+      const hoyAR = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
       for (let k = 1; k < lines.length; k++) {
         const c = lines[k].split(',');
         const rd = (c[iRD] || '').trim();
         if (!rd) continue;
         const t = Date.parse(rd);
-        if (isNaN(t) || !(t > now)) continue;
+        if (isNaN(t)) continue;
+        const day = diaAR(t, rd);       // fecha en hora de Argentina (como el calendario de MP)
+        if (day <= hoyAR) continue;     // solo desde mañana, como MP
         const amt = num(c[iReal]);
         total += amt;
-        const day = diaAR(t, rd);       // fecha en hora de Argentina (como el calendario de MP)
         byDate[day] = (byDate[day] || 0) + amt;
         const rawDay = rd.slice(0, 10);  // fecha cruda del reporte (GMT-04), solo para comparar
         byRaw[rawDay] = (byRaw[rawDay] || 0) + amt;
@@ -6826,10 +6829,10 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const cand = arr.filter(x => x && (x.status === 'processed' || x.status === 'enabled') && String(x.format || '').toUpperCase() === 'CSV' && /\.csv$/i.test(String(x.file_name || '')));
       cand.sort((a, b) => String(b.date_created || '').localeCompare(String(a.date_created || '')));
       const file = cand.length ? cand[0].file_name : null;
-      if (!file) return [];
+      if (!file) return { grupos: [], file: null };
       const dl = await call(token, 'GET', SET + '/' + encodeURIComponent(file));
       const raw = dl.body || '';
-      if (raw.slice(0, 2) === 'PK') return [];
+      if (raw.slice(0, 2) === 'PK') return { grupos: [], file: file };
       const lines = raw.split(/\r?\n/).filter(l => l.length);
       const H = (lines[0] || '').split(',');
       const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
@@ -6865,10 +6868,11 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
         if (!g.producto && o.producto) { g.producto = o.producto; g.item_id = o.item_id; g.cantidad = o.cantidad; }
         if (String(o.fecha_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_full; g.fecha = o.fecha; }
       });
-      return Object.values(grupos);
+      return { grupos: Object.values(grupos), file };
     }
     const todas = [];
-    for (const n of cuentas) { const gs = await procesar(n); todas.push.apply(todas, gs); }
+    const archivos = {};
+    for (const n of cuentas) { const r = await procesar(n); todas.push.apply(todas, r.grupos); archivos[n] = r.file || ''; }
     const porTipo = { REFUND: { cantidad: 0, monto: 0 }, DISPUTE: { cantidad: 0, monto: 0 } };
     let totMonto = 0, totCant = 0;
     const agrupadas = [];
@@ -6883,7 +6887,8 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
         source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full,
         monto: Math.round(g.monto * 100) / 100, real: Math.round(g.real * 100) / 100,
         movimientos: g.movimientos, tipo: tks.length === 1 ? tks[0] : 'VARIOS', tipos_lista: tks,
-        estado_pago: g.estado_pago, estado: seg.estado || 'abierta', estado_fecha: seg.fecha || null, estado_por: seg.por || null
+        estado_pago: g.estado_pago, estado: seg.estado || 'abierta', estado_fecha: seg.fecha || null, estado_por: seg.por || null,
+        enviado: seg.enviado || null, producto_devolucion: seg.producto_devolucion || null
       });
       tks.forEach(t => { if (porTipo[t]) { porTipo[t].cantidad++; porTipo[t].monto += (g.realPorTipo[t] || 0); } });
       totMonto += g.real; totCant += g.movimientos;
@@ -6895,7 +6900,7 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
     return sendJSON(res, 200, {
       cuentas: conToken, cuenta: pedida, desde,
       total: { cantidad: totCant, ventas: agrupadas.length, monto: Math.round(totMonto * 100) / 100 },
-      por_tipo: porTipo, por_estado: porEstado, operaciones: agrupadas, leido: new Date().toISOString()
+      por_tipo: porTipo, por_estado: porEstado, operaciones: agrupadas, archivos, marca: Object.keys(archivos).sort().map(k => k + ':' + archivos[k]).join('|'), leido: new Date().toISOString()
     });
   } catch (e) {
     return sendJSON(res, 500, { error: String(e && (e.message || e)) });
@@ -6915,17 +6920,26 @@ route('POST', '/api/mp/devoluciones/estado', async (req, res) => {
   const venta = String(body.venta || '').trim();
   const estado = String(body.estado || '').trim();
   const VALIDOS = ['abierta', 'en_camino', 'finalizado'];
+  const SN = ['si', 'no'];
+  const enviado = String(body.enviado || '').trim().toLowerCase();
+  const prodDev = String(body.producto_devolucion || '').trim().toLowerCase();
   if (!cuenta || !venta) return sendJSON(res, 400, { error: 'Faltan cuenta o venta' });
   if (VALIDOS.indexOf(estado) === -1) return sendJSON(res, 400, { error: 'Estado inválido' });
+  // En camino / Finalizado: exigen los dos campos Sí/No
+  if (estado === 'en_camino' || estado === 'finalizado') {
+    if (SN.indexOf(enviado) === -1 || SN.indexOf(prodDev) === -1) {
+      return sendJSON(res, 400, { error: 'Para "En camino" o "Finalizado" hay que completar Enviado y Producto para devolución (Sí/No).' });
+    }
+  }
   if (!db.devoluciones_estado) db.devoluciones_estado = {};
   if (!db.devoluciones_estado[cuenta]) db.devoluciones_estado[cuenta] = {};
   if (estado === 'abierta') {
     delete db.devoluciones_estado[cuenta][venta]; // abierta = default, no hace falta guardar
   } else {
-    db.devoluciones_estado[cuenta][venta] = { estado, fecha: new Date().toISOString(), por: (u && u.username) || s.role };
+    db.devoluciones_estado[cuenta][venta] = { estado, enviado, producto_devolucion: prodDev, fecha: new Date().toISOString(), por: (u && u.username) || s.role };
   }
   saveDB(db);
-  return sendJSON(res, 200, { ok: true, cuenta, venta, estado });
+  return sendJSON(res, 200, { ok: true, cuenta, venta, estado, enviado, producto_devolucion: prodDev });
 });
 
 // ======= DIAGNOSTICO PAGO MP -> ORDEN/VENTA ML (solo admin) =======
