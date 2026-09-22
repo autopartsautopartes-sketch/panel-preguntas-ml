@@ -6782,160 +6782,126 @@ route('GET', '/api/mp/saldos', async (req, res) => {
 route('GET', '/api/mp/devoluciones', async (req, res) => {
   const s = requireAuth(req);
   if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  const db = loadDB();
   if (s.role !== 'admin') {
-    const _db = loadDB(); const _u = (_db.users || []).find(x => x.id === s.userId);
+    const _u = (db.users || []).find(x => x.id === s.userId);
     if (!(_u && _u.can_devoluciones === true)) return sendJSON(res, 403, { error: 'Sin permiso para Devoluciones' });
   }
   let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
-  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
-  const envVar = 'MP_TOKEN_' + nombre;
-  const token = process.env[envVar];
-  if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre + '. Cargá ' + envVar + ' en Render.', envVar });
-  const db = loadDB();
+  const NOMBRES = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const conToken = NOMBRES.filter(n => process.env['MP_TOKEN_' + n]);
+  const pedida = (q.get('cuenta') || 'ALL').trim().toUpperCase();
+  const cuentas = (pedida === 'ALL' || !pedida) ? conToken.slice() : conToken.filter(n => n === pedida);
+  const desde = (q.get('desde') || '2026-09-21').trim();
   const BASE = 'https://api.mercadopago.com';
   const SET = '/v1/account/settlement_report';
-  const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
-  const Hpost = { Authorization: `Bearer ${token}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
-  async function call(method, path, bodyObj) {
+  const TIPOS = ['REFUND', 'DISPUTE'];
+  const OCULTAR_ESTADO = ['in_mediation', 'in_process', 'pending', 'authorized'];
+  const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; };
+  if (!conToken.length) return sendJSON(res, 200, { sin_token: true, cuentas: [], operaciones: [], nota: 'No hay ninguna cuenta con app de MP conectada.' });
+  async function call(token, method, path, bodyObj) {
     let status = 0, body = '';
     try {
-      const opt = { method, headers: (method === 'GET' ? Hget : Hpost) };
+      const opt = { method, headers: { Authorization: 'Bearer ' + token, 'Accept': 'application/json', ...(method !== 'GET' ? { 'Content-Type': 'application/json' } : {}) } };
       if (bodyObj !== undefined) opt.body = JSON.stringify(bodyObj);
       const r = await fetch(BASE + path, opt);
       status = r.status; try { body = await r.text(); } catch (e) {}
     } catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
     return { status, body };
   }
-  const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; };
-  // Tipos que se cuentan como devolución (restan dinero). Cashback se saca.
-  const TIPOS = ['REFUND', 'DISPUTE'];
-  // Solo desde esta fecha en adelante (YYYY-MM-DD). Default 2026-09-22.
-  const desde = (q.get('desde') || '2026-09-22').trim();
-  // Estados que significan "en mediación / plata NO devuelta todavía" -> se ocultan
-  const OCULTAR_ESTADO = ['in_mediation', 'in_process', 'pending', 'authorized'];
   try {
     if ((q.get('do') || '') === 'refresh') {
-      const dias = Math.min(180, Math.max(1, parseInt(q.get('dias') || '35', 10) || 35));
+      const dias = Math.min(180, Math.max(1, parseInt(q.get('dias') || '40', 10) || 40));
       const begin = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 19) + 'Z';
       const end = new Date(Date.now() - 60000).toISOString().slice(0, 19) + 'Z';
-      const g = await call('POST', SET, { begin_date: begin, end_date: end });
-      return sendJSON(res, 200, { do: 'refresh', status: g.status, nota: 'Reporte pidiéndose. Esperá ~1-2 min y volvé a leer sin do=refresh.' });
+      const results = {};
+      for (const n of cuentas) { const g = await call(process.env['MP_TOKEN_' + n], 'POST', SET, { begin_date: begin, end_date: end }); results[n] = g.status; }
+      return sendJSON(res, 200, { do: 'refresh', status_por_cuenta: results, nota: 'Reportes pidiéndose. Esperá ~1-2 min y volvé a leer.' });
     }
-    // Buscar el settlement CSV procesado más reciente
-    const lst = await call('GET', SET + '/list');
-    let arr = []; try { arr = JSON.parse(lst.body); } catch (e) {}
-    if (!Array.isArray(arr)) arr = [];
-    const cand = arr.filter(x => x && (x.status === 'processed' || x.status === 'enabled') &&
-      String(x.format || '').toUpperCase() === 'CSV' && /\.csv$/i.test(String(x.file_name || '')));
-    cand.sort((a, b) => String(b.date_created || '').localeCompare(String(a.date_created || '')));
-    const file = cand.length ? cand[0].file_name : null;
-    if (!file) return sendJSON(res, 200, { cuenta: nombre, sin_reporte: true, nota: 'No hay reporte CSV. Tocá Actualizar para generarlo.' });
-    const dl = await call('GET', SET + '/' + encodeURIComponent(file));
-    const raw = dl.body || '';
-    if (raw.slice(0, 2) === 'PK') return sendJSON(res, 500, { error: 'El reporte vino en XLSX; hay que configurarlo en CSV (una vez, con /api/mp/liq?do=setcsv).' });
-    const lines = raw.split(/\r?\n/).filter(l => l.length);
-    const H = (lines[0] || '').split(',');
-    const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
-    const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iFee = H.indexOf('FEE_AMOUNT'), iReal = H.indexOf('REAL_AMOUNT');
-    const ops = [];
-    for (let k = 1; k < lines.length; k++) {
-      const c = lines[k].split(',');
-      const tipo = (c[iType] || '').trim();
-      if (TIPOS.indexOf(tipo) === -1) continue;
-      const fechaDia = (c[iDate] || '').slice(0, 10);
-      if (desde && fechaDia < desde) continue;   // solo desde la fecha pedida
-      ops.push({
-        fecha: fechaDia,
-        fecha_full: (c[iDate] || ''),
-        source_id: c[iSrc] || '',
-        tipo,
-        metodo: (c[iPm] || '') || '—',
-        monto: num(c[iAmt]),
-        fee: num(c[iFee]),
-        real: num(c[iReal])
-      });
-    }
-    ops.sort((a, b) => String(b.fecha_full).localeCompare(String(a.fecha_full)));
-    // Enriquecer con VENTA ML + producto + ESTADO DEL PAGO, consultando cada pago una vez por source_id
-    if ((q.get('ml') || '1') !== '0' && ops.length) {
-      const ids = Array.from(new Set(ops.map(o => o.source_id).filter(Boolean)));
-      const cache = {};
-      async function fetchPago(id) {
-        try {
-          const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(id), { headers: Hget });
-          if (!r.ok) return;
-          const p = await r.json();
-          const its = (p.additional_info && p.additional_info.items) || [];
-          cache[id] = {
-            venta_ml: p.external_reference || (p.order && p.order.id) || '',
-            estado_pago: p.status || '',
-            producto: its.length ? (its[0].title || '') : '',
-            item_id: its.length ? (its[0].id || '') : '',
-            cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0
-          };
-        } catch (e) {}
+    async function procesar(nombre) {
+      const token = process.env['MP_TOKEN_' + nombre];
+      const lst = await call(token, 'GET', SET + '/list');
+      let arr = []; try { arr = JSON.parse(lst.body); } catch (e) {}
+      if (!Array.isArray(arr)) arr = [];
+      const cand = arr.filter(x => x && (x.status === 'processed' || x.status === 'enabled') && String(x.format || '').toUpperCase() === 'CSV' && /\.csv$/i.test(String(x.file_name || '')));
+      cand.sort((a, b) => String(b.date_created || '').localeCompare(String(a.date_created || '')));
+      const file = cand.length ? cand[0].file_name : null;
+      if (!file) return [];
+      const dl = await call(token, 'GET', SET + '/' + encodeURIComponent(file));
+      const raw = dl.body || '';
+      if (raw.slice(0, 2) === 'PK') return [];
+      const lines = raw.split(/\r?\n/).filter(l => l.length);
+      const H = (lines[0] || '').split(',');
+      const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
+      const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iReal = H.indexOf('REAL_AMOUNT');
+      const ops = [];
+      for (let k = 1; k < lines.length; k++) {
+        const c = lines[k].split(',');
+        const tipo = (c[iType] || '').trim();
+        if (TIPOS.indexOf(tipo) === -1) continue;
+        const fechaDia = (c[iDate] || '').slice(0, 10);
+        if (desde && fechaDia < desde) continue;
+        ops.push({ fecha: fechaDia, fecha_full: (c[iDate] || ''), source_id: c[iSrc] || '', tipo, metodo: (c[iPm] || '') || '—', monto: num(c[iAmt]), real: num(c[iReal]) });
       }
-      const CONC = 6; let ei = 0;
-      async function ew() { while (ei < ids.length) { await fetchPago(ids[ei++]); } }
-      await Promise.all(Array.from({ length: CONC }, ew));
-      ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; } });
+      if ((q.get('ml') || '1') !== '0' && ops.length) {
+        const ids = Array.from(new Set(ops.map(o => o.source_id).filter(Boolean)));
+        const cache = {};
+        const Hget = { Authorization: 'Bearer ' + token, 'Accept': 'application/json' };
+        async function fp(id) { try { const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(id), { headers: Hget }); if (!r.ok) return; const p = await r.json(); const its = (p.additional_info && p.additional_info.items) || []; cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0 }; } catch (e) {} }
+        let ei = 0; const CONC = 6;
+        async function ew() { while (ei < ids.length) { await fp(ids[ei++]); } }
+        await Promise.all(Array.from({ length: CONC }, ew));
+        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; } });
+      }
+      const grupos = {};
+      ops.forEach(o => {
+        const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
+        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_full, fecha: o.fecha, source_id: o.source_id, estado_pago: o.estado_pago || '' };
+        const g = grupos[key];
+        g.monto += o.monto; g.real += o.real; g.movimientos++;
+        g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
+        g.realPorTipo[o.tipo] = (g.realPorTipo[o.tipo] || 0) + o.real;
+        if (o.estado_pago && !g.estado_pago) g.estado_pago = o.estado_pago;
+        if (!g.producto && o.producto) { g.producto = o.producto; g.item_id = o.item_id; g.cantidad = o.cantidad; }
+        if (String(o.fecha_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_full; g.fecha = o.fecha; }
+      });
+      return Object.values(grupos);
     }
-    // CENTRALIZAR: misma venta de ML = una sola fila con el total (suma sus movimientos)
-    const grupos = {};
-    ops.forEach(o => {
-      const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
-      if (!grupos[key]) grupos[key] = { venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, metodo: o.metodo || '—', tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_full, fecha: o.fecha, source_id: o.source_id, estado_pago: o.estado_pago || '' };
-      const g = grupos[key];
-      g.monto += o.monto; g.real += o.real; g.movimientos++;
-      g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
-      g.realPorTipo[o.tipo] = (g.realPorTipo[o.tipo] || 0) + o.real;
-      if (o.estado_pago && !g.estado_pago) g.estado_pago = o.estado_pago;
-      if (!g.producto && o.producto) { g.producto = o.producto; g.item_id = o.item_id; g.cantidad = o.cantidad; }
-      if (String(o.fecha_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_full; g.fecha = o.fecha; }
-      if ((g.metodo === '—' || !g.metodo) && o.metodo && o.metodo !== '—') g.metodo = o.metodo;
-    });
-    // Estado de seguimiento (Abierta/En camino/Finalizado) guardado por cuenta+venta
-    const estMap = ((db.devoluciones_estado || {})[nombre] || {});
-    // Filtrar los que están en mediación / sin plata devuelta, y armar la lista
+    const todas = [];
+    for (const n of cuentas) { const gs = await procesar(n); todas.push.apply(todas, gs); }
     const porTipo = { REFUND: { cantidad: 0, monto: 0 }, DISPUTE: { cantidad: 0, monto: 0 } };
     let totMonto = 0, totCant = 0;
     const agrupadas = [];
-    Object.keys(grupos).forEach(k => {
-      const g = grupos[k];
+    todas.forEach(g => {
       const ep = String(g.estado_pago || '').toLowerCase();
-      if (ep && OCULTAR_ESTADO.indexOf(ep) !== -1) return; // en mediación / sin devolver -> ocultar
+      if (ep && OCULTAR_ESTADO.indexOf(ep) !== -1) return;
       const tks = Object.keys(g.tipos);
       const clave = g.venta_ml || g.source_id;
-      const seg = estMap[clave] || {};
+      const seg = (((db.devoluciones_estado || {})[g.cuenta]) || {})[clave] || {};
       agrupadas.push({
-        venta_ml: g.venta_ml, producto: g.producto, item_id: g.item_id, cantidad: g.cantidad,
-        metodo: g.metodo, source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full,
+        cuenta: g.cuenta, venta_ml: g.venta_ml, producto: g.producto, item_id: g.item_id, cantidad: g.cantidad,
+        source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full,
         monto: Math.round(g.monto * 100) / 100, real: Math.round(g.real * 100) / 100,
         movimientos: g.movimientos, tipo: tks.length === 1 ? tks[0] : 'VARIOS', tipos_lista: tks,
-        estado_pago: g.estado_pago,
-        estado: seg.estado || 'abierta',
-        estado_fecha: seg.fecha || null, estado_por: seg.por || null
+        estado_pago: g.estado_pago, estado: seg.estado || 'abierta', estado_fecha: seg.fecha || null, estado_por: seg.por || null
       });
       tks.forEach(t => { if (porTipo[t]) { porTipo[t].cantidad++; porTipo[t].monto += (g.realPorTipo[t] || 0); } });
       totMonto += g.real; totCant += g.movimientos;
     });
     agrupadas.sort((a, b) => String(b.fecha_full).localeCompare(String(a.fecha_full)));
     Object.keys(porTipo).forEach(t => { porTipo[t].monto = Math.round(porTipo[t].monto * 100) / 100; });
-    // conteo por estado de seguimiento
     const porEstado = { abierta: 0, en_camino: 0, finalizado: 0 };
     agrupadas.forEach(a => { porEstado[a.estado] = (porEstado[a.estado] || 0) + 1; });
     return sendJSON(res, 200, {
-      cuenta: nombre, desde,
+      cuentas: conToken, cuenta: pedida, desde,
       total: { cantidad: totCant, ventas: agrupadas.length, monto: Math.round(totMonto * 100) / 100 },
-      por_tipo: porTipo, por_estado: porEstado,
-      operaciones: agrupadas,
-      archivo: file,
-      leido: new Date().toISOString()
+      por_tipo: porTipo, por_estado: porEstado, operaciones: agrupadas, leido: new Date().toISOString()
     });
   } catch (e) {
     return sendJSON(res, 500, { error: String(e && (e.message || e)) });
   }
 });
+
 
 // ======= CAMBIAR ESTADO DE SEGUIMIENTO DE UNA DEVOLUCIÓN (abierta/en_camino/finalizado) =======
 route('POST', '/api/mp/devoluciones/estado', async (req, res) => {
