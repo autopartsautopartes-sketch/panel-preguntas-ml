@@ -1076,94 +1076,124 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (btn) btn.textContent = 'Generando… ' + secs + 's';
   }
   // ==================== DEVOLUCIONES / CANCELACIONES ====================
-  var _dev = { cuenta: 'MARA' };
+  var _dev = { cuenta: 'MARA', desde: '2026-09-22', tab: 'abierta', data: null };
   var _devCuentas = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
   var _devConToken = ['MARA'];
-  var _devTipoLabel = { REFUND: 'Devolución', DISPUTE: 'Disputa / Reclamo', CASHBACK_CANCEL: 'Cashback cancelado' };
+  var _devTipoLabel = { REFUND: 'Devolución', DISPUTE: 'Disputa / Reclamo', VARIOS: 'Varios' };
   var _devMetodoLabel = { available_money: 'Dinero en cuenta', credit_card: 'Tarjeta crédito', debit_card: 'Tarjeta débito', digital_currency: 'Dinero digital', bank_transfer: 'Transferencia', ticket: 'Efectivo / Ticket' };
+  var _devEstadoLabel = { abierta: 'Abierta', en_camino: 'En camino', finalizado: 'Finalizado' };
   function _devMet(m) { return _devMetodoLabel[m] || (m && m !== '—' ? m : '—'); }
+  function _devFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
   async function loadDevoluciones(cuenta) {
     const myNav = navToken;
     const content = document.getElementById('content');
     if (!(currentUser && (currentUser.role === 'admin' || currentUser.can_devoluciones))) { content.innerHTML = '<div class="empty"><p>No tenés permiso para Devoluciones.</p></div>'; return; }
     if (cuenta) _dev.cuenta = cuenta;
     const cta = _dev.cuenta;
-    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Consultando devoluciones/cancelaciones…</p></div>';
-    if (_devConToken.indexOf(cta) === -1) { _devRender(null, cta, 'Esta cuenta todavía no tiene la app de Mercado Pago conectada. Cargá su token (MP_TOKEN_' + cta + ') en Render para ver sus devoluciones.'); return; }
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Consultando devoluciones…</p></div>';
+    if (_devConToken.indexOf(cta) === -1) { _devRender(null, cta, 'Esta cuenta todavía no tiene la app de Mercado Pago conectada. Cargá su token (MP_TOKEN_' + cta + ') en Render.'); return; }
     try {
-      const r = await fetch('/api/mp/devoluciones?cuenta=' + encodeURIComponent(cta), { credentials: 'same-origin' });
+      const r = await fetch('/api/mp/devoluciones?cuenta=' + encodeURIComponent(cta) + '&desde=' + encodeURIComponent(_dev.desde), { credentials: 'same-origin' });
       const d = await r.json();
       if (myNav !== navToken) return;
       if (!r.ok) { _devRender(null, cta, (d && d.error) || 'No se pudo leer.'); return; }
+      _dev.data = d;
       _devRender(d, cta, null);
     } catch (e) { if (myNav !== navToken) return; _devRender(null, cta, 'Error de red.'); }
   }
+  function _devTab(v) { _dev.tab = v; _devRender(_dev.data, _dev.cuenta, null); }
+  function _devSetDesde(v) { _dev.desde = v; loadDevoluciones(_dev.cuenta); }
+  function _devRecount() { const pe = { abierta: 0, en_camino: 0, finalizado: 0 }; (_dev.data.operaciones || []).forEach(o => { pe[o.estado] = (pe[o.estado] || 0) + 1; }); _dev.data.por_estado = pe; }
+  async function devSetEstado(clave, estado) {
+    try {
+      const r = await fetch('/api/mp/devoluciones/estado', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ cuenta: _dev.cuenta, venta: clave, estado }) });
+      if (!r.ok) { alert('No se pudo cambiar el estado.'); return; }
+      (_dev.data.operaciones || []).forEach(o => { if ((o.venta_ml || o.source_id) === clave) o.estado = estado; });
+      _devRecount();
+      _devRender(_dev.data, _dev.cuenta, null);
+    } catch (e) { alert('Error de red al cambiar el estado.'); }
+  }
+  function _devEstadoSelect(o) {
+    const clave = (o.venta_ml || o.source_id);
+    const col = { abierta: '#fef3c7;#92400e', en_camino: '#dbeafe;#1e40af', finalizado: '#dcfce7;#166534' };
+    const c = (col[o.estado] || '#f3f4f6;#374151').split(';');
+    let h = '<select onchange="devSetEstado(\'' + clave + '\', this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:4px 8px;font-size:12px;font-weight:700;cursor:pointer;background:' + c[0] + ';color:' + c[1] + '">';
+    ['abierta', 'en_camino', 'finalizado'].forEach(v => { h += '<option value="' + v + '"' + (o.estado === v ? ' selected' : '') + '>' + _devEstadoLabel[v] + '</option>'; });
+    h += '</select>';
+    return h;
+  }
   function _devRender(d, cta, errMsg) {
     const content = document.getElementById('content');
-    let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">';
+    let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">';
     _devCuentas.forEach(c => {
       const on = c === cta, hasTok = _devConToken.indexOf(c) !== -1;
       tabs += '<button onclick="loadDevoluciones(\'' + c + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? '#dc2626' : '#e5e7eb') + ';background:' + (on ? '#dc2626' : '#fff') + ';color:' + (on ? '#fff' : (hasTok ? '#374151' : '#9ca3af')) + ';font-weight:600;font-size:13px;cursor:pointer">' + c + (hasTok ? '' : ' •') + '</button>';
     });
     tabs += '</div>';
     let header = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
-      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">↩️ Devoluciones / Cancelaciones</h2>' +
+      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">↩️ Devoluciones</h2>' +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<label style="font-size:12px;color:#6b7280;font-weight:600">Desde <input type="date" value="' + _dev.desde + '" onchange="_devSetDesde(this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px"></label>' +
       '<button id="btnDevRefresh" onclick="devActualizar(\'' + cta + '\')" style="padding:9px 16px;border-radius:10px;border:none;background:#dc2626;color:#fff;font-weight:700;font-size:13px;cursor:pointer">↻ Actualizar</button>' +
-      '</div>';
+      '</div></div>';
     if (errMsg) { content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>' + escapeHtml(errMsg) + '</p></div>'; return; }
     if (d.sin_reporte) { content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>No hay reporte todavía. Tocá <b>Actualizar</b> para generarlo (tarda ~1-2 min).</p></div>'; return; }
-    const tot = d.total || { cantidad: 0, monto: 0 };
+    const tot = d.total || { cantidad: 0, ventas: 0, monto: 0 };
     const pt = d.por_tipo || {};
-    // Tarjeta principal + por tipo
-    let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:14px 0 18px">';
+    let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:14px 0 16px">';
     cards += '<div style="background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fecaca;border-radius:14px;padding:18px">' +
-      '<div style="font-size:12px;font-weight:700;color:#b91c1c;text-transform:uppercase;letter-spacing:.4px">Total devuelto / cancelado</div>' +
+      '<div style="font-size:12px;font-weight:700;color:#b91c1c;text-transform:uppercase;letter-spacing:.4px">Total devuelto</div>' +
       '<div style="font-size:28px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(tot.monto) + '</div>' +
-      '<div style="font-size:12px;color:#dc2626;margin-top:2px">' + tot.cantidad + ' operaciones</div></div>';
-    ['REFUND', 'DISPUTE', 'CASHBACK_CANCEL'].forEach(t => {
-      const x = pt[t] || { cantidad: 0, monto: 0 };
+      '<div style="font-size:12px;color:#dc2626;margin-top:2px">' + (tot.ventas || 0) + ' ventas</div></div>';
+    [['REFUND', 'Devoluciones'], ['DISPUTE', 'Disputas / Reclamos']].forEach(pair => {
+      const x = pt[pair[0]] || { cantidad: 0, monto: 0 };
       cards += '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px">' +
-        '<div style="font-size:12px;font-weight:700;color:#6b7280">' + _devTipoLabel[t] + '</div>' +
+        '<div style="font-size:12px;font-weight:700;color:#6b7280">' + pair[1] + '</div>' +
         '<div style="font-size:20px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(x.monto) + '</div>' +
         '<div style="font-size:12px;color:#9ca3af;margin-top:2px">' + x.cantidad + ' oper.</div></div>';
     });
     cards += '</div>';
-    // Tabla de operaciones
-    const ops = d.operaciones || [];
+    // Pestañas de estado
+    const pe = d.por_estado || { abierta: 0, en_camino: 0, finalizado: 0 };
+    let etabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px">';
+    [['abierta', 'Abiertas', '#dc2626'], ['en_camino', 'En camino', '#2563eb'], ['finalizado', 'Finalizadas', '#16a34a']].forEach(t => {
+      const on = _dev.tab === t[0];
+      etabs += '<button onclick="_devTab(\'' + t[0] + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? t[2] : '#e5e7eb') + ';background:' + (on ? t[2] : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';font-weight:700;font-size:13px;cursor:pointer">' + t[1] + ' (' + (pe[t[0]] || 0) + ')</button>';
+    });
+    etabs += '</div>';
+    const ops = (d.operaciones || []).filter(o => o.estado === _dev.tab);
     let tabla = '';
     if (ops.length) {
-      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden">' +
-        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px">' +
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
         '<th style="padding:10px 12px;font-weight:700">Fecha</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
         '<th style="padding:10px 12px;font-weight:700">Producto</th><th style="padding:10px 12px;font-weight:700">Venta ML</th>' +
         '<th style="padding:10px 12px;font-weight:700">Método</th>' +
-        '<th style="padding:10px 12px;font-weight:700;text-align:right">Monto</th><th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th></tr></thead><tbody>';
+        '<th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th>' +
+        '<th style="padding:10px 12px;font-weight:700">Estado</th></tr></thead><tbody>';
       ops.forEach(o => {
-        const badge = o.tipo === 'REFUND' ? '#fee2e2;#991b1b' : (o.tipo === 'DISPUTE' ? '#fef3c7;#92400e' : '#e0e7ff;#3730a3');
+        const badge = o.tipo === 'REFUND' ? '#fee2e2;#991b1b' : (o.tipo === 'DISPUTE' ? '#fef3c7;#92400e' : '#f3f4f6;#374151');
         const bg = badge.split(';')[0], fg = badge.split(';')[1];
+        const movTag = (o.movimientos > 1) ? ' <span style="color:#9ca3af;font-size:11px">·' + o.movimientos + ' mov.</span>' : '';
         const prod = o.producto ? escapeHtml(o.producto) : '<span style="color:#cbd5e1">—</span>';
-        const ventaCell = o.venta_ml
-          ? '<a href="https://www.mercadolibre.com.ar/ventas/' + encodeURIComponent(o.venta_ml) + '/detalle" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600;white-space:nowrap">' + escapeHtml(String(o.venta_ml)) + ' ↗</a>'
-          : '<span style="color:#cbd5e1">—</span>';
+        const ventaCell = o.venta_ml ? '<a href="https://www.mercadolibre.com.ar/ventas/' + encodeURIComponent(o.venta_ml) + '/detalle" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600;white-space:nowrap">' + escapeHtml(String(o.venta_ml)) + ' ↗</a>' : '<span style="color:#cbd5e1">—</span>';
         tabla += '<tr style="border-top:1px solid #f4f5f7">' +
           '<td style="padding:9px 12px;color:#374151;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
-          '<td style="padding:9px 12px"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span></td>' +
+          '<td style="padding:9px 12px;white-space:nowrap"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span>' + movTag + '</td>' +
           '<td style="padding:9px 12px;color:#374151;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (o.producto ? escapeHtml(o.producto) : '') + '">' + prod + (o.cantidad > 1 ? ' <span style="color:#9ca3af">×' + o.cantidad + '</span>' : '') + '</td>' +
           '<td style="padding:9px 12px">' + ventaCell + '</td>' +
           '<td style="padding:9px 12px;color:#6b7280">' + escapeHtml(_devMet(o.metodo)) + '</td>' +
-          '<td style="padding:9px 12px;text-align:right;color:#991b1b;font-weight:700;white-space:nowrap">' + _sMoney(o.monto) + '</td>' +
-          '<td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td></tr>';
+          '<td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td>' +
+          '<td style="padding:9px 12px">' + _devEstadoSelect(o) + '</td></tr>';
       });
       tabla += '</tbody></table></div></div>';
     } else {
-      tabla = '<div class="empty"><p>No hay devoluciones ni cancelaciones en el período del reporte. 🎉</p></div>';
+      tabla = '<div class="empty"><p>No hay devoluciones en "' + (_devEstadoLabel[_dev.tab] || _dev.tab) + '".</p></div>';
     }
     let footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">Última lectura: ' + _sFechaLarga(d.leido) + '. ' +
-      'Incluye devoluciones (REFUND), disputas/reclamos (DISPUTE) y cashback cancelado. "Neto" es lo que efectivamente te descontaron (con comisiones). Tocá <b>Actualizar</b> para pedir un reporte fresco (tarda ~1-2 min).</div>';
-    content.innerHTML = tabs + header + cards + tabla + footer;
+      'Muestra devoluciones y disputas <b>desde ' + _devFecha(d.desde || _dev.desde) + '</b>, en las que ya se devolvió el dinero (las que están en mediación sin devolver no aparecen). Cambiá el estado de cada una con el selector: Abierta → En camino → Finalizado. Tocá <b>Actualizar</b> para pedir un reporte fresco.</div>';
+    content.innerHTML = tabs + header + cards + etabs + tabla + footer;
   }
-  function _devFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
   async function devActualizar(cta) {
     const btn = document.getElementById('btnDevRefresh');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
