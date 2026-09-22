@@ -6791,6 +6791,7 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
   const envVar = 'MP_TOKEN_' + nombre;
   const token = process.env[envVar];
   if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre + '. Cargá ' + envVar + ' en Render.', envVar });
+  const db = loadDB();
   const BASE = 'https://api.mercadopago.com';
   const SET = '/v1/account/settlement_report';
   const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
@@ -6806,8 +6807,12 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
     return { status, body };
   }
   const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; };
-  // Tipos que se cuentan como devolución/cancelación (restan dinero)
-  const TIPOS = ['REFUND', 'DISPUTE', 'CASHBACK_CANCEL'];
+  // Tipos que se cuentan como devolución (restan dinero). Cashback se saca.
+  const TIPOS = ['REFUND', 'DISPUTE'];
+  // Solo desde esta fecha en adelante (YYYY-MM-DD). Default 2026-09-22.
+  const desde = (q.get('desde') || '2026-09-22').trim();
+  // Estados que significan "en mediación / plata NO devuelta todavía" -> se ocultan
+  const OCULTAR_ESTADO = ['in_mediation', 'in_process', 'pending', 'authorized'];
   try {
     if ((q.get('do') || '') === 'refresh') {
       const dias = Math.min(180, Math.max(1, parseInt(q.get('dias') || '35', 10) || 35));
@@ -6833,61 +6838,128 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
     const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
     const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iFee = H.indexOf('FEE_AMOUNT'), iReal = H.indexOf('REAL_AMOUNT');
     const ops = [];
-    const porTipo = {}; TIPOS.forEach(t => porTipo[t] = { cantidad: 0, monto: 0 });
-    let totMonto = 0, totCant = 0;
     for (let k = 1; k < lines.length; k++) {
       const c = lines[k].split(',');
       const tipo = (c[iType] || '').trim();
       if (TIPOS.indexOf(tipo) === -1) continue;
-      const real = num(c[iReal]);
+      const fechaDia = (c[iDate] || '').slice(0, 10);
+      if (desde && fechaDia < desde) continue;   // solo desde la fecha pedida
       ops.push({
-        fecha: (c[iDate] || '').slice(0, 10),
+        fecha: fechaDia,
         fecha_full: (c[iDate] || ''),
         source_id: c[iSrc] || '',
         tipo,
         metodo: (c[iPm] || '') || '—',
         monto: num(c[iAmt]),
         fee: num(c[iFee]),
-        real
+        real: num(c[iReal])
       });
-      porTipo[tipo].cantidad++; porTipo[tipo].monto += real;
-      totMonto += real; totCant++;
     }
-    // ordenar por fecha desc
     ops.sort((a, b) => String(b.fecha_full).localeCompare(String(a.fecha_full)));
-    Object.keys(porTipo).forEach(t => { porTipo[t].monto = Math.round(porTipo[t].monto * 100) / 100; });
-    // Enriquecer con la VENTA de ML + producto, consultando cada pago (salvo ?ml=0)
+    // Enriquecer con VENTA ML + producto + ESTADO DEL PAGO, consultando cada pago una vez por source_id
     if ((q.get('ml') || '1') !== '0' && ops.length) {
-      async function enrich(op) {
-        if (!op.source_id) return;
+      const ids = Array.from(new Set(ops.map(o => o.source_id).filter(Boolean)));
+      const cache = {};
+      async function fetchPago(id) {
         try {
-          const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(op.source_id), { headers: Hget });
+          const r = await fetch(BASE + '/v1/payments/' + encodeURIComponent(id), { headers: Hget });
           if (!r.ok) return;
           const p = await r.json();
-          op.venta_ml = p.external_reference || (p.order && p.order.id) || '';
           const its = (p.additional_info && p.additional_info.items) || [];
-          if (its.length) {
-            op.producto = its[0].title || '';
-            op.item_id = its[0].id || '';
-            op.cantidad = its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length;
-          }
+          cache[id] = {
+            venta_ml: p.external_reference || (p.order && p.order.id) || '',
+            estado_pago: p.status || '',
+            producto: its.length ? (its[0].title || '') : '',
+            item_id: its.length ? (its[0].id || '') : '',
+            cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0
+          };
         } catch (e) {}
       }
       const CONC = 6; let ei = 0;
-      async function ew() { while (ei < ops.length) { const op = ops[ei++]; await enrich(op); } }
+      async function ew() { while (ei < ids.length) { await fetchPago(ids[ei++]); } }
       await Promise.all(Array.from({ length: CONC }, ew));
+      ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; } });
     }
+    // CENTRALIZAR: misma venta de ML = una sola fila con el total (suma sus movimientos)
+    const grupos = {};
+    ops.forEach(o => {
+      const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
+      if (!grupos[key]) grupos[key] = { venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, metodo: o.metodo || '—', tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_full, fecha: o.fecha, source_id: o.source_id, estado_pago: o.estado_pago || '' };
+      const g = grupos[key];
+      g.monto += o.monto; g.real += o.real; g.movimientos++;
+      g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
+      g.realPorTipo[o.tipo] = (g.realPorTipo[o.tipo] || 0) + o.real;
+      if (o.estado_pago && !g.estado_pago) g.estado_pago = o.estado_pago;
+      if (!g.producto && o.producto) { g.producto = o.producto; g.item_id = o.item_id; g.cantidad = o.cantidad; }
+      if (String(o.fecha_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_full; g.fecha = o.fecha; }
+      if ((g.metodo === '—' || !g.metodo) && o.metodo && o.metodo !== '—') g.metodo = o.metodo;
+    });
+    // Estado de seguimiento (Abierta/En camino/Finalizado) guardado por cuenta+venta
+    const estMap = ((db.devoluciones_estado || {})[nombre] || {});
+    // Filtrar los que están en mediación / sin plata devuelta, y armar la lista
+    const porTipo = { REFUND: { cantidad: 0, monto: 0 }, DISPUTE: { cantidad: 0, monto: 0 } };
+    let totMonto = 0, totCant = 0;
+    const agrupadas = [];
+    Object.keys(grupos).forEach(k => {
+      const g = grupos[k];
+      const ep = String(g.estado_pago || '').toLowerCase();
+      if (ep && OCULTAR_ESTADO.indexOf(ep) !== -1) return; // en mediación / sin devolver -> ocultar
+      const tks = Object.keys(g.tipos);
+      const clave = g.venta_ml || g.source_id;
+      const seg = estMap[clave] || {};
+      agrupadas.push({
+        venta_ml: g.venta_ml, producto: g.producto, item_id: g.item_id, cantidad: g.cantidad,
+        metodo: g.metodo, source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full,
+        monto: Math.round(g.monto * 100) / 100, real: Math.round(g.real * 100) / 100,
+        movimientos: g.movimientos, tipo: tks.length === 1 ? tks[0] : 'VARIOS', tipos_lista: tks,
+        estado_pago: g.estado_pago,
+        estado: seg.estado || 'abierta',
+        estado_fecha: seg.fecha || null, estado_por: seg.por || null
+      });
+      tks.forEach(t => { if (porTipo[t]) { porTipo[t].cantidad++; porTipo[t].monto += (g.realPorTipo[t] || 0); } });
+      totMonto += g.real; totCant += g.movimientos;
+    });
+    agrupadas.sort((a, b) => String(b.fecha_full).localeCompare(String(a.fecha_full)));
+    Object.keys(porTipo).forEach(t => { porTipo[t].monto = Math.round(porTipo[t].monto * 100) / 100; });
+    // conteo por estado de seguimiento
+    const porEstado = { abierta: 0, en_camino: 0, finalizado: 0 };
+    agrupadas.forEach(a => { porEstado[a.estado] = (porEstado[a.estado] || 0) + 1; });
     return sendJSON(res, 200, {
-      cuenta: nombre,
-      total: { cantidad: totCant, monto: Math.round(totMonto * 100) / 100 },
-      por_tipo: porTipo,
-      operaciones: ops,
+      cuenta: nombre, desde,
+      total: { cantidad: totCant, ventas: agrupadas.length, monto: Math.round(totMonto * 100) / 100 },
+      por_tipo: porTipo, por_estado: porEstado,
+      operaciones: agrupadas,
       archivo: file,
       leido: new Date().toISOString()
     });
   } catch (e) {
     return sendJSON(res, 500, { error: String(e && (e.message || e)) });
   }
+});
+
+// ======= CAMBIAR ESTADO DE SEGUIMIENTO DE UNA DEVOLUCIÓN (abierta/en_camino/finalizado) =======
+route('POST', '/api/mp/devoluciones/estado', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  const db = loadDB();
+  const u = (db.users || []).find(x => x.id === s.userId);
+  if (!(s.role === 'admin' || (u && u.can_devoluciones === true))) return sendJSON(res, 403, { error: 'Sin permiso' });
+  let body; try { body = await parseBody(req); } catch (e) { body = {}; }
+  const cuenta = String(body.cuenta || '').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const venta = String(body.venta || '').trim();
+  const estado = String(body.estado || '').trim();
+  const VALIDOS = ['abierta', 'en_camino', 'finalizado'];
+  if (!cuenta || !venta) return sendJSON(res, 400, { error: 'Faltan cuenta o venta' });
+  if (VALIDOS.indexOf(estado) === -1) return sendJSON(res, 400, { error: 'Estado inválido' });
+  if (!db.devoluciones_estado) db.devoluciones_estado = {};
+  if (!db.devoluciones_estado[cuenta]) db.devoluciones_estado[cuenta] = {};
+  if (estado === 'abierta') {
+    delete db.devoluciones_estado[cuenta][venta]; // abierta = default, no hace falta guardar
+  } else {
+    db.devoluciones_estado[cuenta][venta] = { estado, fecha: new Date().toISOString(), por: (u && u.username) || s.role };
+  }
+  saveDB(db);
+  return sendJSON(res, 200, { ok: true, cuenta, venta, estado });
 });
 
 // ======= DIAGNOSTICO PAGO MP -> ORDEN/VENTA ML (solo admin) =======
