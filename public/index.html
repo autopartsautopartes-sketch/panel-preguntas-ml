@@ -963,7 +963,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
       case 'accounts': loadAccountsSection(); break;
-      case 'saldos': loadSaldos(); break;
+      case 'saldos': loadSaldosResumen(); break;
       case 'devoluciones': loadDevoluciones(); break;
       case 'reportes': loadReportes(); break;
       case 'users': loadUsers(); break;
@@ -974,13 +974,106 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
   }
   // ==================== SALDOS MERCADO PAGO ====================
-  var _saldos = { cuenta: 'MARA', data: null, loading: false, refreshing: false };
+  var _saldos = { cuenta: 'RESUMEN', data: null, resumen: null, loading: false, refreshing: false };
   // Cuentas: solo las que tienen token MP cargado en Render funcionan. Agregá acá a medida que crees las apps.
   var _saldosCuentas = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
   var _saldosConToken = ['MARA']; // las que ya tienen MP_TOKEN_* en Render
   function _sMoney(n) { const v = Math.round(Number(n) || 0); return '$ ' + v.toLocaleString('es-AR'); }
   function _sFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1]; }
   function _sFechaLarga(iso) { try { const d = new Date(iso); return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso || ''; } }
+  // Solapas de cuentas (Resumen + cada cuenta), compartidas entre la vista general y la por-cuenta
+  function _saldosTabs(activeCta) {
+    let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">';
+    const rOn = activeCta === 'RESUMEN';
+    tabs += '<button onclick="loadSaldosResumen()" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (rOn ? '#7c3aed' : '#e5e7eb') + ';background:' + (rOn ? '#7c3aed' : '#fff') + ';color:' + (rOn ? '#fff' : '#374151') + ';font-weight:700;font-size:13px;cursor:pointer">📊 Resumen</button>';
+    _saldosCuentas.forEach(c => {
+      const on = c === activeCta;
+      const hasTok = _saldosConToken.indexOf(c) !== -1;
+      tabs += '<button onclick="loadSaldos(\'' + c + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : (hasTok ? '#374151' : '#9ca3af')) + ';font-weight:600;font-size:13px;cursor:pointer;position:relative">' + c + (hasTok ? '' : ' •') + '</button>';
+    });
+    tabs += '</div>';
+    return tabs;
+  }
+  // Cronograma consolidado o por cuenta, mismo formato visual
+  function _cronoHtml(crono, titulo) {
+    crono = (crono || []).filter(x => x && Math.abs(x.monto) >= 0.01);
+    if (!crono.length) return '<div class="empty"><p>No hay liberaciones futuras registradas en el período.</p></div>';
+    const maxAbs = Math.max.apply(null, crono.map(x => Math.abs(x.monto)));
+    let h = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px 18px">' +
+      '<div style="font-size:14px;font-weight:800;color:#374151;margin-bottom:12px">' + (titulo || '📅 Cronograma de liberación') + '</div>';
+    crono.forEach(x => {
+      const neg = x.monto < 0;
+      const w = maxAbs > 0 ? Math.max(3, Math.round(Math.abs(x.monto) / maxAbs * 100)) : 0;
+      h += '<div style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid #f4f5f7">' +
+        '<div style="width:52px;font-size:13px;font-weight:700;color:#6b7280;flex-shrink:0">' + _sFecha(x.fecha) + '</div>' +
+        '<div style="flex:1;background:#f3f4f6;border-radius:6px;height:16px;overflow:hidden"><div style="width:' + w + '%;height:100%;background:' + (neg ? '#fca5a5' : '#93c5fd') + '"></div></div>' +
+        '<div style="width:130px;text-align:right;font-size:13px;font-weight:700;color:' + (neg ? '#dc2626' : '#1f2937') + '">' + _sMoney(x.monto) + '</div>' +
+        '</div>';
+    });
+    h += '</div>';
+    return h;
+  }
+  // ===== VISTA RESUMEN: todas las cuentas juntas =====
+  async function loadSaldosResumen() {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (!(currentUser && currentUser.role === 'admin')) {
+      content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver los saldos.</p></div>'; return;
+    }
+    _saldos.cuenta = 'RESUMEN';
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando resumen de saldos...</p></div>';
+    try {
+      const r = await fetch('/api/mp/saldos-resumen', { credentials: 'same-origin' });
+      const d = await r.json();
+      if (myNav !== navToken) return;
+      if (!r.ok) { _saldosResumenRender(null, (d && d.error) || 'No se pudo cargar el resumen.'); return; }
+      _saldos.resumen = d;
+      _saldosResumenRender(d, null);
+    } catch (e) {
+      if (myNav !== navToken) return;
+      _saldosResumenRender(null, 'Error de red al cargar el resumen.');
+    }
+  }
+  function _saldosResumenRender(d, errMsg) {
+    const content = document.getElementById('content');
+    const tabs = _saldosTabs('RESUMEN');
+    const header = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
+      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">💳 Saldos Mercado Pago</h2>' +
+      '<button onclick="loadSaldosResumen()" style="padding:9px 16px;border-radius:10px;border:none;background:#7c3aed;color:#fff;font-weight:700;font-size:13px;cursor:pointer">↻ Actualizar</button>' +
+      '</div>';
+    if (errMsg) { content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>' + escapeHtml(errMsg) + '</p></div>'; return; }
+    const T = d.totales || { disponible: 0, a_liberar: 0, total: 0 };
+    // Leyenda última lectura
+    const leyenda = '<div style="margin:2px 0 14px;font-size:12.5px;color:#6b7280">' +
+      (d.ultima_lectura ? ('🕑 Última lectura de saldos: <b>' + _sFechaLarga(d.ultima_lectura) + '</b>') : 'Todavía no se leyeron saldos.') +
+      ' · ' + (d.con_datos || 0) + ' de ' + _saldosCuentas.length + ' cuentas con datos</div>';
+    // Total general grande
+    let big = '<div style="background:linear-gradient(135deg,#faf5ff,#ede9fe);border:1px solid #ddd6fe;border-radius:16px;padding:22px 24px;margin-bottom:18px">' +
+      '<div style="font-size:13px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.5px">Total en todas las cuentas</div>' +
+      '<div style="font-size:42px;font-weight:800;color:#4c1d95;margin:4px 0 6px;line-height:1.05">' + _sMoney(T.total) + '</div>' +
+      '<div style="font-size:13px;color:#6b21a8">Disponible: <b>' + _sMoney(T.disponible) + '</b> &nbsp;·&nbsp; A liberar: <b>' + _sMoney(T.a_liberar) + '</b></div>' +
+      '</div>';
+    // Tabla por cuenta
+    let tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden;margin-bottom:18px">' +
+      '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:0;background:#f8f7fc;font-size:11.5px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.4px">' +
+      '<div style="padding:11px 16px">Cuenta</div><div style="padding:11px 16px;text-align:right">Disponible</div><div style="padding:11px 16px;text-align:right">A liberar</div><div style="padding:11px 16px;text-align:right">Total</div></div>';
+    (d.cuentas || []).forEach(c => {
+      if (c.tiene_datos) {
+        tabla += '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:0;border-top:1px solid #f1f2f5;cursor:pointer" onclick="loadSaldos(\'' + c.cuenta + '\')">' +
+          '<div style="padding:12px 16px;font-weight:700;color:#1f2937">' + c.cuenta + '</div>' +
+          '<div style="padding:12px 16px;text-align:right;color:#047857;font-weight:600">' + _sMoney(c.disponible) + '</div>' +
+          '<div style="padding:12px 16px;text-align:right;color:#1d4ed8;font-weight:600">' + _sMoney(c.a_liberar) + '</div>' +
+          '<div style="padding:12px 16px;text-align:right;color:#111827;font-weight:800">' + _sMoney(c.total) + '</div></div>';
+      } else {
+        tabla += '<div style="display:grid;grid-template-columns:1.2fr 3fr;gap:0;border-top:1px solid #f1f2f5;opacity:.65">' +
+          '<div style="padding:12px 16px;font-weight:700;color:#9ca3af">' + c.cuenta + '</div>' +
+          '<div style="padding:12px 16px;text-align:right;color:#9ca3af;font-size:12px">sin datos — abrí Mercado Pago en ese navegador</div></div>';
+      }
+    });
+    tabla += '</div>';
+    const crono = _cronoHtml(d.cronograma, '📅 Cronograma de liberación consolidado (todas las cuentas)');
+    content.innerHTML = tabs + header + leyenda + big + tabla + crono;
+  }
   async function loadSaldos(cuenta) {
     const myNav = navToken;
     const content = document.getElementById('content');
@@ -988,6 +1081,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver los saldos.</p></div>'; return;
     }
     if (cuenta) _saldos.cuenta = cuenta;
+    if (!_saldos.cuenta || _saldos.cuenta === 'RESUMEN') _saldos.cuenta = 'MARA';
     const cta = _saldos.cuenta;
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Consultando saldos de Mercado Pago...</p></div>';
     try {
@@ -1006,16 +1100,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function _saldosRender(d, cta, errMsg) {
     const content = document.getElementById('content');
-    // Selector de cuentas
-    let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">';
-    _saldosCuentas.forEach(c => {
-      const on = c === cta;
-      const hasTok = _saldosConToken.indexOf(c) !== -1;
-      tabs += '<button onclick="loadSaldos(\'' + c + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : (hasTok ? '#374151' : '#9ca3af')) + ';font-weight:600;font-size:13px;cursor:pointer;position:relative">' + c + (hasTok ? '' : ' •') + '</button>';
-    });
-    tabs += '</div>';
-    let header = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
-      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">💳 Saldos Mercado Pago</h2>' +
+    const tabs = _saldosTabs(cta);
+    const header = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
+      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">💳 Saldos ' + cta + '</h2>' +
       '<button id="btnSaldosRefresh" onclick="saldosActualizar(\'' + cta + '\')" style="padding:9px 16px;border-radius:10px;border:none;background:#7c3aed;color:#fff;font-weight:700;font-size:13px;cursor:pointer">↻ Actualizar</button>' +
       '</div>';
     if (errMsg) {
@@ -1024,53 +1111,48 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
     const disp = d.disponible == null ? null : d.disponible;
     const alib = d.a_liberar == null ? null : d.a_liberar;
-    const crono = (d.cronograma || []).filter(x => x && Math.abs(x.monto) >= 0.01);
-    // Tarjetas grandes
-    let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:14px 0 20px">';
+    const total = (disp == null && alib == null) ? null : ((disp || 0) + (alib || 0));
+    // Leyenda de última lectura arriba
+    const ts = d.fuente === 'sesion' ? d.pushed_ts : d.leido;
+    const leyenda = '<div style="margin:2px 0 12px;font-size:12.5px;color:#6b7280">' +
+      '🕑 Última lectura de saldos: <b>' + _sFechaLarga(ts) + '</b>' +
+      (d.fuente === 'sesion' ? ' · se actualiza solo cada pocos minutos mientras el navegador de ' + cta + ' esté abierto en Mercado Pago' : ' · datos del reporte oficial (aproximado)') +
+      '</div>';
+    // Tarjetas grandes: Disponible / A liberar / Total
+    let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:8px 0 20px">';
     cards += '<div style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #a7f3d0;border-radius:14px;padding:18px">' +
       '<div style="font-size:12px;font-weight:700;color:#047857;text-transform:uppercase;letter-spacing:.4px">Disponible ahora</div>' +
-      '<div style="font-size:30px;font-weight:800;color:#065f46;margin-top:4px">' + (disp == null ? '—' : _sMoney(disp)) + '</div>' +
+      '<div style="font-size:28px;font-weight:800;color:#065f46;margin-top:4px">' + (disp == null ? '—' : _sMoney(disp)) + '</div>' +
       '<div style="font-size:12px;color:#059669;margin-top:2px">Plata liberada, lista para usar/retirar</div></div>';
     cards += '<div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #bfdbfe;border-radius:14px;padding:18px">' +
       '<div style="font-size:12px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:.4px">A liberar (total)</div>' +
-      '<div style="font-size:30px;font-weight:800;color:#1e3a8a;margin-top:4px">' + (alib == null ? '—' : _sMoney(alib)) + '</div>' +
+      '<div style="font-size:28px;font-weight:800;color:#1e3a8a;margin-top:4px">' + (alib == null ? '—' : _sMoney(alib)) + '</div>' +
       '<div style="font-size:12px;color:#2563eb;margin-top:2px">Pagos retenidos que se liberan en los próximos días</div></div>';
+    cards += '<div style="background:linear-gradient(135deg,#faf5ff,#ede9fe);border:1px solid #ddd6fe;border-radius:14px;padding:18px">' +
+      '<div style="font-size:12px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.4px">Total</div>' +
+      '<div style="font-size:28px;font-weight:800;color:#4c1d95;margin-top:4px">' + (total == null ? '—' : _sMoney(total)) + '</div>' +
+      '<div style="font-size:12px;color:#7c3aed;margin-top:2px">Disponible + a liberar</div></div>';
     cards += '</div>';
-    // Cronograma
-    let crHtml = '';
-    if (crono.length) {
-      const maxAbs = Math.max.apply(null, crono.map(x => Math.abs(x.monto)));
-      crHtml = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px 18px">' +
-        '<div style="font-size:14px;font-weight:800;color:#374151;margin-bottom:12px">📅 Cronograma de liberación</div>';
-      crono.forEach(x => {
-        const neg = x.monto < 0;
-        const w = maxAbs > 0 ? Math.max(3, Math.round(Math.abs(x.monto) / maxAbs * 100)) : 0;
-        crHtml += '<div style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid #f4f5f7">' +
-          '<div style="width:52px;font-size:13px;font-weight:700;color:#6b7280;flex-shrink:0">' + _sFecha(x.fecha) + '</div>' +
-          '<div style="flex:1;background:#f3f4f6;border-radius:6px;height:16px;overflow:hidden"><div style="width:' + w + '%;height:100%;background:' + (neg ? '#fca5a5' : '#93c5fd') + '"></div></div>' +
-          '<div style="width:120px;text-align:right;font-size:13px;font-weight:700;color:' + (neg ? '#dc2626' : '#1f2937') + '">' + _sMoney(x.monto) + '</div>' +
-          '</div>';
-      });
-      crHtml += '</div>';
-    } else {
-      crHtml = '<div class="empty"><p>No hay liberaciones futuras registradas en el período.</p></div>';
-    }
-    // Nota + timestamp
+    const crHtml = _cronoHtml(d.cronograma, '📅 Cronograma de liberación');
+    // Nota fuente
     let footer;
     if (d.fuente === 'sesion') {
       footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">' +
         '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">✓ Datos exactos de tu sesión de MP</span> ' +
-        'Actualizado por el navegador: ' + _sFechaLarga(d.pushed_ts) + '. Se refresca solo mientras ese navegador esté abierto con Mercado Pago.' +
+        'El botón <b>Actualizar</b> vuelve a leer lo último que mandó el navegador (los datos se refrescan solos cada pocos minutos).' +
         '</div>';
     } else {
       footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">' +
-        'Última lectura: ' + _sFechaLarga(d.leido) + '. Datos del reporte oficial (aproximado). Para valores exactos, instalá el userscript de saldos en el navegador de esta cuenta. ' +
+        'Datos del reporte oficial (aproximado). Para valores exactos, instalá el userscript de saldos en el navegador de esta cuenta. ' +
         'Tocá <b>Actualizar</b> para pedir un reporte fresco (tarda 1-2 min).' +
         '</div>';
     }
-    content.innerHTML = tabs + header + cards + crHtml + footer;
+    content.innerHTML = tabs + header + leyenda + cards + crHtml + footer;
   }
   async function saldosActualizar(cta) {
+    // Si los datos vienen del userscript (sesión), Actualizar solo vuelve a leer lo último pusheado (instantáneo).
+    if (_saldos.data && _saldos.data.fuente === 'sesion') { loadSaldos(cta); return; }
+    // Si es una cuenta por reporte oficial (sin userscript), pide un reporte fresco y espera (tarda 1-2 min).
     const btn = document.getElementById('btnSaldosRefresh');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
     const A = (_saldos.data && _saldos.data.archivos) || {};
@@ -1229,7 +1311,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (ops.length) {
       tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1060px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
-        '<th style="padding:10px 12px;font-weight:700">Fecha</th><th style="padding:10px 12px;font-weight:700">Cuenta</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
+        '<th style="padding:10px 12px;font-weight:700" title="Fecha en que se devolvió la plata">Fecha devol.</th><th style="padding:10px 12px;font-weight:700">Cuenta</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
         '<th style="padding:10px 12px;font-weight:700">Producto</th><th style="padding:10px 12px;font-weight:700">Venta ML</th>' +
         '<th style="padding:10px 12px;font-weight:700">Link</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th>' +
@@ -1352,7 +1434,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (ops.length) {
       tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1000px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
-        '<th style="padding:9px 12px;font-weight:700">Fecha</th><th style="padding:9px 12px;font-weight:700">Cuenta</th><th style="padding:9px 12px;font-weight:700">Tipo</th>' +
+        '<th style="padding:9px 12px;font-weight:700" title="Fecha en que se devolvió la plata">Fecha devol.</th><th style="padding:9px 12px;font-weight:700">Cuenta</th><th style="padding:9px 12px;font-weight:700">Tipo</th>' +
         '<th style="padding:9px 12px;font-weight:700">Producto</th><th style="padding:9px 12px;font-weight:700">Venta ML</th>' +
         '<th style="padding:9px 12px;font-weight:700;text-align:right">Neto</th>' +
         '<th style="padding:9px 12px;font-weight:700;text-align:center">Env.</th><th style="padding:9px 12px;font-weight:700;text-align:center">Dev.</th>' +
@@ -1400,7 +1482,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function repDescargar() {
     const ops = _repFiltradas();
-    const headers = ['Fecha', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Enviado', 'Prod. devolución', 'Estado'];
+    const headers = ['Fecha devolución', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Enviado', 'Prod. devolución', 'Estado'];
     const rows = ops.map(o => [_devFecha(o.fecha), o.cuenta || '', (_devTipoLabel[o.tipo] || o.tipo), o.producto || '', o.venta_ml || '', o.venta_ml ? ('https://www.mercadolibre.com.ar/ventas/' + o.venta_ml + '/detalle') : '', o.real, o.enviado || '', o.producto_devolucion || '', (_devEstadoLabel[o.estado] || o.estado)]);
     _descargarTabla('reporte_devoluciones', headers, rows);
   }
