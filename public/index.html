@@ -1133,19 +1133,25 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let tabla = '';
     if (ops.length) {
       tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden">' +
-        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">' +
+        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
         '<th style="padding:10px 12px;font-weight:700">Fecha</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
-        '<th style="padding:10px 12px;font-weight:700">Método</th><th style="padding:10px 12px;font-weight:700">Operación</th>' +
+        '<th style="padding:10px 12px;font-weight:700">Producto</th><th style="padding:10px 12px;font-weight:700">Venta ML</th>' +
+        '<th style="padding:10px 12px;font-weight:700">Método</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:right">Monto</th><th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th></tr></thead><tbody>';
       ops.forEach(o => {
         const badge = o.tipo === 'REFUND' ? '#fee2e2;#991b1b' : (o.tipo === 'DISPUTE' ? '#fef3c7;#92400e' : '#e0e7ff;#3730a3');
         const bg = badge.split(';')[0], fg = badge.split(';')[1];
+        const prod = o.producto ? escapeHtml(o.producto) : '<span style="color:#cbd5e1">—</span>';
+        const ventaCell = o.venta_ml
+          ? '<a href="https://www.mercadolibre.com.ar/ventas/' + encodeURIComponent(o.venta_ml) + '/detalle" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600;white-space:nowrap">' + escapeHtml(String(o.venta_ml)) + ' ↗</a>'
+          : '<span style="color:#cbd5e1">—</span>';
         tabla += '<tr style="border-top:1px solid #f4f5f7">' +
           '<td style="padding:9px 12px;color:#374151;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
           '<td style="padding:9px 12px"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span></td>' +
+          '<td style="padding:9px 12px;color:#374151;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (o.producto ? escapeHtml(o.producto) : '') + '">' + prod + (o.cantidad > 1 ? ' <span style="color:#9ca3af">×' + o.cantidad + '</span>' : '') + '</td>' +
+          '<td style="padding:9px 12px">' + ventaCell + '</td>' +
           '<td style="padding:9px 12px;color:#6b7280">' + escapeHtml(_devMet(o.metodo)) + '</td>' +
-          '<td style="padding:9px 12px;color:#9ca3af;font-size:12px">' + escapeHtml(String(o.source_id || '')) + '</td>' +
           '<td style="padding:9px 12px;text-align:right;color:#991b1b;font-weight:700;white-space:nowrap">' + _sMoney(o.monto) + '</td>' +
           '<td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td></tr>';
       });
