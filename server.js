@@ -180,6 +180,7 @@ const dbMigrate10 = loadDB();
 let migrated10 = false;
 for (const u of dbMigrate10.users) {
   if (u.can_parabrisas === undefined) { u.can_parabrisas = false; migrated10 = true; }
+  if (u.can_devoluciones === undefined) { u.can_devoluciones = false; migrated10 = true; }
 }
 if (migrated10) saveDB(dbMigrate10);
 // Migrate: ENVÍOS — permiso can_envios + configuración de transportes/destinos/cobertura.
@@ -809,6 +810,7 @@ route('GET', '/api/me', async (req, res) => {
     can_view_orders: isAdmin || user?.can_view_orders === true,
     can_local: isAdmin || user?.can_local === true,
     can_parabrisas: isAdmin || user?.can_parabrisas === true,
+    can_devoluciones: isAdmin || user?.can_devoluciones === true,
     can_envios: isAdmin || user?.can_envios === true,
     can_tracking: isAdmin || user?.can_tracking === true,
     // Compras (cuenta corriente proveedores): cargar comprobantes/pagos, y ver saldos/resúmenes.
@@ -839,6 +841,7 @@ route('GET', '/api/users', async (req, res) => {
     can_view_orders: u.role === 'admin' || u.can_view_orders === true,
     can_local: u.role === 'admin' || u.can_local === true,
     can_parabrisas: u.role === 'admin' || u.can_parabrisas === true,
+    can_devoluciones: u.role === 'admin' || u.can_devoluciones === true,
     can_envios: u.role === 'admin' || u.can_envios === true,
     can_tracking: u.role === 'admin' || u.can_tracking === true,
     can_compras_cargar: u.role === 'admin' || u.can_compras_cargar === true || u.can_compras_saldos === true,
@@ -849,7 +852,7 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, prep_sucursal, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, prep_sucursal, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_devoluciones, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
@@ -869,6 +872,7 @@ route('POST', '/api/users/alerts', async (req, res) => {
   if (can_view_orders !== undefined) user.can_view_orders = !!can_view_orders;
   if (can_local !== undefined) user.can_local = !!can_local;
   if (can_parabrisas !== undefined) user.can_parabrisas = !!can_parabrisas;
+  if (can_devoluciones !== undefined) user.can_devoluciones = !!can_devoluciones;
   if (can_envios !== undefined) user.can_envios = !!can_envios;
   if (can_tracking !== undefined) user.can_tracking = !!can_tracking;
   if (can_compras_cargar !== undefined) user.can_compras_cargar = !!can_compras_cargar;
@@ -6767,6 +6771,142 @@ route('GET', '/api/mp/saldos', async (req, res) => {
   } catch (e) {
     return sendJSON(res, 500, { error: String(e && (e.message || e)) });
   }
+});
+
+// ======= DEVOLUCIONES / CANCELACIONES MP (solo admin) =======
+// Lee el settlement report (mismo que usa Saldos) y filtra lo que RESTA dinero:
+// REFUND (devoluciones), DISPUTE (disputas/reclamos) y CASHBACK_CANCEL.
+//   /api/mp/devoluciones?cuenta=MARA            -> totales + detalle por operación
+//   /api/mp/devoluciones?cuenta=MARA&do=refresh -> genera un settlement report fresco (~1-2 min)
+//   opcional: &dias=35  (rango hacia atrás al refrescar; default 35)
+route('GET', '/api/mp/devoluciones', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') {
+    const _db = loadDB(); const _u = (_db.users || []).find(x => x.id === s.userId);
+    if (!(_u && _u.can_devoluciones === true)) return sendJSON(res, 403, { error: 'Sin permiso para Devoluciones' });
+  }
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const envVar = 'MP_TOKEN_' + nombre;
+  const token = process.env[envVar];
+  if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre + '. Cargá ' + envVar + ' en Render.', envVar });
+  const BASE = 'https://api.mercadopago.com';
+  const SET = '/v1/account/settlement_report';
+  const Hget = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  const Hpost = { Authorization: `Bearer ${token}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  async function call(method, path, bodyObj) {
+    let status = 0, body = '';
+    try {
+      const opt = { method, headers: (method === 'GET' ? Hget : Hpost) };
+      if (bodyObj !== undefined) opt.body = JSON.stringify(bodyObj);
+      const r = await fetch(BASE + path, opt);
+      status = r.status; try { body = await r.text(); } catch (e) {}
+    } catch (e) { body = 'ERR ' + String(e && (e.message || e)); }
+    return { status, body };
+  }
+  const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; };
+  // Tipos que se cuentan como devolución/cancelación (restan dinero)
+  const TIPOS = ['REFUND', 'DISPUTE', 'CASHBACK_CANCEL'];
+  try {
+    if ((q.get('do') || '') === 'refresh') {
+      const dias = Math.min(180, Math.max(1, parseInt(q.get('dias') || '35', 10) || 35));
+      const begin = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 19) + 'Z';
+      const end = new Date(Date.now() - 60000).toISOString().slice(0, 19) + 'Z';
+      const g = await call('POST', SET, { begin_date: begin, end_date: end });
+      return sendJSON(res, 200, { do: 'refresh', status: g.status, nota: 'Reporte pidiéndose. Esperá ~1-2 min y volvé a leer sin do=refresh.' });
+    }
+    // Buscar el settlement CSV procesado más reciente
+    const lst = await call('GET', SET + '/list');
+    let arr = []; try { arr = JSON.parse(lst.body); } catch (e) {}
+    if (!Array.isArray(arr)) arr = [];
+    const cand = arr.filter(x => x && (x.status === 'processed' || x.status === 'enabled') &&
+      String(x.format || '').toUpperCase() === 'CSV' && /\.csv$/i.test(String(x.file_name || '')));
+    cand.sort((a, b) => String(b.date_created || '').localeCompare(String(a.date_created || '')));
+    const file = cand.length ? cand[0].file_name : null;
+    if (!file) return sendJSON(res, 200, { cuenta: nombre, sin_reporte: true, nota: 'No hay reporte CSV. Tocá Actualizar para generarlo.' });
+    const dl = await call('GET', SET + '/' + encodeURIComponent(file));
+    const raw = dl.body || '';
+    if (raw.slice(0, 2) === 'PK') return sendJSON(res, 500, { error: 'El reporte vino en XLSX; hay que configurarlo en CSV (una vez, con /api/mp/liq?do=setcsv).' });
+    const lines = raw.split(/\r?\n/).filter(l => l.length);
+    const H = (lines[0] || '').split(',');
+    const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
+    const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iFee = H.indexOf('FEE_AMOUNT'), iReal = H.indexOf('REAL_AMOUNT');
+    const ops = [];
+    const porTipo = {}; TIPOS.forEach(t => porTipo[t] = { cantidad: 0, monto: 0 });
+    let totMonto = 0, totCant = 0;
+    for (let k = 1; k < lines.length; k++) {
+      const c = lines[k].split(',');
+      const tipo = (c[iType] || '').trim();
+      if (TIPOS.indexOf(tipo) === -1) continue;
+      const real = num(c[iReal]);
+      ops.push({
+        fecha: (c[iDate] || '').slice(0, 10),
+        fecha_full: (c[iDate] || ''),
+        source_id: c[iSrc] || '',
+        tipo,
+        metodo: (c[iPm] || '') || '—',
+        monto: num(c[iAmt]),
+        fee: num(c[iFee]),
+        real
+      });
+      porTipo[tipo].cantidad++; porTipo[tipo].monto += real;
+      totMonto += real; totCant++;
+    }
+    // ordenar por fecha desc
+    ops.sort((a, b) => String(b.fecha_full).localeCompare(String(a.fecha_full)));
+    Object.keys(porTipo).forEach(t => { porTipo[t].monto = Math.round(porTipo[t].monto * 100) / 100; });
+    return sendJSON(res, 200, {
+      cuenta: nombre,
+      total: { cantidad: totCant, monto: Math.round(totMonto * 100) / 100 },
+      por_tipo: porTipo,
+      operaciones: ops,
+      archivo: file,
+      leido: new Date().toISOString()
+    });
+  } catch (e) {
+    return sendJSON(res, 500, { error: String(e && (e.message || e)) });
+  }
+});
+
+// ======= DIAGNOSTICO PAGO MP -> ORDEN/VENTA ML (solo admin) =======
+// Consulta un pago de MP por su SOURCE_ID y muestra los campos para linkear con ML.
+//   /api/mp/pago-test?cuenta=MARA&id=179158265433
+route('GET', '/api/mp/pago-test', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
+  const token = process.env['MP_TOKEN_' + nombre];
+  if (!token) return sendJSON(res, 404, { error: 'No hay token para ' + nombre });
+  const id = (q.get('id') || '').trim();
+  if (!id) return sendJSON(res, 400, { error: 'Falta ?id=SOURCE_ID' });
+  const H = { Authorization: `Bearer ${token}`, 'Accept': 'application/json' };
+  async function get(url) { try { const r = await fetch(url, { headers: H }); const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {} return { status: r.status, j, t }; } catch (e) { return { status: 0, t: String(e) }; } }
+  const pago = await get(`https://api.mercadopago.com/v1/payments/${id}`);
+  const j = pago.j || {};
+  const resumen = {
+    status: pago.status,
+    payment_id: j.id,
+    payment_status: j.status,
+    status_detail: j.status_detail,
+    operation_type: j.operation_type,
+    transaction_amount: j.transaction_amount,
+    date_approved: j.date_approved,
+    external_reference: j.external_reference,
+    order: j.order || null,
+    merchant_order_id: (j.order && j.order.id) || null,
+    payer: j.payer ? { id: j.payer.id, email: j.payer.email, nickname: j.payer.nickname } : null,
+    items: (j.additional_info && j.additional_info.items) ? j.additional_info.items.map(it => ({ title: it.title, quantity: it.quantity, unit_price: it.unit_price, id: it.id })) : null,
+    metadata: j.metadata || null
+  };
+  // Si hay merchant_order, traerla para ver la orden de ML
+  let merchant = null;
+  if (resumen.merchant_order_id && resumen.order && String(resumen.order.type || '').includes('mercado')) {
+    const mo = await get(`https://api.mercadopago.com/merchant_orders/${resumen.merchant_order_id}`);
+    if (mo.j) merchant = { status: mo.status, id: mo.j.id, order_status: mo.j.order_status, external_reference: mo.j.external_reference, preference_id: mo.j.preference_id, items: (mo.j.items || []).map(it => ({ title: it.title, quantity: it.quantity, category_id: it.category_id })), payments: (mo.j.payments || []).map(p => ({ id: p.id, status: p.status })) };
+  }
+  return sendJSON(res, 200, { cuenta: nombre, source_id: id, pago: resumen, merchant_order: merchant });
 });
 
 // ======= DIAGNOSTICO CALIDAD / EXPERIENCIA DE PUBLICACIONES (solo admin) =======
