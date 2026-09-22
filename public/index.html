@@ -490,6 +490,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('devoluciones')" id="nav-devoluciones" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 7"/></svg><span>Devoluciones</span>
       </a>
+      <a onclick="showSection('reportes')" id="nav-reportes" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg><span>Reportes</span>
+      </a>
       <a onclick="showSection('users')" id="nav-users" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M4 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M16 6a3 3 0 0 1 0 6"/><path d="M20 20c0-2.5-1.5-4-3.5-4.5"/></svg><span>Usuarios</span>
       </a>
@@ -669,7 +672,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
-          { const ns = document.getElementById('nav-saldos'); if (ns) ns.style.display = ''; }  // Saldos MP: solo admin          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const ns = document.getElementById('nav-saldos'); if (ns) ns.style.display = ''; }  // Saldos MP: solo admin
+          { const nrp = document.getElementById('nav-reportes'); if (nrp) nrp.style.display = ''; }  // Reportes: solo admin          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
           document.getElementById('nav-stock').style.display = '';  // Stock: solo admin
           { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
           { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
@@ -800,7 +804,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
-          { const ns = document.getElementById('nav-saldos'); if (ns) ns.style.display = ''; }  // Saldos MP: solo admin          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const ns = document.getElementById('nav-saldos'); if (ns) ns.style.display = ''; }  // Saldos MP: solo admin
+          { const nrp = document.getElementById('nav-reportes'); if (nrp) nrp.style.display = ''; }  // Reportes: solo admin          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
           document.getElementById('nav-stock').style.display = '';  // Stock: solo admin
           { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
           { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
@@ -960,6 +965,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'accounts': loadAccountsSection(); break;
       case 'saldos': loadSaldos(); break;
       case 'devoluciones': loadDevoluciones(); break;
+      case 'reportes': loadReportes(); break;
       case 'users': loadUsers(); break;
       case 'prep': loadPrepSection(); break;
       case 'update': loadUpdate(); break;
@@ -1063,20 +1069,27 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function saldosActualizar(cta) {
     const btn = document.getElementById('btnSaldosRefresh');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
+    const A = (_saldos.data && _saldos.data.archivos) || {};
+    const prevLib = A.liberaciones || '', prevLiq = A.liquidaciones || '';
     try { await fetch('/api/mp/saldos?cuenta=' + encodeURIComponent(cta) + '&do=refresh', { credentials: 'same-origin' }); } catch (e) {}
-    // Cuenta regresiva mientras MP genera los reportes
-    let secs = 90;
-    const myNav = navToken;
-    const tick = setInterval(() => {
-      if (myNav !== navToken) { clearInterval(tick); return; }
-      secs--;
+    const t0 = Date.now(); const myNav = navToken;
+    async function poll() {
+      if (myNav !== navToken) return;
+      let d = null;
+      try { const r = await fetch('/api/mp/saldos?cuenta=' + encodeURIComponent(cta), { credentials: 'same-origin' }); d = await r.json(); } catch (e) {}
+      const secs = Math.round((Date.now() - t0) / 1000);
+      const lib = d && d.archivos && d.archivos.liberaciones, liq = d && d.archivos && d.archivos.liquidaciones;
+      if (d && lib && liq && lib !== prevLib && liq !== prevLiq) { if (myNav === navToken) { _saldos.data = d; _saldosRender(d, cta, null); } return; }
+      if (secs > 360) { if (myNav === navToken && d) { _saldos.data = d; _saldosRender(d, cta, null); } alert('El reporte está tardando más de lo normal. Te muestro el último disponible; reintentá Actualizar en unos minutos.'); return; }
       if (btn) btn.textContent = 'Generando… ' + secs + 's';
-      if (secs <= 0) { clearInterval(tick); if (myNav === navToken) loadSaldos(cta); }
-    }, 1000);
-    if (btn) btn.textContent = 'Generando… ' + secs + 's';
+      setTimeout(poll, 20000);
+    }
+    if (btn) btn.textContent = 'Generando… 0s';
+    setTimeout(poll, 20000);
   }
   // ==================== DEVOLUCIONES / CANCELACIONES ====================
-  var _dev = { desde: '2026-09-21', tab: 'abierta', filtroCuenta: 'ALL', data: null };
+  var _dev = { desde: '2026-09-21', tab: 'abierta', filtroCuenta: 'ALL', filtroEnviado: 'ALL', filtroProd: 'ALL', data: null };
+  var _devPending = null;
   var _devTipoLabel = { REFUND: 'Devolución', DISPUTE: 'Disputa / Reclamo', VARIOS: 'Varios' };
   var _devEstadoLabel = { abierta: 'Abierta', en_camino: 'En camino', finalizado: 'Finalizado' };
   function _devFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
@@ -1096,18 +1109,65 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function _devTab(v) { _dev.tab = v; _devRender(); }
   function _devSetFiltroCuenta(v) { _dev.filtroCuenta = v; _devRender(); }
+  function _devSetFiltroEnviado(v) { _dev.filtroEnviado = v; _devRender(); }
+  function _devSetFiltroProd(v) { _dev.filtroProd = v; _devRender(); }
+  function _devSN(v) { return v === 'si' ? '<span style="background:#dcfce7;color:#166534;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700">Sí</span>' : (v === 'no' ? '<span style="background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700">No</span>' : '<span style="color:#cbd5e1">—</span>'); }
   function _devRecount() { const pe = { abierta: 0, en_camino: 0, finalizado: 0 }; (_dev.data.operaciones || []).forEach(o => { pe[o.estado] = (pe[o.estado] || 0) + 1; }); _dev.data.por_estado = pe; }
   function devEstadoChange(sel, clave, cuenta, actual) {
     const nuevo = sel.value;
     if (nuevo === actual) return;
-    if (!confirm('¿Cambiar el estado a "' + _devEstadoLabel[nuevo] + '"?')) { sel.value = actual; return; }
-    devSetEstado(clave, cuenta, nuevo);
+    if (nuevo === 'abierta') {
+      if (!confirm('¿Volver a "Abierta"?')) { sel.value = actual; return; }
+      devSetEstado(clave, cuenta, 'abierta', null, null);
+      return;
+    }
+    // En camino / Finalizado -> pedir los dos campos obligatorios
+    sel.value = actual; // se aplica al confirmar el modal
+    devAbrirModal(clave, cuenta, nuevo);
   }
-  async function devSetEstado(clave, cuenta, estado) {
+  function devAbrirModal(clave, cuenta, estado) {
+    _devPending = { clave, cuenta, estado, enviado: null, prod: null };
+    const ov = document.createElement('div');
+    ov.id = 'devModal';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.innerHTML = '<div style="background:#fff;border-radius:16px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
+      '<h3 style="margin:0 0 6px;font-size:17px;font-weight:800;color:#1f2937">Pasar a "' + _devEstadoLabel[estado] + '"</h3>' +
+      '<p style="margin:0 0 18px;font-size:13px;color:#6b7280">Completá estos datos (obligatorios):</p>' +
+      _devPregunta('enviado', '¿Enviado?') +
+      _devPregunta('prod', '¿Producto para devolución?') +
+      '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">' +
+      '<button onclick="devCerrarModal()" style="padding:9px 16px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-weight:700;font-size:13px;cursor:pointer;color:#374151">Cancelar</button>' +
+      '<button id="devModalOk" disabled onclick="devConfirmarModal()" style="padding:9px 18px;border-radius:10px;border:none;background:#16a34a;color:#fff;font-weight:700;font-size:13px;cursor:default;opacity:.5">Confirmar</button>' +
+      '</div></div>';
+    document.body.appendChild(ov);
+  }
+  function _devPregunta(k, label) {
+    return '<div style="margin-bottom:14px"><div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:6px">' + label + '</div>' +
+      '<div style="display:flex;gap:8px">' +
+      '<button type="button" data-k="' + k + '" data-v="si" onclick="devPick(this)" style="flex:1;padding:9px;border:2px solid #e5e7eb;border-radius:10px;background:#fff;font-weight:700;cursor:pointer;color:#374151">Sí</button>' +
+      '<button type="button" data-k="' + k + '" data-v="no" onclick="devPick(this)" style="flex:1;padding:9px;border:2px solid #e5e7eb;border-radius:10px;background:#fff;font-weight:700;cursor:pointer;color:#374151">No</button>' +
+      '</div></div>';
+  }
+  function devPick(btn) {
+    const k = btn.getAttribute('data-k'), v = btn.getAttribute('data-v');
+    document.querySelectorAll('#devModal [data-k="' + k + '"]').forEach(b => { b.style.borderColor = '#e5e7eb'; b.style.background = '#fff'; b.style.color = '#374151'; });
+    btn.style.borderColor = v === 'si' ? '#16a34a' : '#dc2626'; btn.style.background = v === 'si' ? '#dcfce7' : '#fee2e2'; btn.style.color = v === 'si' ? '#166534' : '#991b1b';
+    if (k === 'enviado') _devPending.enviado = v; else _devPending.prod = v;
+    const ok = document.getElementById('devModalOk');
+    if (ok) { const done = _devPending.enviado && _devPending.prod; ok.disabled = !done; ok.style.opacity = done ? '1' : '.5'; ok.style.cursor = done ? 'pointer' : 'default'; }
+  }
+  function devCerrarModal() { const m = document.getElementById('devModal'); if (m) m.remove(); _devPending = null; }
+  function devConfirmarModal() {
+    if (!_devPending || !_devPending.enviado || !_devPending.prod) return;
+    const p = _devPending; devCerrarModal();
+    devSetEstado(p.clave, p.cuenta, p.estado, p.enviado, p.prod);
+  }
+  async function devSetEstado(clave, cuenta, estado, enviado, prod) {
     try {
-      const r = await fetch('/api/mp/devoluciones/estado', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ cuenta, venta: clave, estado }) });
-      if (!r.ok) { alert('No se pudo cambiar el estado.'); return; }
-      (_dev.data.operaciones || []).forEach(o => { if ((o.venta_ml || o.source_id) === clave && o.cuenta === cuenta) o.estado = estado; });
+      const r = await fetch('/api/mp/devoluciones/estado', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ cuenta, venta: clave, estado, enviado: enviado || '', producto_devolucion: prod || '' }) });
+      const d = await r.json();
+      if (!r.ok) { alert((d && d.error) || 'No se pudo cambiar el estado.'); return; }
+      (_dev.data.operaciones || []).forEach(o => { if ((o.venta_ml || o.source_id) === clave && o.cuenta === cuenta) { o.estado = estado; o.enviado = (estado === 'abierta') ? null : enviado; o.producto_devolucion = (estado === 'abierta') ? null : prod; } });
       _devRender();
     } catch (e) { alert('Error de red al cambiar el estado.'); }
   }
@@ -1137,11 +1197,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '<option value="ALL"' + (_dev.filtroCuenta === 'ALL' ? ' selected' : '') + '>Todas</option>' +
       cuentas.map(c => '<option value="' + c + '"' + (_dev.filtroCuenta === c ? ' selected' : '') + '>' + c + '</option>').join('') +
       '</select></label>' +
+      '<label style="font-size:12px;color:#6b7280;font-weight:600">Enviado <select onchange="_devSetFiltroEnviado(this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px">' +
+      ['ALL:Todos', 'si:Sí', 'no:No'].map(o => { const p = o.split(':'); return '<option value="' + p[0] + '"' + (_dev.filtroEnviado === p[0] ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('') +
+      '</select></label>' +
+      '<label style="font-size:12px;color:#6b7280;font-weight:600">Prod. devol. <select onchange="_devSetFiltroProd(this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px">' +
+      ['ALL:Todos', 'si:Sí', 'no:No'].map(o => { const p = o.split(':'); return '<option value="' + p[0] + '"' + (_dev.filtroProd === p[0] ? ' selected' : '') + '>' + p[1] + '</option>'; }).join('') +
+      '</select></label>' +
       '<button id="btnDevRefresh" onclick="devActualizar()" style="padding:9px 16px;border-radius:10px;border:none;background:#dc2626;color:#fff;font-weight:700;font-size:13px;cursor:pointer">↻ Actualizar</button>' +
       '</div></div>';
     if (d.sin_token) { content.innerHTML = filtro + '<div class="empty"><p>No hay ninguna cuenta con la app de Mercado Pago conectada.</p></div>'; return; }
     // operaciones filtradas por cuenta (cliente)
-    const todas = (d.operaciones || []).filter(o => _dev.filtroCuenta === 'ALL' || o.cuenta === _dev.filtroCuenta);
+    const todas = (d.operaciones || []).filter(o =>
+      (_dev.filtroCuenta === 'ALL' || o.cuenta === _dev.filtroCuenta) &&
+      (_dev.filtroEnviado === 'ALL' || o.enviado === _dev.filtroEnviado) &&
+      (_dev.filtroProd === 'ALL' || o.producto_devolucion === _dev.filtroProd));
     // conteos por estado (dentro del filtro de cuenta)
     const pe = { abierta: 0, en_camino: 0, finalizado: 0 };
     todas.forEach(o => { pe[o.estado] = (pe[o.estado] || 0) + 1; });
@@ -1154,12 +1223,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const ops = todas.filter(o => o.estado === _dev.tab);
     let tabla = '';
     if (ops.length) {
-      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:920px">' +
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1060px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
         '<th style="padding:10px 12px;font-weight:700">Fecha</th><th style="padding:10px 12px;font-weight:700">Cuenta</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
         '<th style="padding:10px 12px;font-weight:700">Producto</th><th style="padding:10px 12px;font-weight:700">Venta ML</th>' +
         '<th style="padding:10px 12px;font-weight:700">Link</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th>' +
+        '<th style="padding:10px 12px;font-weight:700;text-align:center">Enviado</th>' +
+        '<th style="padding:10px 12px;font-weight:700;text-align:center">Prod. dev.</th>' +
         '<th style="padding:10px 12px;font-weight:700">Estado</th></tr></thead><tbody>';
       ops.forEach(o => {
         const badge = o.tipo === 'REFUND' ? '#fee2e2;#991b1b' : (o.tipo === 'DISPUTE' ? '#fef3c7;#92400e' : '#f3f4f6;#374151');
@@ -1176,6 +1247,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           '<td style="padding:9px 12px">' + ventaCell + '</td>' +
           '<td style="padding:9px 12px">' + linkCell + '</td>' +
           '<td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td>' +
+          '<td style="padding:9px 12px;text-align:center">' + _devSN(o.enviado) + '</td>' +
+          '<td style="padding:9px 12px;text-align:center">' + _devSN(o.producto_devolucion) + '</td>' +
           '<td style="padding:9px 12px">' + _devEstadoSelect(o) + '</td></tr>';
       });
       tabla += '</tbody></table></div></div>';
@@ -1189,14 +1262,143 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function devActualizar() {
     const btn = document.getElementById('btnDevRefresh');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
+    const prev = (_dev.data && _dev.data.marca) || '';
     try { await fetch('/api/mp/devoluciones?cuenta=ALL&do=refresh', { credentials: 'same-origin' }); } catch (e) {}
-    let secs = 100; const myNav = navToken;
-    const tick = setInterval(() => {
-      if (myNav !== navToken) { clearInterval(tick); return; }
-      secs--; if (btn) btn.textContent = 'Generando… ' + secs + 's';
-      if (secs <= 0) { clearInterval(tick); if (myNav === navToken) loadDevoluciones(); }
-    }, 1000);
-    if (btn) btn.textContent = 'Generando… ' + secs + 's';
+    const t0 = Date.now(); const myNav = navToken;
+    async function poll() {
+      if (myNav !== navToken) return;
+      let d = null;
+      try { const r = await fetch('/api/mp/devoluciones?cuenta=ALL&desde=' + encodeURIComponent(_dev.desde), { credentials: 'same-origin' }); d = await r.json(); } catch (e) {}
+      const secs = Math.round((Date.now() - t0) / 1000);
+      if (d && d.marca && d.marca !== prev) { if (myNav === navToken) { _dev.data = d; _devRender(); } return; }
+      if (secs > 360) { if (myNav === navToken && d) { _dev.data = d; _devRender(); } const b2 = document.getElementById('btnDevRefresh'); if (b2) { b2.disabled = false; b2.style.opacity = '1'; b2.style.cursor = 'pointer'; b2.textContent = '↻ Actualizar'; } alert('El reporte está tardando más de lo normal. Te muestro el último disponible; reintentá Actualizar en unos minutos.'); return; }
+      if (btn) btn.textContent = 'Generando… ' + secs + 's';
+      setTimeout(poll, 20000);
+    }
+    if (btn) btn.textContent = 'Generando… 0s';
+    setTimeout(poll, 20000);
+  }
+  // ==================== REPORTES (solo admin) ====================
+  var _rep = { desde: '2026-09-01', hasta: '', fCuenta: 'ALL', fTipo: 'ALL', fEstado: 'ALL', fEnviado: 'ALL', fProd: 'ALL', data: null };
+  async function loadReportes() {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (!(currentUser && currentUser.role === 'admin')) { content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver Reportes.</p></div>'; return; }
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando reportes…</p></div>';
+    try {
+      const r = await fetch('/api/mp/devoluciones?cuenta=ALL&desde=' + encodeURIComponent(_rep.desde), { credentials: 'same-origin' });
+      const d = await r.json();
+      if (myNav !== navToken) return;
+      if (!r.ok) { content.innerHTML = '<div class="empty"><p>' + escapeHtml((d && d.error) || 'No se pudo leer.') + '</p></div>'; return; }
+      _rep.data = d; _repRender();
+    } catch (e) { if (myNav !== navToken) return; content.innerHTML = '<div class="empty"><p>Error de red.</p></div>'; }
+  }
+  function _repSet(k, v) { _rep[k] = v; if (k === 'desde') { loadReportes(); } else { _repRender(); } }
+  function _repFiltradas() {
+    const d = _rep.data || {}; const hasta = _rep.hasta;
+    return (d.operaciones || []).filter(o =>
+      (_rep.fCuenta === 'ALL' || o.cuenta === _rep.fCuenta) &&
+      (_rep.fTipo === 'ALL' || o.tipo === _rep.fTipo) &&
+      (_rep.fEstado === 'ALL' || o.estado === _rep.fEstado) &&
+      (_rep.fEnviado === 'ALL' || o.enviado === _rep.fEnviado) &&
+      (_rep.fProd === 'ALL' || o.producto_devolucion === _rep.fProd) &&
+      (!hasta || (o.fecha || '') <= hasta));
+  }
+  function _repSelect(k, label, pares) {
+    return '<label style="font-size:12px;color:#6b7280;font-weight:600">' + label + ' <select onchange="_repSet(\'' + k + '\', this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px">' +
+      pares.map(p => '<option value="' + p[0] + '"' + (_rep[k] === p[0] ? ' selected' : '') + '>' + p[1] + '</option>').join('') + '</select></label>';
+  }
+  function _repRender() {
+    const content = document.getElementById('content');
+    const d = _rep.data || {};
+    const cuentas = d.cuentas || [];
+    const ops = _repFiltradas();
+    // KPIs
+    let totMonto = 0; const porTipo = { REFUND: 0, DISPUTE: 0 }; const porEstado = { abierta: 0, en_camino: 0, finalizado: 0 }; const porCuenta = {};
+    ops.forEach(o => { totMonto += (o.real || 0); if (porTipo[o.tipo] != null) porTipo[o.tipo] += (o.real || 0); porEstado[o.estado] = (porEstado[o.estado] || 0) + 1; porCuenta[o.cuenta] = (porCuenta[o.cuenta] || 0) + (o.real || 0); });
+    // Header + filtros
+    let head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">' +
+      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">📊 Reportes de devoluciones</h2>' +
+      '<button onclick="repDescargar()" style="padding:9px 16px;border-radius:10px;border:none;background:#16a34a;color:#fff;font-weight:700;font-size:13px;cursor:pointer">⬇ Descargar Excel</button></div>';
+    let filtros = '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;background:#f9fafb;border:1px solid #eef0f3;border-radius:12px;padding:12px 14px;margin-bottom:16px">' +
+      '<label style="font-size:12px;color:#6b7280;font-weight:600">Desde <input type="date" value="' + _rep.desde + '" onchange="_repSet(\'desde\', this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px"></label>' +
+      '<label style="font-size:12px;color:#6b7280;font-weight:600">Hasta <input type="date" value="' + (_rep.hasta || '') + '" onchange="_repSet(\'hasta\', this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px"></label>' +
+      _repSelect('fCuenta', 'Cuenta', [['ALL', 'Todas']].concat(cuentas.map(c => [c, c]))) +
+      _repSelect('fTipo', 'Tipo', [['ALL', 'Todos'], ['REFUND', 'Devolución'], ['DISPUTE', 'Disputa/Reclamo']]) +
+      _repSelect('fEstado', 'Estado', [['ALL', 'Todos'], ['abierta', 'Abierta'], ['en_camino', 'En camino'], ['finalizado', 'Finalizado']]) +
+      _repSelect('fEnviado', 'Enviado', [['ALL', 'Todos'], ['si', 'Sí'], ['no', 'No']]) +
+      _repSelect('fProd', 'Prod. dev.', [['ALL', 'Todos'], ['si', 'Sí'], ['no', 'No']]) +
+      '</div>';
+    // KPIs cards
+    let kpis = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px">';
+    kpis += '<div style="background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fecaca;border-radius:14px;padding:16px"><div style="font-size:12px;font-weight:700;color:#b91c1c;text-transform:uppercase">Total devuelto</div><div style="font-size:26px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(totMonto) + '</div><div style="font-size:12px;color:#dc2626">' + ops.length + ' ventas</div></div>';
+    kpis += '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px"><div style="font-size:12px;font-weight:700;color:#6b7280">Devoluciones</div><div style="font-size:20px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(porTipo.REFUND) + '</div></div>';
+    kpis += '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px"><div style="font-size:12px;font-weight:700;color:#6b7280">Disputas / Reclamos</div><div style="font-size:20px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(porTipo.DISPUTE) + '</div></div>';
+    kpis += '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px"><div style="font-size:12px;font-weight:700;color:#6b7280">Por estado</div><div style="font-size:13px;color:#374151;margin-top:6px;line-height:1.6">Abiertas: <b>' + porEstado.abierta + '</b> · En camino: <b>' + porEstado.en_camino + '</b> · Finalizadas: <b>' + porEstado.finalizado + '</b></div></div>';
+    kpis += '</div>';
+    // desglose por cuenta (si hay más de una)
+    let porCta = '';
+    const cks = Object.keys(porCuenta);
+    if (cks.length > 1) {
+      porCta = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:14px 16px;margin-bottom:16px"><div style="font-size:13px;font-weight:800;color:#374151;margin-bottom:8px">Por cuenta</div>' +
+        cks.sort().map(c => '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f4f5f7"><span style="color:#6b7280">' + escapeHtml(c) + '</span><b style="color:#991b1b">' + _sMoney(porCuenta[c]) + '</b></div>').join('') + '</div>';
+    }
+    // Tabla
+    let tabla = '';
+    if (ops.length) {
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1000px">' +
+        '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
+        '<th style="padding:9px 12px;font-weight:700">Fecha</th><th style="padding:9px 12px;font-weight:700">Cuenta</th><th style="padding:9px 12px;font-weight:700">Tipo</th>' +
+        '<th style="padding:9px 12px;font-weight:700">Producto</th><th style="padding:9px 12px;font-weight:700">Venta ML</th>' +
+        '<th style="padding:9px 12px;font-weight:700;text-align:right">Neto</th>' +
+        '<th style="padding:9px 12px;font-weight:700;text-align:center">Env.</th><th style="padding:9px 12px;font-weight:700;text-align:center">Dev.</th>' +
+        '<th style="padding:9px 12px;font-weight:700">Estado</th></tr></thead><tbody>';
+      ops.forEach(o => {
+        const badge = o.tipo === 'REFUND' ? '#fee2e2;#991b1b' : (o.tipo === 'DISPUTE' ? '#fef3c7;#92400e' : '#f3f4f6;#374151');
+        const bg = badge.split(';')[0], fg = badge.split(';')[1];
+        const est = { abierta: '#fef3c7;#92400e', en_camino: '#dbeafe;#1e40af', finalizado: '#dcfce7;#166534' }[o.estado] || '#f3f4f6;#374151';
+        const eb = est.split(';');
+        const ventaCell = o.venta_ml ? '<a href="https://www.mercadolibre.com.ar/ventas/' + encodeURIComponent(o.venta_ml) + '/detalle" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600">' + escapeHtml(String(o.venta_ml)) + '</a>' : '—';
+        tabla += '<tr style="border-top:1px solid #f4f5f7">' +
+          '<td style="padding:8px 12px;white-space:nowrap;color:#374151">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
+          '<td style="padding:8px 12px"><span style="background:#eef2ff;color:#3730a3;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + escapeHtml(o.cuenta || '') + '</span></td>' +
+          '<td style="padding:8px 12px;white-space:nowrap"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span></td>' +
+          '<td style="padding:8px 12px;color:#374151;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (o.producto ? escapeHtml(o.producto) : '') + '">' + (o.producto ? escapeHtml(o.producto) : '<span style="color:#cbd5e1">—</span>') + '</td>' +
+          '<td style="padding:8px 12px">' + ventaCell + '</td>' +
+          '<td style="padding:8px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td>' +
+          '<td style="padding:8px 12px;text-align:center">' + _devSN(o.enviado) + '</td>' +
+          '<td style="padding:8px 12px;text-align:center">' + _devSN(o.producto_devolucion) + '</td>' +
+          '<td style="padding:8px 12px"><span style="background:' + eb[0] + ';color:' + eb[1] + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + (_devEstadoLabel[o.estado] || o.estado) + '</span></td></tr>';
+      });
+      tabla += '</tbody></table></div></div>';
+    } else {
+      tabla = '<div class="empty"><p>No hay devoluciones para los filtros elegidos.</p></div>';
+    }
+    let footer = '<div style="margin-top:12px;font-size:12px;color:#9ca3af">Última lectura: ' + _sFechaLarga(d.leido) + '. Datos de todas las cuentas con Mercado Pago conectado.</div>';
+    content.innerHTML = head + filtros + kpis + porCta + tabla + footer;
+  }
+  function _ensureXLSX(cb) { if (window.XLSX) { cb(); return; } const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = () => cb(); s.onerror = () => cb(); document.head.appendChild(s); }
+  function _descargarTabla(nombre, headers, rows) {
+    const fn = nombre + '_' + new Date().toISOString().slice(0, 10);
+    _ensureXLSX(() => {
+      if (window.XLSX) {
+        const ws = window.XLSX.utils.aoa_to_sheet([headers].concat(rows));
+        const wb = window.XLSX.utils.book_new(); window.XLSX.utils.book_append_sheet(wb, ws, 'Devoluciones');
+        window.XLSX.writeFile(wb, fn + '.xlsx');
+      } else {
+        const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+        let csv = headers.map(esc).join(';') + '\r\n';
+        rows.forEach(r => { csv += r.map(esc).join(';') + '\r\n'; });
+        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fn + '.csv'; document.body.appendChild(a); a.click(); a.remove();
+      }
+    });
+  }
+  function repDescargar() {
+    const ops = _repFiltradas();
+    const headers = ['Fecha', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Enviado', 'Prod. devolución', 'Estado'];
+    const rows = ops.map(o => [_devFecha(o.fecha), o.cuenta || '', (_devTipoLabel[o.tipo] || o.tipo), o.producto || '', o.venta_ml || '', o.venta_ml ? ('https://www.mercadolibre.com.ar/ventas/' + o.venta_ml + '/detalle') : '', o.real, o.enviado || '', o.producto_devolucion || '', (_devEstadoLabel[o.estado] || o.estado)]);
+    _descargarTabla('reporte_devoluciones', headers, rows);
   }
   // ==================== PARABRISAS ====================
   var _pb = null;
