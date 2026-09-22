@@ -484,6 +484,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('accounts')" id="nav-accounts" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M4 9l1-4h14l1 4"/><path d="M4 9v10h16V9"/><path d="M9 19v-5h6v5"/></svg><span>Cuentas ML</span>
       </a>
+      <a onclick="showSection('saldos')" id="nav-saldos" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/><circle cx="17" cy="14.5" r="1.2"/></svg><span>Saldos MP</span>
+      </a>
+      <a onclick="showSection('devoluciones')" id="nav-devoluciones" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 7"/></svg><span>Devoluciones</span>
+      </a>
       <a onclick="showSection('users')" id="nav-users" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M4 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M16 6a3 3 0 0 1 0 6"/><path d="M20 20c0-2.5-1.5-4-3.5-4.5"/></svg><span>Usuarios</span>
       </a>
@@ -663,7 +669,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
-          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const ns = document.getElementById('nav-saldos'); if (ns) ns.style.display = ''; }  // Saldos MP: solo admin          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
           document.getElementById('nav-stock').style.display = '';  // Stock: solo admin
           { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
           { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
@@ -718,6 +724,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
         if (currentUser.role === 'admin' || currentUser.can_parabrisas) {
           const np = document.getElementById('nav-parabrisas'); if (np) np.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_devoluciones) {
+          const ndv = document.getElementById('nav-devoluciones'); if (ndv) ndv.style.display = '';
         }
         if (currentUser.role === 'admin') {
           const ne = document.getElementById('nav-envios'); if (ne) ne.style.display = '';
@@ -791,7 +800,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           document.getElementById('nav-accounts').style.display = '';
           document.getElementById('btnBackup').style.display = '';
           document.getElementById('nav-gestion').style.display = '';  // Gestión: solo admin
-          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
+          { const ns = document.getElementById('nav-saldos'); if (ns) ns.style.display = ''; }  // Saldos MP: solo admin          document.getElementById('nav-publicidad').style.display = '';  // Estrategia: solo admin
           document.getElementById('nav-stock').style.display = '';  // Stock: solo admin
           { const nr = document.getElementById('nav-reputation'); if (nr) nr.style.display = ''; }  // Reputación: solo admin
           { const mr = document.getElementById('mob-reputation'); if (mr) mr.style.display = ''; }
@@ -825,6 +834,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
         if (currentUser.role === 'admin' || currentUser.can_parabrisas) {
           const np2 = document.getElementById('nav-parabrisas'); if (np2) np2.style.display = '';
+        }
+        if (currentUser.role === 'admin' || currentUser.can_devoluciones) {
+          const ndv2 = document.getElementById('nav-devoluciones'); if (ndv2) ndv2.style.display = '';
         }
         if (currentUser.role === 'admin') {
           const ne2 = document.getElementById('nav-envios'); if (ne2) ne2.style.display = '';
@@ -946,12 +958,217 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'claims': loadClaims(); break;
       case 'orders': loadOrdersSection(); break;
       case 'accounts': loadAccountsSection(); break;
+      case 'saldos': loadSaldos(); break;
+      case 'devoluciones': loadDevoluciones(); break;
       case 'users': loadUsers(); break;
       case 'prep': loadPrepSection(); break;
       case 'update': loadUpdate(); break;
       case 'promos': loadPromos(); break;
       case 'stock': loadStock(); break;
     }
+  }
+  // ==================== SALDOS MERCADO PAGO ====================
+  var _saldos = { cuenta: 'MARA', data: null, loading: false, refreshing: false };
+  // Cuentas: solo las que tienen token MP cargado en Render funcionan. Agregá acá a medida que crees las apps.
+  var _saldosCuentas = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  var _saldosConToken = ['MARA']; // las que ya tienen MP_TOKEN_* en Render
+  function _sMoney(n) { const v = Math.round(Number(n) || 0); return '$ ' + v.toLocaleString('es-AR'); }
+  function _sFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1]; }
+  function _sFechaLarga(iso) { try { const d = new Date(iso); return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso || ''; } }
+  async function loadSaldos(cuenta) {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (!(currentUser && currentUser.role === 'admin')) {
+      content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver los saldos.</p></div>'; return;
+    }
+    if (cuenta) _saldos.cuenta = cuenta;
+    const cta = _saldos.cuenta;
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Consultando saldos de Mercado Pago...</p></div>';
+    // Si la cuenta no tiene token, no llamamos a la API
+    if (_saldosConToken.indexOf(cta) === -1) {
+      _saldosRender(null, cta, 'Esta cuenta todavía no tiene la app de Mercado Pago conectada. Creá la app y cargá su token (MP_TOKEN_' + cta + ') en Render para ver sus saldos.');
+      return;
+    }
+    try {
+      const r = await fetch('/api/mp/saldos?cuenta=' + encodeURIComponent(cta), { credentials: 'same-origin' });
+      const d = await r.json();
+      if (myNav !== navToken) return;
+      if (!r.ok) { _saldosRender(null, cta, (d && d.error) || 'No se pudo leer el saldo.'); return; }
+      _saldos.data = d;
+      _saldosRender(d, cta, null);
+    } catch (e) {
+      if (myNav !== navToken) return;
+      _saldosRender(null, cta, 'Error de red al consultar Mercado Pago.');
+    }
+  }
+  function _saldosRender(d, cta, errMsg) {
+    const content = document.getElementById('content');
+    // Selector de cuentas
+    let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">';
+    _saldosCuentas.forEach(c => {
+      const on = c === cta;
+      const hasTok = _saldosConToken.indexOf(c) !== -1;
+      tabs += '<button onclick="loadSaldos(\'' + c + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : (hasTok ? '#374151' : '#9ca3af')) + ';font-weight:600;font-size:13px;cursor:pointer;position:relative">' + c + (hasTok ? '' : ' •') + '</button>';
+    });
+    tabs += '</div>';
+    let header = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
+      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">💳 Saldos Mercado Pago</h2>' +
+      '<button id="btnSaldosRefresh" onclick="saldosActualizar(\'' + cta + '\')" style="padding:9px 16px;border-radius:10px;border:none;background:#7c3aed;color:#fff;font-weight:700;font-size:13px;cursor:pointer">↻ Actualizar</button>' +
+      '</div>';
+    if (errMsg) {
+      content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>' + escapeHtml(errMsg) + '</p></div>';
+      return;
+    }
+    const disp = d.disponible == null ? null : d.disponible;
+    const alib = d.a_liberar == null ? null : d.a_liberar;
+    const crono = (d.cronograma || []).filter(x => x && Math.abs(x.monto) >= 0.01);
+    // Tarjetas grandes
+    let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:14px 0 20px">';
+    cards += '<div style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #a7f3d0;border-radius:14px;padding:18px">' +
+      '<div style="font-size:12px;font-weight:700;color:#047857;text-transform:uppercase;letter-spacing:.4px">Disponible ahora</div>' +
+      '<div style="font-size:30px;font-weight:800;color:#065f46;margin-top:4px">' + (disp == null ? '—' : _sMoney(disp)) + '</div>' +
+      '<div style="font-size:12px;color:#059669;margin-top:2px">Plata liberada, lista para usar/retirar</div></div>';
+    cards += '<div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #bfdbfe;border-radius:14px;padding:18px">' +
+      '<div style="font-size:12px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:.4px">A liberar (total)</div>' +
+      '<div style="font-size:30px;font-weight:800;color:#1e3a8a;margin-top:4px">' + (alib == null ? '—' : _sMoney(alib)) + '</div>' +
+      '<div style="font-size:12px;color:#2563eb;margin-top:2px">Pagos retenidos que se liberan en los próximos días</div></div>';
+    cards += '</div>';
+    // Cronograma
+    let crHtml = '';
+    if (crono.length) {
+      const maxAbs = Math.max.apply(null, crono.map(x => Math.abs(x.monto)));
+      crHtml = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px 18px">' +
+        '<div style="font-size:14px;font-weight:800;color:#374151;margin-bottom:12px">📅 Cronograma de liberación</div>';
+      crono.forEach(x => {
+        const neg = x.monto < 0;
+        const w = maxAbs > 0 ? Math.max(3, Math.round(Math.abs(x.monto) / maxAbs * 100)) : 0;
+        crHtml += '<div style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid #f4f5f7">' +
+          '<div style="width:52px;font-size:13px;font-weight:700;color:#6b7280;flex-shrink:0">' + _sFecha(x.fecha) + '</div>' +
+          '<div style="flex:1;background:#f3f4f6;border-radius:6px;height:16px;overflow:hidden"><div style="width:' + w + '%;height:100%;background:' + (neg ? '#fca5a5' : '#93c5fd') + '"></div></div>' +
+          '<div style="width:120px;text-align:right;font-size:13px;font-weight:700;color:' + (neg ? '#dc2626' : '#1f2937') + '">' + _sMoney(x.monto) + '</div>' +
+          '</div>';
+      });
+      crHtml += '</div>';
+    } else {
+      crHtml = '<div class="empty"><p>No hay liberaciones futuras registradas en el período.</p></div>';
+    }
+    // Nota + timestamp
+    let footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">' +
+      'Última lectura: ' + _sFechaLarga(d.leido) + '. ' +
+      'El "disponible" refleja el saldo del último reporte generado; tocá <b>Actualizar</b> para pedir uno fresco (tarda ~1-2 min). ' +
+      'El "a liberar" es el total bruto pendiente; en la app de MP el "disponible para adelantar" puede ser algo menor porque es la parte que ellos ofrecen adelantar hoy.' +
+      '</div>';
+    content.innerHTML = tabs + header + cards + crHtml + footer;
+  }
+  async function saldosActualizar(cta) {
+    const btn = document.getElementById('btnSaldosRefresh');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
+    try { await fetch('/api/mp/saldos?cuenta=' + encodeURIComponent(cta) + '&do=refresh', { credentials: 'same-origin' }); } catch (e) {}
+    // Cuenta regresiva mientras MP genera los reportes
+    let secs = 90;
+    const myNav = navToken;
+    const tick = setInterval(() => {
+      if (myNav !== navToken) { clearInterval(tick); return; }
+      secs--;
+      if (btn) btn.textContent = 'Generando… ' + secs + 's';
+      if (secs <= 0) { clearInterval(tick); if (myNav === navToken) loadSaldos(cta); }
+    }, 1000);
+    if (btn) btn.textContent = 'Generando… ' + secs + 's';
+  }
+  // ==================== DEVOLUCIONES / CANCELACIONES ====================
+  var _dev = { cuenta: 'MARA' };
+  var _devCuentas = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  var _devConToken = ['MARA'];
+  var _devTipoLabel = { REFUND: 'Devolución', DISPUTE: 'Disputa / Reclamo', CASHBACK_CANCEL: 'Cashback cancelado' };
+  var _devMetodoLabel = { available_money: 'Dinero en cuenta', credit_card: 'Tarjeta crédito', debit_card: 'Tarjeta débito', digital_currency: 'Dinero digital', bank_transfer: 'Transferencia', ticket: 'Efectivo / Ticket' };
+  function _devMet(m) { return _devMetodoLabel[m] || (m && m !== '—' ? m : '—'); }
+  async function loadDevoluciones(cuenta) {
+    const myNav = navToken;
+    const content = document.getElementById('content');
+    if (!(currentUser && (currentUser.role === 'admin' || currentUser.can_devoluciones))) { content.innerHTML = '<div class="empty"><p>No tenés permiso para Devoluciones.</p></div>'; return; }
+    if (cuenta) _dev.cuenta = cuenta;
+    const cta = _dev.cuenta;
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Consultando devoluciones/cancelaciones…</p></div>';
+    if (_devConToken.indexOf(cta) === -1) { _devRender(null, cta, 'Esta cuenta todavía no tiene la app de Mercado Pago conectada. Cargá su token (MP_TOKEN_' + cta + ') en Render para ver sus devoluciones.'); return; }
+    try {
+      const r = await fetch('/api/mp/devoluciones?cuenta=' + encodeURIComponent(cta), { credentials: 'same-origin' });
+      const d = await r.json();
+      if (myNav !== navToken) return;
+      if (!r.ok) { _devRender(null, cta, (d && d.error) || 'No se pudo leer.'); return; }
+      _devRender(d, cta, null);
+    } catch (e) { if (myNav !== navToken) return; _devRender(null, cta, 'Error de red.'); }
+  }
+  function _devRender(d, cta, errMsg) {
+    const content = document.getElementById('content');
+    let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">';
+    _devCuentas.forEach(c => {
+      const on = c === cta, hasTok = _devConToken.indexOf(c) !== -1;
+      tabs += '<button onclick="loadDevoluciones(\'' + c + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? '#dc2626' : '#e5e7eb') + ';background:' + (on ? '#dc2626' : '#fff') + ';color:' + (on ? '#fff' : (hasTok ? '#374151' : '#9ca3af')) + ';font-weight:600;font-size:13px;cursor:pointer">' + c + (hasTok ? '' : ' •') + '</button>';
+    });
+    tabs += '</div>';
+    let header = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px">' +
+      '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">↩️ Devoluciones / Cancelaciones</h2>' +
+      '<button id="btnDevRefresh" onclick="devActualizar(\'' + cta + '\')" style="padding:9px 16px;border-radius:10px;border:none;background:#dc2626;color:#fff;font-weight:700;font-size:13px;cursor:pointer">↻ Actualizar</button>' +
+      '</div>';
+    if (errMsg) { content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>' + escapeHtml(errMsg) + '</p></div>'; return; }
+    if (d.sin_reporte) { content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>No hay reporte todavía. Tocá <b>Actualizar</b> para generarlo (tarda ~1-2 min).</p></div>'; return; }
+    const tot = d.total || { cantidad: 0, monto: 0 };
+    const pt = d.por_tipo || {};
+    // Tarjeta principal + por tipo
+    let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:14px 0 18px">';
+    cards += '<div style="background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fecaca;border-radius:14px;padding:18px">' +
+      '<div style="font-size:12px;font-weight:700;color:#b91c1c;text-transform:uppercase;letter-spacing:.4px">Total devuelto / cancelado</div>' +
+      '<div style="font-size:28px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(tot.monto) + '</div>' +
+      '<div style="font-size:12px;color:#dc2626;margin-top:2px">' + tot.cantidad + ' operaciones</div></div>';
+    ['REFUND', 'DISPUTE', 'CASHBACK_CANCEL'].forEach(t => {
+      const x = pt[t] || { cantidad: 0, monto: 0 };
+      cards += '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;padding:16px">' +
+        '<div style="font-size:12px;font-weight:700;color:#6b7280">' + _devTipoLabel[t] + '</div>' +
+        '<div style="font-size:20px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(x.monto) + '</div>' +
+        '<div style="font-size:12px;color:#9ca3af;margin-top:2px">' + x.cantidad + ' oper.</div></div>';
+    });
+    cards += '</div>';
+    // Tabla de operaciones
+    const ops = d.operaciones || [];
+    let tabla = '';
+    if (ops.length) {
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden">' +
+        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px">' +
+        '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
+        '<th style="padding:10px 12px;font-weight:700">Fecha</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
+        '<th style="padding:10px 12px;font-weight:700">Método</th><th style="padding:10px 12px;font-weight:700">Operación</th>' +
+        '<th style="padding:10px 12px;font-weight:700;text-align:right">Monto</th><th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th></tr></thead><tbody>';
+      ops.forEach(o => {
+        const badge = o.tipo === 'REFUND' ? '#fee2e2;#991b1b' : (o.tipo === 'DISPUTE' ? '#fef3c7;#92400e' : '#e0e7ff;#3730a3');
+        const bg = badge.split(';')[0], fg = badge.split(';')[1];
+        tabla += '<tr style="border-top:1px solid #f4f5f7">' +
+          '<td style="padding:9px 12px;color:#374151;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
+          '<td style="padding:9px 12px"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span></td>' +
+          '<td style="padding:9px 12px;color:#6b7280">' + escapeHtml(_devMet(o.metodo)) + '</td>' +
+          '<td style="padding:9px 12px;color:#9ca3af;font-size:12px">' + escapeHtml(String(o.source_id || '')) + '</td>' +
+          '<td style="padding:9px 12px;text-align:right;color:#991b1b;font-weight:700;white-space:nowrap">' + _sMoney(o.monto) + '</td>' +
+          '<td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td></tr>';
+      });
+      tabla += '</tbody></table></div></div>';
+    } else {
+      tabla = '<div class="empty"><p>No hay devoluciones ni cancelaciones en el período del reporte. 🎉</p></div>';
+    }
+    let footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">Última lectura: ' + _sFechaLarga(d.leido) + '. ' +
+      'Incluye devoluciones (REFUND), disputas/reclamos (DISPUTE) y cashback cancelado. "Neto" es lo que efectivamente te descontaron (con comisiones). Tocá <b>Actualizar</b> para pedir un reporte fresco (tarda ~1-2 min).</div>';
+    content.innerHTML = tabs + header + cards + tabla + footer;
+  }
+  function _devFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
+  async function devActualizar(cta) {
+    const btn = document.getElementById('btnDevRefresh');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'default'; }
+    try { await fetch('/api/mp/devoluciones?cuenta=' + encodeURIComponent(cta) + '&do=refresh', { credentials: 'same-origin' }); } catch (e) {}
+    let secs = 90; const myNav = navToken;
+    const tick = setInterval(() => {
+      if (myNav !== navToken) { clearInterval(tick); return; }
+      secs--; if (btn) btn.textContent = 'Generando… ' + secs + 's';
+      if (secs <= 0) { clearInterval(tick); if (myNav === navToken) loadDevoluciones(cta); }
+    }, 1000);
+    if (btn) btn.textContent = 'Generando… ' + secs + 's';
   }
   // ==================== PARABRISAS ====================
   var _pb = null;
@@ -4948,6 +5165,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Parabrisas: puede usar la Carga de Taller (los usuarios habilitados solo ven ese paso).">
                   <input type="checkbox" ${u.can_parabrisas || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_parabrisas', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
                   Parabrisas
+                </label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Devoluciones: puede ver la sección Devoluciones/Cancelaciones de Mercado Pago.">
+                  <input type="checkbox" ${u.can_devoluciones || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_devoluciones', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
+                  Devoluciones
                 </label>
                 <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Tracking: puede ver y gestionar el seguimiento de envíos (acordar con el vendedor).">
                   <input type="checkbox" ${u.can_tracking || u.role === 'admin' ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : `onchange="toggleAlert(${u.id}, 'can_tracking', this.checked)"`} style="width:16px;height:16px;cursor:pointer">
