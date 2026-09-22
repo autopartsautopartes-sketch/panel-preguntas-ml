@@ -6624,7 +6624,7 @@ route('GET', '/api/mp/liq', async (req, res) => {
         separator: ',',
         frequency: { hour: 0, value: 1, type: 'monthly' },
         columns: [
-          { key: 'TRANSACTION_DATE' }, { key: 'MONEY_RELEASE_DATE' }, { key: 'TRANSACTION_TYPE' },
+          { key: 'TRANSACTION_DATE' }, { key: 'SETTLEMENT_DATE' }, { key: 'MONEY_RELEASE_DATE' }, { key: 'TRANSACTION_TYPE' },
           { key: 'TRANSACTION_AMOUNT' }, { key: 'FEE_AMOUNT' }, { key: 'REAL_AMOUNT' },
           { key: 'PAYMENT_METHOD_TYPE' }, { key: 'SOURCE_ID' }
         ]
@@ -6917,24 +6917,32 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const dl = await call(token, 'GET', SET + '/' + encodeURIComponent(file));
       const raw = dl.body || '';
       if (raw.slice(0, 2) === 'PK') return { grupos: [], file: file };
-      const lines = raw.split(/\r?\n/).filter(l => l.length);
-      const H = (lines[0] || '').split(',');
+      let lines = raw.split(/\r?\n/).filter(l => l.length);
+      if (lines.length && lines[0].charCodeAt(0) === 0xFEFF) lines[0] = lines[0].slice(1); // saca BOM
+      // El reporte puede venir separado por coma (formato viejo) o por punto y coma (formato v2). Detectamos.
+      const sep = ((lines[0] || '').split(';').length > (lines[0] || '').split(',').length) ? ';' : ',';
+      const H = (lines[0] || '').split(sep).map(h => h.trim());
       const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
       const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iReal = H.indexOf('REAL_AMOUNT');
-      // Pre-filtro AMPLIO por fecha de compra (solo para no traer pagos viejísimos).
-      // La fecha que importa (la de la devolución) se calcula después con el pago real.
-      function _minusDays(ymd, days) { const t = Date.parse(ymd + 'T00:00:00Z'); if (isNaN(t)) return ''; return new Date(t - days * 86400000).toISOString().slice(0, 10); }
-      const desdeLookback = desde ? _minusDays(desde, 120) : '';
+      const iSettle = H.indexOf('SETTLEMENT_DATE'), iRelease = H.indexOf('MONEY_RELEASE_DATE');
+      // Fecha en que se devolvió/movió la plata: preferimos SETTLEMENT_DATE, luego MONEY_RELEASE_DATE,
+      // y como último recurso la fecha de la transacción (que suele ser la de compra).
+      function fechaDev(c) {
+        let f = (iSettle >= 0 ? (c[iSettle] || '') : '') || (iRelease >= 0 ? (c[iRelease] || '') : '') || (c[iDate] || '');
+        return f;
+      }
       const ops = [];
       for (let k = 1; k < lines.length; k++) {
-        const c = lines[k].split(',');
+        const c = lines[k].split(sep);
         const tipo = (c[iType] || '').trim();
         if (TIPOS.indexOf(tipo) === -1) continue;
-        const fechaDia = (c[iDate] || '').slice(0, 10);
-        // descarta compras MUY anteriores al período (una devolución no suele tardar >120 días)
-        if (desdeLookback && fechaDia && fechaDia < desdeLookback) continue;
-        ops.push({ fecha: fechaDia, fecha_full: (c[iDate] || ''), source_id: c[iSrc] || '', tipo, metodo: (c[iPm] || '') || '—', monto: num(c[iAmt]), real: num(c[iReal]) });
+        const fdevFull = fechaDev(c);
+        const fdev = (fdevFull || '').slice(0, 10);
+        // Filtramos directo por la fecha real de la devolución (viene en el reporte)
+        if (desde && (!fdev || fdev < desde)) continue;
+        ops.push({ fecha: fdev, fecha_full: fdevFull, fecha_compra: (c[iDate] || '').slice(0, 10), source_id: c[iSrc] || '', tipo, metodo: (c[iPm] || '') || '—', monto: num(c[iAmt]), real: num(c[iReal]) });
       }
+      // Enriquecemos SOLO las que pasaron el filtro (venta ML + producto + estado para ocultar mediaciones)
       const enriquecer = (q.get('ml') || '1') !== '0';
       if (enriquecer && ops.length) {
         const ids = Array.from(new Set(ops.map(o => o.source_id).filter(Boolean)));
@@ -6946,28 +6954,20 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
             if (!r.ok) return;
             const p = await r.json();
             const its = (p.additional_info && p.additional_info.items) || [];
-            // Fecha REAL de la devolución del dinero: date_created del reembolso más reciente.
-            // Para disputas/contracargos (sin refunds) usamos la última actualización del pago.
-            let fdev = '';
-            const refs = Array.isArray(p.refunds) ? p.refunds : [];
-            if (refs.length) { const ds = refs.map(x => x && x.date_created).filter(Boolean).sort(); if (ds.length) fdev = ds[ds.length - 1]; }
-            if (!fdev) fdev = p.date_last_updated || '';
-            cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0, fecha_dev: fdev };
+            cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0 };
           } catch (e) {}
         }
         let ei = 0; const CONC = 6;
         async function ew() { while (ei < ids.length) { await fp(ids[ei++]); } }
         await Promise.all(Array.from({ length: CONC }, ew));
-        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; o.fecha_dev_full = d.fecha_dev || o.fecha_full; } });
+        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; } });
       }
-      // fecha_dev = fecha en que se devolvió la plata (real). Si no se pudo enriquecer, cae en la de compra.
-      ops.forEach(o => { if (!o.fecha_dev_full) o.fecha_dev_full = o.fecha_full; o.fecha_dev = (o.fecha_dev_full || '').slice(0, 10); });
-      // Recién ahora filtramos por la fecha real de la devolución
-      const opsFiltradas = ops.filter(o => !desde || (o.fecha_dev && o.fecha_dev >= desde));
+      ops.forEach(o => { o.fecha_dev_full = o.fecha_full; o.fecha_dev = o.fecha; });
+      const opsFiltradas = ops;
       const grupos = {};
       opsFiltradas.forEach(o => {
         const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
-        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha, source_id: o.source_id, estado_pago: o.estado_pago || '' };
+        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha_compra || '', source_id: o.source_id, estado_pago: o.estado_pago || '' };
         const g = grupos[key];
         g.monto += o.monto; g.real += o.real; g.movimientos++;
         g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
