@@ -990,15 +990,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (cuenta) _saldos.cuenta = cuenta;
     const cta = _saldos.cuenta;
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Consultando saldos de Mercado Pago...</p></div>';
-    // Si la cuenta no tiene token, no llamamos a la API
-    if (_saldosConToken.indexOf(cta) === -1) {
-      _saldosRender(null, cta, 'Esta cuenta todavía no tiene la app de Mercado Pago conectada. Creá la app y cargá su token (MP_TOKEN_' + cta + ') en Render para ver sus saldos.');
-      return;
-    }
     try {
       const r = await fetch('/api/mp/saldos?cuenta=' + encodeURIComponent(cta), { credentials: 'same-origin' });
       const d = await r.json();
       if (myNav !== navToken) return;
+      if (d && d.cuentas_con_token) _saldosConToken = d.cuentas_con_token; // aprende qué cuentas tienen token
+      if (r.status === 404 && d && d.envVar) { _saldosRender(null, cta, 'Esta cuenta todavía no tiene la app de Mercado Pago conectada. Creá la app y cargá su token (' + d.envVar + ') en Render para ver sus saldos.'); return; }
       if (!r.ok) { _saldosRender(null, cta, (d && d.error) || 'No se pudo leer el saldo.'); return; }
       _saldos.data = d;
       _saldosRender(d, cta, null);
@@ -1059,11 +1056,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       crHtml = '<div class="empty"><p>No hay liberaciones futuras registradas en el período.</p></div>';
     }
     // Nota + timestamp
-    let footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">' +
-      'Última lectura: ' + _sFechaLarga(d.leido) + '. ' +
-      'El "disponible" refleja el saldo del último reporte generado; tocá <b>Actualizar</b> para pedir uno fresco (tarda ~1-2 min). ' +
-      'El "a liberar" es el total bruto pendiente; en la app de MP el "disponible para adelantar" puede ser algo menor porque es la parte que ellos ofrecen adelantar hoy.' +
-      '</div>';
+    let footer;
+    if (d.fuente === 'sesion') {
+      footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">' +
+        '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">✓ Datos exactos de tu sesión de MP</span> ' +
+        'Actualizado por el navegador: ' + _sFechaLarga(d.pushed_ts) + '. Se refresca solo mientras ese navegador esté abierto con Mercado Pago.' +
+        '</div>';
+    } else {
+      footer = '<div style="margin-top:14px;font-size:12px;color:#9ca3af;line-height:1.6">' +
+        'Última lectura: ' + _sFechaLarga(d.leido) + '. Datos del reporte oficial (aproximado). Para valores exactos, instalá el userscript de saldos en el navegador de esta cuenta. ' +
+        'Tocá <b>Actualizar</b> para pedir un reporte fresco (tarda 1-2 min).' +
+        '</div>';
+    }
     content.innerHTML = tabs + header + cards + crHtml + footer;
   }
   async function saldosActualizar(cta) {
