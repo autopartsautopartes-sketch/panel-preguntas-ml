@@ -1174,7 +1174,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     setTimeout(poll, 20000);
   }
   // ==================== DEVOLUCIONES / CANCELACIONES ====================
-  var _dev = { desde: '2026-09-21', tab: 'abierta', filtroCuenta: 'ALL', filtroEnviado: 'ALL', filtroProd: 'ALL', data: null };
+  var _dev = { desde: '2026-09-21', tab: 'abierta', filtroCuenta: 'ALL', filtroEnviado: 'ALL', filtroProd: 'ALL', data: null, sortKey: 'fecha', sortDir: 'desc' };
+  function _devSort(key) { if (_dev.sortKey === key) { _dev.sortDir = (_dev.sortDir === 'asc' ? 'desc' : 'asc'); } else { _dev.sortKey = key; _dev.sortDir = (key === 'fecha' || key === 'fecha_compra' || key === 'real') ? 'desc' : 'asc'; } _devRender(); }
+  function _devArrow(key) { if (_dev.sortKey !== key) return '<span style="color:#cbd5e1;font-size:10px"> ⇅</span>'; return '<span style="color:#374151;font-size:10px"> ' + (_dev.sortDir === 'asc' ? '▲' : '▼') + '</span>'; }
   var _devPending = null;
   var _devTipoLabel = { REFUND: 'Devolución', DISPUTE: 'Disputa / Reclamo', VARIOS: 'Varios' };
   var _devEstadoLabel = { abierta: 'Abierta', en_camino: 'En camino', finalizado: 'Finalizado' };
@@ -1307,14 +1309,35 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     });
     etabs += '</div>';
     const ops = todas.filter(o => o.estado === _dev.tab);
+    // Ordenar por la columna elegida
+    (function () {
+      const sk = _dev.sortKey, sdir = (_dev.sortDir === 'asc') ? 1 : -1;
+      ops.sort((a, b) => {
+        if (sk === 'real') return (((a.real || 0) - (b.real || 0)) * sdir);
+        let va, vb;
+        if (sk === 'fecha') { va = a.fecha_full || a.fecha || ''; vb = b.fecha_full || b.fecha || ''; }
+        else if (sk === 'fecha_compra') { va = a.fecha_compra || ''; vb = b.fecha_compra || ''; }
+        else if (sk === 'cuenta') { va = a.cuenta || ''; vb = b.cuenta || ''; }
+        else if (sk === 'tipo') { va = a.tipo || ''; vb = b.tipo || ''; }
+        else if (sk === 'producto') { va = (a.producto || '').toLowerCase(); vb = (b.producto || '').toLowerCase(); }
+        else if (sk === 'venta_ml') { va = String(a.venta_ml || ''); vb = String(b.venta_ml || ''); }
+        else { va = ''; vb = ''; }
+        return String(va).localeCompare(String(vb)) * sdir;
+      });
+    })();
     let tabla = '';
     if (ops.length) {
-      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1060px">' +
+      const thBase = 'padding:10px 12px;font-weight:700;cursor:pointer;user-select:none;white-space:nowrap';
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1160px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
-        '<th style="padding:10px 12px;font-weight:700" title="Fecha en que se devolvió la plata">Fecha devol.</th><th style="padding:10px 12px;font-weight:700">Cuenta</th><th style="padding:10px 12px;font-weight:700">Tipo</th>' +
-        '<th style="padding:10px 12px;font-weight:700">Producto</th><th style="padding:10px 12px;font-weight:700">Venta ML</th>' +
+        '<th onclick="_devSort(\'fecha_compra\')" style="' + thBase + '" title="Fecha de la venta">Fecha venta' + _devArrow('fecha_compra') + '</th>' +
+        '<th onclick="_devSort(\'fecha\')" style="' + thBase + '" title="Fecha en que se devolvió la plata">Fecha devol.' + _devArrow('fecha') + '</th>' +
+        '<th onclick="_devSort(\'cuenta\')" style="' + thBase + '">Cuenta' + _devArrow('cuenta') + '</th>' +
+        '<th onclick="_devSort(\'tipo\')" style="' + thBase + '">Tipo' + _devArrow('tipo') + '</th>' +
+        '<th onclick="_devSort(\'producto\')" style="' + thBase + '">Producto' + _devArrow('producto') + '</th>' +
+        '<th onclick="_devSort(\'venta_ml\')" style="' + thBase + '">Venta ML' + _devArrow('venta_ml') + '</th>' +
         '<th style="padding:10px 12px;font-weight:700">Link</th>' +
-        '<th style="padding:10px 12px;font-weight:700;text-align:right">Neto</th>' +
+        '<th onclick="_devSort(\'real\')" style="' + thBase + ';text-align:right">Neto' + _devArrow('real') + '</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:center">Enviado</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:center">Prod. dev.</th>' +
         '<th style="padding:10px 12px;font-weight:700">Estado</th></tr></thead><tbody>';
@@ -1323,9 +1346,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         const bg = badge.split(';')[0], fg = badge.split(';')[1];
         const movTag = (o.movimientos > 1) ? ' <span style="color:#9ca3af;font-size:11px">·' + o.movimientos + ' mov.</span>' : '';
         const prod = o.producto ? escapeHtml(o.producto) : '<span style="color:#cbd5e1">—</span>';
-        const ventaCell = o.venta_ml ? '<a href="https://www.mercadolibre.com.ar/ventas/' + encodeURIComponent(o.venta_ml) + '/detalle" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600;white-space:nowrap">' + escapeHtml(String(o.venta_ml)) + '</a>' : '<span style="color:#cbd5e1">—</span>';
+        // El número de venta abre la venta DENTRO del panel (con notas, etc.) en una pestaña nueva
+        const ventaCell = o.venta_ml ? '<a href="/?section=sales&order_id=' + encodeURIComponent(o.venta_ml) + '" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600;white-space:nowrap">' + escapeHtml(String(o.venta_ml)) + '</a>' : '<span style="color:#cbd5e1">—</span>';
         const linkCell = o.venta_ml ? '<button onclick="devCopyLink(\'' + o.venta_ml + '\', this)" style="border:1px solid #d1d5db;background:#fff;border-radius:8px;padding:4px 10px;font-size:12px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap">⧉ Copiar</button>' : '—';
         tabla += '<tr style="border-top:1px solid #f4f5f7">' +
+          '<td style="padding:9px 12px;color:#6b7280;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha_compra)) + '</td>' +
           '<td style="padding:9px 12px;color:#374151;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
           '<td style="padding:9px 12px"><span style="background:#eef2ff;color:#3730a3;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap">' + escapeHtml(o.cuenta || '') + '</span></td>' +
           '<td style="padding:9px 12px;white-space:nowrap"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span>' + movTag + '</td>' +
