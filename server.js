@@ -3774,7 +3774,7 @@ route('GET', '/api/messages', async (req, res) => {
       // funciona es GET /messages/unread?role=seller&tag=post_sale, que devuelve el listado autoritativo
       // de conversaciones con mensajes pendientes (results[].resource = "/packs/{id}/sellers/{sid}"),
       // incluyendo ventas viejas. Resolvemos la orden de cada una para mostrar comprador + producto.
-      if (!orderFilter && !buyerFilter && packsListAllowed()) {
+      if (!orderFilter && !buyerFilter) {
         try {
           const un = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' });
           const pendPacks = un.results || un.data || [];
@@ -3807,10 +3807,7 @@ route('GET', '/api/messages', async (req, res) => {
             seenPacks.add(opk);
             uniqueOrders.push(synth);
           }
-          packsListOk();
         } catch (e) {
-          // Solo desactivamos el endpoint si ML devuelve 404 (roto de verdad). Un 429/500 es transitorio.
-          if (e.response && e.response.status === 404) packsListFailed();
           _d.pending_err = { status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 80) };
           console.log(`[MESSAGES] No se pudo obtener sin-leer para ${account.name}:`, e.response?.data?.message || e.message || '');
         }
@@ -5009,14 +5006,11 @@ route('GET', '/api/stats', async (req, res) => {
       const todayAnswered = (a.questions || []).filter(q => q.date_created && q.date_created >= todayStart).length;
       totalAnsweredToday += todayAnswered;
     } catch (e) {}
-    // Mensajes sin leer: con circuit-breaker (si ML rompió /messages/packs, no lo martillamos).
-    if (packsListAllowed()) {
-      try {
-        const msgData = await mlGet('https://api.mercadolibre.com/messages/packs', token, { seller: account.seller_id, tag: 'unread', limit: 0 });
-        totalUnreadMessages += msgData.paging?.total || 0;
-        packsListOk();
-      } catch (e) { packsListFailed(); }
-    }
+    // Mensajes sin leer: usamos /messages/unread (el /messages/packs viejo lo rompió ML y daba 404).
+    try {
+      const msgData = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' });
+      totalUnreadMessages += (msgData.results || []).length || 0;
+    } catch (e) {}
     if (user?.view_dashboard !== false) {
       let accountSales = 0, accountRevenue = 0, accountUnits = 0;
       try {
