@@ -1195,7 +1195,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   // ==================== DEVOLUCIONES / CANCELACIONES ====================
   var _dev = { desde: '2026-09-21', tab: 'abierta', filtroCuenta: 'ALL', filtroEnviado: 'ALL', filtroProd: 'ALL', data: null, sortKey: 'fecha', sortDir: 'desc' };
-  function _devSort(key) { if (_dev.sortKey === key) { _dev.sortDir = (_dev.sortDir === 'asc' ? 'desc' : 'asc'); } else { _dev.sortKey = key; _dev.sortDir = (key === 'fecha' || key === 'fecha_compra' || key === 'real') ? 'desc' : 'asc'; } _devRender(); }
+  function _devSort(key) { if (_dev.sortKey === key) { _dev.sortDir = (_dev.sortDir === 'asc' ? 'desc' : 'asc'); } else { _dev.sortKey = key; _dev.sortDir = (key === 'fecha' || key === 'fecha_compra' || key === 'fecha_llegada' || key === 'real') ? 'desc' : 'asc'; } _devRender(); }
   function _devArrow(key) { if (_dev.sortKey !== key) return '<span style="color:#cbd5e1;font-size:10px"> ⇅</span>'; return '<span style="color:#374151;font-size:10px"> ' + (_dev.sortDir === 'asc' ? '▲' : '▼') + '</span>'; }
   var _devPending = null;
   var _devTipoLabel = { REFUND: 'Devolución', DISPUTE: 'Disputa / Reclamo', VARIOS: 'Varios' };
@@ -1342,6 +1342,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         let va, vb;
         if (sk === 'fecha') { va = a.fecha_full || a.fecha || ''; vb = b.fecha_full || b.fecha || ''; }
         else if (sk === 'fecha_compra') { va = a.fecha_compra || ''; vb = b.fecha_compra || ''; }
+        else if (sk === 'fecha_llegada') { va = a.fecha_llegada || ''; vb = b.fecha_llegada || ''; }
         else if (sk === 'cuenta') { va = a.cuenta || ''; vb = b.cuenta || ''; }
         else if (sk === 'tipo') { va = a.tipo || ''; vb = b.tipo || ''; }
         else if (sk === 'producto') { va = (a.producto || '').toLowerCase(); vb = (b.producto || '').toLowerCase(); }
@@ -1354,10 +1355,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let tabla = '';
     if (ops.length) {
       const thBase = 'padding:10px 12px;font-weight:700;cursor:pointer;user-select:none;white-space:nowrap';
-      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1260px">' +
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1360px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
         '<th onclick="_devSort(\'fecha_compra\')" style="' + thBase + '" title="Fecha de la venta">Fecha venta' + _devArrow('fecha_compra') + '</th>' +
-        '<th onclick="_devSort(\'fecha\')" style="' + thBase + '" title="Fecha en que se devolvió la plata">Fecha devol.' + _devArrow('fecha') + '</th>' +
+        '<th onclick="_devSort(\'fecha\')" style="' + thBase + '" title="Fecha en que se reintegró la plata">Fecha devol.' + _devArrow('fecha') + '</th>' +
+        '<th onclick="_devSort(\'fecha_llegada\')" style="' + thBase + '" title="Fecha de liberación / llegada del producto">Llegada' + _devArrow('fecha_llegada') + '</th>' +
         '<th onclick="_devSort(\'cuenta\')" style="' + thBase + '">Cuenta' + _devArrow('cuenta') + '</th>' +
         '<th onclick="_devSort(\'tipo\')" style="' + thBase + '">Tipo' + _devArrow('tipo') + '</th>' +
         '<th onclick="_devSort(\'producto\')" style="' + thBase + '">Producto' + _devArrow('producto') + '</th>' +
@@ -1379,6 +1381,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         tabla += '<tr style="border-top:1px solid #f4f5f7">' +
           '<td style="padding:9px 12px;color:#6b7280;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha_compra)) + '</td>' +
           '<td style="padding:9px 12px;color:#374151;white-space:nowrap">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
+          '<td style="padding:9px 12px;color:#6b7280;white-space:nowrap">' + (o.fecha_llegada ? escapeHtml(_devFecha(o.fecha_llegada)) : '<span style="color:#cbd5e1">—</span>') + '</td>' +
           '<td style="padding:9px 12px"><span style="background:#eef2ff;color:#3730a3;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;white-space:nowrap">' + escapeHtml(o.cuenta || '') + '</span></td>' +
           '<td style="padding:9px 12px;white-space:nowrap"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span>' + movTag + '</td>' +
           '<td style="padding:9px 12px;color:#374151;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (o.producto ? escapeHtml(o.producto) : '') + '">' + prod + (o.cantidad > 1 ? ' <span style="color:#9ca3af">×' + o.cantidad + '</span>' : '') + '</td>' +
@@ -1536,8 +1539,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function repDescargar() {
     const ops = _repFiltradas();
     const _dinLbl = { si: 'Devuelto', parcial: 'Parcial', no: 'No aún' };
-    const headers = ['Fecha venta', 'Fecha devolución', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Dinero devuelto', 'Enviado', 'Prod. devolución', 'Estado'];
-    const rows = ops.map(o => [_devFecha(o.fecha_compra), _devFecha(o.fecha), o.cuenta || '', (_devTipoLabel[o.tipo] || o.tipo), o.producto || '', o.venta_ml || '', o.venta_ml ? ('https://www.mercadolibre.com.ar/ventas/' + o.venta_ml + '/detalle') : '', o.real, (_dinLbl[o.dinero_devuelto] || 'No aún'), o.enviado || '', o.producto_devolucion || '', (_devEstadoLabel[o.estado] || o.estado)]);
+    const headers = ['Fecha venta', 'Fecha devolución', 'Llegada', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Dinero devuelto', 'Enviado', 'Prod. devolución', 'Estado'];
+    const rows = ops.map(o => [_devFecha(o.fecha_compra), _devFecha(o.fecha), (o.fecha_llegada ? _devFecha(o.fecha_llegada) : ''), o.cuenta || '', (_devTipoLabel[o.tipo] || o.tipo), o.producto || '', o.venta_ml || '', o.venta_ml ? ('https://www.mercadolibre.com.ar/ventas/' + o.venta_ml + '/detalle') : '', o.real, (_dinLbl[o.dinero_devuelto] || 'No aún'), o.enviado || '', o.producto_devolucion || '', (_devEstadoLabel[o.estado] || o.estado)]);
     _descargarTabla('reporte_devoluciones', headers, rows);
   }
   // ==================== PARABRISAS ====================
