@@ -3726,15 +3726,20 @@ route('GET', '/api/messages', async (req, res) => {
           seller: account.seller_id, buyer: buyerFilter, sort: 'date_desc', limit: 50
         });
         ordersResults = ordersData.results || [];
+      } else if (statusFilter === 'unread') {
+        // Vista "sin leer" (la principal): NO escaneamos las últimas 50 ventas. Usamos /messages/unread
+        // más abajo, que es el listado AUTORITATIVO de ML (incluye ventas viejas) y hace 1 sola llamada.
+        // Esto además evita los 429 (antes hacíamos 50+ llamadas por cuenta en cada consulta).
+        ordersResults = [];
       } else {
         const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
           seller: account.seller_id, sort: 'date_desc', limit: 50
         });
         ordersResults = ordersData.results || [];
       }
-      // Fetch open claims for this seller (one call per account, not per order)
+      // Fetch open claims for this seller (una sola llamada; solo si escaneamos órdenes)
       let claimedOrderIds = new Set();
-      try {
+      if (ordersResults.length) try {
         const claimsData = await mlGet('https://api.mercadolibre.com/post-purchase/v1/claims/search', token, {
           seller_id: account.seller_id, status: 'opened', limit: 50
         });
@@ -3761,22 +3766,15 @@ route('GET', '/api/messages', async (req, res) => {
         seenPacks.add(packId);
         uniqueOrders.push(order);
       }
-      // ===== Traer TODOS los packs con mensajes pendientes (no solo los de las últimas 50 órdenes).
-      // ML: GET /messages/packs?role=seller&tag=post_sale devuelve los packs con mensajes sin leer sin
-      // importar qué tan vieja es la orden. Resolvemos su orden para no perder conversaciones antiguas.
+      // ===== Traer TODOS los packs con mensajes SIN LEER (no solo los de las últimas 50 órdenes).
+      // ML rompió GET /messages/packs (404 "message with id: packs does not exist"). El endpoint que SÍ
+      // funciona es GET /messages/unread?role=seller&tag=post_sale, que devuelve el listado autoritativo
+      // de conversaciones con mensajes pendientes (results[].resource = "/packs/{id}/sellers/{sid}"),
+      // incluyendo ventas viejas. Resolvemos la orden de cada una para mostrar comprador + producto.
       if (!orderFilter && !buyerFilter && packsListAllowed()) {
         try {
-          // Paginamos para traer TODOS los packs pendientes (no solo la primera página).
-          const pendPacks = [];
-          let offset = 0;
-          for (let page = 0; page < 8; page++) {
-            const pend = await mlGet('https://api.mercadolibre.com/messages/packs', token, { role: 'seller', tag: 'post_sale', limit: 50, offset });
-            const pr = pend.results || pend.data || [];
-            pendPacks.push(...pr);
-            const total = (pend.paging && pend.paging.total != null) ? pend.paging.total : pr.length;
-            offset += 50;
-            if (pr.length < 50 || offset >= total) break;
-          }
+          const un = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' });
+          const pendPacks = un.results || un.data || [];
           for (const pr of pendPacks) {
             // Extraemos el id del pack del recurso (ej. "/packs/123..."). Fallback: primer número largo.
             let mm = String(pr.resource || '').match(/\/packs\/(\d+)/);
@@ -3807,8 +3805,9 @@ route('GET', '/api/messages', async (req, res) => {
           }
           packsListOk();
         } catch (e) {
-          packsListFailed();
-          console.log(`[MESSAGES] No se pudo obtener pendientes para ${account.name}:`, e.response?.data?.message || e.message || '');
+          // Solo desactivamos el endpoint si ML devuelve 404 (roto de verdad). Un 429/500 es transitorio.
+          if (e.response && e.response.status === 404) packsListFailed();
+          console.log(`[MESSAGES] No se pudo obtener sin-leer para ${account.name}:`, e.response?.data?.message || e.message || '');
         }
       }
       // Fetch message packs in parallel (batches of 5 to avoid rate limits)
@@ -3942,12 +3941,7 @@ route('GET', '/api/messages/diag', async (req, res) => {
     const token = await getValidToken(account);
     const row = { name: account.name, id: account.id, seller_id: account.seller_id };
     if (!token) { row.error = 'sin token'; out.push(row); continue; }
-    async function probe(params) {
-      try { const j = await mlGet('https://api.mercadolibre.com/messages/packs', token, params); return { ok: true, count: (j.results || []).length, total: (j.paging && j.paging.total), sample: (j.results || []).slice(0, 3).map(x => ({ resource: x.resource, count: x.count })) }; }
-      catch (e) { return { ok: false, status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 140) }; }
-    }
-    row.packs_plain = await probe({ role: 'seller', tag: 'post_sale' });
-    row.packs_limit = await probe({ role: 'seller', tag: 'post_sale', limit: 50, offset: 0 });
+    // Solo probamos /messages/unread (el de packs ya confirmamos que da 404). Una sola llamada para no gatillar rate-limit.
     try { const j = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' }); row.unread = { ok: true, keys: Object.keys(j).slice(0, 8), total: j.total, results_len: (j.results || []).length, sample: (j.results || []).slice(0, 4) }; }
     catch (e) { row.unread = { ok: false, status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 140) }; }
     out.push(row);
