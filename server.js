@@ -3735,10 +3735,19 @@ route('GET', '/api/messages', async (req, res) => {
         // Esto además evita los 429 (antes hacíamos 50+ llamadas por cuenta en cada consulta).
         ordersResults = [];
       } else {
-        const ordersData = await mlGet('https://api.mercadolibre.com/orders/search', token, {
-          seller: account.seller_id, sort: 'date_desc', limit: 50
-        });
-        ordersResults = ordersData.results || [];
+        // "Sin responder" / "Respondidos": no hay endpoint de ML que los liste, así que escaneamos ventas.
+        // Si estás mirando UNA cuenta puntual, paginamos hasta ~200 ventas para no perder las viejas.
+        // Si es "Todas las cuentas", 50 por cuenta (si no, serían miles de llamadas y ML bloquea).
+        const scanParam = parseInt(url.searchParams.get('scan') || '', 10);
+        const SCAN_MAX = scanParam ? Math.min(400, Math.max(50, scanParam)) : (accountFilter ? 200 : 50);
+        ordersResults = [];
+        for (let off = 0; off < SCAN_MAX; off += 50) {
+          const od = await mlGet('https://api.mercadolibre.com/orders/search', token, { seller: account.seller_id, sort: 'date_desc', limit: 50, offset: off });
+          const rs = od.results || [];
+          ordersResults.push(...rs);
+          const tot = (od.paging && od.paging.total != null) ? od.paging.total : rs.length;
+          if (rs.length < 50 || ordersResults.length >= tot) break;
+        }
       }
       // Fetch open claims for this seller (una sola llamada; solo si escaneamos órdenes)
       let claimedOrderIds = new Set();
