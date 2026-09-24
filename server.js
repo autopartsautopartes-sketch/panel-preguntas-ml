@@ -3942,8 +3942,32 @@ route('GET', '/api/messages/diag', async (req, res) => {
     const row = { name: account.name, id: account.id, seller_id: account.seller_id };
     if (!token) { row.error = 'sin token'; out.push(row); continue; }
     // Solo probamos /messages/unread (el de packs ya confirmamos que da 404). Una sola llamada para no gatillar rate-limit.
-    try { const j = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' }); row.unread = { ok: true, keys: Object.keys(j).slice(0, 8), total: j.total, results_len: (j.results || []).length, sample: (j.results || []).slice(0, 4) }; }
+    let unreadResults = [];
+    try { const j = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' }); unreadResults = j.results || []; row.unread = { ok: true, keys: Object.keys(j).slice(0, 8), total: j.total, results_len: unreadResults.length, sample: unreadResults.slice(0, 4) }; }
     catch (e) { row.unread = { ok: false, status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 140) }; }
+    // Modo profundo: simula el procesamiento de los primeros packs (resolver orden + traer conversación)
+    if (q.get('deep') === '1' && unreadResults.length) {
+      const sid = String(account.seller_id);
+      const pasos = [];
+      for (const pr of unreadResults.slice(0, 5)) {
+        const mm = String(pr.resource || '').match(/\/packs\/(\d+)/);
+        const pid = mm ? mm[1] : null;
+        const paso = { pid };
+        if (!pid) { paso.err = 'sin pid'; pasos.push(paso); continue; }
+        try {
+          const conv = await mlGet(`https://api.mercadolibre.com/messages/packs/${pid}/sellers/${sid}`, token, { tag: 'post_sale', limit: 15, mark_as_read: false });
+          const msgs = conv.messages || [];
+          paso.msg_count = msgs.length;
+          if (msgs.length) {
+            const m0 = msgs[0];
+            paso.lastFrom = (m0.from && String(m0.from.user_id) === sid) ? 'seller' : 'buyer';
+            paso.text0 = String(m0.text || (m0.plain && m0.plain.content) || '').slice(0, 40);
+          }
+        } catch (e) { paso.conv_err = { status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 80) }; }
+        pasos.push(paso);
+      }
+      row.deep = pasos;
+    }
     out.push(row);
   }
   sendJSON(res, 200, { cuentas: out, packs_breaker_next: _packsListNextTry, ahora: Date.now() });
