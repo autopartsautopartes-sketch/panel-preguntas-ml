@@ -3934,7 +3934,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   // Cambio de pestaña (Sin leer / Sin responder / Respondidos): muestra spinner mientras carga
   function msgSetStatus(s) { messageStatus = s; msgBuyerSearch = ''; loadMessages(undefined, true); }
-  async function loadMessages(accountId, showSpinner) {
+  async function loadMessages(accountId, showSpinner, force) {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_messages) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver Mensajes.</p></div>';
@@ -3944,7 +3944,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const content = document.getElementById('content');
     if (showSpinner) content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando mensajes…</p></div>';
     try {
-      const res = await fetch(`/api/messages?account_id=${encodeURIComponent(msgAccountFilter)}&status=${messageStatus}`);
+      const res = await fetch(`/api/messages?account_id=${encodeURIComponent(msgAccountFilter)}&status=${messageStatus}${force ? '&refresh=1' : ''}`);
       allConversationsCache = await res.json();
       if (navToken !== myNav) return;
       renderMessagesList();
@@ -3966,10 +3966,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <button class="${messageStatus === 'unanswered' ? 'active' : ''}" onclick="msgSetStatus('unanswered')">Sin responder</button>
         <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="msgSetStatus('answered')">Respondidos</button>
         <select onchange="loadMessages(this.value, true)">${accountFilterHTML()}</select>
+        <button onclick="loadMessages(undefined, true, true)" title="Volver a leer desde Mercado Libre" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">🔄 Actualizar</button>
         <input type="text" id="msg-buyer-search" placeholder="🔍 Buscar comprador..." value="${escapeHtml(msgBuyerSearch)}"
           oninput="msgBuyerSearch=this.value;renderMessagesList()"
           style="flex:1;min-width:160px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
       </div>
+      ${messageStatus !== 'unread' ? `<div style="font-size:12px;color:#888;margin:-8px 0 12px 2px">Revisa las ventas de los últimos ${msgAccountFilter ? '3 meses' : '30 días'} (sin reclamos). ${msgAccountFilter ? '' : 'Elegí una cuenta para ver los 3 meses completos. '}Se actualiza al entrar; usá 🔄 para releer.</div>` : ''}
     `;
     if (conversations.length === 0) {
       html += `<div class="empty"><p>${search ? 'No hay resultados para "'+escapeHtml(search)+'"' : messageStatus === 'unread' ? 'No hay mensajes sin leer' : messageStatus === 'unanswered' ? 'No hay mensajes sin responder' : 'No hay mensajes respondidos'}</p></div>`;
@@ -4029,7 +4031,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <textarea id="msg-${conv.order_id}" placeholder="Escribí tu mensaje..."></textarea>
                 <div class="msg-btns">
                   <button class="msg-send" onclick="replyMessage('${conv.order_id}', ${conv.account_id})">Enviar</button>
-                  ${messageStatus === 'unread' ? `<button class="msg-done" onclick="dismissMessage('${conv.pack_id}', this)" title="Marcar como respondido y mover a Respondidos">✓ Respondido</button>` : ''}
+                  ${(messageStatus === 'unread' || messageStatus === 'unanswered') ? `<button class="msg-done" onclick="dismissMessage('${conv.pack_id}', this)" title="Marcar como respondido y mover a Respondidos">✓ Pasar a respondidos</button>` : ''}
                 </div>
               </div>
               <input type="file" id="msgfile-${conv.order_id}" accept=".jpg,.jpeg,.png,.pdf,.txt" multiple style="display:none" onchange="onMsgFilePick('${conv.order_id}', this)">
@@ -11146,8 +11148,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         playNotificationSound();
         const newConvs = conversations.filter(c => newIds.includes(c.messages?.[0]?.id));
         showNotification(newIds.length, 'messages', newConvs);
-        // Don't auto-refresh messages if user is typing
-        if (currentSection === 'messages' && !isUserTyping()) loadMessages();
+        // Don't auto-refresh messages if user is typing. Solo el tab "Sin leer" (liviano);
+        // los tabs de escaneo (Sin responder/Respondidos) no se auto-refrescan para no gatillar 429.
+        if (currentSection === 'messages' && messageStatus === 'unread' && !isUserTyping()) loadMessages();
       }
     } catch(e) {}
   }
@@ -11166,7 +11169,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   setInterval(() => {
     if (isUserTyping()) return;
     if (currentSection === 'questions') loadQuestions();
-    if (currentSection === 'messages') loadMessages();
+    // Solo auto-refrescamos "Sin leer" (1 sola llamada, liviano). "Sin responder"/"Respondidos"
+    // escanean las ventas de los últimos meses: si se refrescaran cada 15s ML bloquearía (429).
+    // Esos se actualizan al entrar al tab, al responder/pasar a respondidos, o con el botón 🔄.
+    if (currentSection === 'messages' && messageStatus === 'unread') loadMessages();
   }, 15000);
   // Dashboard: refrescar SOLO la parte superior (KPIs + ventas del día) cada 30s,
   // y únicamente si el usuario está parado en el Dashboard (no si navegó a otra sección).
