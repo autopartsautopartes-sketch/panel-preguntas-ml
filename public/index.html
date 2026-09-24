@@ -953,7 +953,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'dashboard': loadDashboard(); break;
       case 'cotizador': loadCotizador(); break;
       case 'questions': loadQuestions(); break;
-      case 'messages': loadMessages(); break;
+      case 'messages': loadMessages(undefined, true); break;
       case 'sales': loadSales(); break;
       case 'local': loadLocal(); break;
       case 'parabrisas': loadParabrisas(); break;
@@ -3932,7 +3932,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       return `<div style="margin-top:6px"><a href="${url}" target="_blank" style="font-size:12px;color:inherit;text-decoration:underline">📎 ${escapeHtml(a.name || 'archivo')}</a></div>`;
     }).join('');
   }
-  async function loadMessages(accountId) {
+  // Cambio de pestaña (Sin leer / Sin responder / Respondidos): muestra spinner mientras carga
+  function msgSetStatus(s) { messageStatus = s; msgBuyerSearch = ''; loadMessages(undefined, true); }
+  async function loadMessages(accountId, showSpinner) {
     const myNav = navToken;
     if (currentUser?.role !== 'admin' && !currentUser?.can_view_messages) {
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para ver Mensajes.</p></div>';
@@ -3940,6 +3942,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
     if (accountId !== undefined) msgAccountFilter = accountId;
     const content = document.getElementById('content');
+    if (showSpinner) content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando mensajes…</p></div>';
     try {
       const res = await fetch(`/api/messages?account_id=${encodeURIComponent(msgAccountFilter)}&status=${messageStatus}`);
       allConversationsCache = await res.json();
@@ -3959,16 +3962,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let html = `
       <h2 style="margin-bottom:16px;color:#2d3277">Mensajes de compras</h2>
       <div class="filters" style="flex-wrap:wrap;gap:8px">
-        <button class="${messageStatus === 'unread' ? 'active' : ''}" onclick="messageStatus='unread';msgBuyerSearch='';loadMessages()">Sin leer</button>
-        <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="messageStatus='answered';msgBuyerSearch='';loadMessages()">Respondidos</button>
-        <select onchange="loadMessages(this.value)">${accountFilterHTML()}</select>
+        <button class="${messageStatus === 'unread' ? 'active' : ''}" onclick="msgSetStatus('unread')">Sin leer</button>
+        <button class="${messageStatus === 'unanswered' ? 'active' : ''}" onclick="msgSetStatus('unanswered')">Sin responder</button>
+        <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="msgSetStatus('answered')">Respondidos</button>
+        <select onchange="loadMessages(this.value, true)">${accountFilterHTML()}</select>
         <input type="text" id="msg-buyer-search" placeholder="🔍 Buscar comprador..." value="${escapeHtml(msgBuyerSearch)}"
           oninput="msgBuyerSearch=this.value;renderMessagesList()"
           style="flex:1;min-width:160px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
       </div>
     `;
     if (conversations.length === 0) {
-      html += `<div class="empty"><p>${search ? 'No hay resultados para "'+escapeHtml(search)+'"' : messageStatus === 'unread' ? 'No hay mensajes sin leer' : 'No hay mensajes respondidos'}</p></div>`;
+      html += `<div class="empty"><p>${search ? 'No hay resultados para "'+escapeHtml(search)+'"' : messageStatus === 'unread' ? 'No hay mensajes sin leer' : messageStatus === 'unanswered' ? 'No hay mensajes sin responder' : 'No hay mensajes respondidos'}</p></div>`;
     } else {
       for (const conv of conversations) {
         const isMLUnread = conv.has_ml_unread;
