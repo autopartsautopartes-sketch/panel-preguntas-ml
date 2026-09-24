@@ -3703,6 +3703,8 @@ route('GET', '/api/messages', async (req, res) => {
   const buyerFilter = url.searchParams.get('buyer_id');
   const db = loadDB();
   const dismissedPacks = db.dismissed_msg_packs || {};
+  const debug = url.searchParams.get('debug') === '1';
+  const dbg = [];
   let allMessages = [];
   // SINCRONIZACIÓN CON ML: conversaciones YA ATENDIDAS (respondimos último o descartadas) que ML
   // igual marca "sin leer" → las marcamos leídas en ML para que su contador coincida con el panel.
@@ -3713,7 +3715,8 @@ route('GET', '/api/messages', async (req, res) => {
   // Fetch accounts in parallel
   await Promise.all(targets.map(async (account) => {
     const token = await getValidToken(account);
-    if (!token) return;
+    if (!token) { if (debug) dbg.push({ acct: account.name, err: 'sin token' }); return; }
+    const _d = { acct: account.name, breaker_allowed: packsListAllowed(), unread_packs: null, uniqueOrders: 0, conv_ok: 0, conv_err: 0, pushed: 0, conv_err_sample: null };
     try {
       let ordersResults;
       if (orderFilter) {
@@ -3775,6 +3778,7 @@ route('GET', '/api/messages', async (req, res) => {
         try {
           const un = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' });
           const pendPacks = un.results || un.data || [];
+          _d.unread_packs = pendPacks.length;
           for (const pr of pendPacks) {
             // Extraemos el id del pack del recurso (ej. "/packs/123..."). Fallback: primer número largo.
             let mm = String(pr.resource || '').match(/\/packs\/(\d+)/);
@@ -3807,9 +3811,11 @@ route('GET', '/api/messages', async (req, res) => {
         } catch (e) {
           // Solo desactivamos el endpoint si ML devuelve 404 (roto de verdad). Un 429/500 es transitorio.
           if (e.response && e.response.status === 404) packsListFailed();
+          _d.pending_err = { status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 80) };
           console.log(`[MESSAGES] No se pudo obtener sin-leer para ${account.name}:`, e.response?.data?.message || e.message || '');
         }
       }
+      _d.uniqueOrders = uniqueOrders.length;
       // Fetch message packs in parallel (batches of 5 to avoid rate limits)
       for (let i = 0; i < uniqueOrders.length; i += 5) {
         const batch = uniqueOrders.slice(i, i + 5);
@@ -3896,13 +3902,17 @@ route('GET', '/api/messages', async (req, res) => {
           };
         }));
         for (const r of results) {
-          if (r.status === 'fulfilled' && r.value) allMessages.push(r.value);
+          if (r.status === 'fulfilled') { _d.conv_ok++; if (r.value) { allMessages.push(r.value); _d.pushed++; } }
+          else { _d.conv_err++; if (!_d.conv_err_sample) { const e = r.reason || {}; _d.conv_err_sample = { status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || e).slice(0, 80) }; } }
         }
       }
     } catch (err) {
+      _d.route_err = String(err.response?.data?.message || err.message || err).slice(0, 100);
       console.error(`Error messages ${account.name}:`, err.response?.data || err.message || err);
     }
+    if (debug) dbg.push(_d);
   }));
+  if (debug) return sendJSON(res, 200, { debug: dbg });
   // Marcamos en ML como leídas las conversaciones ya atendidas (en segundo plano, con 1 reintento).
   // No bloquea la respuesta del panel. Dedupe por pack para no repetir llamadas.
   if (markReadJobs.length) {
