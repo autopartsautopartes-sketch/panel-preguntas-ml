@@ -6954,24 +6954,35 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
             if (!r.ok) return;
             const p = await r.json();
             const its = (p.additional_info && p.additional_info.items) || [];
-            cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0 };
+            // ¿Se le devolvió la plata al comprador? Lo sacamos del estado real del pago.
+            const st = String(p.status || '').toLowerCase();
+            const refAmt = Number(p.transaction_amount_refunded) || 0;
+            const txAmt = Number(p.transaction_amount) || 0;
+            let devuelto = 'no';
+            if (st === 'refunded' || st === 'charged_back') devuelto = 'si';
+            else if (st === 'partially_refunded') devuelto = 'parcial';
+            else if (refAmt > 0) devuelto = (txAmt && refAmt < txAmt - 0.5) ? 'parcial' : 'si';
+            cache[id] = { venta_ml: p.external_reference || (p.order && p.order.id) || '', estado_pago: p.status || '', producto: its.length ? (its[0].title || '') : '', item_id: its.length ? (its[0].id || '') : '', cantidad: its.length ? (its.reduce((a, it) => a + (parseInt(it.quantity) || 0), 0) || its.length) : 0, dinero_devuelto: devuelto };
           } catch (e) {}
         }
         let ei = 0; const CONC = 6;
         async function ew() { while (ei < ids.length) { await fp(ids[ei++]); } }
         await Promise.all(Array.from({ length: CONC }, ew));
-        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; } });
+        ops.forEach(o => { const d = cache[o.source_id]; if (d) { o.venta_ml = d.venta_ml; o.estado_pago = d.estado_pago; o.producto = d.producto; o.item_id = d.item_id; o.cantidad = d.cantidad; o.dinero_devuelto = d.dinero_devuelto; } });
       }
       ops.forEach(o => { o.fecha_dev_full = o.fecha_full; o.fecha_dev = o.fecha; });
       const opsFiltradas = ops;
       const grupos = {};
       opsFiltradas.forEach(o => {
         const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
-        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha_compra || '', source_id: o.source_id, estado_pago: o.estado_pago || '' };
+        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha_compra || '', source_id: o.source_id, estado_pago: o.estado_pago || '', dinero_devuelto: 'no' };
         const g = grupos[key];
         g.monto += o.monto; g.real += o.real; g.movimientos++;
         g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
         g.realPorTipo[o.tipo] = (g.realPorTipo[o.tipo] || 0) + o.real;
+        // El más "devuelto" gana: si > parcial > no
+        const rank = { si: 2, parcial: 1, no: 0 };
+        if ((rank[o.dinero_devuelto] || 0) > (rank[g.dinero_devuelto] || 0)) g.dinero_devuelto = o.dinero_devuelto;
         if (o.estado_pago && !g.estado_pago) g.estado_pago = o.estado_pago;
         if (!g.producto && o.producto) { g.producto = o.producto; g.item_id = o.item_id; g.cantidad = o.cantidad; }
         if (String(o.fecha_dev_full) > String(g.fecha_full)) { g.fecha_full = o.fecha_dev_full; g.fecha = o.fecha_dev; }
@@ -6996,7 +7007,8 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
         monto: Math.round(g.monto * 100) / 100, real: Math.round(g.real * 100) / 100,
         movimientos: g.movimientos, tipo: tks.length === 1 ? tks[0] : 'VARIOS', tipos_lista: tks,
         estado_pago: g.estado_pago, estado: seg.estado || 'abierta', estado_fecha: seg.fecha || null, estado_por: seg.por || null,
-        enviado: seg.enviado || null, producto_devolucion: seg.producto_devolucion || null
+        enviado: seg.enviado || null, producto_devolucion: seg.producto_devolucion || null,
+        dinero_devuelto: g.dinero_devuelto || 'no'
       });
       tks.forEach(t => { if (porTipo[t]) { porTipo[t].cantidad++; porTipo[t].monto += (g.realPorTipo[t] || 0); } });
       totMonto += g.real; totCant += g.movimientos;
