@@ -3969,6 +3969,9 @@ route('GET', '/api/messages/diag', async (req, res) => {
             const m0 = msgs[0];
             paso.lastFrom = (m0.from && String(m0.from.user_id) === sid) ? 'seller' : 'buyer';
             paso.text0 = String(m0.text || (m0.plain && m0.plain.content) || '').slice(0, 40);
+            // ¿hay algún mensaje del comprador SIN LEER por nosotros? (esto es lo que ML llama "no leído")
+            paso.hasMLUnread = msgs.some(m => { const fs = m.from && String(m.from.user_id) === sid; return !fs && !(m.message_date && m.message_date.read); });
+            paso.newest = String(m0.message_date && m0.message_date.created || m0.date_created || m0.date || '').slice(0, 10);
           }
         } catch (e) { paso.conv_err = { status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 80) }; }
         pasos.push(paso);
