@@ -6901,8 +6901,23 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const dias = Math.min(180, Math.max(1, parseInt(q.get('dias') || '40', 10) || 40));
       const begin = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 19) + 'Z';
       const end = new Date(Date.now() - 60000).toISOString().slice(0, 19) + 'Z';
+      // Config del reporte: nos aseguramos de incluir SETTLEMENT_DATE (fecha real del reintegro)
+      // y MONEY_RELEASE_DATE (llegada/liberación) en TODAS las cuentas, antes de generar.
+      const cfgDev = {
+        include_withdraw: false, show_chargeback_cancel: true, scheduled: false, coupon_detailed: true, separator: ',',
+        frequency: { hour: 0, value: 1, type: 'monthly' },
+        columns: [
+          { key: 'TRANSACTION_DATE' }, { key: 'SETTLEMENT_DATE' }, { key: 'MONEY_RELEASE_DATE' }, { key: 'TRANSACTION_TYPE' },
+          { key: 'TRANSACTION_AMOUNT' }, { key: 'FEE_AMOUNT' }, { key: 'REAL_AMOUNT' }, { key: 'PAYMENT_METHOD_TYPE' }, { key: 'SOURCE_ID' }
+        ]
+      };
       const results = {};
-      for (const n of cuentas) { const g = await call(process.env['MP_TOKEN_' + n], 'POST', SET, { begin_date: begin, end_date: end }); results[n] = g.status; }
+      for (const n of cuentas) {
+        const tk = process.env['MP_TOKEN_' + n];
+        try { await call(tk, 'PUT', SET + '/config', Object.assign({ file_name_prefix: 'settlement-report-' + n.toLowerCase() }, cfgDev)); } catch (e) {}
+        const g = await call(tk, 'POST', SET, { begin_date: begin, end_date: end });
+        results[n] = g.status;
+      }
       return sendJSON(res, 200, { do: 'refresh', status_por_cuenta: results, nota: 'Reportes pidiéndose. Esperá ~1-2 min y volvé a leer.' });
     }
     async function procesar(nombre) {
@@ -6925,12 +6940,19 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const iSrc = H.indexOf('SOURCE_ID'), iPm = H.indexOf('PAYMENT_METHOD_TYPE'), iType = H.indexOf('TRANSACTION_TYPE');
       const iAmt = H.indexOf('TRANSACTION_AMOUNT'), iDate = H.indexOf('TRANSACTION_DATE'), iReal = H.indexOf('REAL_AMOUNT');
       const iSettle = H.indexOf('SETTLEMENT_DATE'), iRelease = H.indexOf('MONEY_RELEASE_DATE');
-      // Fecha en que se devolvió/movió la plata: preferimos SETTLEMENT_DATE, luego MONEY_RELEASE_DATE,
-      // y como último recurso la fecha de la transacción (que suele ser la de compra).
+      const hoyAR = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
+      // Fecha en que se REINTEGRÓ la plata (movimiento real de dinero): SETTLEMENT_DATE.
+      // Nunca puede ser a futuro. Si no está la columna, usamos MONEY_RELEASE_DATE solo si NO es futura,
+      // y como último recurso la fecha de transacción. La fecha futura (release) va aparte como "llegada".
       function fechaDev(c) {
-        let f = (iSettle >= 0 ? (c[iSettle] || '') : '') || (iRelease >= 0 ? (c[iRelease] || '') : '') || (c[iDate] || '');
-        return f;
+        const s = (iSettle >= 0 ? (c[iSettle] || '') : '');
+        if (s) return s;
+        const r = (iRelease >= 0 ? (c[iRelease] || '') : '');
+        if (r && r.slice(0, 10) <= hoyAR) return r;   // solo si ya pasó
+        return (c[iDate] || '');
       }
+      // Fecha de LLEGADA / liberación programada (puede ser a futuro): MONEY_RELEASE_DATE
+      function fechaLlegada(c) { return (iRelease >= 0 ? (c[iRelease] || '') : ''); }
       const ops = [];
       for (let k = 1; k < lines.length; k++) {
         const c = lines[k].split(sep);
@@ -6940,7 +6962,7 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
         const fdev = (fdevFull || '').slice(0, 10);
         // Filtramos directo por la fecha real de la devolución (viene en el reporte)
         if (desde && (!fdev || fdev < desde)) continue;
-        ops.push({ fecha: fdev, fecha_full: fdevFull, fecha_compra: (c[iDate] || '').slice(0, 10), source_id: c[iSrc] || '', tipo, metodo: (c[iPm] || '') || '—', monto: num(c[iAmt]), real: num(c[iReal]) });
+        ops.push({ fecha: fdev, fecha_full: fdevFull, fecha_compra: (c[iDate] || '').slice(0, 10), fecha_llegada: (fechaLlegada(c) || '').slice(0, 10), source_id: c[iSrc] || '', tipo, metodo: (c[iPm] || '') || '—', monto: num(c[iAmt]), real: num(c[iReal]) });
       }
       // Enriquecemos SOLO las que pasaron el filtro (venta ML + producto + estado para ocultar mediaciones)
       const enriquecer = (q.get('ml') || '1') !== '0';
@@ -6975,9 +6997,10 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const grupos = {};
       opsFiltradas.forEach(o => {
         const key = o.venta_ml ? ('v:' + o.venta_ml) : ('s:' + o.source_id);
-        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha_compra || '', source_id: o.source_id, estado_pago: o.estado_pago || '', dinero_devuelto: 'no' };
+        if (!grupos[key]) grupos[key] = { cuenta: nombre, venta_ml: o.venta_ml || '', producto: o.producto || '', item_id: o.item_id || '', cantidad: o.cantidad || 0, tipos: {}, realPorTipo: {}, monto: 0, real: 0, movimientos: 0, fecha_full: o.fecha_dev_full, fecha: o.fecha_dev, fecha_compra: o.fecha_compra || '', fecha_llegada: o.fecha_llegada || '', source_id: o.source_id, estado_pago: o.estado_pago || '', dinero_devuelto: 'no' };
         const g = grupos[key];
         g.monto += o.monto; g.real += o.real; g.movimientos++;
+        if (o.fecha_llegada && String(o.fecha_llegada) > String(g.fecha_llegada || '')) g.fecha_llegada = o.fecha_llegada;
         g.tipos[o.tipo] = (g.tipos[o.tipo] || 0) + 1;
         g.realPorTipo[o.tipo] = (g.realPorTipo[o.tipo] || 0) + o.real;
         // El más "devuelto" gana: si > parcial > no
@@ -7003,7 +7026,7 @@ route('GET', '/api/mp/devoluciones', async (req, res) => {
       const seg = (((db.devoluciones_estado || {})[g.cuenta]) || {})[clave] || {};
       agrupadas.push({
         cuenta: g.cuenta, venta_ml: g.venta_ml, producto: g.producto, item_id: g.item_id, cantidad: g.cantidad,
-        source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full, fecha_compra: g.fecha_compra || null,
+        source_id: g.source_id, fecha: g.fecha, fecha_full: g.fecha_full, fecha_compra: g.fecha_compra || null, fecha_llegada: g.fecha_llegada || null,
         monto: Math.round(g.monto * 100) / 100, real: Math.round(g.real * 100) / 100,
         movimientos: g.movimientos, tipo: tks.length === 1 ? tks[0] : 'VARIOS', tipos_lista: tks,
         estado_pago: g.estado_pago, estado: seg.estado || 'abierta', estado_fecha: seg.fecha || null, estado_por: seg.por || null,
