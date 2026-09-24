@@ -3774,7 +3774,8 @@ route('GET', '/api/messages', async (req, res) => {
       // funciona es GET /messages/unread?role=seller&tag=post_sale, que devuelve el listado autoritativo
       // de conversaciones con mensajes pendientes (results[].resource = "/packs/{id}/sellers/{sid}"),
       // incluyendo ventas viejas. Resolvemos la orden de cada una para mostrar comprador + producto.
-      if (!orderFilter && !buyerFilter) {
+      // Solo para el tab "Sin leer"; los tabs "Sin responder"/"Respondidos" salen del escaneo de ventas.
+      if (!orderFilter && !buyerFilter && statusFilter === 'unread') {
         try {
           const un = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' });
           const pendPacks = un.results || un.data || [];
@@ -3858,9 +3859,13 @@ route('GET', '/api/messages', async (req, res) => {
           });
           // ML returns messages newest first, so [0] is the most recent message
           const lastMsg = mappedMessages[0];
-          // "Sin leer" = last msg from buyer (we haven't replied) OR ML marks any buyer msg as unread
           const hasMLUnread = mappedMessages.some(m => m.from === 'buyer' && m.mlUnread);
-          let isUnread = lastMsg.from === 'buyer' || hasMLUnread;
+          const lastFromBuyer = lastMsg.from === 'buyer';
+          // Categoría (igual que ML): 'unread' = hay un mensaje del comprador SIN abrir;
+          // 'unanswered' = leído pero el comprador escribió último (falta responder);
+          // 'answered' = respondimos último.
+          let categoria = hasMLUnread ? 'unread' : (lastFromBuyer ? 'unanswered' : 'answered');
+          let isUnread = (categoria === 'unread');
           // Check dismissed: if pack was manually dismissed but buyer sent a NEW message after that → auto-un-dismiss
           const packKey = String(packId);
           const dismissedAt = dismissedPacks[packKey];
@@ -3875,7 +3880,7 @@ route('GET', '/api/messages', async (req, res) => {
               saveDB(db);
             } else {
               isDismissed = true;
-              isUnread = false; // treat as answered
+              isUnread = false; categoria = 'answered'; // descartada = tratada como respondida
             }
           }
           // SYNC ML (airtight): SOLO si la conversación está ATENDIDA — respondimos último
@@ -3885,15 +3890,16 @@ route('GET', '/api/messages', async (req, res) => {
             markReadJobs.push({ packId: String(packId), sellerId: account.seller_id, token });
           }
           if (!buyerFilter && !orderFilter) {
-            if (statusFilter === 'unread' && (!isUnread || isDismissed)) return null;
-            if (statusFilter === 'answered' && isUnread && !isDismissed) return null;
+            if (statusFilter === 'unread' && categoria !== 'unread') return null;
+            if (statusFilter === 'unanswered' && categoria !== 'unanswered') return null;
+            if (statusFilter === 'answered' && categoria !== 'answered') return null;
           }
           return {
             order_id: order.id, pack_id: packId, account_name: account.name, account_id: account.id,
             seller_id: account.seller_id, buyer_name: order.buyer?.nickname || 'Comprador',
             buyer_id: order.buyer?.id?.toString() || '',
             item_title: order.order_items?.[0]?.item?.title || 'Producto',
-            messages: mappedMessages, is_unread: isUnread, has_ml_unread: hasMLUnread, is_dismissed: isDismissed,
+            messages: mappedMessages, is_unread: isUnread, categoria: categoria, has_ml_unread: hasMLUnread, is_dismissed: isDismissed,
             // messages[0] is newest (ML returns newest-first) — use it for sorting
             last_message_date: messages[0]?.date_created || messages[0]?.date || order.date_created
           };
