@@ -3926,6 +3926,34 @@ route('GET', '/api/messages', async (req, res) => {
   allMessages.sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
   sendJSON(res, 200, allMessages);
 });
+// ======= DIAGNOSTICO MENSAJES: prueba el listado oficial de packs pendientes por cuenta (solo admin) =======
+route('GET', '/api/messages/diag', async (req, res) => {
+  const s = requireAuth(req);
+  if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const db = loadDB();
+  const filtro = (q.get('account_id') || '').trim();
+  const nombre = (q.get('cuenta') || '').trim().toUpperCase();
+  let targets = db.ml_accounts || [];
+  if (filtro) targets = targets.filter(a => String(a.id) === filtro);
+  else if (nombre) targets = targets.filter(a => String(a.name || '').toUpperCase().includes(nombre));
+  const out = [];
+  for (const account of targets) {
+    const token = await getValidToken(account);
+    const row = { name: account.name, id: account.id, seller_id: account.seller_id };
+    if (!token) { row.error = 'sin token'; out.push(row); continue; }
+    async function probe(params) {
+      try { const j = await mlGet('https://api.mercadolibre.com/messages/packs', token, params); return { ok: true, count: (j.results || []).length, total: (j.paging && j.paging.total), sample: (j.results || []).slice(0, 3).map(x => ({ resource: x.resource, count: x.count })) }; }
+      catch (e) { return { ok: false, status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 140) }; }
+    }
+    row.packs_plain = await probe({ role: 'seller', tag: 'post_sale' });
+    row.packs_limit = await probe({ role: 'seller', tag: 'post_sale', limit: 50, offset: 0 });
+    try { const j = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' }); row.unread = { ok: true, keys: Object.keys(j).slice(0, 8), count: (j.count != null ? j.count : (j.results || []).length) }; }
+    catch (e) { row.unread = { ok: false, status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 140) }; }
+    out.push(row);
+  }
+  sendJSON(res, 200, { cuentas: out, packs_breaker_next: _packsListNextTry, ahora: Date.now() });
+});
 route('POST', '/api/messages/reply', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
