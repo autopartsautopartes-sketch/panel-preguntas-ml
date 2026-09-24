@@ -981,6 +981,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function _sMoney(n) { const v = Math.round(Number(n) || 0); return '$ ' + v.toLocaleString('es-AR'); }
   function _sFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1]; }
   function _sFechaLarga(iso) { try { const d = new Date(iso); return d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso || ''; } }
+  var _SALDO_STALE_MIN = 40; // a partir de cuántos minutos consideramos el saldo "viejo"
+  function _sMinutos(ts) { if (!ts) return null; const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000); return (isNaN(m) ? null : m); }
+  function _sStale(ts) { const m = _sMinutos(ts); return (m != null && m > _SALDO_STALE_MIN); }
+  function _sHace(ts) { const m = _sMinutos(ts); if (m == null) return ''; if (m < 1) return 'recién'; if (m < 60) return 'hace ' + m + ' min'; const h = Math.floor(m / 60); return 'hace ' + h + 'h ' + (m % 60) + 'm'; }
   // Solapas de cuentas (Resumen + cada cuenta), compartidas entre la vista general y la por-cuenta
   function _saldosTabs(activeCta) {
     let tabs = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">';
@@ -1043,10 +1047,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '</div>';
     if (errMsg) { content.innerHTML = tabs + header + '<div class="empty" style="margin-top:12px"><p>' + escapeHtml(errMsg) + '</p></div>'; return; }
     const T = d.totales || { disponible: 0, a_liberar: 0, total: 0 };
+    // ¿Alguna cuenta con saldo viejo?
+    const viejas = (d.cuentas || []).filter(c => c.tiene_datos && _sStale(c.ts)).map(c => c.cuenta);
     // Leyenda última lectura
-    const leyenda = '<div style="margin:2px 0 14px;font-size:12.5px;color:#6b7280">' +
+    let leyenda = '<div style="margin:2px 0 14px;font-size:12.5px;color:#6b7280">' +
       (d.ultima_lectura ? ('🕑 Última lectura de saldos: <b>' + _sFechaLarga(d.ultima_lectura) + '</b>') : 'Todavía no se leyeron saldos.') +
       ' · ' + (d.con_datos || 0) + ' de ' + _saldosCuentas.length + ' cuentas con datos</div>';
+    if (viejas.length) {
+      leyenda += '<div style="margin:0 0 14px;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;font-size:12.5px;color:#991b1b">' +
+        '⚠ Saldo desactualizado en: <b>' + viejas.join(', ') + '</b>. Abrí (o recargá) el navegador de esa cuenta en Mercado Pago para que se actualice.</div>';
+    }
     // Total general grande
     let big = '<div style="background:linear-gradient(135deg,#faf5ff,#ede9fe);border:1px solid #ddd6fe;border-radius:16px;padding:22px 24px;margin-bottom:18px">' +
       '<div style="font-size:13px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.5px">Total en todas las cuentas</div>' +
@@ -1054,18 +1064,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '<div style="font-size:13px;color:#6b21a8">Disponible: <b>' + _sMoney(T.disponible) + '</b> &nbsp;·&nbsp; A liberar: <b>' + _sMoney(T.a_liberar) + '</b></div>' +
       '</div>';
     // Tabla por cuenta
+    const _gc = '1.1fr 1fr 1fr 1fr 1fr';
     let tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden;margin-bottom:18px">' +
-      '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:0;background:#f8f7fc;font-size:11.5px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.4px">' +
-      '<div style="padding:11px 16px">Cuenta</div><div style="padding:11px 16px;text-align:right">Disponible</div><div style="padding:11px 16px;text-align:right">A liberar</div><div style="padding:11px 16px;text-align:right">Total</div></div>';
+      '<div style="display:grid;grid-template-columns:' + _gc + ';gap:0;background:#f8f7fc;font-size:11.5px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:.4px">' +
+      '<div style="padding:11px 16px">Cuenta</div><div style="padding:11px 16px;text-align:right">Disponible</div><div style="padding:11px 16px;text-align:right">A liberar</div><div style="padding:11px 16px;text-align:right">Total</div><div style="padding:11px 16px;text-align:right">Actualizado</div></div>';
     (d.cuentas || []).forEach(c => {
       if (c.tiene_datos) {
-        tabla += '<div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:0;border-top:1px solid #f1f2f5;cursor:pointer" onclick="loadSaldos(\'' + c.cuenta + '\')">' +
+        const stale = _sStale(c.ts);
+        const actTxt = c.ts ? _sHace(c.ts) : '—';
+        const actCell = '<div style="padding:12px 16px;text-align:right;font-size:12px;font-weight:700;color:' + (stale ? '#dc2626' : '#9ca3af') + '">' + (stale ? '⚠ ' : '') + actTxt + '</div>';
+        tabla += '<div style="display:grid;grid-template-columns:' + _gc + ';gap:0;border-top:1px solid #f1f2f5;cursor:pointer" onclick="loadSaldos(\'' + c.cuenta + '\')" title="' + (stale ? 'Saldo viejo: abrí/actualizá el navegador de ' + c.cuenta : 'Actualizado ' + actTxt) + '">' +
           '<div style="padding:12px 16px;font-weight:700;color:#1f2937">' + c.cuenta + '</div>' +
           '<div style="padding:12px 16px;text-align:right;color:#047857;font-weight:600">' + _sMoney(c.disponible) + '</div>' +
           '<div style="padding:12px 16px;text-align:right;color:#1d4ed8;font-weight:600">' + _sMoney(c.a_liberar) + '</div>' +
-          '<div style="padding:12px 16px;text-align:right;color:#111827;font-weight:800">' + _sMoney(c.total) + '</div></div>';
+          '<div style="padding:12px 16px;text-align:right;color:#111827;font-weight:800">' + _sMoney(c.total) + '</div>' +
+          actCell + '</div>';
       } else {
-        tabla += '<div style="display:grid;grid-template-columns:1.2fr 3fr;gap:0;border-top:1px solid #f1f2f5;opacity:.65">' +
+        tabla += '<div style="display:grid;grid-template-columns:1.1fr 4fr;gap:0;border-top:1px solid #f1f2f5;opacity:.65">' +
           '<div style="padding:12px 16px;font-weight:700;color:#9ca3af">' + c.cuenta + '</div>' +
           '<div style="padding:12px 16px;text-align:right;color:#9ca3af;font-size:12px">sin datos — abrí Mercado Pago en ese navegador</div></div>';
       }
@@ -1112,12 +1127,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const disp = d.disponible == null ? null : d.disponible;
     const alib = d.a_liberar == null ? null : d.a_liberar;
     const total = (disp == null && alib == null) ? null : ((disp || 0) + (alib || 0));
-    // Leyenda de última lectura arriba
+    // Leyenda de última lectura arriba (en rojo si el dato está viejo)
     const ts = d.fuente === 'sesion' ? d.pushed_ts : d.leido;
-    const leyenda = '<div style="margin:2px 0 12px;font-size:12.5px;color:#6b7280">' +
-      '🕑 Última lectura de saldos: <b>' + _sFechaLarga(ts) + '</b>' +
+    const stale = (d.fuente === 'sesion') && _sStale(ts);
+    let leyenda = '<div style="margin:2px 0 12px;font-size:12.5px;color:' + (stale ? '#991b1b' : '#6b7280') + '">' +
+      (stale ? '⚠ ' : '🕑 ') + 'Última lectura de saldos: <b>' + _sFechaLarga(ts) + '</b> (' + _sHace(ts) + ')' +
       (d.fuente === 'sesion' ? ' · se actualiza solo cada pocos minutos mientras el navegador de ' + cta + ' esté abierto en Mercado Pago' : ' · datos del reporte oficial (aproximado)') +
       '</div>';
+    if (stale) {
+      leyenda += '<div style="margin:0 0 12px;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;font-size:12.5px;color:#991b1b">' +
+        '⚠ Este saldo está desactualizado. Abrí o recargá el navegador de ' + cta + ' en Mercado Pago (o simplemente hacé clic en esa pestaña) para que el dato se actualice.</div>';
+    }
     // Tarjetas grandes: Disponible / A liberar / Total
     let cards = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:8px 0 20px">';
     cards += '<div style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #a7f3d0;border-radius:14px;padding:18px">' +
@@ -1200,6 +1220,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function _devSetFiltroEnviado(v) { _dev.filtroEnviado = v; _devRender(); }
   function _devSetFiltroProd(v) { _dev.filtroProd = v; _devRender(); }
   function _devSN(v) { return v === 'si' ? '<span style="background:#dcfce7;color:#166534;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700">Sí</span>' : (v === 'no' ? '<span style="background:#fee2e2;color:#991b1b;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:700">No</span>' : '<span style="color:#cbd5e1">—</span>'); }
+  function _devDinero(v) {
+    if (v === 'si') return '<span style="background:#dcfce7;color:#166534;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:700">✓ Devuelto</span>';
+    if (v === 'parcial') return '<span style="background:#fef3c7;color:#92400e;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:700">Parcial</span>';
+    return '<span style="background:#fee2e2;color:#991b1b;padding:2px 9px;border-radius:6px;font-size:11px;font-weight:700">No aún</span>';
+  }
   function _devRecount() { const pe = { abierta: 0, en_camino: 0, finalizado: 0 }; (_dev.data.operaciones || []).forEach(o => { pe[o.estado] = (pe[o.estado] || 0) + 1; }); _dev.data.por_estado = pe; }
   function devEstadoChange(sel, clave, cuenta, actual) {
     const nuevo = sel.value;
@@ -1321,6 +1346,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         else if (sk === 'tipo') { va = a.tipo || ''; vb = b.tipo || ''; }
         else if (sk === 'producto') { va = (a.producto || '').toLowerCase(); vb = (b.producto || '').toLowerCase(); }
         else if (sk === 'venta_ml') { va = String(a.venta_ml || ''); vb = String(b.venta_ml || ''); }
+        else if (sk === 'dinero') { const rk = { si: 2, parcial: 1, no: 0 }; return ((rk[a.dinero_devuelto] || 0) - (rk[b.dinero_devuelto] || 0)) * sdir; }
         else { va = ''; vb = ''; }
         return String(va).localeCompare(String(vb)) * sdir;
       });
@@ -1328,7 +1354,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let tabla = '';
     if (ops.length) {
       const thBase = 'padding:10px 12px;font-weight:700;cursor:pointer;user-select:none;white-space:nowrap';
-      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1160px">' +
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1260px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
         '<th onclick="_devSort(\'fecha_compra\')" style="' + thBase + '" title="Fecha de la venta">Fecha venta' + _devArrow('fecha_compra') + '</th>' +
         '<th onclick="_devSort(\'fecha\')" style="' + thBase + '" title="Fecha en que se devolvió la plata">Fecha devol.' + _devArrow('fecha') + '</th>' +
@@ -1338,6 +1364,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         '<th onclick="_devSort(\'venta_ml\')" style="' + thBase + '">Venta ML' + _devArrow('venta_ml') + '</th>' +
         '<th style="padding:10px 12px;font-weight:700">Link</th>' +
         '<th onclick="_devSort(\'real\')" style="' + thBase + ';text-align:right">Neto' + _devArrow('real') + '</th>' +
+        '<th onclick="_devSort(\'dinero\')" style="' + thBase + ';text-align:center" title="Si Mercado Pago ya le devolvió la plata al comprador">Dinero' + _devArrow('dinero') + '</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:center">Enviado</th>' +
         '<th style="padding:10px 12px;font-weight:700;text-align:center">Prod. dev.</th>' +
         '<th style="padding:10px 12px;font-weight:700">Estado</th></tr></thead><tbody>';
@@ -1358,6 +1385,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           '<td style="padding:9px 12px">' + ventaCell + '</td>' +
           '<td style="padding:9px 12px">' + linkCell + '</td>' +
           '<td style="padding:9px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td>' +
+          '<td style="padding:9px 12px;text-align:center">' + _devDinero(o.dinero_devuelto) + '</td>' +
           '<td style="padding:9px 12px;text-align:center">' + _devSN(o.enviado) + '</td>' +
           '<td style="padding:9px 12px;text-align:center">' + _devSN(o.producto_devolucion) + '</td>' +
           '<td style="padding:9px 12px">' + _devEstadoSelect(o) + '</td></tr>';
@@ -1507,8 +1535,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function repDescargar() {
     const ops = _repFiltradas();
-    const headers = ['Fecha devolución', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Enviado', 'Prod. devolución', 'Estado'];
-    const rows = ops.map(o => [_devFecha(o.fecha), o.cuenta || '', (_devTipoLabel[o.tipo] || o.tipo), o.producto || '', o.venta_ml || '', o.venta_ml ? ('https://www.mercadolibre.com.ar/ventas/' + o.venta_ml + '/detalle') : '', o.real, o.enviado || '', o.producto_devolucion || '', (_devEstadoLabel[o.estado] || o.estado)]);
+    const _dinLbl = { si: 'Devuelto', parcial: 'Parcial', no: 'No aún' };
+    const headers = ['Fecha venta', 'Fecha devolución', 'Cuenta', 'Tipo', 'Producto', 'Venta ML', 'Link', 'Neto', 'Dinero devuelto', 'Enviado', 'Prod. devolución', 'Estado'];
+    const rows = ops.map(o => [_devFecha(o.fecha_compra), _devFecha(o.fecha), o.cuenta || '', (_devTipoLabel[o.tipo] || o.tipo), o.producto || '', o.venta_ml || '', o.venta_ml ? ('https://www.mercadolibre.com.ar/ventas/' + o.venta_ml + '/detalle') : '', o.real, (_dinLbl[o.dinero_devuelto] || 'No aún'), o.enviado || '', o.producto_devolucion || '', (_devEstadoLabel[o.estado] || o.estado)]);
     _descargarTabla('reporte_devoluciones', headers, rows);
   }
   // ==================== PARABRISAS ====================
