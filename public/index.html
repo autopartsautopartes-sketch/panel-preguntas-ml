@@ -1421,21 +1421,28 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     setTimeout(poll, 20000);
   }
   // ==================== REPORTES (solo admin) ====================
-  var _rep = { desde: '2026-09-01', hasta: '', fCuenta: 'ALL', fTipo: 'ALL', fEstado: 'ALL', fEnviado: 'ALL', fProd: 'ALL', data: null };
+  var _rep = (function () {
+    const now = new Date(); const pad = n => String(n).padStart(2, '0');
+    return { desde: now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-01', hasta: now.toISOString().slice(0, 10), fCuenta: 'ALL', fTipo: 'ALL', fEstado: 'ALL', fEnviado: 'ALL', fProd: 'ALL', data: null, buscado: false };
+  })();
   async function loadReportes() {
-    const myNav = navToken;
     const content = document.getElementById('content');
     if (!(currentUser && currentUser.role === 'admin')) { content.innerHTML = '<div class="empty"><p>Solo el administrador puede ver Reportes.</p></div>'; return; }
-    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando reportes…</p></div>';
+    _rep.buscado = false; // al entrar no muestra datos hasta tocar Buscar
+    _repRender();
+  }
+  async function repBuscar() {
+    const myNav = navToken;
+    const btn = document.getElementById('btnRepBuscar');
+    if (btn) { btn.disabled = true; btn.textContent = 'Buscando…'; }
     try {
       const r = await fetch('/api/mp/devoluciones?cuenta=ALL&desde=' + encodeURIComponent(_rep.desde), { credentials: 'same-origin' });
       const d = await r.json();
       if (myNav !== navToken) return;
-      if (!r.ok) { content.innerHTML = '<div class="empty"><p>' + escapeHtml((d && d.error) || 'No se pudo leer.') + '</p></div>'; return; }
-      _rep.data = d; _repRender();
-    } catch (e) { if (myNav !== navToken) return; content.innerHTML = '<div class="empty"><p>Error de red.</p></div>'; }
+      _rep.data = (r.ok ? d : { operaciones: [], cuentas: [], error: (d && d.error) }); _rep.buscado = true; _repRender();
+    } catch (e) { if (myNav !== navToken) return; _rep.data = { operaciones: [], cuentas: [], error: 'Error de red' }; _rep.buscado = true; _repRender(); }
   }
-  function _repSet(k, v) { _rep[k] = v; if (k === 'desde') { loadReportes(); } else { _repRender(); } }
+  function _repSet(k, v) { _rep[k] = v; if (k === 'desde') { _rep.buscado = false; } _repRender(); }
   function _repFiltradas() {
     const d = _rep.data || {}; const hasta = _rep.hasta;
     return (d.operaciones || []).filter(o =>
@@ -1461,7 +1468,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // Header + filtros
     let head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">' +
       '<h2 style="font-size:20px;font-weight:800;color:#1f2937;margin:0">📊 Reportes de devoluciones</h2>' +
-      '<button onclick="repDescargar()" style="padding:9px 16px;border-radius:10px;border:none;background:#16a34a;color:#fff;font-weight:700;font-size:13px;cursor:pointer">⬇ Descargar Excel</button></div>';
+      (_rep.buscado ? '<button onclick="repDescargar()" style="padding:9px 16px;border-radius:10px;border:none;background:#16a34a;color:#fff;font-weight:700;font-size:13px;cursor:pointer">⬇ Descargar Excel</button>' : '') + '</div>';
     let filtros = '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;background:#f9fafb;border:1px solid #eef0f3;border-radius:12px;padding:12px 14px;margin-bottom:16px">' +
       '<label style="font-size:12px;color:#6b7280;font-weight:600">Desde <input type="date" value="' + _rep.desde + '" onchange="_repSet(\'desde\', this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px"></label>' +
       '<label style="font-size:12px;color:#6b7280;font-weight:600">Hasta <input type="date" value="' + (_rep.hasta || '') + '" onchange="_repSet(\'hasta\', this.value)" style="border:1px solid #e5e7eb;border-radius:8px;padding:5px 8px;font-size:13px"></label>' +
@@ -1470,7 +1477,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       _repSelect('fEstado', 'Estado', [['ALL', 'Todos'], ['abierta', 'Abierta'], ['en_camino', 'En camino'], ['finalizado', 'Finalizado']]) +
       _repSelect('fEnviado', 'Enviado', [['ALL', 'Todos'], ['si', 'Sí'], ['no', 'No']]) +
       _repSelect('fProd', 'Prod. dev.', [['ALL', 'Todos'], ['si', 'Sí'], ['no', 'No']]) +
+      '<button id="btnRepBuscar" onclick="repBuscar()" style="padding:8px 22px;border-radius:9px;border:none;background:#7c3aed;color:#fff;font-weight:700;font-size:13px;cursor:pointer">🔎 Buscar</button>' +
       '</div>';
+    // Antes de buscar, no mostramos datos
+    if (!_rep.buscado) {
+      content.innerHTML = head + filtros + '<div class="empty" style="padding:44px 20px;text-align:center"><p style="font-size:15px;color:#6b7280">Elegí el rango de fechas y los filtros, y tocá <b>Buscar</b> para ver las devoluciones.</p></div>';
+      return;
+    }
+    if (d.error) {
+      content.innerHTML = head + filtros + '<div class="empty"><p>' + escapeHtml(d.error) + '</p></div>';
+      return;
+    }
     // KPIs cards
     let kpis = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px">';
     kpis += '<div style="background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fecaca;border-radius:14px;padding:16px"><div style="font-size:12px;font-weight:700;color:#b91c1c;text-transform:uppercase">Total devuelto</div><div style="font-size:26px;font-weight:800;color:#991b1b;margin-top:4px">' + _sMoney(totMonto) + '</div><div style="font-size:12px;color:#dc2626">' + ops.length + ' ventas</div></div>';
@@ -1488,10 +1505,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // Tabla
     let tabla = '';
     if (ops.length) {
-      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1000px">' +
+      tabla = '<div style="background:#fff;border:1px solid #eef0f3;border-radius:14px;overflow:hidden"><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1090px">' +
         '<thead><tr style="background:#f9fafb;color:#6b7280;text-align:left">' +
         '<th style="padding:9px 12px;font-weight:700" title="Fecha en que se devolvió la plata">Fecha devol.</th><th style="padding:9px 12px;font-weight:700">Cuenta</th><th style="padding:9px 12px;font-weight:700">Tipo</th>' +
         '<th style="padding:9px 12px;font-weight:700">Producto</th><th style="padding:9px 12px;font-weight:700">Venta ML</th>' +
+        '<th style="padding:9px 12px;font-weight:700">Link</th>' +
         '<th style="padding:9px 12px;font-weight:700;text-align:right">Neto</th>' +
         '<th style="padding:9px 12px;font-weight:700;text-align:center">Env.</th><th style="padding:9px 12px;font-weight:700;text-align:center">Dev.</th>' +
         '<th style="padding:9px 12px;font-weight:700">Estado</th></tr></thead><tbody>';
@@ -1500,13 +1518,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         const bg = badge.split(';')[0], fg = badge.split(';')[1];
         const est = { abierta: '#fef3c7;#92400e', en_camino: '#dbeafe;#1e40af', finalizado: '#dcfce7;#166534' }[o.estado] || '#f3f4f6;#374151';
         const eb = est.split(';');
-        const ventaCell = o.venta_ml ? '<a href="https://www.mercadolibre.com.ar/ventas/' + encodeURIComponent(o.venta_ml) + '/detalle" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600">' + escapeHtml(String(o.venta_ml)) + '</a>' : '—';
+        const ventaCell = o.venta_ml ? '<a href="/?section=sales&order_id=' + encodeURIComponent(o.venta_ml) + '" target="_blank" rel="noopener" style="color:#2563eb;text-decoration:none;font-weight:600;white-space:nowrap">' + escapeHtml(String(o.venta_ml)) + '</a>' : '—';
+        const linkCell = o.venta_ml ? '<button onclick="devCopyLink(\'' + o.venta_ml + '\', this)" style="border:1px solid #d1d5db;background:#fff;border-radius:8px;padding:4px 10px;font-size:12px;font-weight:600;color:#374151;cursor:pointer;white-space:nowrap">⧉ Copiar</button>' : '—';
         tabla += '<tr style="border-top:1px solid #f4f5f7">' +
           '<td style="padding:8px 12px;white-space:nowrap;color:#374151">' + escapeHtml(_devFecha(o.fecha)) + '</td>' +
           '<td style="padding:8px 12px"><span style="background:#eef2ff;color:#3730a3;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + escapeHtml(o.cuenta || '') + '</span></td>' +
           '<td style="padding:8px 12px;white-space:nowrap"><span style="background:' + bg + ';color:' + fg + ';padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">' + (_devTipoLabel[o.tipo] || o.tipo) + '</span></td>' +
           '<td style="padding:8px 12px;color:#374151;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (o.producto ? escapeHtml(o.producto) : '') + '">' + (o.producto ? escapeHtml(o.producto) : '<span style="color:#cbd5e1">—</span>') + '</td>' +
           '<td style="padding:8px 12px">' + ventaCell + '</td>' +
+          '<td style="padding:8px 12px">' + linkCell + '</td>' +
           '<td style="padding:8px 12px;text-align:right;color:#dc2626;font-weight:700;white-space:nowrap">' + _sMoney(o.real) + '</td>' +
           '<td style="padding:8px 12px;text-align:center">' + _devSN(o.enviado) + '</td>' +
           '<td style="padding:8px 12px;text-align:center">' + _devSN(o.producto_devolucion) + '</td>' +
@@ -10842,11 +10862,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const m = d.getMinutes().toString().padStart(2,'0');
     return `${day}-${mon}-${yr} · ${h}:${m} hs`;
   }
+  // Contenedor único de notificaciones, abajo a la derecha (apila todas hacia arriba)
+  function _notifStack() {
+    let s = document.getElementById('notifStack');
+    if (!s) {
+      s = document.createElement('div');
+      s.id = 'notifStack';
+      s.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:10000;display:flex;flex-direction:column-reverse;gap:10px;align-items:flex-end;max-width:390px;pointer-events:none';
+      document.body.appendChild(s);
+    }
+    return s;
+  }
   function showToast(msg, type = 'success') {
     const toast = document.createElement('div');
     toast.className = 'toast ' + type;
+    toast.style.position = 'static'; toast.style.bottom = 'auto'; toast.style.right = 'auto'; toast.style.pointerEvents = 'auto';
     toast.textContent = msg;
-    document.body.appendChild(toast);
+    _notifStack().appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
   }
   async function copyListingUrl(url, itemId) {
@@ -10962,14 +10994,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       desktopNotif.onclick = () => { window.focus(); showSection(type); desktopNotif.close(); };
       setTimeout(() => desktopNotif.close(), 10000);
     }
-    // Also show in-page notification popup
+    // Also show in-page notification popup (abajo a la derecha, apiladas)
     const notifId = type === 'questions' ? 'newQuestionsNotif' : 'newMessagesNotif';
     const existing = document.getElementById(notifId);
     if (existing) existing.remove();
-    const topPos = isQ ? '20px' : '90px';
     const notif = document.createElement('div');
     notif.id = notifId;
-    notif.style.cssText = `position:fixed;top:${topPos};right:20px;background:${isQ ? '#2d3277' : '#155e3e'};color:white;padding:14px 18px;border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,0.35);z-index:9999;animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:flex-start;gap:12px;max-width:360px`;
+    notif.style.cssText = `position:relative;background:${isQ ? '#2d3277' : '#155e3e'};color:white;padding:14px 18px;border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,0.35);animation:slideIn 0.4s ease;cursor:pointer;display:flex;align-items:flex-start;gap:12px;max-width:360px;pointer-events:auto`;
     notif.innerHTML = `
       <span style="font-size:22px;flex-shrink:0;margin-top:1px">${isQ ? '❓' : '💬'}</span>
       <div style="flex:1;min-width:0">
@@ -10979,7 +11010,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <span onclick="event.stopPropagation();this.parentElement.remove()" style="flex-shrink:0;opacity:0.55;cursor:pointer;font-size:17px;line-height:1;margin-top:1px">✕</span>
     `;
     notif.onclick = () => { notif.remove(); showSection(type); };
-    document.body.appendChild(notif);
+    _notifStack().appendChild(notif);
     setTimeout(() => { if (notif.parentElement) notif.remove(); }, 12000);
   }
   // Check if user is typing in any textarea
