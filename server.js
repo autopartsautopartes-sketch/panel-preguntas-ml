@@ -3693,6 +3693,21 @@ route('POST', '/api/questions/answer', async (req, res) => {
 });
 // MESSAGES
 const msgOrderCache = {}; // cache de órdenes resueltas para packs pendientes (evita recargar en cada poll)
+// Cache del ESCANEO de "Sin responder"/"Respondidos". Ese escaneo recorre TODAS las ventas de los
+// últimos meses + trae la conversación de cada una (muchas llamadas). El panel refresca la sección
+// cada 15s, así que sin cache dispararía cientos de llamadas por minuto y ML bloquearía (429).
+// Guardamos el resultado categorizado (todas las categorías) por cuenta y lo reusamos unos minutos.
+const msgScanCache = {}; // key 'scan:<accountId|all>' -> { ts, items:[conversaciones categorizadas] }
+const MSG_SCAN_TTL = 120 * 1000; // 2 min
+// Actualiza en el lugar los ítems cacheados que cumplan el predicado (para mover una conversación de
+// tab al instante tras responder o "pasar a respondidos", sin re-escanear los 3 meses).
+function msgScanCachePatch(pred, patch) {
+  for (const k of Object.keys(msgScanCache)) {
+    const c = msgScanCache[k];
+    if (!c || !c.items) continue;
+    for (const it of c.items) { if (pred(it)) Object.assign(it, patch); }
+  }
+}
 route('GET', '/api/messages', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -3704,7 +3719,22 @@ route('GET', '/api/messages', async (req, res) => {
   const db = loadDB();
   const dismissedPacks = db.dismissed_msg_packs || {};
   const debug = url.searchParams.get('debug') === '1';
+  const refresh = url.searchParams.get('refresh') === '1';
   const dbg = [];
+  // "Sin responder"/"Respondidos" salen del escaneo de ventas (no hay endpoint de ML para apps).
+  // "Sin leer" NO entra acá: usa /messages/unread (rápido) y no se cachea.
+  const scanTabs = (statusFilter === 'unanswered' || statusFilter === 'answered') && !orderFilter && !buyerFilter;
+  // Cache-hit: si tenemos un escaneo reciente, filtramos por la categoría pedida y respondemos ya.
+  if (scanTabs && !debug && !refresh) {
+    const ck = 'scan:' + (accountFilter || 'all');
+    const c = msgScanCache[ck];
+    if (c && Date.now() - c.ts < MSG_SCAN_TTL) {
+      const items = c.items
+        .filter(m => m.categoria === statusFilter)
+        .sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
+      return sendJSON(res, 200, items);
+    }
+  }
   let allMessages = [];
   // SINCRONIZACIÓN CON ML: conversaciones YA ATENDIDAS (respondimos último o descartadas) que ML
   // igual marca "sin leer" → las marcamos leídas en ML para que su contador coincida con el panel.
@@ -3735,18 +3765,33 @@ route('GET', '/api/messages', async (req, res) => {
         // Esto además evita los 429 (antes hacíamos 50+ llamadas por cuenta en cada consulta).
         ordersResults = [];
       } else {
-        // "Sin responder" / "Respondidos": no hay endpoint de ML que los liste, así que escaneamos ventas.
-        // Si estás mirando UNA cuenta puntual, paginamos hasta ~200 ventas para no perder las viejas.
-        // Si es "Todas las cuentas", 50 por cuenta (si no, serían miles de llamadas y ML bloquea).
-        const scanParam = parseInt(url.searchParams.get('scan') || '', 10);
-        const SCAN_MAX = scanParam ? Math.min(400, Math.max(50, scanParam)) : (accountFilter ? 200 : 50);
+        // "Sin responder" / "Respondidos": ML no tiene un endpoint que los liste para apps de terceros
+        // (GET /messages/packs solo funciona con la sesión del navegador, a la app le da 404). Así que
+        // traemos TODAS las ventas de los últimos meses y las categorizamos por quién escribió último.
+        // - Cuenta puntual: 3 meses completos (lo que pidió Daniel).
+        // - "Todas las cuentas": ventana más corta (45 días) para no hacer miles de llamadas de una.
+        // El resultado se cachea 2 min (msgScanCache), así el auto-refresh de 15s no re-escanea.
+        const mesesParam = parseInt(url.searchParams.get('meses') || '', 10);
+        const MESES = accountFilter ? (mesesParam && mesesParam > 0 && mesesParam <= 6 ? mesesParam : 3) : 1;
+        const HARD_CAP = accountFilter ? 800 : 100; // tope de seguridad de órdenes por cuenta
+        const desde = new Date(Date.now() - MESES * 30 * 24 * 60 * 60 * 1000);
+        const desdeIso = desde.toISOString().replace('Z', '-00:00');
         ordersResults = [];
-        for (let off = 0; off < SCAN_MAX; off += 50) {
-          const od = await mlGet('https://api.mercadolibre.com/orders/search', token, { seller: account.seller_id, sort: 'date_desc', limit: 50, offset: off });
+        for (let off = 0; off < HARD_CAP; off += 50) {
+          const od = await mlGet('https://api.mercadolibre.com/orders/search', token, {
+            seller: account.seller_id, sort: 'date_desc', limit: 50, offset: off,
+            'order.date_created.from': desdeIso
+          });
           const rs = od.results || [];
-          ordersResults.push(...rs);
+          // Cota por fecha del lado del cliente (por si ML ignora el filtro): como viene date_desc,
+          // en cuanto aparece una venta anterior a "desde" cortamos.
+          let stop = false;
+          for (const o of rs) {
+            const dc = new Date(o.date_created || o.date_closed || 0);
+            if (dc >= desde) ordersResults.push(o); else stop = true;
+          }
           const tot = (od.paging && od.paging.total != null) ? od.paging.total : rs.length;
-          if (rs.length < 50 || ordersResults.length >= tot) break;
+          if (stop || rs.length < 50 || (off + 50) >= tot) break;
         }
       }
       // Fetch open claims for this seller (una sola llamada; solo si escaneamos órdenes)
@@ -3898,7 +3943,9 @@ route('GET', '/api/messages', async (req, res) => {
           if (hasMLUnread && (lastMsg.from === 'seller' || isDismissed)) {
             markReadJobs.push({ packId: String(packId), sellerId: account.seller_id, token });
           }
-          if (!buyerFilter && !orderFilter) {
+          // En los tabs de escaneo recolectamos TODAS las categorías (para cachearlas y servir
+          // "Sin responder" y "Respondidos" del mismo escaneo); el filtro por categoría se hace al final.
+          if (!buyerFilter && !orderFilter && !scanTabs) {
             if (statusFilter === 'unread' && categoria !== 'unread') return null;
             if (statusFilter === 'unanswered' && categoria !== 'unanswered') return null;
             if (statusFilter === 'answered' && categoria !== 'answered') return null;
@@ -3943,6 +3990,12 @@ route('GET', '/api/messages', async (req, res) => {
       }
       console.log('[MESSAGES] marcadas leídas en ML (atendidas):', jobs.length);
     })().catch(() => {});
+  }
+  // Guardamos el escaneo completo (todas las categorías) en cache y devolvemos solo la categoría pedida.
+  if (scanTabs) {
+    const ck = 'scan:' + (accountFilter || 'all');
+    msgScanCache[ck] = { ts: Date.now(), items: allMessages.slice() };
+    allMessages = allMessages.filter(m => m.categoria === statusFilter);
   }
   allMessages.sort((a, b) => new Date(b.last_message_date) - new Date(a.last_message_date));
   sendJSON(res, 200, allMessages);
@@ -4045,6 +4098,9 @@ route('POST', '/api/messages/reply', async (req, res) => {
       if (!db.dismissed_msg_packs) db.dismissed_msg_packs = {};
       db.dismissed_msg_packs[String(packId)] = new Date().toISOString();
       saveDB(db);
+      // Mover la conversación a "Respondidos" en el cache al instante (sin re-escanear).
+      msgScanCachePatch(it => String(it.pack_id) === String(packId) || String(it.order_id) === String(order_id),
+        { categoria: 'answered', is_unread: false, is_dismissed: true });
     } catch (e) { console.log('[MSG REPLY] no se pudo auto-dismiss:', e.message || e); }
     // Además la marcamos LEÍDA en ML (con 1 reintento) para que el contador de ML baje al instante.
     (async () => {
@@ -4188,6 +4244,9 @@ route('POST', '/api/messages/dismiss', async (req, res) => {
   if (!db.dismissed_msg_packs) db.dismissed_msg_packs = {};
   db.dismissed_msg_packs[String(pack_id)] = new Date().toISOString();
   saveDB(db);
+  // Movemos la conversación a "Respondidos" en el cache al instante (sin re-escanear).
+  msgScanCachePatch(it => String(it.pack_id) === String(pack_id),
+    { categoria: 'answered', is_unread: false, is_dismissed: true });
   sendJSON(res, 200, { ok: true });
 });
 // GET /api/prep/claims — returns {order_id: 'open'|'closed'} for orders with claims (last 90 days)
