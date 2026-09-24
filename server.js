@@ -3948,7 +3948,7 @@ route('GET', '/api/messages/diag', async (req, res) => {
     }
     row.packs_plain = await probe({ role: 'seller', tag: 'post_sale' });
     row.packs_limit = await probe({ role: 'seller', tag: 'post_sale', limit: 50, offset: 0 });
-    try { const j = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' }); row.unread = { ok: true, keys: Object.keys(j).slice(0, 8), count: (j.count != null ? j.count : (j.results || []).length) }; }
+    try { const j = await mlGet('https://api.mercadolibre.com/messages/unread', token, { role: 'seller', tag: 'post_sale' }); row.unread = { ok: true, keys: Object.keys(j).slice(0, 8), total: j.total, results_len: (j.results || []).length, sample: (j.results || []).slice(0, 4) }; }
     catch (e) { row.unread = { ok: false, status: e.response && e.response.status, msg: String((e.response && e.response.data && e.response.data.message) || e.message || '').slice(0, 140) }; }
     out.push(row);
   }
