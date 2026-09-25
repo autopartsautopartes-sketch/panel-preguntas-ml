@@ -11212,6 +11212,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // Esos se actualizan al entrar al tab, al responder/pasar a respondidos, o con el botón 🔄.
     if (currentSection === 'messages' && messageStatus === 'unread') loadMessages();
   }, 15000);
+  // Contable: auto-refresco de la solapa Transacción (y las planillas de solo-lectura) cada 15s,
+  // para que aparezcan los movimientos nuevos que empujan los userscripts sin refrescar a mano.
+  // No molesta si estás cargando manual, derivando, sincronizando o escribiendo en un filtro.
+  setInterval(async () => {
+    if (currentSection !== 'contable') return;
+    if (_cont.tab !== 'transaccion') return;
+    if (_cont.showManual || _cont.derivarId || _syncing) return;
+    if (typeof isUserTyping === 'function' && isUserTyping()) return;
+    var ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) return;
+    try { var res = await fetch('/api/contable/data'); _cont.data = await res.json(); renderContable(); } catch (e) {}
+  }, 15000);
   // Dashboard: refrescar SOLO la parte superior (KPIs + ventas del día) cada 30s,
   // y únicamente si el usuario está parado en el Dashboard (no si navegó a otra sección).
   setInterval(() => {
