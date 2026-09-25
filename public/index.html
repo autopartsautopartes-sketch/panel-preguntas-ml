@@ -7564,8 +7564,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           '<div class="sale-item-meta">' + (item.quantity || 1) + ' unidad' + ((item.quantity || 1) !== 1 ? 'es' : '') + (item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : '') + '</div></div></div>'
         ).join('');
         html += '<div style="margin-top:10px">' +
-          '<label style="font-size:12px;color:#666;font-weight:600;display:block;margin-bottom:4px">¿Cuál es el motivo?</label>' +
+          '<label style="font-size:12px;color:#666;font-weight:600;display:block;margin-bottom:4px">Motivo de la cancelación</label>' +
           '<textarea id="cancmot-' + oid + '" oninput="cancelarMotivoInput(\'' + oid + '\')" placeholder="Escribí el motivo de la cancelación…" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #e0a800;border-radius:8px;font-size:13px;min-height:52px;resize:vertical;font-family:inherit">' + escapeHtml(order.cancel_motivo || '') + '</textarea>' +
+          '</div>';
+        // Nota original de ML (la que tenía la venta en Sin preparar)
+        html += '<div style="margin-top:8px;padding:8px 10px;background:#f8fafc;border:1px solid #eef2f7;border-radius:8px;font-size:12.5px;color:#374151">' +
+          '<span style="color:#6b7280;font-weight:600">📝 Nota original de ML:</span> ' +
+          (order.notes ? escapeHtml(order.notes) : '<span style="color:#9ca3af">(sin nota)</span>') +
           '</div>';
         html += '<div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
           '<span>| Orden: <a onclick="verVentaPrep(\'' + oid + '\',\'' + order.account_id + '\')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#' + oid + '</a></span>' +
@@ -8233,10 +8238,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const saleDataStr = btn.dataset.saleJson;
     let saleData;
     try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch (e) { showToast('Error al procesar datos', 'error'); return; }
-    if (!confirm('¿Mandar esta venta a "Para Cancelar"? Vas a tener que escribir el motivo en esa solapa.')) return;
+    // Pedimos el motivo ACÁ (obligatorio) antes de mandarla a Para Cancelar.
+    const motivo = (prompt('¿Cuál es el motivo de la cancelación? (obligatorio)') || '').trim();
+    if (!motivo) { showToast('Cancelación no enviada: falta el motivo', 'error'); return; }
+    // Capturamos la nota original de ML de la tarjeta para mostrarla después.
+    let noteText = '';
+    const saleCard = btn.closest('.sale-card');
+    if (saleCard) { const noteEl = saleCard.querySelector('[id^="prep-note-display-"]'); if (noteEl && noteEl.dataset.noteText) noteText = noteEl.dataset.noteText; }
     btn.disabled = true; btn.textContent = 'Procesando...';
     try {
-      const res = await fetch('/api/prep/para-cancelar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(saleData) });
+      const res = await fetch('/api/prep/para-cancelar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...saleData, notes: noteText, cancel_motivo: motivo }) });
       if (res.ok) {
         showToast('Movida a Para Cancelar', 'success');
         prepRemoveCard(btn);
