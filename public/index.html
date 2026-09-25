@@ -7720,8 +7720,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       // Estados de ML que NO deben estar en "Sin preparar": van directo a Finalizadas (auto).
       const AUTO_FINISH_STATUSES = ['in_transit', 'cancelled', 'delivered'];
       const keyOf = (sale) => sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
-      // Ventas en camino / canceladas / entregadas que todavía no están cargadas → a Finalizadas automático.
-      const toAuto = allSales.filter(sale => !inPrepIds.has(keyOf(sale)) && AUTO_FINISH_STATUSES.includes(sale.status));
+      // Ventas "a acordar" viejas: ML no expone su estado de envío, pero si tienen +30 días ya están
+      // entregadas/resueltas. Las damos por finalizadas para que no queden colgadas en Sin preparar.
+      const PREP_AGREEMENT_DONE_DAYS = 30;
+      const nowMs = Date.now();
+      const esAcordarViejo = (sale) => sale.shipping_type === 'agreement' && sale.status !== 'cancelled' &&
+        sale.date_created && (nowMs - new Date(sale.date_created).getTime() > PREP_AGREEMENT_DONE_DAYS * 86400000);
+      const debeAutoFinalizar = (sale) => AUTO_FINISH_STATUSES.includes(sale.status) || esAcordarViejo(sale);
+      // Ventas en camino / canceladas / entregadas (o "acordar" viejas) que aún no están cargadas → Finalizadas auto.
+      const toAuto = allSales.filter(sale => !inPrepIds.has(keyOf(sale)) && debeAutoFinalizar(sale));
       if (toAuto.length) {
         try {
           await fetch('/api/prep/auto-finish', {
@@ -7734,7 +7741,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 account_id: sale.account_id, account_name: sale.account_name, seller_id: sale.seller_id,
                 buyer_name: sale.buyer_name, buyer_id: String(sale.buyer_id || ''),
                 items: sale.items, shipping_id: sale.shipping_id || null, shipping_type: sale.shipping_type,
-                total_amount: sale.total_amount || 0, date_created: sale.date_created, ml_status: sale.status
+                total_amount: sale.total_amount || 0, date_created: sale.date_created,
+                ml_status: AUTO_FINISH_STATUSES.includes(sale.status) ? sale.status : 'Acordar (antigua)'
               }))
             })
           });
@@ -7742,8 +7750,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         toAuto.forEach(sale => inPrepIds.add(keyOf(sale)));
       }
       let pendingSales = allSales.filter(sale => {
-        if (inPrepIds.has(keyOf(sale))) return false;                  // ya en prep o finalizadas (incluye auto)
-        if (AUTO_FINISH_STATUSES.includes(sale.status)) return false;  // en camino / cancelado / entregado
+        if (inPrepIds.has(keyOf(sale))) return false;   // ya en prep o finalizadas (incluye auto)
+        if (debeAutoFinalizar(sale)) return false;      // en camino / cancelado / entregado / acordar viejo
         return true;
       });
       // Filtro por número de venta: matchea order_id, pack_id o cualquiera de los order_ids del pack.
@@ -7820,6 +7828,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px;flex-wrap:wrap">
               <div class="sale-actions" style="margin-top:0">
                 ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Etiqueta</button>` : ''}
+                <a href="/?section=sales&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank" title="Abrir esta venta en el panel (nueva ventana)">👁️ Ver venta</a>
                 <a href="/?section=messages&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
                 <a href="/?section=questions&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">❓ Preguntas</a>
               </div>
