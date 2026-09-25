@@ -11376,7 +11376,94 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
 
   /* ---------- RESUMEN ---------- */
   function contResumenHtml() {
-    return '<div class="empty" style="padding:40px"><p>El resumen lo definimos después. Por ahora, cargá los datos en las otras solapas.</p></div>';
+    var c = _cont.como;
+    // Siempre en vivo: si no hay datos o tienen más de 20s, recargar.
+    if (!c || (!c.loading && (Date.now() - (c.ts || 0) > 20000))) {
+      if (!(c && c.loading)) { _cont.como = _cont.como || {}; _cont.como.loading = true; setTimeout(contLoadComoEstoy, 10); }
+    }
+    if (!c || (c.loading && c.ts == null)) {
+      return '<div class="loading"><div class="spinner"></div><p>Calculando tu situación (en vivo)…</p></div>';
+    }
+    var modo = (c.provModo === 'real') ? 'real' : 'facturado';
+    var mp = Number(c.mp) || 0;
+    var cheques = Number(c.cheques) || 0;
+    var prestamos = Number(c.prestamos) || 0;
+    var prov = (modo === 'real') ? (Number(c.provReal) || 0) : (Number(c.provFacturado) || 0);
+    var saldo = mp - cheques - prestamos - prov;
+
+    var row = function (label, val, signo, color) {
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid #eef2f7">' +
+        '<span style="font-weight:600;color:#374151;font-size:14px">' + label + '</span>' +
+        '<span style="font-weight:700;font-size:15px;color:' + color + '">' + signo + contMoney2(Math.abs(val)) + '</span></div>';
+    };
+    var h = '';
+    // Barra superior
+    var cuando = c.ts ? new Date(c.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
+    h += '<h3 style="margin:0;color:#2d3277;font-size:18px">¿Cómo estoy?</h3>';
+    h += '<button onclick="contLoadComoEstoy(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">' + (c.loading ? '⏳' : '↻') + ' Actualizar</button>';
+    if (cuando) h += '<span style="font-size:12px;color:#9ca3af">En vivo · ' + cuando + '</span>';
+    h += '</div>';
+
+    // Tarjeta de composición
+    h += '<div style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;margin-bottom:16px">';
+    h += row('SALDOS MP', mp, '+ ', '#047857');
+    h += row('CHEQUES', cheques, '− ', '#b91c1c');
+    h += row('PRÉSTAMOS', prestamos, '− ', '#b91c1c');
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid #eef2f7">' +
+      '<span style="font-weight:600;color:#374151;font-size:14px">DEUDA PROVEEDORES' +
+      '<span style="display:block;font-size:11px;color:#9ca3af;font-weight:500;margin-top:2px">' +
+      '<label style="cursor:pointer"><input type="radio" name="cmodo" ' + (modo === 'facturado' ? 'checked' : '') + ' onchange="contComoSetModo(\'facturado\')"> Facturado</label> &nbsp; ' +
+      '<label style="cursor:pointer"><input type="radio" name="cmodo" ' + (modo === 'real' ? 'checked' : '') + ' onchange="contComoSetModo(\'real\')"> Con descuento</label></span></span>' +
+      '<span style="font-weight:700;font-size:15px;color:#b91c1c">− ' + contMoney2(Math.abs(prov)) + '</span></div>';
+    // SALDO grande
+    var sColor = saldo >= 0 ? '#065f46' : '#b91c1c';
+    var sBg = saldo >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
+    h += '<div style="background:' + sBg + ';padding:20px 16px;text-align:center">' +
+      '<div style="font-size:13px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Saldo</div>' +
+      '<div style="font-size:40px;font-weight:800;color:' + sColor + ';line-height:1.1;margin-top:4px">' + contMoney2(saldo) + '</div></div>';
+    h += '</div>';
+
+    if (c.errs && c.errs.length) {
+      h += '<div style="max-width:560px;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px">⚠ ' + c.errs.map(escapeHtml).join(' · ') + '</div>';
+    }
+    return h;
+  }
+  function contComoSetModo(m) { _cont.como = _cont.como || {}; _cont.como.provModo = m; if (currentSection === 'contable' && _cont.tab === 'resumen') renderContable(); }
+  // Deuda de proveedores desde el estado de Compras (cuenta corriente).
+  function contComprasDeuda(state) {
+    var provs = (state && state.proveedores) || [], comps = (state && state.comprobantes) || [], pagos = (state && state.pagos) || [];
+    var by = {};
+    provs.forEach(function (p) { by[p.id] = { d1: Number(p.descuento_pct) || 0, d2: Number(p.descuento_pct2) || 0, fact: 0, nc: 0, pag: 0 }; });
+    comps.forEach(function (c) { var b = by[c.proveedor_id]; if (!b) return; if (c.tipo === 'factura') b.fact += Number(c.importe) || 0; else if (c.tipo === 'nc') b.nc += Number(c.importe) || 0; });
+    pagos.forEach(function (pg) { var b = by[pg.proveedor_id]; if (!b) return; b.pag += Number(pg.importe) || 0; });
+    var facturado = 0, real = 0;
+    Object.keys(by).forEach(function (k) { var b = by[k]; var bruto = b.fact - b.nc - b.pag; facturado += bruto; var factor = (1 - b.d1 / 100) * (1 - b.d2 / 100); real += (bruto > 0 ? bruto * factor : bruto); });
+    return { facturado: facturado, real: real };
+  }
+  async function contLoadComoEstoy(force) {
+    _cont.como = _cont.como || {};
+    var prevModo = _cont.como.provModo || 'facturado';
+    _cont.como.loading = true;
+    if (force && currentSection === 'contable' && _cont.tab === 'resumen') renderContable();
+    var errs = [];
+    var mp = 0, cheques = 0, prestamos = 0, provFacturado = 0, provReal = 0;
+    // 1) Saldos MP (en vivo)
+    try { var r1 = await fetch('/api/mp/saldos-resumen', { credentials: 'same-origin' }); var j1 = await r1.json(); mp = (j1.totales && Number(j1.totales.total)) || 0; }
+    catch (e) { errs.push('No pude leer Saldos MP'); }
+    // 2) Cheques (total sin relleno, en vivo)
+    try { var r2 = await fetch('/api/contable/cheques?refresh=1'); var j2 = await r2.json(); cheques = (j2 && j2.total_sin_relleno != null) ? Number(j2.total_sin_relleno) : 0; if (j2 && j2.total_sin_relleno == null) errs.push('Cheques: no se pudo leer el total sin relleno'); }
+    catch (e) { errs.push('No pude leer Cheques'); }
+    // 3) Préstamos (deuda = total − pagado)
+    try {
+      var prs = (contD().prestamos) || [];
+      prs.forEach(function (p) { var pagado = (p.pagos || []).reduce(function (s, x) { return s + (Number(x.monto) || 0); }, 0); prestamos += (Number(p.total) || 0) - pagado; });
+    } catch (e) { errs.push('No pude calcular Préstamos'); }
+    // 4) Proveedores (cuenta corriente Compras, en vivo)
+    try { var r4 = await fetch('/api/compras/state', { credentials: 'same-origin' }); if (r4.ok) { var j4 = await r4.json(); var dd = contComprasDeuda(j4); provFacturado = dd.facturado; provReal = dd.real; } else { errs.push('No pude leer Deuda proveedores'); } }
+    catch (e) { errs.push('No pude leer Deuda proveedores'); }
+    _cont.como = { loading: false, ts: Date.now(), mp: mp, cheques: cheques, prestamos: prestamos, provFacturado: provFacturado, provReal: provReal, provModo: prevModo, errs: errs };
+    if (currentSection === 'contable' && _cont.tab === 'resumen') renderContable();
   }
 
   /* ---------- Opciones de selects ---------- */
