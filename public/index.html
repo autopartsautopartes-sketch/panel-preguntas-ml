@@ -997,7 +997,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // ==================== SALDOS MERCADO PAGO ====================
   var _saldos = { cuenta: 'RESUMEN', data: null, resumen: null, loading: false, refreshing: false };
   // Cuentas: solo las que tienen token MP cargado en Render funcionan. Agregá acá a medida que crees las apps.
-  var _saldosCuentas = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  var _saldosCuentas = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'];
   var _saldosConToken = ['MARA']; // las que ya tienen MP_TOKEN_* en Render
   function _sMoney(n) { const v = Math.round(Number(n) || 0); return '$ ' + v.toLocaleString('es-AR'); }
   function _sFecha(iso) { if (!iso || iso.length < 10) return iso || ''; const p = iso.slice(0, 10).split('-'); return p[2] + '/' + p[1]; }
@@ -7509,7 +7509,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         ${can_operate ? `<button class="prep-tab ${currentPrepTab==='en-preparacion'?'active':''}" onclick="switchPrepTab('en-preparacion')">🔄 En Preparación</button>` : ''}
         <button class="prep-tab ${currentPrepTab==='finalizadas'?'active':''}" onclick="switchPrepTab('finalizadas')">✅ Finalizadas</button>
         ${can_manage ? `<button class="prep-tab ${currentPrepTab==='para-cancelar'?'active':''}" onclick="switchPrepTab('para-cancelar')" style="${prepCancelarCount>0?'color:#b91c1c;border-color:#e74c3c':''}">🚫 Para Cancelar${prepCancelarCount>0?` (${prepCancelarCount})`:''}</button>` : ''}
-        ${can_manage ? `<button class="prep-tab ${currentPrepTab==='advertencia'?'active':''}" onclick="switchPrepTab('advertencia')" style="${prepAdvertCount>0?'color:#b45309;border-color:#f59e0b':''}">⚠️ Advertencia${prepAdvertCount>0?` (${prepAdvertCount})`:''}</button>` : ''}
+        ${currentUser?.role === 'admin' ? `<button class="prep-tab ${currentPrepTab==='advertencia'?'active':''}" onclick="switchPrepTab('advertencia')" style="${prepAdvertCount>0?'color:#b45309;border-color:#f59e0b':''}">⚠️ Advertencia${prepAdvertCount>0?` (${prepAdvertCount})`:''}</button>` : ''}
         ${currentUser?.role === 'admin' ? `<button class="prep-tab ${currentPrepTab==='estadisticas'?'active':''}" onclick="switchPrepTab('estadisticas')">📊 Estadísticas</button>` : ''}
       </div>
       <div id="prep-tab-content"></div>
@@ -7673,8 +7673,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   let _prepAdvertPrev = 0;
   async function refreshPrepAdvert() {
-    const canManage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
-    if (!canManage) return;
+    // La Advertencia (badge + aviso) es SOLO para el admin. Los gestores no la ven.
+    if (currentUser?.role !== 'admin') { const b = document.getElementById('badge-prep-advert'); if (b) b.style.display = 'none'; return; }
     try {
       const r = await fetch('/api/prep/advert-count', { credentials: 'same-origin' });
       const d = await r.json();
@@ -11769,7 +11769,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!c || (c.loading && c.ts == null)) {
       return '<div class="loading"><div class="spinner"></div><p>Calculando tu situación (en vivo)…</p></div>';
     }
-    var modo = (c.provModo === 'real') ? 'real' : 'facturado';
+    var modo = (c.provModo === 'facturado') ? 'facturado' : 'real'; // por defecto SIEMPRE con descuento
     var mp = Number(c.mp) || 0;
     var cheques = Number(c.cheques) || 0;
     var prestamos = Number(c.prestamos) || 0;
@@ -11828,7 +11828,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   async function contLoadComoEstoy(force) {
     _cont.como = _cont.como || {};
-    var prevModo = _cont.como.provModo || 'facturado';
+    var prevModo = _cont.como.provModo || 'real'; // arranca con descuento
     _cont.como.loading = true;
     if (force && currentSection === 'contable' && _cont.tab === 'resumen') renderContable();
     var errs = [];
