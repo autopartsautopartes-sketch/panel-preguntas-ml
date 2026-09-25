@@ -13616,6 +13616,7 @@ route('GET', '/api/contable/data', async (req, res) => {
     transacciones: db.contable.transacciones,
     intereses_adelanto: db.contable.intereses_adelanto,
     prestamos: db.contable.prestamos,
+    mp_last_push: db.contable.mp_last_push || {},
     cuentas: ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE']
   });
 });
@@ -13644,7 +13645,9 @@ route('POST', '/api/contable/mutate', async (req, res) => {
         break;
       }
       case 'tx.purge_mp': {
-        c.transacciones = c.transacciones.filter(t => t.origen !== 'mp');
+        // Borra SOLO las transacciones de MP que siguen PENDIENTES (sin derivar). Las que ya derivaste
+        // (viven en Negocio/Casa/Banco/etc) NO se tocan.
+        c.transacciones = c.transacciones.filter(t => !(t.origen === 'mp' && !t.derivado));
         break;
       }
       case 'rubro.save': {
@@ -13801,6 +13804,8 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   const movs = Array.isArray(body.movimientos) ? body.movimientos : [];
   const cur = contCurrentPeriod(db);
   const excl = (tipo, desc) => (tipo === 'sales' || tipo === 'in_money' || tipo === 'transfers_received' || tipo === 'pix_received' || /venta en mercado libre|devoluci[oó]n de dinero/.test(desc));
+  // Rubro de Negocio para auto-derivar "Pago de factura" → Facturas ML.
+  const rubroFacturas = (db.contable.config.rubros.negocio || []).find(r => /factura/i.test(String(r.nombre || '')));
   let added = 0, skipped = 0;
   for (const m of movs) {
     const mpId = String(m.mp_id || m.operacion || '').trim();
@@ -13829,17 +13834,24 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
     if (has(mpId)) { skipped++; continue; }
     const opFinal = String(m.operacion || '').trim();
     if (opFinal && hasOp(opFinal)) { skipped++; continue; }
+    // Auto-derivar "Pago de factura" → Negocio / Facturas ML (no queda pendiente en Transacción).
+    const esFactura = /pago de factura/.test(desc);
+    const autoDeriv = (esFactura && rubroFacturas) ? { derivado: 'negocio', rubro_id: rubroFacturas.id, estado: 'derivado' } : { derivado: null, rubro_id: null, estado: 'pendiente' };
     db.contable.transacciones.push({
       id: contId(db, 't'), period_id: cur ? cur.id : null, origen: 'mp', mp_id: mpId,
-      fecha: String(m.fecha || '').slice(0, 10), operacion: opFinal || mpId, cuenta: cuenta,
+      fecha: String(m.fecha || '').slice(0, 10), hora: String(m.hora || '').slice(0, 5),
+      operacion: opFinal || mpId, cuenta: cuenta,
       detalle: m.titulo || m.descripcion || 'Movimiento MP',
       monto: Math.round(Math.abs(monto) * 100) / 100,
       tipo_mp: tipo, forma_pago: null, cheque: null, tarjeta: null,
-      derivado: null, rubro_id: null, subrubro_id: null,
-      nota: (m.descripcion && m.descripcion !== m.titulo) ? m.descripcion : '', estado: 'pendiente'
+      derivado: autoDeriv.derivado, rubro_id: autoDeriv.rubro_id, subrubro_id: null,
+      nota: (m.descripcion && m.descripcion !== m.titulo) ? m.descripcion : '', estado: autoDeriv.estado
     });
     added++;
   }
+  // Registrar última sincronización de esta cuenta (para mostrar en el panel).
+  if (!db.contable.mp_last_push) db.contable.mp_last_push = {};
+  db.contable.mp_last_push[cuenta] = { ts: new Date().toISOString(), added: added };
   saveDB(db);
   return sendJSON(res, 200, { ok: true, cuenta, added, skipped });
 });
