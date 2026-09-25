@@ -13799,6 +13799,12 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   if (body.mode === 'probe') {
     const ids = Array.isArray(body.ids) ? body.ids : [];
     const nuevos = ids.filter(id => id && !has(id));
+    // Registramos la última vez que la cuenta CHEQUEÓ (aunque no tenga nada nuevo), así la leyenda
+    // "Última sync" muestra que está al día y no parece dormida cuando simplemente no hay novedades.
+    if (!db.contable.mp_last_push) db.contable.mp_last_push = {};
+    const prev = db.contable.mp_last_push[cuenta] || {};
+    db.contable.mp_last_push[cuenta] = { ts: new Date().toISOString(), added: prev.added || 0 };
+    saveDB(db);
     return sendJSON(res, 200, { ok: true, cuenta, nuevos });
   }
   const movs = Array.isArray(body.movimientos) ? body.movimientos : [];
