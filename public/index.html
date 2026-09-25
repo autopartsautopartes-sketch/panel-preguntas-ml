@@ -11867,7 +11867,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!filtroActivo) {
       // ---- VISTA POR DEFECTO: sólo totales por fecha del período de Configuración ----
       var enPeriodo = rows.filter(function (r) {
-        var ord = contParseFechaOrd(r.fecha_h || r.fecha);
+        var ord = contParseFechaOrd(r.fecha_h); // SOLO col H (fecha de pago)
         if (ord == null) return false;
         if (perIni != null && ord < perIni) return false;
         if (perFin != null && ord > perFin) return false;
@@ -11911,7 +11911,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function contTotalesPorFechaTabla(rows, esPeriodo) {
     var porFecha = {};
     rows.forEach(function (r) {
-      var fk = contFechaKey(r.fecha_h != null && r.fecha_h !== '' ? r.fecha_h : r.fecha);
+      // SOLO columna H (fecha de pago). Si no tiene fecha de pago válida, no entra en el resumen.
+      if (contParseFechaOrd(r.fecha_h) == null) return;
+      var fk = contFechaKey(r.fecha_h);
       var mv = contMontoNum(r.monto_e != null && r.monto_e !== '' ? r.monto_e : r.monto);
       if (!porFecha[fk]) porFecha[fk] = { total: 0, n: 0 };
       porFecha[fk].total += mv; porFecha[fk].n += 1;
