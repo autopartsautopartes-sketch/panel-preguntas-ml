@@ -11905,7 +11905,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function contTotalesPorFechaTabla(rows, esPeriodo) {
     var porFecha = {};
     rows.forEach(function (r) {
-      var fk = (r.fecha_h != null && r.fecha_h !== '') ? r.fecha_h : (r.fecha || '(sin fecha)');
+      var fk = contFechaKey(r.fecha_h != null && r.fecha_h !== '' ? r.fecha_h : r.fecha);
       var mv = contMontoNum(r.monto_e != null && r.monto_e !== '' ? r.monto_e : r.monto);
       if (!porFecha[fk]) porFecha[fk] = { total: 0, n: 0 };
       porFecha[fk].total += mv; porFecha[fk].n += 1;
@@ -11936,15 +11936,25 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '</tr></tfoot></table></div>';
     return h;
   }
-  // Convierte "dd/mm/aaaa" (o aaaa-mm-dd) a un número ordenable; null si no se puede.
+  // Convierte una fecha a número ordenable (aaaammdd); null si no se puede.
+  // Soporta: dd/mm/aaaa, aaaa-mm-dd, y dd/mm SIN año (asume el año en curso).
   function contParseFechaOrd(s) {
     if (!s) return null;
     var t = String(s).trim();
-    var m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+    var m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/); // dd/mm/aaaa
     if (m) { var d = +m[1], mo = +m[2], y = +m[3]; if (y < 100) y += 2000; return y * 10000 + mo * 100 + d; }
-    m = t.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+    m = t.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/); // aaaa-mm-dd
     if (m) return (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]);
+    m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})$/); // dd/mm (sin año) → año en curso
+    if (m) { var d2 = +m[1], mo2 = +m[2]; if (mo2 < 1 || mo2 > 12 || d2 < 1 || d2 > 31) return null; return (new Date().getFullYear()) * 10000 + mo2 * 100 + d2; }
     return null;
+  }
+  // Devuelve la fecha normalizada como "dd/mm/aaaa" para agrupar/mostrar; si no parsea, el texto original.
+  function contFechaKey(s) {
+    var ord = contParseFechaOrd(s);
+    if (ord == null) return (s == null || s === '') ? '(sin fecha)' : String(s).trim();
+    var y = Math.floor(ord / 10000), mo = Math.floor((ord % 10000) / 100), d = ord % 100;
+    return String(d).padStart(2, '0') + '/' + String(mo).padStart(2, '0') + '/' + y;
   }
   function contExportCheques() {
     var d = _cont.chequesData || {}; var f = _cont.filtros.cheques || {}; var q = (f.q || '').toLowerCase();
