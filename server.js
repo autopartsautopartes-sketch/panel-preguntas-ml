@@ -4802,6 +4802,10 @@ route('GET', '/api/sales', async (req, res) => {
             permalink: cached.permalink || '', brand: cached.brand || ''
           });
         }
+        // ¿Se devolvió el dinero? (pagos refunded/charged_back, monto reintegrado, o tags de devolución)
+        const _pays = order.payments || [];
+        const refunded = _pays.some(p => ['refunded', 'charged_back'].includes(String(p.status)) || (Number(p.transaction_amount_refunded) || 0) > 0)
+          || (Array.isArray(order.tags) && order.tags.some(t => ['refunded', 'order_refunded', 'reversed'].includes(String(t))));
         rawOrders.push({
           order_id: order.id, pack_id: order.pack_id || null,
           date_created: order.date_created, status: displayStatus,
@@ -4809,6 +4813,7 @@ route('GET', '/api/sales', async (req, res) => {
           total_amount: order.total_amount || 0,
           buyer_name: order.buyer?.nickname || 'Comprador', buyer_id: order.buyer?.id || '',
           account_name: account.name, account_id: account.id, seller_id: account.seller_id,
+          refunded: refunded,
           items, affects_reputation: !(shippingStatus === 'cancelled' && shippingSubstatus === 'cancelled_manually')
         });
       }
@@ -4828,6 +4833,7 @@ route('GET', '/api/sales', async (req, res) => {
         packMap[o.pack_id].items.push(...o.items);
         packMap[o.pack_id].total_amount += o.total_amount;
         packMap[o.pack_id].order_ids.push(o.order_id);
+        if (o.refunded) packMap[o.pack_id].refunded = true;
       }
     } else {
       singles.push({ ...o, order_ids: [o.order_id] });
@@ -5415,7 +5421,7 @@ route('POST', '/api/prep/add', async (req, res) => {
   const { order_id, order_ids, pack_id, account_id, account_name, seller_id, buyer_name, buyer_id, items, shipping_id, shipping_type, total_amount, date_created, priority, notes, note_id, finish_type, shipping_data } = body;
   if (!order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
   const sucursal = ['Rufino', 'San Martin'].includes(String(body.sucursal || '')) ? String(body.sucursal) : 'Rufino';
-  const validFinishTypes = ['dropshipping', 'puerta'];
+  const validFinishTypes = ['dropshipping', 'puerta', 'finalizado'];
   const isDirectDone = validFinishTypes.includes(finish_type);
   const db = loadDB();
   if (!db.prep_orders) db.prep_orders = [];
@@ -5506,6 +5512,99 @@ route('POST', '/api/prep/auto-finish', async (req, res) => {
   if (added) saveDB(db);
   sendJSON(res, 200, { ok: true, added });
 });
+// PARA CANCELAR: la venta se manda a una lista de espera de cancelación. Requiere un motivo para
+// confirmar. Cuando ML la cancela o devuelve el dinero, pasa sola a Finalizadas.
+route('POST', '/api/prep/para-cancelar', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const b = await parseBody(req);
+  if (!b.order_id) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  if (!db.prep_orders) db.prep_orders = [];
+  const now = new Date().toISOString();
+  const oid = String(b.order_id);
+  let o = db.prep_orders.find(x => x.order_id === oid);
+  if (o) {
+    o.status = 'para_cancelar';
+    o.cancel_motivo = o.cancel_motivo || '';
+    o.cancel_confirmado = o.cancel_confirmado || false;
+    o.para_cancelar_at = now;
+  } else {
+    const sucursal = ['Rufino', 'San Martin'].includes(String(b.sucursal || '')) ? String(b.sucursal) : 'Rufino';
+    db.prep_orders.push({
+      order_id: oid, order_ids: b.order_ids || [oid], pack_id: b.pack_id || null,
+      account_id: b.account_id, account_name: b.account_name, seller_id: b.seller_id,
+      buyer_name: b.buyer_name, buyer_id: String(b.buyer_id || ''), sucursal,
+      items: b.items || [], shipping_id: b.shipping_id ? String(b.shipping_id) : null,
+      shipping_type: b.shipping_type || 'drop_off', total_amount: b.total_amount || 0,
+      date_created: b.date_created || now, status: 'para_cancelar', finish_type: 'normal',
+      cancel_motivo: '', cancel_confirmado: false, para_cancelar_at: now,
+      priority: b.priority || 3, notes: b.notes || '', note_id: b.note_id || null,
+      added_at: now, added_by: sess.username, done_at: null, done_by: null, shipping_data: b.shipping_data || null
+    });
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+// Confirmar la cancelación: exige motivo. Queda en la lista esperando que ML la procese.
+route('POST', '/api/prep/cancelar-confirmar', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id, motivo } = await parseBody(req);
+  const m = String(motivo || '').trim();
+  if (!m) return sendJSON(res, 400, { error: 'Escribí el motivo de la cancelación' });
+  const db = loadDB();
+  const o = (db.prep_orders || []).find(x => x.order_id === String(order_id) && x.status === 'para_cancelar');
+  if (!o) return sendJSON(res, 404, { error: 'No encontrada en Para Cancelar' });
+  o.cancel_motivo = m;
+  o.cancel_confirmado = true;
+  o.cancel_confirmado_at = new Date().toISOString();
+  o.cancel_confirmado_por = sess.username;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+// Sacar de Para Cancelar (arrepentimiento): vuelve a Sin preparar (se borra el registro).
+route('POST', '/api/prep/cancelar-quitar', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id } = await parseBody(req);
+  const db = loadDB();
+  const i = (db.prep_orders || []).findIndex(x => x.order_id === String(order_id) && x.status === 'para_cancelar');
+  if (i < 0) return sendJSON(res, 404, { error: 'No encontrada' });
+  db.prep_orders.splice(i, 1);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+// Auto-finaliza en lote las "para_cancelar" que ML ya canceló/devolvió (las manda el cliente por order_id).
+route('POST', '/api/prep/cancelar-finalizar', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const ids = (Array.isArray(body.order_ids) ? body.order_ids : []).map(String);
+  const db = loadDB();
+  const now = new Date().toISOString();
+  let done = 0;
+  for (const oid of ids) {
+    const o = (db.prep_orders || []).find(x => x.order_id === oid && x.status === 'para_cancelar');
+    if (!o) continue;
+    o.status = 'done';
+    o.finish_type = 'cancelada';
+    o.cancelada_finalizada = true;
+    o.done_at = now;
+    o.done_by = 'automático';
+    done++;
+  }
+  if (done) saveDB(db);
+  sendJSON(res, 200, { ok: true, done });
+});
+// Conteo liviano de "para_cancelar" para el badge de la solapa.
+route('GET', '/api/prep/cancelar-count', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepOperate(sess) && !canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const db = loadDB();
+  const count = (db.prep_orders || []).filter(o => o.status === 'para_cancelar').length;
+  sendJSON(res, 200, { count });
+});
 // ADVERTENCIA: ventas que YA pasaron por preparación (o se finalizaron a mano) y que después el
 // comprador CANCELÓ o abrió un RECLAMO. Se "mueven" a la solapa Advertencia (status='advertencia').
 // Solo se vigilan desde el 21/09/2026 en adelante.
@@ -5560,6 +5659,55 @@ route('POST', '/api/prep/resolve-advertencia', async (req, res) => {
   if (!o.done_by) o.done_by = sess.username;
   saveDB(db);
   sendJSON(res, 200, { ok: true });
+});
+// DIAGNÓSTICO (solo admin): devuelve lo que ML reporta de una orden/venta, para ver de dónde sacar el "entregado".
+// Uso: /api/debug/order?order_id=2000018267118862   (opcional &cuenta=ANTO)
+route('GET', '/api/debug/order', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const u = new URL(req.url, 'http://x');
+  const idRaw = String(u.searchParams.get('order_id') || '').replace(/\D/g, '');
+  const accQ = String(u.searchParams.get('cuenta') || u.searchParams.get('account') || u.searchParams.get('account_id') || '');
+  if (!idRaw) return sendJSON(res, 400, { error: 'Falta order_id' });
+  const db = loadDB();
+  const accounts = db.ml_accounts || [];
+  const chosen = accounts.find(a => String(a.id) === accQ || String(a.name).toUpperCase() === accQ.toUpperCase());
+  const tryAccounts = chosen ? [chosen] : accounts;
+  for (const acc of tryAccounts) {
+    let token;
+    try { token = await getValidToken(acc); } catch (e) { continue; }
+    // 1) intentar como orden
+    let order = null;
+    try { order = await mlGet('https://api.mercadolibre.com/orders/' + idRaw, token); } catch (e) { order = null; }
+    // 2) si no es orden, probar como pack y tomar la primera orden
+    if (!order || !order.id) {
+      try {
+        const pack = await mlGet('https://api.mercadolibre.com/packs/' + idRaw, token);
+        const firstOrderId = pack && pack.orders && pack.orders[0] && pack.orders[0].id;
+        if (firstOrderId) order = await mlGet('https://api.mercadolibre.com/orders/' + firstOrderId, token);
+      } catch (e) { /* seguir */ }
+    }
+    if (!order || !order.id) continue;
+    let shipment = null;
+    const shipId = order.shipping && order.shipping.id;
+    if (shipId) {
+      try { const s = await mlGet('https://api.mercadolibre.com/shipments/' + shipId, token); shipment = { id: shipId, status: s.status, substatus: s.substatus, logistic_type: s.logistic_type, mode: s.mode, tracking_number: s.tracking_number }; }
+      catch (e) { shipment = { id: shipId, error: String(e.message || e) }; }
+    }
+    return sendJSON(res, 200, {
+      cuenta: acc.name,
+      order_id: order.id,
+      pack_id: order.pack_id || null,
+      order_status: order.status,
+      order_status_detail: order.status_detail,
+      tags: order.tags,
+      fulfilled: order.fulfilled,
+      pickup_id: order.pickup_id,
+      shipping_raw: order.shipping,
+      shipment
+    });
+  }
+  sendJSON(res, 404, { error: 'No pude leer la orden con ninguna cuenta', cuentas: accounts.map(a => a.name) });
 });
 // Conteo liviano para el badge/notificación global.
 route('GET', '/api/prep/advert-count', async (req, res) => {
