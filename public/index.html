@@ -11348,9 +11348,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // Barra superior
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
     h += '<button onclick="contToggleManual()" style="padding:8px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">+ Agregar manual</button>';
-    h += '<button onclick="contImportMP()" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">⬇ Traer de Mercado Pago</button>';
+    h += '<button onclick="contReload()" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
     h += '<button onclick="contExportTransacciones()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-weight:600;cursor:pointer">📥 XLSX</button>';
     h += '</div>';
+    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Los movimientos de MP (transferencias, pagos/compras, préstamos, facturas, impuestos, extracciones) entran solos desde el userscript de cada cuenta. Tocá 🔄 para ver los últimos.</div>';
     if (_cont.showManual) h += contManualFormHtml();
     if (_cont.derivarId) h += contDerivarPanelHtml(_cont.derivarId);
     // Filtros
