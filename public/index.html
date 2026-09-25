@@ -7476,6 +7476,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
     if (!can_manage && can_operate) currentPrepTab = 'en-preparacion';
     renderPrepTabs();
+    // Detección de advertencias en segundo plano (no re-renderiza solapas).
+    if (can_manage) setTimeout(scanPrepAdvertencias, 800);
   }
   function renderPrepTabs() {
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
@@ -7547,11 +7549,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
     } catch (e) { /* silencioso */ }
     prepAdvertScanning = false;
+    // Solo actualizamos el badge/aviso global. NO re-renderizamos solapas (eso interrumpía impresión y causaba bucle).
     await refreshPrepAdvert();
-    // Si estoy viendo Preparación, refresco la vista para reflejar los movimientos.
-    if (currentSection === 'prep' && (currentPrepTab === 'advertencia' || currentPrepTab === 'finalizadas' || currentPrepTab === 'en-preparacion')) {
-      renderPrepTabs();
-    }
   }
   let _prepAdvertPrev = 0;
   async function refreshPrepAdvert() {
@@ -7597,14 +7596,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function loadAdvertencia() {
     const container = document.getElementById('prep-tab-content');
     if (!container) return;
-    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Buscando ventas en advertencia…</p></div>';
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando advertencias…</p></div>';
     try {
-      await scanPrepAdvertencias(); // detecta lo nuevo antes de mostrar
       const res = await fetch('/api/prep/list?status=advertencia');
       const orders = await res.json();
       orders.sort((a, b) => new Date(b.advertencia_at || 0) - new Date(a.advertencia_at || 0));
-      let html = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#7c2d12">' +
-        '⚠️ Estas ventas <b>ya estaban preparadas o listas para enviar</b> y el comprador las <b>canceló</b> o abrió un <b>reclamo</b>. Revisá cada una y tocá <b>Resuelto</b> cuando la cierres.</div>';
+      let html = '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+        '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;font-size:13px;color:#7c2d12;flex:1;min-width:260px">' +
+        '⚠️ Estas ventas <b>ya estaban preparadas o listas para enviar</b> y el comprador las <b>canceló</b> o abrió un <b>reclamo</b>. Revisá cada una y tocá <b>Resuelto</b> cuando la cierres.</div>' +
+        '<button onclick="scanThenReloadAdvert(this)" style="padding:8px 14px;border:none;border-radius:8px;background:#f59e0b;color:#fff;font-weight:600;cursor:pointer;font-size:13px">🔄 Buscar ahora</button></div>';
       html += '<p style="color:#999;font-size:13px;margin-bottom:12px">' + orders.length + ' venta' + (orders.length !== 1 ? 's' : '') + ' en advertencia</p>';
       if (!orders.length) { container.innerHTML = html + '<div class="empty"><p>No hay ventas en advertencia 🎉</p></div>'; return; }
       for (const order of orders) {
@@ -7645,6 +7645,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       await refreshPrepAdvert();
       if (currentSection === 'prep' && currentPrepTab === 'advertencia') renderPrepTabs();
     } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '✓ Resuelto'; } }
+  }
+  async function scanThenReloadAdvert(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Buscando…'; }
+    await scanPrepAdvertencias();
+    if (currentSection === 'prep' && currentPrepTab === 'advertencia') loadAdvertencia();
+    else if (btn) { btn.disabled = false; btn.textContent = '🔄 Buscar ahora'; }
   }
   let prepSalesStatusFilters = [];
   let prepSalesShippingFilters = [];
