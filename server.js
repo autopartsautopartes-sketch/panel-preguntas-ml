@@ -13537,8 +13537,8 @@ function contLoad() {
   if (!db.contable) db.contable = {};
   const c = db.contable;
   if (!c.config) c.config = {};
-  if (c.config.period_start_day == null) c.config.period_start_day = 1;
-  if (c.config.period_end_day == null) c.config.period_end_day = 0; // 0 = fin de mes
+  if (c.config.period_start_day == null) c.config.period_start_day = 23;
+  if (c.config.period_end_day == null) c.config.period_end_day = 22; // ciclo 23 → 22 del mes siguiente
   if (!c.config.rubros) c.config.rubros = {};
   for (const k of ['negocio', 'casa', 'construccion', 'banco', 'prestamos', 'transaccion']) if (!c.config.rubros[k]) c.config.rubros[k] = [];
   if (c.config.current_period_id === undefined) c.config.current_period_id = null;
@@ -13554,6 +13554,23 @@ function contLoad() {
     const ensure = (nombre) => { if (!nb.some(r => String(r.nombre).toLowerCase() === nombre.toLowerCase())) nb.push({ id: contId(db, 'r'), nombre: nombre, subrubros: [] }); };
     ensure('Facturas ML'); ensure('Retenciones'); ensure('Flex');
     c.config._seeded_negocio = true;
+    try { saveDB(db); } catch (e) {}
+  }
+  // Corrección única: si el período seguía en el default viejo (1 → fin de mes), pasarlo a 23 → 22
+  // y recalcular el período abierto (si no cerraste ninguno todavía). Corre una sola vez.
+  if (!c.config._period_2322_v1) {
+    c.config._period_2322_v1 = true;
+    const eraDefaultViejo = (c.config.period_start_day === 1 && (c.config.period_end_day === 0 || c.config.period_end_day == null));
+    if (eraDefaultViejo) {
+      c.config.period_start_day = 23;
+      c.config.period_end_day = 22;
+      const hayCerrados = c.periods.some(pp => pp.closed);
+      const curP = c.periods.find(pp => pp.id === c.config.current_period_id);
+      if (!hayCerrados && curP) {
+        const rng = contPeriodRange(c.config, new Date());
+        curP.start = rng.start; curP.end = rng.end; curP.label = contPeriodLabel(rng.start, rng.end);
+      }
+    }
     try { saveDB(db); } catch (e) {}
   }
   return db;
