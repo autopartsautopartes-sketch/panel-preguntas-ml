@@ -5455,6 +5455,115 @@ route('POST', '/api/prep/add', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true });
 });
+// Auto-finaliza en LOTE las ventas cuyo estado de ML es "en camino", "cancelado" o "entregado":
+// entran directo a Finalizadas con la leyenda "a finalizado automático". Idempotente (saltea las ya cargadas).
+route('POST', '/api/prep/auto-finish', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const list = Array.isArray(body.orders) ? body.orders : [];
+  const db = loadDB();
+  if (!db.prep_orders) db.prep_orders = [];
+  const now = new Date().toISOString();
+  let added = 0;
+  for (const o of list) {
+    const oid = String(o.order_id || '');
+    if (!oid) continue;
+    if (db.prep_orders.find(x => x.order_id === oid)) continue; // ya está (en prep o finalizada)
+    const sucursal = ['Rufino', 'San Martin'].includes(String(o.sucursal || '')) ? String(o.sucursal) : 'Rufino';
+    db.prep_orders.push({
+      order_id: oid,
+      order_ids: o.order_ids || [oid],
+      pack_id: o.pack_id || null,
+      account_id: o.account_id, account_name: o.account_name, seller_id: o.seller_id,
+      buyer_name: o.buyer_name, buyer_id: String(o.buyer_id || ''),
+      sucursal,
+      items: o.items || [],
+      shipping_id: o.shipping_id ? String(o.shipping_id) : null,
+      shipping_type: o.shipping_type || 'drop_off',
+      total_amount: o.total_amount || 0,
+      date_created: o.date_created || now,
+      status: 'done',
+      finish_type: 'auto',
+      auto_finalizado: true,
+      ml_status: String(o.ml_status || ''),   // el estado de ML que la mandó a finalizadas
+      priority: o.priority || 3,
+      notes: o.notes || '',
+      note_id: o.note_id || null,
+      added_at: now,
+      added_by: sess.username,
+      done_at: now,
+      done_by: 'automático',
+      shipping_data: o.shipping_data || null
+    });
+    added++;
+  }
+  if (added) saveDB(db);
+  sendJSON(res, 200, { ok: true, added });
+});
+// ADVERTENCIA: ventas que YA pasaron por preparación (o se finalizaron a mano) y que después el
+// comprador CANCELÓ o abrió un RECLAMO. Se "mueven" a la solapa Advertencia (status='advertencia').
+// Solo se vigilan desde el 21/09/2026 en adelante.
+const PREP_ADVERT_CUTOFF = '2026-09-21';
+route('POST', '/api/prep/mark-advertencia', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const body = await parseBody(req);
+  const items = Array.isArray(body.items) ? body.items : [];
+  const db = loadDB();
+  // Órdenes que están en Tracking como EN CAMINO o ENTREGADA (no deben entrar a Advertencia).
+  const trackEnviadas = new Set();
+  for (const t of (db.tracking_orders || [])) {
+    if (t.estado === 'en_camino' || t.estado === 'entregada') trackEnviadas.add(String(t.order_id));
+  }
+  let marked = 0;
+  for (const it of items) {
+    const oid = String(it.order_id || '');
+    const motivo = (it.motivo === 'reclamo') ? 'reclamo' : 'cancelado';
+    const o = (db.prep_orders || []).find(x => x.order_id === oid);
+    if (!o) continue;
+    if (o.auto_finalizado) continue;                    // las que nunca se prepararon no cuentan
+    if (o.advertencia_resuelta) continue;               // ya resuelta antes
+    if (o.status !== 'in_prep' && o.status !== 'done') continue;
+    if (String(o.date_created || '').slice(0, 10) < PREP_ADVERT_CUTOFF) continue; // solo desde el corte
+    // NO entran a Advertencia si el producto ya salió: en camino / entregado (estado ML)…
+    if (it.ml_status === 'in_transit' || it.ml_status === 'delivered') continue;
+    // …ni si está en Tracking como en camino / entregada (por order_id o cualquiera de sus órdenes).
+    const ids = [oid].concat(o.order_ids || []).map(String);
+    if (ids.some(id => trackEnviadas.has(id))) continue;
+    o.advertencia_from = o.status;
+    o.status = 'advertencia';
+    o.advertencia_motivo = motivo;
+    o.advertencia_at = new Date().toISOString();
+    marked++;
+  }
+  if (marked) saveDB(db);
+  sendJSON(res, 200, { ok: true, marked });
+});
+route('POST', '/api/prep/resolve-advertencia', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const { order_id } = await parseBody(req);
+  const db = loadDB();
+  const o = (db.prep_orders || []).find(x => x.order_id === String(order_id) && x.status === 'advertencia');
+  if (!o) return sendJSON(res, 404, { error: 'Advertencia no encontrada' });
+  o.status = 'done';
+  o.advertencia_resuelta = true;
+  o.advertencia_resuelta_at = new Date().toISOString();
+  o.advertencia_resuelta_por = sess.username;
+  if (!o.done_at) o.done_at = new Date().toISOString();
+  if (!o.done_by) o.done_by = sess.username;
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+// Conteo liviano para el badge/notificación global.
+route('GET', '/api/prep/advert-count', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!canPrepOperate(sess) && !canPrepManage(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
+  const db = loadDB();
+  const count = (db.prep_orders || []).filter(o => o.status === 'advertencia').length;
+  sendJSON(res, 200, { count });
+});
 route('POST', '/api/prep/shipping', async (req, res) => {
   const sess = requireAuth(req);
   if (!canPrepManage(sess) && !canPrepOperate(sess)) return sendJSON(res, 403, { error: 'Acceso denegado' });
