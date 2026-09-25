@@ -5408,10 +5408,12 @@ route('GET', '/api/prep/list', async (req, res) => {
   const db = loadDB();
   let orders = db.prep_orders || [];
   if (statusFilter) orders = orders.filter(o => o.status === statusFilter);
-  // Si el usuario tiene una sucursal asignada (y no es admin), solo ve las órdenes de su sucursal.
+  // Si el usuario tiene una sucursal asignada y es SOLO operario (no admin ni gestor), ve solo su sucursal.
+  // Los que gestionan preparación (can_prep_manage) ven TODO, igual que el admin.
   const u = (db.users || []).find(x => x.id === sess.userId);
   const mySuc = (u && u.prep_sucursal) ? String(u.prep_sucursal) : '';
-  if (mySuc && sess.role !== 'admin') orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
+  const esGestor = sess.role === 'admin' || (u && u.can_prep_manage);
+  if (mySuc && !esGestor) orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
   sendJSON(res, 200, orders);
 });
 route('POST', '/api/prep/add', async (req, res) => {
@@ -7062,7 +7064,7 @@ route('POST', '/api/mp/saldo-push', async (req, res) => {
   let body; try { body = await parseBody(req); } catch (e) { body = {}; }
   const PUSH_TOKEN = process.env.SALDO_PUSH_TOKEN || 'autochap-saldos-push';
   if (String(body.token || '') !== PUSH_TOKEN) return sendJSON(res, 403, { error: 'token inválido' });
-  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'];
   const cuenta = String(body.cuenta || '').trim().toUpperCase();
   if (NOMBRES_MP.indexOf(cuenta) === -1) return sendJSON(res, 400, { error: 'cuenta inválida' });
   const nOrNull = v => (v == null || v === '' || isNaN(Number(v))) ? null : Math.round(Number(v) * 100) / 100;
@@ -7089,7 +7091,7 @@ route('GET', '/api/mp/saldos', async (req, res) => {
   if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
   let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
   const nombre = (q.get('cuenta') || 'MARA').trim().toUpperCase().replace(/[^A-Z0-9_]/g, '');
-  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'];
   const dbTop = loadDB();
   const pushMap = dbTop.saldos_push || {};
   // Cuentas disponibles = las que tienen token de app O datos pusheados por el userscript
@@ -7213,7 +7215,7 @@ route('GET', '/api/mp/saldos', async (req, res) => {
 route('GET', '/api/mp/saldos-resumen', async (req, res) => {
   const s = requireAuth(req);
   if (!s || s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
-  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const NOMBRES_MP = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'];
   const dbTop = loadDB();
   const pushMap = dbTop.saldos_push || {};
   const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
@@ -13898,7 +13900,7 @@ route('GET', '/api/contable/data', async (req, res) => {
     intereses_adelanto: db.contable.intereses_adelanto,
     prestamos: db.contable.prestamos,
     mp_last_push: db.contable.mp_last_push || {},
-    cuentas: ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE']
+    cuentas: ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL']
   });
 });
 // POST mutaciones por acción (una sola ruta para no multiplicar endpoints).
@@ -14064,7 +14066,7 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   let body; try { body = await parseBody(req); } catch (e) { body = {}; }
   const PUSH_TOKEN = process.env.CONTABLE_PUSH_TOKEN || 'autochap-contable-push';
   if (String(body.token || '') !== PUSH_TOKEN) return sendJSON(res, 403, { error: 'token inválido' });
-  const NOMBRES = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const NOMBRES = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'];
   const cuenta = String(body.cuenta || '').trim().toUpperCase();
   if (NOMBRES.indexOf(cuenta) === -1) return sendJSON(res, 400, { error: 'cuenta inválida' });
   const db = contLoad();
