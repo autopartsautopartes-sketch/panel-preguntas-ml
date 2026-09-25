@@ -13624,6 +13624,18 @@ route('POST', '/api/contable/mutate', async (req, res) => {
       case 'config.update': {
         if (p.period_start_day != null) c.config.period_start_day = _cclamp(p.period_start_day, 1, 28);
         if (p.period_end_day != null) c.config.period_end_day = (parseInt(p.period_end_day) === 0 ? 0 : _cclamp(p.period_end_day, 1, 28));
+        // Si todavía no cerraste ningún período, recalculamos el período actual (abierto) con la nueva
+        // definición, para que 23→22 aplique ya (sin tener que cerrar/abrir).
+        const hayCerrados = c.periods.some(pp => pp.closed);
+        const curP = contCurPeriod(db);
+        if (!hayCerrados && curP) {
+          const rng = contPeriodRange(c.config, new Date());
+          curP.start = rng.start; curP.end = rng.end; curP.label = contPeriodLabel(rng.start, rng.end);
+        }
+        break;
+      }
+      case 'tx.purge_mp': {
+        c.transacciones = c.transacciones.filter(t => t.origen !== 'mp');
         break;
       }
       case 'rubro.save': {
