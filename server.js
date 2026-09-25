@@ -13627,7 +13627,7 @@ route('POST', '/api/contable/mutate', async (req, res) => {
         // Si todavía no cerraste ningún período, recalculamos el período actual (abierto) con la nueva
         // definición, para que 23→22 aplique ya (sin tener que cerrar/abrir).
         const hayCerrados = c.periods.some(pp => pp.closed);
-        const curP = contCurPeriod(db);
+        const curP = contCurrentPeriod(db);
         if (!hayCerrados && curP) {
           const rng = contPeriodRange(c.config, new Date());
           curP.start = rng.start; curP.end = rng.end; curP.label = contPeriodLabel(rng.start, rng.end);
@@ -13784,7 +13784,7 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
     return sendJSON(res, 200, { ok: true, cuenta, nuevos });
   }
   const movs = Array.isArray(body.movimientos) ? body.movimientos : [];
-  const cur = contCurPeriod(db);
+  const cur = contCurrentPeriod(db);
   const excl = (tipo, desc) => (tipo === 'sales' || tipo === 'in_money' || tipo === 'transfers_received' || tipo === 'pix_received' || /venta en mercado libre|devoluci[oó]n de dinero/.test(desc));
   let added = 0, skipped = 0;
   for (const m of movs) {
