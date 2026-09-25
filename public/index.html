@@ -11666,22 +11666,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</div>';
     var rows = contFilterPlanilla(all, f);
     var total = rows.reduce(function (s, t) { return s + (Number(t.monto) || 0); }, 0);
-    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px">';
-    h += '<thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Tipo</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Rubro</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Notas</th><th style="padding:8px"></th></tr></thead><tbody>';
-    if (!rows.length) h += '<tr><td colspan="7" style="padding:18px;text-align:center;color:#9ca3af">Sin registros. Derivá transacciones desde la solapa Transacción.</td></tr>';
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:980px">';
+    h += '<thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Tipo</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Detalle</th><th style="padding:8px">Rubro</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Notas</th><th style="padding:8px"></th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="8" style="padding:18px;text-align:center;color:#9ca3af">Sin registros. Derivá transacciones desde la solapa Transacción.</td></tr>';
     rows.forEach(function (t) {
       var rub = contRubroNombre(dest, t.rubro_id); var sub = t.subrubro_id ? contSubNombre(dest, t.rubro_id, t.subrubro_id) : '';
       h += '<tr style="border-bottom:1px solid #eef2f7">' +
-        '<td style="padding:8px">' + contFechaDisp(t.fecha) + '</td>' +
+        '<td style="padding:8px">' + contFechaDisp(t.fecha) + (t.hora ? ' <span style="color:#9ca3af">' + escapeHtml(t.hora) + '</span>' : '') + '</td>' +
         '<td style="padding:8px">' + contTipo(t) + '</td>' +
         '<td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(t.detalle || '') + '</td>' +
         '<td style="padding:8px">' + escapeHtml(rub) + (sub ? ' <span style="color:#9ca3af">/ ' + escapeHtml(sub) + '</span>' : '') + '</td>' +
         '<td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td>' +
         '<td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td>' +
         '<td style="padding:8px;white-space:nowrap"><button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#eef;color:#3b3b8f;cursor:pointer;font-size:12px">Editar</button> <button onclick="contUnderivar(\'' + t.id + '\')" title="Volver a pendiente" style="padding:3px 7px;border:none;border-radius:6px;background:#fef9c3;color:#854d0e;cursor:pointer;font-size:12px">↩</button></td>' +
         '</tr>';
     });
-    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="4" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot>';
+    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="5" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot>';
     h += '</table></div>';
     return h;
   }
@@ -11704,8 +11705,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var all = contD().transacciones.filter(function (t) { return t.derivado === dest && (pid == null || t.period_id === pid); });
     if (dest === 'negocio') all = all.filter(function (t) { return contNegClass(dest, t.rubro_id) === 'gastos'; });
     var rows = contFilterPlanilla(all, f);
-    var headers = ['Fecha', 'Tipo', 'Cuenta', 'Rubro', 'Subrubro', 'Monto', 'Notas'];
-    var data = rows.map(function (t) { return [t.fecha, contTipo(t), t.cuenta || '', contRubroNombre(dest, t.rubro_id), t.subrubro_id ? contSubNombre(dest, t.rubro_id, t.subrubro_id) : '', t.monto, t.nota || '']; });
+    var headers = ['Fecha', 'Hora', 'Tipo', 'Cuenta', 'Detalle', 'Rubro', 'Subrubro', 'Monto', 'Notas'];
+    var data = rows.map(function (t) { return [t.fecha, t.hora || '', contTipo(t), t.cuenta || '', t.detalle || '', contRubroNombre(dest, t.rubro_id), t.subrubro_id ? contSubNombre(dest, t.rubro_id, t.subrubro_id) : '', t.monto, t.nota || '']; });
     contExportXLSX(titulo.toLowerCase(), headers, data);
   }
 
@@ -11737,12 +11738,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<button onclick="contClearFiltros(\'neg_' + clase + '\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Limpiar</button>';
     h += '<button onclick="contExportNegEspecial(\'' + clase + '\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">📥 XLSX</button>';
     h += '</div>';
-    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Cuenta</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Notas</th><th style="padding:8px"></th></tr></thead><tbody>';
-    if (!rows.length) h += '<tr><td colspan="5" style="padding:18px;text-align:center;color:#9ca3af">Sin registros.</td></tr>';
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Detalle</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Notas</th><th style="padding:8px"></th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="6" style="padding:18px;text-align:center;color:#9ca3af">Sin registros.</td></tr>';
     rows.forEach(function (t) {
-      h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#eef;color:#3b3b8f;cursor:pointer;font-size:12px">Editar</button> <button onclick="contUnderivar(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fef9c3;color:#854d0e;cursor:pointer;font-size:12px">↩</button></td></tr>';
+      h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + (t.hora ? ' <span style="color:#9ca3af">' + escapeHtml(t.hora) + '</span>' : '') + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px">' + escapeHtml(t.detalle || '') + '</td><td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#eef;color:#3b3b8f;cursor:pointer;font-size:12px">Editar</button> <button onclick="contUnderivar(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fef9c3;color:#854d0e;cursor:pointer;font-size:12px">↩</button></td></tr>';
     });
-    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="2" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot></table></div>';
+    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="3" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot></table></div>';
     return h;
   }
   function contExportNegEspecial(clase) {
@@ -11751,7 +11752,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
     var all = contD().transacciones.filter(function (t) { return t.derivado === 'negocio' && (pid == null || t.period_id === pid) && contNegClass('negocio', t.rubro_id) === clase; });
     var rows = contFilterPlanilla(all, f);
-    contExportXLSX(clase, ['Fecha', 'Cuenta', 'Monto', 'Notas'], rows.map(function (t) { return [t.fecha, t.cuenta || '', t.monto, t.nota || '']; }));
+    contExportXLSX(clase, ['Fecha', 'Hora', 'Cuenta', 'Detalle', 'Monto', 'Notas'], rows.map(function (t) { return [t.fecha, t.hora || '', t.cuenta || '', t.detalle || '', t.monto, t.nota || '']; }));
   }
   // INTERESES ADELANTO (carga directa)
   function contInteresesHtml() {
@@ -11789,8 +11790,98 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
 
   /* ---------- CHEQUES (placeholder Drive) ---------- */
+  function contMontoNum(s) { // "$961.960,00" -> 961960.00
+    if (s == null) return 0;
+    var t = String(s).replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+    var v = parseFloat(t); return isNaN(v) ? 0 : v;
+  }
   function contChequesHtml() {
-    return '<div class="empty" style="padding:40px"><p>La solapa de Cheques va a traer los datos desde tu Excel de Drive. La conectamos en el próximo paso.</p></div>';
+    if (_cont.chequesData) return contChequesTable();
+    if (!_cont.chequesLoading) { _cont.chequesLoading = true; setTimeout(function () { contLoadCheques(false); }, 10); }
+    return '<div class="loading"><div class="spinner"></div><p>Leyendo la planilla de Drive…</p></div>';
+  }
+  async function contLoadCheques(force) {
+    _cont.chequesLoading = true;
+    try { var r = await fetch('/api/contable/cheques' + (force ? '?refresh=1' : '')); _cont.chequesData = await r.json(); }
+    catch (e) { _cont.chequesData = { ok: false, error: 'Error de conexión', rows: [] }; }
+    _cont.chequesLoading = false;
+    if (currentSection === 'contable' && _cont.tab === 'cheques') renderContable();
+  }
+  function contChequesTable() {
+    var d = _cont.chequesData || {};
+    var f = _cont.filtros.cheques || {};
+    var h = '';
+    // Barra superior
+    var cuando = d.ts ? new Date(d.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
+    h += '<button onclick="contLoadCheques(true)" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
+    h += '<button onclick="contExportCheques()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-weight:600;cursor:pointer">📥 XLSX</button>';
+    if (cuando) h += '<span style="font-size:12px;color:#6b7280">Leído de Drive: ' + cuando + '</span>';
+    h += '</div>';
+    if (!d.ok) return h + '<div class="empty" style="padding:30px"><p style="color:#b91c1c">' + escapeHtml(d.error || 'No se pudo leer la planilla.') + '</p><p style="font-size:12px;color:#6b7280">Abrí la planilla en Google Sheets → Compartir → "Acceso general" → <b>Cualquiera con el enlace: Lector</b>. Después tocá 🔄 Actualizar.</p></div>';
+    var all = d.rows || [];
+    // Opciones de filtro (distintas)
+    var uniq = function (key) { var s = {}; all.forEach(function (r) { if (r[key]) s[r[key]] = 1; }); return Object.keys(s).sort(); };
+    var optsSel = function (key, val) { var o = '<option value="">(todas)</option>'; uniq(key).forEach(function (v) { o += '<option value="' + escapeHtml(v) + '"' + (val === v ? ' selected' : '') + '>' + escapeHtml(v) + '</option>'; }); return o; };
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px;background:#f8fafc;padding:10px;border-radius:10px">';
+    h += contFiltroSelectOpts('cheques', 'chequera', 'Chequera', optsSel('chequera', f.chequera), f.chequera);
+    h += contFiltroSelectOpts('cheques', 'tipo', 'Tipo', optsSel('tipo', f.tipo), f.tipo);
+    h += contFiltroSelect('cheques', 'estado', 'Estado', [['', 'Todos'], ['pend', 'Pendientes (sin fecha pago)'], ['pag', 'Pagados']], f.estado);
+    h += contFiltroTexto('cheques', 'Buscar (nº, quién…)', f.q);
+    h += '<button onclick="contClearFiltros(\'cheques\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Limpiar</button>';
+    h += '</div>';
+    // Filtrado
+    var q = (f.q || '').toLowerCase();
+    var rows = all.filter(function (r) {
+      if (f.chequera && r.chequera !== f.chequera) return false;
+      if (f.tipo && r.tipo !== f.tipo) return false;
+      if (f.estado === 'pend' && r.fecha_pago) return false;
+      if (f.estado === 'pag' && !r.fecha_pago) return false;
+      if (q && ((r.numero || '') + ' ' + (r.quien || '') + ' ' + (r.chequera || '') + ' ' + (r.anotados || '')).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    var total = rows.reduce(function (s, r) { return s + contMontoNum(r.monto); }, 0);
+    // Total pedido: columna E (MONTO) de las celdas SIN color de relleno (lo calcula el server con la API de Sheets)
+    if (d.total_sin_relleno != null) {
+      h += '<div style="display:inline-block;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:10px 16px;margin-bottom:10px"><span style="color:#065f46;font-weight:700;font-size:15px">Total sin relleno (col. E): ' + contMoney(d.total_sin_relleno) + '</span></div>';
+    } else if (d.total_sin_relleno_error) {
+      h += '<div style="font-size:12px;color:#b45309;margin-bottom:8px">⚠ No pude calcular el "total sin relleno": ' + escapeHtml(d.total_sin_relleno_error) + '</div>';
+    }
+    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:6px">' + rows.length + ' cheques (filtrados) · total mostrado ' + contMoney(total) + '</div>';
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px"><thead><tr style="background:#f1f5f9;text-align:left">' +
+      '<th style="padding:8px">Nº</th><th style="padding:8px">Chequera</th><th style="padding:8px">Tipo</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Fecha</th><th style="padding:8px">Quién</th><th style="padding:8px">Fecha pago</th><th style="padding:8px">Estado</th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="8" style="padding:18px;text-align:center;color:#9ca3af">Sin cheques con esos filtros.</td></tr>';
+    rows.forEach(function (r) {
+      var pagado = !!r.fecha_pago && !/vencido/i.test(r.fecha_pago);
+      var venc = /vencido/i.test(r.fecha_pago || '');
+      var estado = venc ? '<span style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:10px;font-size:11px">Vencido</span>'
+        : (pagado ? '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:11px">Pagado</span>'
+          : '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:10px;font-size:11px">Pendiente</span>');
+      h += '<tr style="border-bottom:1px solid #eef2f7">' +
+        '<td style="padding:8px">' + escapeHtml(r.numero || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(r.chequera || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(r.tipo || '') + '</td>' +
+        '<td style="padding:8px;text-align:right;font-weight:600">' + escapeHtml(r.monto || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(r.fecha || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(r.quien || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(r.fecha_pago || '') + '</td>' +
+        '<td style="padding:8px">' + estado + '</td>' +
+        '</tr>';
+    });
+    h += '</tbody></table></div>';
+    return h;
+  }
+  function contExportCheques() {
+    var d = _cont.chequesData || {}; var f = _cont.filtros.cheques || {}; var q = (f.q || '').toLowerCase();
+    var rows = (d.rows || []).filter(function (r) {
+      if (f.chequera && r.chequera !== f.chequera) return false;
+      if (f.tipo && r.tipo !== f.tipo) return false;
+      if (f.estado === 'pend' && r.fecha_pago) return false;
+      if (f.estado === 'pag' && !r.fecha_pago) return false;
+      if (q && ((r.numero || '') + ' ' + (r.quien || '') + ' ' + (r.chequera || '')).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    contExportXLSX('cheques', ['Nº', 'Chequera', 'Tipo', 'Monto', 'Fecha', 'Quién', 'Fecha pago'], rows.map(function (r) { return [r.numero, r.chequera, r.tipo, r.monto, r.fecha, r.quien, r.fecha_pago]; }));
   }
 
   /* ---------- PRÉSTAMOS ---------- */
