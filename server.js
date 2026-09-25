@@ -553,7 +553,7 @@ function canPrepOperate(sess) {
 // ==================== SECURITY HEADERS ====================
 function setSecurityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN'); // permite el diálogo (iframe) del propio panel
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
@@ -566,7 +566,7 @@ function setSecurityHeaders(res) {
     "manifest-src 'self'; " +
     "object-src 'none'; " +
     "base-uri 'self'; " +
-    "frame-ancestors 'none'"
+    "frame-ancestors 'self'"
   );
 }
 // ==================== HTTP HELPERS ====================
@@ -5523,11 +5523,13 @@ route('POST', '/api/prep/para-cancelar', async (req, res) => {
   if (!db.prep_orders) db.prep_orders = [];
   const now = new Date().toISOString();
   const oid = String(b.order_id);
+  const motivo0 = String(b.cancel_motivo || '').trim();
   let o = db.prep_orders.find(x => x.order_id === oid);
   if (o) {
     o.status = 'para_cancelar';
-    o.cancel_motivo = o.cancel_motivo || '';
+    o.cancel_motivo = motivo0 || o.cancel_motivo || '';
     o.cancel_confirmado = o.cancel_confirmado || false;
+    if (b.notes && !o.notes) o.notes = b.notes;
     o.para_cancelar_at = now;
   } else {
     const sucursal = ['Rufino', 'San Martin'].includes(String(b.sucursal || '')) ? String(b.sucursal) : 'Rufino';
@@ -5538,7 +5540,7 @@ route('POST', '/api/prep/para-cancelar', async (req, res) => {
       items: b.items || [], shipping_id: b.shipping_id ? String(b.shipping_id) : null,
       shipping_type: b.shipping_type || 'drop_off', total_amount: b.total_amount || 0,
       date_created: b.date_created || now, status: 'para_cancelar', finish_type: 'normal',
-      cancel_motivo: '', cancel_confirmado: false, para_cancelar_at: now,
+      cancel_motivo: motivo0, cancel_confirmado: false, para_cancelar_at: now,
       priority: b.priority || 3, notes: b.notes || '', note_id: b.note_id || null,
       added_at: now, added_by: sess.username, done_at: null, done_by: null, shipping_data: b.shipping_data || null
     });
