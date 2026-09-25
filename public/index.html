@@ -461,6 +461,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       </a>
       <a onclick="showSection('prep')" id="nav-prep" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/></svg><span>Preparación</span>
+        <span class="badge" id="badge-prep-advert" style="display:none;background:#f59e0b">0</span>
       </a>
       <a onclick="showSection('update')" id="nav-update" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5"/><path d="M18 3v4h-4"/><path d="M20 12a8 8 0 0 1-14 5"/><path d="M6 21v-4h4"/></svg><span>Actualizar</span>
@@ -700,6 +701,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
           document.getElementById('mob-prep').style.display = '';
+          if (currentUser.role === 'admin' || currentUser.can_prep_manage) setTimeout(startPrepAdvertMonitor, 1500);
         }
         // Show dashboard nav only for admin or users with can_view_dashboard permission
         if (currentUser.role !== 'admin' && !currentUser.can_view_dashboard) {
@@ -833,6 +835,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_prep_manage || currentUser.can_prep_operate) {
           document.getElementById('nav-prep').style.display = '';
           document.getElementById('mob-prep').style.display = '';
+          if (currentUser.role === 'admin' || currentUser.can_prep_manage) setTimeout(startPrepAdvertMonitor, 1500);
         }
         if (currentUser.role === 'admin' || currentUser.can_view_orders) {
           document.getElementById('nav-orders').style.display = '';
@@ -7458,6 +7461,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // ==================== PREP SECTION ====================
   let currentPrepTab = 'sin-preparar';
   let prepOrdersCache = null;
+  let prepAdvertCount = 0;
+  let prepAdvertBannerDismissed = false;
+  let prepAdvertScanning = false;
   let prepRenderedOrderIds = new Set();
   let prepAutoRefreshTimer = null;
   let acordarPendingData = { saleKey: null, btn: null };
@@ -7480,6 +7486,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         ${can_manage ? `<button class="prep-tab ${currentPrepTab==='sin-preparar'?'active':''}" onclick="switchPrepTab('sin-preparar')">📋 Sin Preparar</button>` : ''}
         ${can_operate ? `<button class="prep-tab ${currentPrepTab==='en-preparacion'?'active':''}" onclick="switchPrepTab('en-preparacion')">🔄 En Preparación</button>` : ''}
         <button class="prep-tab ${currentPrepTab==='finalizadas'?'active':''}" onclick="switchPrepTab('finalizadas')">✅ Finalizadas</button>
+        ${can_manage ? `<button class="prep-tab ${currentPrepTab==='advertencia'?'active':''}" onclick="switchPrepTab('advertencia')" style="${prepAdvertCount>0?'color:#b45309;border-color:#f59e0b':''}">⚠️ Advertencia${prepAdvertCount>0?` (${prepAdvertCount})`:''}</button>` : ''}
         ${currentUser?.role === 'admin' ? `<button class="prep-tab ${currentPrepTab==='estadisticas'?'active':''}" onclick="switchPrepTab('estadisticas')">📊 Estadísticas</button>` : ''}
       </div>
       <div id="prep-tab-content"></div>
@@ -7496,7 +7503,148 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (currentPrepTab === 'sin-preparar') loadSinPreparar();
     else if (currentPrepTab === 'en-preparacion') loadEnPreparacion();
     else if (currentPrepTab === 'estadisticas') loadEstadisticas();
+    else if (currentPrepTab === 'advertencia') loadAdvertencia();
     else loadFinalizadas();
+  }
+  // ===== ADVERTENCIA: ventas ya preparadas que el comprador canceló o reclamó =====
+  const PREP_ADVERT_CUTOFF = '2026-09-21';
+  const PREP_ADVERT_SKIP_ML = ['in_transit', 'delivered']; // ya salió: no es advertencia
+  async function scanPrepAdvertencias() {
+    const canManage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    if (!canManage || prepAdvertScanning) return;
+    prepAdvertScanning = true;
+    try {
+      const [salesRes, prepRes, claimsRes] = await Promise.all([
+        fetch('/api/sales?date_from=' + PREP_ADVERT_CUTOFF + '&limit=500'),
+        fetch('/api/prep/list'),
+        fetch('/api/prep/claims')
+      ]);
+      const sales = salesRes.ok ? await salesRes.json() : [];
+      const preps = prepRes.ok ? await prepRes.json() : [];
+      const claims = claimsRes.ok ? await claimsRes.json() : {};
+      // Mapa: cada order_id / pack_id → estado ML de la venta
+      const statusById = {};
+      for (const s of sales) {
+        const st = s.status;
+        [s.order_id, s.pack_id, ...(s.order_ids || [])].filter(v => v != null).forEach(v => { statusById[String(v)] = st; });
+      }
+      const candidates = [];
+      for (const o of preps) {
+        if (o.auto_finalizado || o.advertencia_resuelta) continue;
+        if (o.status !== 'in_prep' && o.status !== 'done') continue;   // ya en advertencia u otro
+        if (String(o.date_created || '').slice(0, 10) < PREP_ADVERT_CUTOFF) continue;
+        const ids = [o.order_id, ...(o.order_ids || [])].filter(v => v != null).map(String);
+        let mlStatus = null;
+        for (const id of ids) { if (statusById[id]) { mlStatus = statusById[id]; break; } }
+        if (PREP_ADVERT_SKIP_ML.includes(mlStatus)) continue;          // en camino / entregado → no
+        const cancelada = mlStatus === 'cancelled';
+        const reclamo = ids.some(id => claims[id] === 'open');
+        if (!cancelada && !reclamo) continue;
+        candidates.push({ order_id: o.order_id, motivo: cancelada ? 'cancelado' : 'reclamo', ml_status: mlStatus || '' });
+      }
+      if (candidates.length) {
+        try { await fetch('/api/prep/mark-advertencia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ items: candidates }) }); } catch (e) {}
+      }
+    } catch (e) { /* silencioso */ }
+    prepAdvertScanning = false;
+    await refreshPrepAdvert();
+    // Si estoy viendo Preparación, refresco la vista para reflejar los movimientos.
+    if (currentSection === 'prep' && (currentPrepTab === 'advertencia' || currentPrepTab === 'finalizadas' || currentPrepTab === 'en-preparacion')) {
+      renderPrepTabs();
+    }
+  }
+  let _prepAdvertPrev = 0;
+  async function refreshPrepAdvert() {
+    const canManage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    if (!canManage) return;
+    try {
+      const r = await fetch('/api/prep/advert-count', { credentials: 'same-origin' });
+      const d = await r.json();
+      prepAdvertCount = Number(d.count) || 0;
+    } catch (e) { return; }
+    // Badge en el nav
+    const b = document.getElementById('badge-prep-advert');
+    if (b) { if (prepAdvertCount > 0) { b.textContent = prepAdvertCount; b.style.display = ''; } else { b.style.display = 'none'; } }
+    // Si aparecieron nuevas, reactivar el banner aunque lo hayan cerrado
+    if (prepAdvertCount > _prepAdvertPrev) prepAdvertBannerDismissed = false;
+    _prepAdvertPrev = prepAdvertCount;
+    renderPrepAdvertBanner();
+  }
+  function renderPrepAdvertBanner() {
+    let el = document.getElementById('prep-advert-banner');
+    if (prepAdvertCount <= 0 || prepAdvertBannerDismissed) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'prep-advert-banner';
+      el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.14);padding:11px 14px;display:flex;align-items:center;gap:12px;max-width:92vw';
+      document.body.appendChild(el);
+    }
+    el.innerHTML =
+      '<span style="font-size:20px">⚠️</span>' +
+      '<span style="font-size:13.5px;color:#7c2d12"><b>' + prepAdvertCount + '</b> venta' + (prepAdvertCount !== 1 ? 's' : '') + ' en ADVERTENCIA (preparadas y luego canceladas o con reclamo).</span>' +
+      '<button onclick="irAAdvertencia()" style="padding:7px 12px;border:none;border-radius:8px;background:#f59e0b;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer">VER: Preparación → Advertencia</button>' +
+      '<button onclick="cerrarBannerAdvert()" title="Cerrar aviso" style="border:none;background:transparent;color:#92400e;font-size:18px;cursor:pointer;line-height:1">✕</button>';
+  }
+  function irAAdvertencia() { currentPrepTab = 'advertencia'; showSection('prep'); }
+  function cerrarBannerAdvert() { prepAdvertBannerDismissed = true; renderPrepAdvertBanner(); }
+  let _prepAdvertMonitor = null;
+  function startPrepAdvertMonitor() {
+    const canManage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
+    if (!canManage || _prepAdvertMonitor) return;
+    scanPrepAdvertencias();
+    _prepAdvertMonitor = setInterval(scanPrepAdvertencias, 180000); // cada 3 min
+  }
+  async function loadAdvertencia() {
+    const container = document.getElementById('prep-tab-content');
+    if (!container) return;
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Buscando ventas en advertencia…</p></div>';
+    try {
+      await scanPrepAdvertencias(); // detecta lo nuevo antes de mostrar
+      const res = await fetch('/api/prep/list?status=advertencia');
+      const orders = await res.json();
+      orders.sort((a, b) => new Date(b.advertencia_at || 0) - new Date(a.advertencia_at || 0));
+      let html = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#7c2d12">' +
+        '⚠️ Estas ventas <b>ya estaban preparadas o listas para enviar</b> y el comprador las <b>canceló</b> o abrió un <b>reclamo</b>. Revisá cada una y tocá <b>Resuelto</b> cuando la cierres.</div>';
+      html += '<p style="color:#999;font-size:13px;margin-bottom:12px">' + orders.length + ' venta' + (orders.length !== 1 ? 's' : '') + ' en advertencia</p>';
+      if (!orders.length) { container.innerHTML = html + '<div class="empty"><p>No hay ventas en advertencia 🎉</p></div>'; return; }
+      for (const order of orders) {
+        const motivo = order.advertencia_motivo === 'reclamo'
+          ? '<span style="padding:2px 10px;border-radius:12px;font-weight:700;font-size:11px;background:#fee2e2;color:#b91c1c">⚖️ Reclamo del comprador</span>'
+          : '<span style="padding:2px 10px;border-radius:12px;font-weight:700;font-size:11px;background:#fef3c7;color:#92400e">🚫 Cancelada por el comprador</span>';
+        html += '<div class="sale-card" style="border-left:4px solid #f59e0b">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">' +
+          motivo +
+          '<span class="card-account">' + escapeHtml(order.account_name || '') + '</span>' +
+          '<span style="font-size:13px;color:#333;font-weight:600">' + escapeHtml(order.buyer_name || '') + '</span>' +
+          '<span title="Sucursal" style="font-size:11px;font-weight:700;color:#2d6a4f;background:#e7f6ee;border:1px solid #c3e8d4;border-radius:20px;padding:2px 9px">🏪 ' + escapeHtml(order.sucursal || 'San Martin') + '</span>' +
+          '<span style="font-size:11px;color:#9ca3af">venía de: ' + (order.advertencia_from === 'in_prep' ? 'En preparación' : 'Finalizadas') + '</span>' +
+          '</div>';
+        html += (order.items || []).map(item =>
+          '<div class="sale-item">' +
+          (item.thumbnail ? '<img src="' + item.thumbnail + '" alt="" style="width:45px;height:45px;border-radius:6px;object-fit:cover" onerror="this.onerror=null;this.style.visibility=\'hidden\'">' : '') +
+          '<div class="sale-item-info"><div style="font-weight:600;font-size:14px">' + escapeHtml(item.title || '') + '</div>' +
+          '<div class="sale-item-meta">' + (item.quantity || 1) + ' unidad' + ((item.quantity || 1) !== 1 ? 'es' : '') + (item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : '') + '</div></div></div>'
+        ).join('');
+        html += '<div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:12px;align-items:center">' +
+          '<span>Detectada: ' + formatDateTime(order.advertencia_at) + '</span>' +
+          '<span>| Orden: <a onclick="verVentaPrep(\'' + escapeHtml(order.order_id) + '\',\'' + order.account_id + '\')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#' + escapeHtml(order.order_id) + '</a></span>' +
+          '<button onclick="resolverAdvertencia(\'' + escapeHtml(order.order_id) + '\',this)" style="margin-left:auto;padding:6px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer">✓ Resuelto</button>' +
+          '</div></div>';
+      }
+      container.innerHTML = html;
+    } catch (e) {
+      container.innerHTML = '<div class="empty"><p>Error al cargar Advertencia</p></div>';
+    }
+  }
+  async function resolverAdvertencia(orderId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Resolviendo…'; }
+    try {
+      const r = await fetch('/api/prep/resolve-advertencia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ order_id: orderId }) });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); showToast(d.error || 'No se pudo resolver', 'error'); if (btn) { btn.disabled = false; btn.textContent = '✓ Resuelto'; } return; }
+      showToast('Advertencia resuelta', 'success');
+      await refreshPrepAdvert();
+      if (currentSection === 'prep' && currentPrepTab === 'advertencia') renderPrepTabs();
+    } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '✓ Resuelto'; } }
   }
   let prepSalesStatusFilters = [];
   let prepSalesShippingFilters = [];
@@ -7563,10 +7711,34 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       prepOrdersCache = prepOrders;
       const inPrepIds = new Set();
       for (const p of prepOrders) inPrepIds.add(String(p.order_id));
+      // Estados de ML que NO deben estar en "Sin preparar": van directo a Finalizadas (auto).
+      const AUTO_FINISH_STATUSES = ['in_transit', 'cancelled', 'delivered'];
+      const keyOf = (sale) => sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
+      // Ventas en camino / canceladas / entregadas que todavía no están cargadas → a Finalizadas automático.
+      const toAuto = allSales.filter(sale => !inPrepIds.has(keyOf(sale)) && AUTO_FINISH_STATUSES.includes(sale.status));
+      if (toAuto.length) {
+        try {
+          await fetch('/api/prep/auto-finish', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+            body: JSON.stringify({
+              orders: toAuto.map(sale => ({
+                order_id: keyOf(sale),
+                order_ids: sale.order_ids || [sale.order_id],
+                pack_id: sale.pack_id || null,
+                account_id: sale.account_id, account_name: sale.account_name, seller_id: sale.seller_id,
+                buyer_name: sale.buyer_name, buyer_id: String(sale.buyer_id || ''),
+                items: sale.items, shipping_id: sale.shipping_id || null, shipping_type: sale.shipping_type,
+                total_amount: sale.total_amount || 0, date_created: sale.date_created, ml_status: sale.status
+              }))
+            })
+          });
+        } catch (e) { /* si falla, no rompemos la vista */ }
+        toAuto.forEach(sale => inPrepIds.add(keyOf(sale)));
+      }
       let pendingSales = allSales.filter(sale => {
-        if (sale.status === 'cancelled') return false; // Never show cancelled
-        const key = sale.pack_id ? String(sale.pack_id) : String(sale.order_id);
-        return !inPrepIds.has(key);
+        if (inPrepIds.has(keyOf(sale))) return false;                  // ya en prep o finalizadas (incluye auto)
+        if (AUTO_FINISH_STATUSES.includes(sale.status)) return false;  // en camino / cancelado / entregado
+        return true;
       });
       // Filtro por número de venta: matchea order_id, pack_id o cualquiera de los order_ids del pack.
       const oq = (prepSalesOrderQuery || '').trim();
@@ -8175,7 +8347,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               </div>` : ''}
             </div>
             <div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-              ${order.finish_type && order.finish_type !== 'normal' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;${order.finish_type==='dropshipping'?'background:#f0e6ff;color:#8e44ad':'background:#e6f7f4;color:#16a085'}">${order.finish_type==='dropshipping'?'🚚 Dropshipping':'🏠 Puerta'}</span>` : ''}
+              ${order.auto_finalizado ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;background:#fff4e5;color:#b45309">⚡ A finalizado automático${order.ml_status ? ' (' + escapeHtml(STATUS_LABELS[order.ml_status] || order.ml_status) + ')' : ''}</span>` : ''}
+              ${order.finish_type && order.finish_type !== 'normal' && order.finish_type !== 'auto' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;${order.finish_type==='dropshipping'?'background:#f0e6ff;color:#8e44ad':'background:#e6f7f4;color:#16a085'}">${order.finish_type==='dropshipping'?'🚚 Dropshipping':'🏠 Puerta'}</span>` : ''}
               <span>Finalizado por: <strong style="color:#333">${escapeHtml(order.done_by || '-')}</strong></span>
               <span>${formatDateTime(order.done_at)}</span>
               ${can_manage ? `<span>| Orden: <a onclick="verVentaPrep('${escapeHtml(order.order_id)}','${order.account_id}')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#${escapeHtml(order.order_id)}</a></span>` : ''}
