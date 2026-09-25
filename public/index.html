@@ -11798,8 +11798,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var v = parseFloat(t); return isNaN(v) ? 0 : v;
   }
   function contChequesHtml() {
-    if (_cont.chequesData) return contChequesTable();
-    if (!_cont.chequesLoading) { _cont.chequesLoading = true; setTimeout(function () { contLoadCheques(false); }, 10); }
+    if (_cont.chequesData) {
+      // Si la lectura ya tiene más de 45s, refrescamos en segundo plano (así nunca queda vieja).
+      if (!_cont.chequesLoading && _cont.chequesData.ts && (Date.now() - _cont.chequesData.ts > 45000)) {
+        _cont.chequesLoading = true; setTimeout(function () { contLoadCheques(true); }, 10);
+      }
+      return contChequesTable();
+    }
+    if (!_cont.chequesLoading) { _cont.chequesLoading = true; setTimeout(function () { contLoadCheques(true); }, 10); }
     return '<div class="loading"><div class="spinner"></div><p>Leyendo la planilla de Drive…</p></div>';
   }
   async function contLoadCheques(force) {
