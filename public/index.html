@@ -413,6 +413,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     <button onclick="doLogin()">Ingresar</button>
   </div>
 </div>
+<style>
+  /* Modo "embed": cuando el panel se abre dentro del diálogo de Mensajes/Preguntas, sin menú ni header. */
+  body.embed-mode .header, body.embed-mode .sidebar { display: none !important; }
+  body.embed-mode .main { display: block !important; }
+  body.embed-mode .content { padding: 12px !important; margin: 0 !important; }
+  body.embed-mode #prep-advert-banner { display: none !important; }
+</style>
 <!-- APP -->
 <div class="app" id="app">
   <div class="header">
@@ -744,9 +751,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         if (currentUser.role === 'admin' || currentUser.can_tracking) {
           const nt = document.getElementById('nav-tracking'); if (nt) nt.style.display = '';
         }
-        loadAccounts();
-        // Run immediately so badge shows on first load without waiting 15s
-        checkNewMessages();
+        // En modo embed (diálogo de Mensajes/Preguntas) salteamos cargas de fondo para que abra rápido.
+        const _embed = new URLSearchParams(location.search).get('embed') === '1';
+        if (!_embed) {
+          loadAccounts();
+          checkNewMessages(); // badge en la primera carga
+        }
         // Check URL params for deep linking (e.g. from sales buttons)
         handleDeepLink();
       }
@@ -754,6 +764,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function handleDeepLink() {
     const urlParams = new URLSearchParams(location.search);
+    if (urlParams.get('embed') === '1') document.body.classList.add('embed-mode'); // vista para el diálogo (sin menú ni header)
     const targetSection = urlParams.get('section');
     const urlBuyerId = urlParams.get('buyer_id');
     const urlOrderId = urlParams.get('order_id');
@@ -7464,6 +7475,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let prepAdvertCount = 0;
   let prepAdvertBannerDismissed = false;
   let prepAdvertScanning = false;
+  let prepCancelarCount = 0;
+  const PREP_IS_EMBED = new URLSearchParams(location.search).get('embed') === '1';
   let prepSinPrepararCount = null;
   function setSinPrepararCount(n) {
     prepSinPrepararCount = n;
@@ -7494,6 +7507,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         ${can_manage ? `<button class="prep-tab ${currentPrepTab==='sin-preparar'?'active':''}" onclick="switchPrepTab('sin-preparar')">📋 Sin Preparar <span id="prep-count-sinprep" style="display:${prepSinPrepararCount!=null?'inline-block':'none'};min-width:22px;padding:1px 8px;margin-left:6px;border-radius:11px;background:#c0392b;color:#fff;font-weight:800;font-size:13px;vertical-align:middle;box-shadow:0 1px 2px rgba(0,0,0,.2)">${prepSinPrepararCount!=null?prepSinPrepararCount:''}</span></button>` : ''}
         ${can_operate ? `<button class="prep-tab ${currentPrepTab==='en-preparacion'?'active':''}" onclick="switchPrepTab('en-preparacion')">🔄 En Preparación</button>` : ''}
         <button class="prep-tab ${currentPrepTab==='finalizadas'?'active':''}" onclick="switchPrepTab('finalizadas')">✅ Finalizadas</button>
+        ${can_manage ? `<button class="prep-tab ${currentPrepTab==='para-cancelar'?'active':''}" onclick="switchPrepTab('para-cancelar')" style="${prepCancelarCount>0?'color:#b91c1c;border-color:#e74c3c':''}">🚫 Para Cancelar${prepCancelarCount>0?` (${prepCancelarCount})`:''}</button>` : ''}
         ${can_manage ? `<button class="prep-tab ${currentPrepTab==='advertencia'?'active':''}" onclick="switchPrepTab('advertencia')" style="${prepAdvertCount>0?'color:#b45309;border-color:#f59e0b':''}">⚠️ Advertencia${prepAdvertCount>0?` (${prepAdvertCount})`:''}</button>` : ''}
         ${currentUser?.role === 'admin' ? `<button class="prep-tab ${currentPrepTab==='estadisticas'?'active':''}" onclick="switchPrepTab('estadisticas')">📊 Estadísticas</button>` : ''}
       </div>
@@ -7512,7 +7526,86 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     else if (currentPrepTab === 'en-preparacion') loadEnPreparacion();
     else if (currentPrepTab === 'estadisticas') loadEstadisticas();
     else if (currentPrepTab === 'advertencia') loadAdvertencia();
+    else if (currentPrepTab === 'para-cancelar') loadParaCancelar();
     else loadFinalizadas();
+  }
+  // ===== PARA CANCELAR =====
+  async function refreshPrepCancelarCount() {
+    try { const r = await fetch('/api/prep/cancelar-count', { credentials: 'same-origin' }); const d = await r.json(); prepCancelarCount = Number(d.count) || 0; } catch (e) {}
+  }
+  async function loadParaCancelar() {
+    const container = document.getElementById('prep-tab-content');
+    if (!container) return;
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando…</p></div>';
+    try {
+      const res = await fetch('/api/prep/list?status=para_cancelar');
+      const orders = await res.json();
+      prepCancelarCount = orders.length;
+      orders.sort((a, b) => new Date(b.para_cancelar_at || 0) - new Date(a.para_cancelar_at || 0));
+      let html = '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:#7f1d1d">' +
+        '🚫 Ventas marcadas para cancelar. Escribí el <b>motivo</b> y tocá <b>Confirmar cancelación</b>. Cuando ML cancele o devuelva el dinero, pasan solas a Finalizadas.</div>';
+      html += '<p style="color:#999;font-size:13px;margin-bottom:12px">' + orders.length + ' venta' + (orders.length !== 1 ? 's' : '') + ' para cancelar</p>';
+      if (!orders.length) { container.innerHTML = html + '<div class="empty"><p>No hay ventas para cancelar 🎉</p></div>'; return; }
+      for (const order of orders) {
+        const oid = escapeHtml(order.order_id);
+        const confirmada = !!order.cancel_confirmado;
+        html += '<div class="sale-card" style="border-left:4px solid #c0392b">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">' +
+          (confirmada
+            ? '<span style="padding:2px 10px;border-radius:12px;font-weight:700;font-size:11px;background:#fee2e2;color:#b91c1c">✔ Confirmada · esperando a ML</span>'
+            : '<span style="padding:2px 10px;border-radius:12px;font-weight:700;font-size:11px;background:#fef3c7;color:#92400e">Falta confirmar</span>') +
+          '<span class="card-account">' + escapeHtml(order.account_name || '') + '</span>' +
+          '<span style="font-size:13px;color:#333;font-weight:600">' + escapeHtml(order.buyer_name || '') + '</span>' +
+          '</div>';
+        html += (order.items || []).map(item =>
+          '<div class="sale-item">' +
+          (item.thumbnail ? '<img src="' + item.thumbnail + '" alt="" style="width:45px;height:45px;border-radius:6px;object-fit:cover" onerror="this.onerror=null;this.style.visibility=\'hidden\'">' : '') +
+          '<div class="sale-item-info"><div style="font-weight:600;font-size:14px">' + escapeHtml(item.title || '') + '</div>' +
+          '<div class="sale-item-meta">' + (item.quantity || 1) + ' unidad' + ((item.quantity || 1) !== 1 ? 'es' : '') + (item.sku ? ' &middot; SKU: ' + escapeHtml(item.sku) : '') + '</div></div></div>'
+        ).join('');
+        html += '<div style="margin-top:10px">' +
+          '<label style="font-size:12px;color:#666;font-weight:600;display:block;margin-bottom:4px">¿Cuál es el motivo?</label>' +
+          '<textarea id="cancmot-' + oid + '" oninput="cancelarMotivoInput(\'' + oid + '\')" placeholder="Escribí el motivo de la cancelación…" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #e0a800;border-radius:8px;font-size:13px;min-height:52px;resize:vertical;font-family:inherit">' + escapeHtml(order.cancel_motivo || '') + '</textarea>' +
+          '</div>';
+        html += '<div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
+          '<span>| Orden: <a onclick="verVentaPrep(\'' + oid + '\',\'' + order.account_id + '\')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#' + oid + '</a></span>' +
+          '<button onclick="cancelarQuitar(\'' + oid + '\',this)" style="padding:6px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-size:12.5px;font-weight:600;cursor:pointer">↩️ Quitar</button>' +
+          '<button id="cancbtn-' + oid + '" onclick="cancelarConfirmar(\'' + oid + '\',this)" ' + ((order.cancel_motivo || '').trim() ? '' : 'disabled') + ' style="margin-left:auto;padding:6px 16px;background:' + ((order.cancel_motivo || '').trim() ? '#c0392b' : '#e5b4b0') + ';color:#fff;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer">✔ Confirmar cancelación</button>' +
+          '</div></div>';
+      }
+      container.innerHTML = html;
+    } catch (e) { container.innerHTML = '<div class="empty"><p>Error al cargar Para Cancelar</p></div>'; }
+  }
+  function cancelarMotivoInput(oid) {
+    const ta = document.getElementById('cancmot-' + oid);
+    const btn = document.getElementById('cancbtn-' + oid);
+    if (!ta || !btn) return;
+    const has = ta.value.trim().length > 0;
+    btn.disabled = !has;
+    btn.style.background = has ? '#c0392b' : '#e5b4b0';
+  }
+  async function cancelarConfirmar(oid, btn) {
+    const ta = document.getElementById('cancmot-' + oid);
+    const motivo = ta ? ta.value.trim() : '';
+    if (!motivo) { showToast('Escribí el motivo primero', 'error'); return; }
+    btn.disabled = true; btn.textContent = 'Confirmando…';
+    try {
+      const r = await fetch('/api/prep/cancelar-confirmar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ order_id: oid, motivo }) });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); showToast(d.error || 'No se pudo confirmar', 'error'); btn.disabled = false; btn.textContent = '✔ Confirmar cancelación'; return; }
+      showToast('Cancelación confirmada. Esperando a ML.', 'success');
+      loadParaCancelar();
+    } catch (e) { showToast('Error de red', 'error'); btn.disabled = false; btn.textContent = '✔ Confirmar cancelación'; }
+  }
+  async function cancelarQuitar(oid, btn) {
+    if (!confirm('¿Sacar esta venta de Para Cancelar? Vuelve a aparecer en Sin preparar.')) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/prep/cancelar-quitar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ order_id: oid }) });
+      if (!r.ok) { showToast('No se pudo quitar', 'error'); btn.disabled = false; return; }
+      showToast('Quitada de Para Cancelar', 'success');
+      await refreshPrepCancelarCount();
+      loadParaCancelar();
+    } catch (e) { showToast('Error de red', 'error'); btn.disabled = false; }
   }
   // ===== ADVERTENCIA: ventas ya preparadas que el comprador canceló o reclamó =====
   const PREP_ADVERT_CUTOFF = '2026-09-21';
@@ -7530,11 +7623,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const sales = salesRes.ok ? await salesRes.json() : [];
       const preps = prepRes.ok ? await prepRes.json() : [];
       const claims = claimsRes.ok ? await claimsRes.json() : {};
-      // Mapa: cada order_id / pack_id → estado ML de la venta
+      // Mapa: cada order_id / pack_id → estado ML de la venta, y si tuvo devolución de dinero.
       const statusById = {};
+      const refundedById = {};
       for (const s of sales) {
         const st = s.status;
-        [s.order_id, s.pack_id, ...(s.order_ids || [])].filter(v => v != null).forEach(v => { statusById[String(v)] = st; });
+        [s.order_id, s.pack_id, ...(s.order_ids || [])].filter(v => v != null).forEach(v => { statusById[String(v)] = st; if (s.refunded) refundedById[String(v)] = true; });
       }
       const candidates = [];
       for (const o of preps) {
@@ -7553,10 +7647,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (candidates.length) {
         try { await fetch('/api/prep/mark-advertencia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ items: candidates }) }); } catch (e) {}
       }
+      // PARA CANCELAR: las que ML ya canceló/devolvió → Finalizadas automático.
+      const cancFin = [];
+      for (const o of preps) {
+        if (o.status !== 'para_cancelar') continue;
+        const ids = [o.order_id, ...(o.order_ids || [])].filter(v => v != null).map(String);
+        let mlStatus = null, refund = false;
+        for (const id of ids) { if (statusById[id] && !mlStatus) mlStatus = statusById[id]; if (refundedById[id]) refund = true; }
+        if (mlStatus === 'cancelled' || refund) cancFin.push(o.order_id); // cancelada O con el dinero devuelto
+      }
+      if (cancFin.length) {
+        try { await fetch('/api/prep/cancelar-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ order_ids: cancFin }) }); } catch (e) {}
+      }
     } catch (e) { /* silencioso */ }
     prepAdvertScanning = false;
     // Solo actualizamos el badge/aviso global. NO re-renderizamos solapas (eso interrumpía impresión y causaba bucle).
     await refreshPrepAdvert();
+    await refreshPrepCancelarCount();
   }
   let _prepAdvertPrev = 0;
   async function refreshPrepAdvert() {
@@ -7595,7 +7702,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let _prepAdvertMonitor = null;
   function startPrepAdvertMonitor() {
     const canManage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
-    if (!canManage || _prepAdvertMonitor) return;
+    if (PREP_IS_EMBED || !canManage || _prepAdvertMonitor) return; // en el diálogo embebido no corre el monitor
     setTimeout(scanPrepAdvertencias, 15000);                       // primer escaneo a los 15s (no compite con la carga inicial)
     _prepAdvertMonitor = setInterval(scanPrepAdvertencias, 600000); // cada 10 min
   }
@@ -7652,6 +7759,34 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (currentSection === 'prep' && currentPrepTab === 'advertencia') renderPrepTabs();
     } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '✓ Resuelto'; } }
   }
+  // Diálogo (modal) para Mensajes/Preguntas: abre el panel embebido en un iframe, sin nueva pestaña.
+  function openPrepDialog(kind, orderId, accountId, buyerId) {
+    const title = kind === 'messages' ? '💬 Mensajes' : '❓ Preguntas';
+    const src = kind === 'messages'
+      ? '/?section=messages&order_id=' + encodeURIComponent(orderId) + '&account_id=' + encodeURIComponent(accountId) + '&embed=1'
+      : '/?section=questions&buyer_id=' + encodeURIComponent(buyerId) + '&account_id=' + encodeURIComponent(accountId) + '&embed=1';
+    let ov = document.getElementById('prep-dialog-ov');
+    if (ov) ov.remove();
+    ov = document.createElement('div');
+    ov.id = 'prep-dialog-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
+    ov.addEventListener('click', function (e) { if (e.target === ov) closePrepDialog(); });
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;width:min(960px,96vw);height:min(88vh,920px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #eef2f7;flex-shrink:0">' +
+      '<strong style="color:#2d3277;font-size:15px">' + title + '</strong>' +
+      '<button onclick="closePrepDialog()" style="border:none;background:#f1f5f9;border-radius:8px;width:34px;height:34px;font-size:16px;cursor:pointer">✕</button>' +
+      '</div>' +
+      '<div style="flex:1;position:relative">' +
+      '<div id="prep-dialog-spin" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#fff"><div class="loading"><div class="spinner"></div><p>Abriendo…</p></div></div>' +
+      '<iframe src="' + src + '" onload="var s=document.getElementById(\'prep-dialog-spin\');if(s)s.remove()" style="position:absolute;inset:0;border:0;width:100%;height:100%" title="' + title + '"></iframe>' +
+      '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    document.addEventListener('keydown', _prepDialogEsc);
+  }
+  function _prepDialogEsc(e) { if (e.key === 'Escape') closePrepDialog(); }
+  function closePrepDialog() { const ov = document.getElementById('prep-dialog-ov'); if (ov) ov.remove(); document.removeEventListener('keydown', _prepDialogEsc); }
   async function scanThenReloadAdvert(btn) {
     if (btn) { btn.disabled = true; btn.textContent = 'Buscando…'; }
     await scanPrepAdvertencias();
@@ -7836,8 +7971,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               <div class="sale-actions" style="margin-top:0">
                 ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Etiqueta</button>` : ''}
                 <a href="/?section=sales&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank" title="Abrir esta venta en el panel (nueva ventana)">👁️ Ver venta</a>
-                <a href="/?section=messages&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
-                <a href="/?section=questions&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">❓ Preguntas</a>
+                <a href="#" onclick="openPrepDialog('messages','${firstOrderId}','${sale.account_id}','${sale.buyer_id}');return false">💬 Mensajes</a>
+                <a href="#" onclick="openPrepDialog('questions','${firstOrderId}','${sale.account_id}','${sale.buyer_id}');return false">❓ Preguntas</a>
               </div>
               <div style="font-weight:700;color:#2d3277;font-size:16px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR',{minimumFractionDigits:2})}</div>
             </div>
@@ -7850,6 +7985,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               ${sale.shipping_type !== 'flex' && sale.shipping_type !== 'drop_off' ? `<button class="btn-preparar" onclick="openAcordarModal('${saleKey}', this)" data-sale-json="${saleDataJson}" style="background:#e67e22">📋 ACORDAR</button>` : ''}
               <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','dropshipping',this)" data-sale-json="${saleDataJson}" style="background:#8e44ad">🚚 Dropshipping</button>
               <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','puerta',this)" data-sale-json="${saleDataJson}" style="background:#16a085">🏠 Puerta</button>
+              <button class="btn-preparar" onclick="finalizarDirecto('${saleKey}','finalizado',this)" data-sale-json="${saleDataJson}" style="background:#27ae60">✅ Finalizado</button>
+              <button class="btn-preparar" onclick="paraCancelar('${saleKey}', this)" data-sale-json="${saleDataJson}" style="background:#c0392b">🚫 Para cancelar</button>
             </div>
             <div class="sale-notes" style="margin-top:8px" id="prep-note-display-${firstOrderId}">
               <div style="font-size:13px;color:#bbb;padding:8px 10px;background:#f8f9fa;border-radius:6px">Cargando nota...</div>
@@ -8044,8 +8181,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch (e) { showToast('Error de red', 'error'); }
   }
   async function finalizarDirecto(saleKey, finishType, btn) {
-    const labels = { dropshipping: 'Dropshipping', puerta: 'Puerta' };
+    const labels = { dropshipping: 'Dropshipping', puerta: 'Puerta', finalizado: 'Finalizado' };
+    const btnText = { dropshipping: '🚚 Dropshipping', puerta: '🏠 Puerta', finalizado: '✅ Finalizado' };
     const label = labels[finishType] || finishType;
+    const origText = btnText[finishType] || label;
     const saleDataStr = btn.dataset.saleJson;
     let saleData;
     try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch(e) { showToast('Error al procesar datos', 'error'); return; }
@@ -8059,7 +8198,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const sucEl = saleCard.querySelector('.prep-sucursal-sel');
       if (sucEl) sucursal = sucEl.value || '';
     }
-    if (!sucursal) {
+    // "Finalizado" directo no exige sucursal (no se prepara); Dropshipping/Puerta sí.
+    if (!sucursal && finishType !== 'finalizado') {
       showToast('Elegí la sucursal (Rufino o San Martín) antes de continuar', 'error');
       const sel = saleCard && saleCard.querySelector('.prep-sucursal-sel');
       if (sel) { sel.style.borderColor = '#e74c3c'; sel.focus(); }
@@ -8080,13 +8220,31 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         const data = await res.json();
         showToast(data.error || 'Error al procesar', 'error');
         btn.disabled = false;
-        btn.textContent = finishType === 'dropshipping' ? '🚚 Dropshipping' : '🏠 Puerta';
+        btn.textContent = origText;
       }
     } catch(e) {
       showToast('Error de conexión', 'error');
       btn.disabled = false;
-      btn.textContent = finishType === 'dropshipping' ? '🚚 Dropshipping' : '🏠 Puerta';
+      btn.textContent = origText;
     }
+  }
+  // Mandar una venta a la solapa "Para Cancelar" (queda esperando el motivo + que ML la procese).
+  async function paraCancelar(saleKey, btn) {
+    const saleDataStr = btn.dataset.saleJson;
+    let saleData;
+    try { saleData = JSON.parse(saleDataStr.replace(/&quot;/g, '"')); } catch (e) { showToast('Error al procesar datos', 'error'); return; }
+    if (!confirm('¿Mandar esta venta a "Para Cancelar"? Vas a tener que escribir el motivo en esa solapa.')) return;
+    btn.disabled = true; btn.textContent = 'Procesando...';
+    try {
+      const res = await fetch('/api/prep/para-cancelar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(saleData) });
+      if (res.ok) {
+        showToast('Movida a Para Cancelar', 'success');
+        prepRemoveCard(btn);
+        refreshPrepCancelarCount();
+      } else {
+        const d = await res.json(); showToast(d.error || 'Error', 'error'); btn.disabled = false; btn.textContent = '🚫 Para cancelar';
+      }
+    } catch (e) { showToast('Error de conexión', 'error'); btn.disabled = false; btn.textContent = '🚫 Para cancelar'; }
   }
   // Tarjetas de ritmo de embalaje (HOY: promedio + ventana; últimos 7 días: promedio) — para todos los usuarios de preparación.
   async function loadPrepPaceHtml() {
@@ -8387,7 +8545,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
             </div>
             <div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
               ${order.auto_finalizado ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;background:#fff4e5;color:#b45309">⚡ A finalizado automático${order.ml_status ? ' (' + escapeHtml(STATUS_LABELS[order.ml_status] || order.ml_status) + ')' : ''}</span>` : ''}
-              ${order.finish_type && order.finish_type !== 'normal' && order.finish_type !== 'auto' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;${order.finish_type==='dropshipping'?'background:#f0e6ff;color:#8e44ad':'background:#e6f7f4;color:#16a085'}">${order.finish_type==='dropshipping'?'🚚 Dropshipping':'🏠 Puerta'}</span>` : ''}
+              ${(order.finish_type==='dropshipping'||order.finish_type==='puerta') ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;${order.finish_type==='dropshipping'?'background:#f0e6ff;color:#8e44ad':'background:#e6f7f4;color:#16a085'}">${order.finish_type==='dropshipping'?'🚚 Dropshipping':'🏠 Puerta'}</span>` : ''}
+              ${order.finish_type==='cancelada' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;background:#fee2e2;color:#b91c1c">🚫 Cancelada${order.cancel_motivo?': '+escapeHtml(order.cancel_motivo):''}</span>` : ''}
               <span>Finalizado por: <strong style="color:#333">${escapeHtml(order.done_by || '-')}</strong></span>
               <span>${formatDateTime(order.done_at)}</span>
               ${can_manage ? `<span>| Orden: <a onclick="verVentaPrep('${escapeHtml(order.order_id)}','${order.account_id}')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#${escapeHtml(order.order_id)}</a></span>` : ''}
