@@ -11236,13 +11236,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     });
   }
   /* ==================== CONTABLE (solo admin) ==================== */
-  var _cont = { data: null, tab: 'resumen', negSub: 'gastos', casaSub: 'gastos', consSub: 'gastos', derivarId: null, editId: null, showManual: false, filtros: {} };
+  var _cont = { data: null, tab: 'resumen', negSub: 'gastos', casaSub: 'gastos', consSub: 'gastos', bancoSub: 'gastos', derivarId: null, editId: null, showManual: false, filtros: { tx: { estado: 'pendiente' } } };
   var CONT_TABS = [
     ['resumen', 'Resumen'], ['transaccion', 'Transacción'], ['negocio', 'Negocio'],
-    ['casa', 'Casa'], ['construccion', 'Construcción'], ['cheques', 'Cheques'],
+    ['casa', 'Casa'], ['banco', 'Banco'], ['construccion', 'Construcción'], ['cheques', 'Cheques'],
     ['prestamos', 'Préstamos'], ['periodos', 'Períodos'], ['config', 'Configuración']
   ];
-  var CONT_DEST_LABEL = { negocio: 'Negocio', casa: 'Casa', prestamos: 'Préstamos', construccion: 'Construcción' };
+  var CONT_DEST_LABEL = { negocio: 'Negocio', casa: 'Casa', prestamos: 'Préstamos', construccion: 'Construcción', banco: 'Banco' };
+  var CONT_DESTINOS = [['negocio', 'Negocio'], ['casa', 'Casa'], ['construccion', 'Construcción'], ['banco', 'Banco'], ['prestamos', 'Préstamos']];
+  function contDestOptions(sel) { var h = '<option value="">(pendiente)</option>'; CONT_DESTINOS.forEach(function (d) { h += '<option value="' + d[0] + '"' + (sel === d[0] ? ' selected' : '') + '>' + d[1] + '</option>'; }); return h; }
   function contMoney(n) { n = Number(n) || 0; return (n < 0 ? '-' : '') + '$ ' + Math.abs(Math.round(n)).toLocaleString('es-AR'); }
   function contFechaDisp(iso) { if (!iso) return ''; var p = String(iso).slice(0, 10).split('-'); if (p.length < 3) return iso; return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
   function contHoy() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -11295,13 +11297,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'transaccion': body = contTransaccionHtml(); break;
       case 'negocio': body = contNegocioHtml(); break;
       case 'casa': body = contPlanillaHtml('casa', 'Casa', 'casaSub'); break;
+      case 'banco': body = contPlanillaHtml('banco', 'Banco', 'bancoSub'); break;
       case 'construccion': body = contPlanillaHtml('construccion', 'Construcción', 'consSub'); break;
       case 'cheques': body = contChequesHtml(); break;
       case 'prestamos': body = contPrestamosHtml(); break;
       case 'periodos': body = contPeriodosHtml(); break;
       case 'config': body = contConfigHtml(); break;
     }
-    content.innerHTML = h + '<div id="cont-body">' + body + '</div>';
+    content.innerHTML = h + '<div id="cont-body">' + body + '</div>' + (_cont.derivarId ? contDerivarPanelHtml(_cont.derivarId) : '');
   }
   async function contMutate(action, payload) {
     try {
@@ -11354,7 +11357,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</div>';
     h += '<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Los movimientos de MP (transferencias, pagos/compras, préstamos, facturas, impuestos, extracciones) entran solos desde el userscript de cada cuenta. Tocá 🔄 para ver los últimos.</div>';
     if (_cont.showManual) h += contManualFormHtml();
-    if (_cont.derivarId) h += contDerivarPanelHtml(_cont.derivarId);
     // Filtros
     var f = _cont.filtros.tx || {};
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:10px 0;background:#f8fafc;padding:10px;border-radius:10px">';
@@ -11416,7 +11418,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '</div></div>';
     // Derivación
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px">';
-    h += contField('Derivar a', '<select id="ctx-derivado" onchange="contDerivadoOnChange()" style="' + contInputCss() + '"><option value="">(pendiente)</option><option value="negocio">Negocio</option><option value="casa">Casa</option><option value="prestamos">Préstamos</option></select>');
+    h += contField('Derivar a', '<select id="ctx-derivado" onchange="contDerivadoOnChange()" style="' + contInputCss() + '">' + contDestOptions('') + '</select>');
     h += '<div id="ctx-rubro-wrap">' + contField('Rubro', '<select id="ctx-rubro" style="' + contInputCss() + '" disabled><option value="">(elegí derivación primero)</option></select>') + '</div>';
     h += '<div id="ctx-sub-wrap">' + contField('Subrubro', '<select id="ctx-sub" style="' + contInputCss() + '" disabled><option value=""></option></select>') + '</div>';
     h += contField('Notas', '<input type="text" id="ctx-nota" placeholder="Nota" style="' + contInputCss() + '">');
@@ -11489,15 +11491,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var ok = await contMutate('tx.purge_mp', {});
     if (ok) { showToast('Movimientos MP vaciados', 'success'); await contReload(); }
   }
-  // Panel de derivación de una transacción existente
-  function contDerivarOpen(id) { _cont.derivarId = id; renderContable(); var el = document.getElementById('cont-derivar-panel'); if (el) el.scrollIntoView({ block: 'center' }); }
+  // Ventana modal de derivación de una transacción existente
+  function contDerivarOpen(id) { _cont.derivarId = id; renderContable(); }
   function contDerivarPanelHtml(id) {
     var t = contD().transacciones.find(function (x) { return x.id === id; }); if (!t) return '';
-    var h = '<div id="cont-derivar-panel" style="background:#faf5ff;border:1px solid #d8b4fe;border-radius:12px;padding:16px;margin-bottom:14px">';
-    h += '<h3 style="margin:0 0 4px;color:#6b21a8;font-size:15px">Derivar transacción</h3>';
-    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:12px">' + contFechaDisp(t.fecha) + ' · ' + escapeHtml(t.detalle || '') + ' · ' + contMoney(t.monto) + (t.cuenta ? ' · ' + escapeHtml(t.cuenta) : '') + '</div>';
+    var h = '<div onclick="if(event.target===this)contDerivarCancel()" style="position:fixed;inset:0;background:rgba(17,24,39,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px">';
+    h += '<div style="background:#fff;border-radius:14px;padding:20px;width:100%;max-width:560px;max-height:90vh;overflow:auto;box-shadow:0 20px 50px rgba(0,0,0,.35)">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h3 style="margin:0;color:#6b21a8;font-size:16px">Derivar transacción</h3><button onclick="contDerivarCancel()" style="border:none;background:none;font-size:20px;cursor:pointer;color:#9ca3af">✕</button></div>';
+    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:14px">' + contFechaDisp(t.fecha) + ' · ' + escapeHtml(t.detalle || '') + ' · ' + contMoney(t.monto) + (t.cuenta ? ' · ' + escapeHtml(t.cuenta) : '') + '</div>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
-    h += contField('Derivar a', '<select id="cder-dest" onchange="contDerDestChange()" style="' + contInputCss() + '"><option value="">(pendiente)</option><option value="negocio"' + (t.derivado === 'negocio' ? ' selected' : '') + '>Negocio</option><option value="casa"' + (t.derivado === 'casa' ? ' selected' : '') + '>Casa</option><option value="prestamos"' + (t.derivado === 'prestamos' ? ' selected' : '') + '>Préstamos</option></select>');
+    h += contField('Derivar a', '<select id="cder-dest" onchange="contDerDestChange()" style="' + contInputCss() + '">' + contDestOptions(t.derivado) + '</select>');
     var rubroInner;
     if (t.derivado === 'prestamos') rubroInner = '<select id="cder-rubro" style="' + contInputCss() + '">' + contPrestamoOptions('') + '</select>';
     else if (t.derivado) rubroInner = '<select id="cder-rubro" onchange="contDerRubroChange()" style="' + contInputCss() + '">' + contRubroOptions(t.derivado, t.rubro_id) + '</select>';
@@ -11506,8 +11509,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div id="cder-sub-wrap">' + contField('Subrubro', '<select id="cder-sub" style="' + contInputCss() + '">' + contSubOptions(t.derivado, t.rubro_id, t.subrubro_id) + '</select>') + '</div>';
     h += contField('Notas', '<input type="text" id="cder-nota" value="' + escapeHtml(t.nota || '') + '" style="' + contInputCss() + '">');
     h += '</div>';
-    h += '<div style="margin-top:12px;display:flex;gap:8px"><button onclick="contDerivarSave(\'' + id + '\')" style="padding:9px 18px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">Guardar derivación</button><button onclick="contDerivarCancel()" style="padding:9px 18px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer">Cancelar</button></div>';
-    h += '</div>';
+    h += '<div style="margin-top:14px;display:flex;gap:8px"><button onclick="contDerivarSave(\'' + id + '\')" style="padding:9px 18px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">Guardar derivación</button><button onclick="contDerivarCancel()" style="padding:9px 18px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer">Cancelar</button></div>';
+    h += '</div></div>';
     return h;
   }
   function contDerDestChange() {
@@ -11623,7 +11626,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     });
     h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="4" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot>';
     h += '</table></div>';
-    if (_cont.derivarId) h = contDerivarPanelHtml(_cont.derivarId) + h;
     return h;
   }
   function contFilterPlanilla(list, f) {
@@ -11684,7 +11686,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#eef;color:#3b3b8f;cursor:pointer;font-size:12px">Editar</button> <button onclick="contUnderivar(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fef9c3;color:#854d0e;cursor:pointer;font-size:12px">↩</button></td></tr>';
     });
     h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="2" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot></table></div>';
-    if (_cont.derivarId) h = contDerivarPanelHtml(_cont.derivarId) + h;
     return h;
   }
   function contExportNegEspecial(clase) {
@@ -11830,7 +11831,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div style="font-size:12px;color:#6b7280;margin-top:8px">Ej: del 1 al 0 (fin de mes) = mes calendario. Del 5 al 4 = del 5 de un mes al 4 del siguiente.</div>';
     h += '</div>';
     // Rubros por destino
-    var dests = [['negocio', 'Negocio'], ['casa', 'Casa'], ['construccion', 'Construcción'], ['prestamos', 'Préstamos']];
+    var dests = [['negocio', 'Negocio'], ['casa', 'Casa'], ['banco', 'Banco'], ['construccion', 'Construcción'], ['prestamos', 'Préstamos']];
     h += '<h3 style="color:#2d3277;font-size:15px;margin:6px 0 10px">Rubros y subrubros por solapa</h3>';
     h += '<div style="font-size:12px;color:#6b7280;margin-bottom:12px">En Negocio, poné rubros con las palabras <strong>Factura</strong>, <strong>Retención</strong> o <strong>Flex</strong> para que caigan en sus sub-solapas.</div>';
     dests.forEach(function (d) {
