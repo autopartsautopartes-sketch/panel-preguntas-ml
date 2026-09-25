@@ -13547,6 +13547,15 @@ function contLoad() {
   if (!Array.isArray(c.intereses_adelanto)) c.intereses_adelanto = [];
   if (!Array.isArray(c.prestamos)) c.prestamos = [];
   if (!c.seq) c.seq = 1;
+  // Semilla (una sola vez) de los rubros especiales de Negocio, para que Facturas ML / Retenciones /
+  // Flex funcionen al derivar sin tener que crearlos a mano. Si el usuario los borra, no reaparecen.
+  if (!c.config._seeded_negocio) {
+    const nb = c.config.rubros.negocio;
+    const ensure = (nombre) => { if (!nb.some(r => String(r.nombre).toLowerCase() === nombre.toLowerCase())) nb.push({ id: contId(db, 'r'), nombre: nombre, subrubros: [] }); };
+    ensure('Facturas ML'); ensure('Retenciones'); ensure('Flex');
+    c.config._seeded_negocio = true;
+    try { saveDB(db); } catch (e) {}
+  }
   return db;
 }
 function contId(db, pfx) { return (pfx || 'c') + (db.contable.seq++) + '_' + Date.now().toString(36); }
@@ -13695,7 +13704,7 @@ route('POST', '/api/contable/mutate', async (req, res) => {
       case 'interes.save': {
         const cur = contCurrentPeriod(db);
         if (p.id) { const t = c.intereses_adelanto.find(x => x.id === p.id); if (t) Object.assign(t, p, { id: t.id }); }
-        else c.intereses_adelanto.push({ id: contId(db, 'i'), period_id: cur ? cur.id : null, fecha: p.fecha || _ciso(new Date()), cuenta: p.cuenta || '', adelanto: Number(p.adelanto) || 0, intereses: Number(p.intereses) || 0, nota: p.nota || '' });
+        else c.intereses_adelanto.push({ id: contId(db, 'i'), period_id: cur ? cur.id : null, fecha: p.fecha || _ciso(new Date()), cuenta: p.cuenta || '', adelanto: Number(p.adelanto) || 0, intereses: Number(p.intereses) || 0, costo_pct: Number(p.costo_pct) || 0, nota: p.nota || '' });
         break;
       }
       case 'interes.delete': { c.intereses_adelanto = c.intereses_adelanto.filter(x => x.id !== p.id); break; }
@@ -13775,7 +13784,13 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   const cuenta = String(body.cuenta || '').trim().toUpperCase();
   if (NOMBRES.indexOf(cuenta) === -1) return sendJSON(res, 400, { error: 'cuenta inválida' });
   const db = contLoad();
-  const has = (mpid) => db.contable.transacciones.some(t => t.origen === 'mp' && t.cuenta === cuenta && String(t.mp_id || t.operacion) === String(mpid));
+  // Dedupe: un mp_id ya existe si está en transacciones O en intereses_adelanto (así un adelanto ya
+  // importado tampoco se vuelve a pedir/insertar).
+  const has = (mpid) => db.contable.transacciones.some(t => t.origen === 'mp' && t.cuenta === cuenta && String(t.mp_id || t.operacion) === String(mpid))
+    || db.contable.intereses_adelanto.some(x => x.origen === 'mp' && x.cuenta === cuenta && String(x.mp_id) === String(mpid));
+  // Dedupe por Nº de operación: MP a veces lista el mismo movimiento como 2 entradas internas
+  // distintas (mismo nº de operación). Si ya existe ese nº para la cuenta, no lo repetimos.
+  const hasOp = (op) => op && db.contable.transacciones.some(t => t.origen === 'mp' && t.cuenta === cuenta && String(t.operacion) === String(op));
   // Modo PROBE: el userscript manda solo los ids internos y le devolvemos cuáles son nuevos,
   // así después trae el nº de operación (detalle) SOLO de esos y no recarga todo cada vez.
   if (body.mode === 'probe') {
@@ -13789,17 +13804,34 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   let added = 0, skipped = 0;
   for (const m of movs) {
     const mpId = String(m.mp_id || m.operacion || '').trim();
+    if (!mpId) { skipped++; continue; }
+    // ADELANTO DE DINERO: no va a Transacción, impacta directo en Negocio → Intereses adelanto.
+    if (m.kind === 'adelanto') {
+      const op = String(m.operacion || '').trim();
+      const dupe = db.contable.intereses_adelanto.some(x => (x.mp_id && String(x.mp_id) === mpId) || (op && x.cuenta === cuenta && String(x.operacion) === op));
+      if (dupe) { skipped++; continue; }
+      db.contable.intereses_adelanto.push({
+        id: contId(db, 'i'), period_id: cur ? cur.id : null, origen: 'mp', mp_id: mpId, operacion: op,
+        fecha: String(m.fecha || '').slice(0, 10), cuenta: cuenta,
+        adelanto: Math.round((Number(m.adelanto) || 0) * 100) / 100,
+        intereses: Math.round(Math.abs(Number(m.intereses) || 0) * 100) / 100,
+        costo_pct: Number(m.costo_pct) || 0, nota: ''
+      });
+      added++; continue;
+    }
     let monto = Number(m.monto);
-    if (!mpId || isNaN(monto)) { skipped++; continue; }
+    if (isNaN(monto)) { skipped++; continue; }
     const tipo = String(m.tipo || m.categoria || '').toLowerCase();
     const desc = (String(m.descripcion || '') + ' ' + String(m.titulo || '')).toLowerCase();
     // Solo egresos. Excluir ventas y devoluciones de venta.
     if (monto > 0) { skipped++; continue; }
     if (excl(tipo, desc)) { skipped++; continue; }
     if (has(mpId)) { skipped++; continue; }
+    const opFinal = String(m.operacion || '').trim();
+    if (opFinal && hasOp(opFinal)) { skipped++; continue; }
     db.contable.transacciones.push({
       id: contId(db, 't'), period_id: cur ? cur.id : null, origen: 'mp', mp_id: mpId,
-      fecha: String(m.fecha || '').slice(0, 10), operacion: String(m.operacion || '').trim() || mpId, cuenta: cuenta,
+      fecha: String(m.fecha || '').slice(0, 10), operacion: opFinal || mpId, cuenta: cuenta,
       detalle: m.titulo || m.descripcion || 'Movimiento MP',
       monto: Math.round(Math.abs(monto) * 100) / 100,
       tipo_mp: tipo, forma_pago: null, cheque: null, tarjeta: null,
