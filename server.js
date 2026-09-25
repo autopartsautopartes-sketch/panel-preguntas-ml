@@ -13540,7 +13540,7 @@ function contLoad() {
   if (c.config.period_start_day == null) c.config.period_start_day = 1;
   if (c.config.period_end_day == null) c.config.period_end_day = 0; // 0 = fin de mes
   if (!c.config.rubros) c.config.rubros = {};
-  for (const k of ['negocio', 'casa', 'construccion', 'prestamos', 'transaccion']) if (!c.config.rubros[k]) c.config.rubros[k] = [];
+  for (const k of ['negocio', 'casa', 'construccion', 'banco', 'prestamos', 'transaccion']) if (!c.config.rubros[k]) c.config.rubros[k] = [];
   if (c.config.current_period_id === undefined) c.config.current_period_id = null;
   if (!Array.isArray(c.periods)) c.periods = [];
   if (!Array.isArray(c.transacciones)) c.transacciones = [];
@@ -13607,7 +13607,7 @@ route('GET', '/api/contable/data', async (req, res) => {
     transacciones: db.contable.transacciones,
     intereses_adelanto: db.contable.intereses_adelanto,
     prestamos: db.contable.prestamos,
-    cuentas: (db.ml_accounts || []).map(a => a.name)
+    cuentas: ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE']
   });
 });
 // POST mutaciones por acción (una sola ruta para no multiplicar endpoints).
