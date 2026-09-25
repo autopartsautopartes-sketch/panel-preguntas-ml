@@ -416,8 +416,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
 <style>
   /* Modo "embed": cuando el panel se abre dentro del diálogo de Mensajes/Preguntas, sin menú ni header. */
   body.embed-mode .header, body.embed-mode .sidebar { display: none !important; }
-  body.embed-mode .main { display: block !important; }
-  body.embed-mode .content { padding: 12px !important; margin: 0 !important; }
+  body.embed-mode .app { display: block !important; height: auto !important; min-height: 0 !important; }
+  body.embed-mode .main { display: block !important; height: auto !important; overflow: visible !important; }
+  body.embed-mode .content { padding: 12px !important; margin: 0 !important; height: auto !important; overflow: visible !important; min-height: 0 !important; }
   body.embed-mode #prep-advert-banner { display: none !important; }
 </style>
 <!-- APP -->
@@ -7774,10 +7775,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (ov) ov.remove();
     ov = document.createElement('div');
     ov.id = 'prep-dialog-ov';
-    ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:1.5vh 1vw';
     ov.addEventListener('click', function (e) { if (e.target === ov) closePrepDialog(); });
     ov.innerHTML =
-      '<div style="background:#fff;border-radius:14px;width:min(960px,96vw);height:min(88vh,920px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)">' +
+      '<div style="background:#fff;border-radius:14px;width:min(1280px,97vw);height:95vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #eef2f7;flex-shrink:0">' +
       '<strong style="color:#2d3277;font-size:15px">' + title + '</strong>' +
       '<button onclick="closePrepDialog()" style="border:none;background:#f1f5f9;border-radius:8px;width:34px;height:34px;font-size:16px;cursor:pointer">✕</button>' +
@@ -11580,6 +11581,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // Chequeo de contadores (Preguntas + Mensajes sin leer) cada 8s. Son llamadas livianas
   // (1 por cuenta) y así el número de la izquierda se mantiene al día sin quedar "tildado".
   setInterval(() => {
+    if (PREP_IS_EMBED) return; // en el diálogo embebido no corren refrescos de fondo
     checkNewQuestions();
     checkNewMessages();
     if (!notificationsReady) notificationsReady = true;
@@ -11587,6 +11589,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // Auto-refresh current view every 15 seconds ONLY if not typing
   // El dashboard NO se refresca automáticamente para no destruir el gráfico.
   setInterval(() => {
+    if (PREP_IS_EMBED) return; // en el diálogo embebido no auto-refresca (no pisa la conversación)
     if (isUserTyping()) return;
     if (currentSection === 'questions') loadQuestions();
     // Solo auto-refrescamos "Sin leer" (1 sola llamada, liviano). "Sin responder"/"Respondidos"
