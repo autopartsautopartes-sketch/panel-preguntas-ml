@@ -11315,6 +11315,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     } catch (e) { showToast('Error de conexión', 'error'); return false; }
   }
   async function contReload() { var res = await fetch('/api/contable/data'); _cont.data = await res.json(); renderContable(); }
+  async function contReloadTx() { showToast('Actualizando…', 'info'); try { await contReload(); showToast('Actualizado ✓', 'success'); } catch (e) { showToast('Error al actualizar', 'error'); } }
+  // Leyenda de última sincronización por cuenta (de mp_last_push que registra el server en cada push del userscript)
+  function contSyncLegend() {
+    var lp = contD().mp_last_push || {};
+    var parts = contCuentas().map(function (c) {
+      var e = lp[c];
+      if (!e || !e.ts) return '<span style="color:#9ca3af">' + c + ': sin datos</span>';
+      var mins = Math.round((Date.now() - new Date(e.ts).getTime()) / 60000);
+      var col = mins <= 45 ? '#16a34a' : '#b45309';
+      var hace = mins < 1 ? 'recién' : (mins < 60 ? ('hace ' + mins + 'm') : ('hace ' + Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm'));
+      return '<span style="color:' + col + '">✓ ' + c + ' <span style="color:#9ca3af">' + hace + '</span></span>';
+    });
+    return '<div style="font-size:12px;margin:0 0 8px;display:flex;gap:14px;flex-wrap:wrap;align-items:center"><span style="color:#6b7280;font-weight:600">Última sync MP:</span>' + parts.join('') + '</div>';
+  }
 
   /* ---------- RESUMEN ---------- */
   function contResumenHtml() {
@@ -11351,10 +11365,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // Barra superior
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
     h += '<button onclick="contToggleManual()" style="padding:8px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">+ Agregar manual</button>';
-    h += '<button onclick="contReload()" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
+    h += '<button onclick="contReloadTx()" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
     h += '<button onclick="contExportTransacciones()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-weight:600;cursor:pointer">📥 XLSX</button>';
-    h += '<button onclick="contPurgeMP()" style="padding:8px 14px;border:1px solid #fecaca;border-radius:8px;background:#fff;color:#b91c1c;font-weight:600;cursor:pointer">🧹 Vaciar movimientos MP</button>';
+    h += '<button onclick="contPurgeMP()" style="padding:8px 14px;border:1px solid #fecaca;border-radius:8px;background:#fff;color:#b91c1c;font-weight:600;cursor:pointer">🧹 Vaciar pendientes MP</button>';
     h += '</div>';
+    h += contSyncLegend();
     h += '<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Los movimientos de MP (transferencias, pagos/compras, préstamos, facturas, impuestos, extracciones) entran solos desde el userscript de cada cuenta. Tocá 🔄 para ver los últimos.</div>';
     if (_cont.showManual) h += contManualFormHtml();
     // Filtros
@@ -11362,7 +11377,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:10px 0;background:#f8fafc;padding:10px;border-radius:10px">';
     h += contFiltroSelect('tx', 'estado', 'Estado', [['', 'Todos'], ['pendiente', 'Pendientes'], ['derivado', 'Derivadas']], f.estado);
     h += contFiltroSelectOpts('tx', 'cuenta', 'Cuenta', contCuentaOptions(f.cuenta), f.cuenta);
-    h += contFiltroSelect('tx', 'derivado', 'Derivado', [['', 'Todos'], ['negocio', 'Negocio'], ['casa', 'Casa'], ['prestamos', 'Préstamos']], f.derivado);
+    h += contFiltroSelect('tx', 'derivado', 'Derivado', [['', 'Todos'], ['negocio', 'Negocio'], ['casa', 'Casa'], ['banco', 'Banco'], ['construccion', 'Construcción'], ['prestamos', 'Préstamos']], f.derivado);
     h += contFiltroFecha('tx', f);
     h += contFiltroTexto('tx', 'Detalle/nota', f.q);
     h += '<button onclick="contClearFiltros(\'tx\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Limpiar</button>';
@@ -11371,14 +11386,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var rows = contFilterTx(contTxOfPeriod(cur ? cur.id : null), f);
     h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1000px">';
     h += '<thead><tr style="background:#f1f5f9;text-align:left">' +
-      '<th style="padding:8px">Fecha</th><th style="padding:8px">Nº oper.</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Detalle</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Tipo</th><th style="padding:8px">Estado</th><th style="padding:8px">Acciones</th></tr></thead><tbody>';
+      '<th style="padding:8px">Fecha / hora</th><th style="padding:8px">Nº oper.</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Detalle</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Tipo</th><th style="padding:8px">Estado</th><th style="padding:8px">Acciones</th></tr></thead><tbody>';
     if (!rows.length) h += '<tr><td colspan="8" style="padding:18px;text-align:center;color:#9ca3af">No hay transacciones en este período con esos filtros.</td></tr>';
     rows.forEach(function (t) {
       var estado = '';
       if (t.derivado) { estado = '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:11px">' + (CONT_DEST_LABEL[t.derivado] || t.derivado) + (t.rubro_id ? ' · ' + escapeHtml(contRubroNombre(t.derivado, t.rubro_id)) : '') + '</span>'; }
       else estado = '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:10px;font-size:11px">Pendiente</span>';
       h += '<tr style="border-bottom:1px solid #eef2f7">' +
-        '<td style="padding:8px">' + contFechaDisp(t.fecha) + '</td>' +
+        '<td style="padding:8px">' + contFechaDisp(t.fecha) + (t.hora ? ' <span style="color:#9ca3af">' + escapeHtml(t.hora) + '</span>' : '') + '</td>' +
         '<td style="padding:8px;color:#6b7280">' + escapeHtml(t.operacion || '') + '</td>' +
         '<td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td>' +
         '<td style="padding:8px">' + escapeHtml(t.detalle || '') + (t.nota ? '<div style="font-size:11px;color:#9ca3af">📝 ' + escapeHtml(t.nota) + '</div>' : '') + '</td>' +
