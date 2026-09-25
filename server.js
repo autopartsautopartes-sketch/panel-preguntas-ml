@@ -13751,6 +13751,54 @@ route('POST', '/api/contable/import-mp', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, imported, detalle, nota: 'Se traen operaciones de MP (payments). Vamos a afinar qué tipos de movimiento incluir (transferencias / compras / préstamos) en el próximo paso.' });
 });
+// POST receptor de MOVIMIENTOS de MP empujados por el userscript (misma idea que /api/mp/saldo-push).
+// Los movimientos negativos (egresos) de la "Actividad" de MP son de sesión (no accesibles con el token
+// de la app), así que un userscript los lee y los manda acá. Guardamos solo egresos, excluyendo ventas
+// y devoluciones de venta, dedupe por (cuenta + nº operación).
+route('POST', '/api/contable/mp-push', async (req, res) => {
+  let body; try { body = await parseBody(req); } catch (e) { body = {}; }
+  const PUSH_TOKEN = process.env.CONTABLE_PUSH_TOKEN || 'autochap-contable-push';
+  if (String(body.token || '') !== PUSH_TOKEN) return sendJSON(res, 403, { error: 'token inválido' });
+  const NOMBRES = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const cuenta = String(body.cuenta || '').trim().toUpperCase();
+  if (NOMBRES.indexOf(cuenta) === -1) return sendJSON(res, 400, { error: 'cuenta inválida' });
+  const db = contLoad();
+  const has = (mpid) => db.contable.transacciones.some(t => t.origen === 'mp' && t.cuenta === cuenta && String(t.mp_id || t.operacion) === String(mpid));
+  // Modo PROBE: el userscript manda solo los ids internos y le devolvemos cuáles son nuevos,
+  // así después trae el nº de operación (detalle) SOLO de esos y no recarga todo cada vez.
+  if (body.mode === 'probe') {
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    const nuevos = ids.filter(id => id && !has(id));
+    return sendJSON(res, 200, { ok: true, cuenta, nuevos });
+  }
+  const movs = Array.isArray(body.movimientos) ? body.movimientos : [];
+  const cur = contCurPeriod(db);
+  const excl = (tipo, desc) => (tipo === 'sales' || tipo === 'in_money' || tipo === 'transfers_received' || tipo === 'pix_received' || /venta en mercado libre|devoluci[oó]n de dinero/.test(desc));
+  let added = 0, skipped = 0;
+  for (const m of movs) {
+    const mpId = String(m.mp_id || m.operacion || '').trim();
+    let monto = Number(m.monto);
+    if (!mpId || isNaN(monto)) { skipped++; continue; }
+    const tipo = String(m.tipo || m.categoria || '').toLowerCase();
+    const desc = (String(m.descripcion || '') + ' ' + String(m.titulo || '')).toLowerCase();
+    // Solo egresos. Excluir ventas y devoluciones de venta.
+    if (monto > 0) { skipped++; continue; }
+    if (excl(tipo, desc)) { skipped++; continue; }
+    if (has(mpId)) { skipped++; continue; }
+    db.contable.transacciones.push({
+      id: contId(db, 't'), period_id: cur ? cur.id : null, origen: 'mp', mp_id: mpId,
+      fecha: String(m.fecha || '').slice(0, 10), operacion: String(m.operacion || '').trim() || mpId, cuenta: cuenta,
+      detalle: m.titulo || m.descripcion || 'Movimiento MP',
+      monto: Math.round(Math.abs(monto) * 100) / 100,
+      tipo_mp: tipo, forma_pago: null, cheque: null, tarjeta: null,
+      derivado: null, rubro_id: null, subrubro_id: null,
+      nota: (m.descripcion && m.descripcion !== m.titulo) ? m.descripcion : '', estado: 'pendiente'
+    });
+    added++;
+  }
+  saveDB(db);
+  return sendJSON(res, 200, { ok: true, cuenta, added, skipped });
+});
 
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
