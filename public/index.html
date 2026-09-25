@@ -11350,6 +11350,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<button onclick="contToggleManual()" style="padding:8px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">+ Agregar manual</button>';
     h += '<button onclick="contReload()" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
     h += '<button onclick="contExportTransacciones()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-weight:600;cursor:pointer">📥 XLSX</button>';
+    h += '<button onclick="contPurgeMP()" style="padding:8px 14px;border:1px solid #fecaca;border-radius:8px;background:#fff;color:#b91c1c;font-weight:600;cursor:pointer">🧹 Vaciar movimientos MP</button>';
     h += '</div>';
     h += '<div style="font-size:12px;color:#6b7280;margin-bottom:10px">Los movimientos de MP (transferencias, pagos/compras, préstamos, facturas, impuestos, extracciones) entran solos desde el userscript de cada cuenta. Tocá 🔄 para ver los últimos.</div>';
     if (_cont.showManual) h += contManualFormHtml();
@@ -11482,6 +11483,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       showToast('Importadas ' + (j.imported || 0) + ' operaciones de MP', 'success');
       await contReload();
     } catch (e) { showToast('Error al importar', 'error'); }
+  }
+  async function contPurgeMP() {
+    if (!confirm('Esto borra TODOS los movimientos traídos de Mercado Pago (los que dicen "MP"). Las cargas manuales no se tocan. El userscript los vuelve a traer. ¿Continuar?')) return;
+    var ok = await contMutate('tx.purge_mp', {});
+    if (ok) { showToast('Movimientos MP vaciados', 'success'); await contReload(); }
   }
   // Panel de derivación de una transacción existente
   function contDerivarOpen(id) { _cont.derivarId = id; renderContable(); var el = document.getElementById('cont-derivar-panel'); if (el) el.scrollIntoView({ block: 'center' }); }
