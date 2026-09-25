@@ -496,6 +496,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a onclick="showSection('users')" id="nav-users" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M4 20c0-3 2.5-5 5-5s5 2 5 5"/><path d="M16 6a3 3 0 0 1 0 6"/><path d="M20 20c0-2.5-1.5-4-3.5-4.5"/></svg><span>Usuarios</span>
       </a>
+      <a onclick="showSection('contable')" id="nav-contable" style="display:none">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 3h16v18H4z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg><span>Contable</span>
+      </a>
       <a onclick="showSection('cotizador')" id="nav-cotizador" style="display:none">
         <svg class="nvic" viewBox="0 0 24 24"><path d="M20.5 11.3L12 2.8H3v9l8.5 8.5a1.4 1.4 0 0 0 2 0l7-7a1.4 1.4 0 0 0 0-2z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg><span>Cotizador</span>
       </a>
@@ -680,6 +683,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           { const ncl = document.getElementById('nav-claims'); if (ncl) ncl.style.display = ''; }  // Reclamos: solo admin
           { const mcl = document.getElementById('mob-claims'); if (mcl) mcl.style.display = ''; }
           { const mp = document.getElementById('mob-publicidad'); if (mp) mp.style.display = ''; }
+          { const nct = document.getElementById('nav-contable'); if (nct) nct.style.display = ''; }  // Contable: solo admin
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
@@ -812,6 +816,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           { const ncl = document.getElementById('nav-claims'); if (ncl) ncl.style.display = ''; }  // Reclamos: solo admin
           { const mcl = document.getElementById('mob-claims'); if (mcl) mcl.style.display = ''; }
           { const mp = document.getElementById('mob-publicidad'); if (mp) mp.style.display = ''; }
+          { const nct = document.getElementById('nav-contable'); if (nct) nct.style.display = ''; }  // Contable: solo admin
           // mob-promos y mob-accounts ocultos en móvil (no se muestran)
         }
         if (currentUser.role === 'admin' || currentUser.can_view_promos) {
@@ -971,6 +976,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'update': loadUpdate(); break;
       case 'promos': loadPromos(); break;
       case 'stock': loadStock(); break;
+      case 'contable': loadContable(); break;
     }
   }
   // ==================== SALDOS MERCADO PAGO ====================
@@ -11229,6 +11235,622 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       }
     });
   }
+  /* ==================== CONTABLE (solo admin) ==================== */
+  var _cont = { data: null, tab: 'resumen', negSub: 'gastos', casaSub: 'gastos', consSub: 'gastos', derivarId: null, editId: null, showManual: false, filtros: {} };
+  var CONT_TABS = [
+    ['resumen', 'Resumen'], ['transaccion', 'Transacción'], ['negocio', 'Negocio'],
+    ['casa', 'Casa'], ['construccion', 'Construcción'], ['cheques', 'Cheques'],
+    ['prestamos', 'Préstamos'], ['periodos', 'Períodos'], ['config', 'Configuración']
+  ];
+  var CONT_DEST_LABEL = { negocio: 'Negocio', casa: 'Casa', prestamos: 'Préstamos', construccion: 'Construcción' };
+  function contMoney(n) { n = Number(n) || 0; return (n < 0 ? '-' : '') + '$ ' + Math.abs(Math.round(n)).toLocaleString('es-AR'); }
+  function contFechaDisp(iso) { if (!iso) return ''; var p = String(iso).slice(0, 10).split('-'); if (p.length < 3) return iso; return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
+  function contHoy() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function contD() { return _cont.data || { config: { rubros: {} }, periods: [], transacciones: [], intereses_adelanto: [], prestamos: [], cuentas: [] }; }
+  function contRubros(dest) { var c = contD(); return (c.config.rubros && c.config.rubros[dest]) || []; }
+  function contRubroNombre(dest, id) { var r = contRubros(dest).find(function (x) { return x.id === id; }); return r ? r.nombre : ''; }
+  function contSubNombre(dest, rid, sid) { var r = contRubros(dest).find(function (x) { return x.id === rid; }); if (!r || !r.subrubros) return ''; var s = r.subrubros.find(function (x) { return x.id === sid; }); return s ? s.nombre : ''; }
+  function contCurPeriod() { var c = contD(); return (c.periods || []).find(function (p) { return p.id === c.current_period_id; }) || null; }
+  function contPeriodById(id) { var c = contD(); return (c.periods || []).find(function (p) { return p.id === id; }) || null; }
+  function contCuentas() { return contD().cuentas || []; }
+  function _cv(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  function contTipo(t) { if (t.origen === 'mp') return 'MP'; if (t.forma_pago === 'tarjeta') return 'Tarjeta'; if (t.forma_pago === 'cheque') return 'Cheque'; if (t.forma_pago === 'efectivo') return 'Efectivo'; return '—'; }
+  // Clasifica un rubro de Negocio para saber a qué sub-solapa va (por nombre).
+  function contNegClass(dest, rubroId) {
+    var nom = contRubroNombre(dest, rubroId).toLowerCase();
+    if (/factura/.test(nom)) return 'facturas';
+    if (/retenc/.test(nom)) return 'retenciones';
+    if (/flex/.test(nom)) return 'flex';
+    return 'gastos';
+  }
+
+  async function loadContable() {
+    var myNav = navToken;
+    if (!(currentUser && currentUser.role === 'admin')) { document.getElementById('content').innerHTML = '<div class="empty"><p>Solo el administrador puede ver Contable.</p></div>'; return; }
+    document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando Contable…</p></div>';
+    try {
+      var res = await fetch('/api/contable/data'); var j = await res.json();
+      if (navToken !== myNav) return;
+      if (!res.ok) { document.getElementById('content').innerHTML = '<div class="empty"><p>' + (j.error || 'Error') + '</p></div>'; return; }
+      _cont.data = j;
+      renderContable();
+    } catch (e) { if (navToken === myNav) document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar Contable</p></div>'; }
+  }
+  function contSetTab(t) { _cont.tab = t; _cont.derivarId = null; _cont.editId = null; renderContable(); }
+  function contTabsHtml() {
+    var cur = contCurPeriod();
+    var h = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
+    CONT_TABS.forEach(function (t) { var on = _cont.tab === t[0]; h += '<button onclick="contSetTab(\'' + t[0] + '\')" style="padding:7px 13px;border-radius:9px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';font-weight:' + (on ? '700' : '600') + ';font-size:13px;cursor:pointer">' + t[1] + '</button>'; });
+    h += '</div>';
+    var perTxt = cur ? ('Período actual: <strong>' + escapeHtml(cur.label) + '</strong>') : 'Sin período abierto';
+    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:16px">' + perTxt + '</div>';
+    return h;
+  }
+  function renderContable() {
+    var content = document.getElementById('content');
+    var h = '<h2 style="margin-bottom:14px;color:#2d3277">Contable</h2>' + contTabsHtml();
+    var body = '';
+    switch (_cont.tab) {
+      case 'resumen': body = contResumenHtml(); break;
+      case 'transaccion': body = contTransaccionHtml(); break;
+      case 'negocio': body = contNegocioHtml(); break;
+      case 'casa': body = contPlanillaHtml('casa', 'Casa', 'casaSub'); break;
+      case 'construccion': body = contPlanillaHtml('construccion', 'Construcción', 'consSub'); break;
+      case 'cheques': body = contChequesHtml(); break;
+      case 'prestamos': body = contPrestamosHtml(); break;
+      case 'periodos': body = contPeriodosHtml(); break;
+      case 'config': body = contConfigHtml(); break;
+    }
+    content.innerHTML = h + '<div id="cont-body">' + body + '</div>';
+  }
+  async function contMutate(action, payload) {
+    try {
+      var r = await fetch('/api/contable/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action, payload: payload || {} }) });
+      var j = await r.json();
+      if (!r.ok) { showToast(j.error || 'Error', 'error'); return false; }
+      return true;
+    } catch (e) { showToast('Error de conexión', 'error'); return false; }
+  }
+  async function contReload() { var res = await fetch('/api/contable/data'); _cont.data = await res.json(); renderContable(); }
+
+  /* ---------- RESUMEN ---------- */
+  function contResumenHtml() {
+    return '<div class="empty" style="padding:40px"><p>El resumen lo definimos después. Por ahora, cargá los datos en las otras solapas.</p></div>';
+  }
+
+  /* ---------- Opciones de selects ---------- */
+  function contCuentaOptions(sel) {
+    var h = '<option value="">(cuenta)</option>';
+    contCuentas().forEach(function (c) { h += '<option value="' + escapeHtml(c) + '"' + (sel === c ? ' selected' : '') + '>' + escapeHtml(c) + '</option>'; });
+    return h;
+  }
+  function contRubroOptions(dest, sel) {
+    var h = '<option value="">(rubro)</option>';
+    contRubros(dest).forEach(function (r) { h += '<option value="' + r.id + '"' + (sel === r.id ? ' selected' : '') + '>' + escapeHtml(r.nombre) + '</option>'; });
+    return h;
+  }
+  function contSubOptions(dest, rid, sel) {
+    var r = contRubros(dest).find(function (x) { return x.id === rid; });
+    var h = '<option value="">(sin subrubro)</option>';
+    if (r && r.subrubros) r.subrubros.forEach(function (s) { h += '<option value="' + s.id + '"' + (sel === s.id ? ' selected' : '') + '>' + escapeHtml(s.nombre) + '</option>'; });
+    return h;
+  }
+  function contPrestamoOptions(sel) {
+    var h = '<option value="">(elegí préstamo)</option>';
+    contD().prestamos.forEach(function (p) { h += '<option value="' + p.id + '"' + (sel === p.id ? ' selected' : '') + '>' + escapeHtml(p.cuenta + ' · cuota ' + contMoney(p.monto_cuota) + ' · quedan ' + p.cuotas_restantes) + '</option>'; });
+    return h;
+  }
+
+  /* ---------- TRANSACCIÓN ---------- */
+  function contTransaccionHtml() {
+    var cur = contCurPeriod();
+    var h = '';
+    // Barra superior
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
+    h += '<button onclick="contToggleManual()" style="padding:8px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">+ Agregar manual</button>';
+    h += '<button onclick="contImportMP()" style="padding:8px 14px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:600;cursor:pointer">⬇ Traer de Mercado Pago</button>';
+    h += '<button onclick="contExportTransacciones()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-weight:600;cursor:pointer">📥 XLSX</button>';
+    h += '</div>';
+    if (_cont.showManual) h += contManualFormHtml();
+    if (_cont.derivarId) h += contDerivarPanelHtml(_cont.derivarId);
+    // Filtros
+    var f = _cont.filtros.tx || {};
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:10px 0;background:#f8fafc;padding:10px;border-radius:10px">';
+    h += contFiltroSelect('tx', 'estado', 'Estado', [['', 'Todos'], ['pendiente', 'Pendientes'], ['derivado', 'Derivadas']], f.estado);
+    h += contFiltroSelectOpts('tx', 'cuenta', 'Cuenta', contCuentaOptions(f.cuenta), f.cuenta);
+    h += contFiltroSelect('tx', 'derivado', 'Derivado', [['', 'Todos'], ['negocio', 'Negocio'], ['casa', 'Casa'], ['prestamos', 'Préstamos']], f.derivado);
+    h += contFiltroFecha('tx', f);
+    h += contFiltroTexto('tx', 'Detalle/nota', f.q);
+    h += '<button onclick="contClearFiltros(\'tx\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Limpiar</button>';
+    h += '</div>';
+    // Tabla
+    var rows = contFilterTx(contTxOfPeriod(cur ? cur.id : null), f);
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1000px">';
+    h += '<thead><tr style="background:#f1f5f9;text-align:left">' +
+      '<th style="padding:8px">Fecha</th><th style="padding:8px">Nº oper.</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Detalle</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Tipo</th><th style="padding:8px">Estado</th><th style="padding:8px">Acciones</th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="8" style="padding:18px;text-align:center;color:#9ca3af">No hay transacciones en este período con esos filtros.</td></tr>';
+    rows.forEach(function (t) {
+      var estado = '';
+      if (t.derivado) { estado = '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:11px">' + (CONT_DEST_LABEL[t.derivado] || t.derivado) + (t.rubro_id ? ' · ' + escapeHtml(contRubroNombre(t.derivado, t.rubro_id)) : '') + '</span>'; }
+      else estado = '<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:10px;font-size:11px">Pendiente</span>';
+      h += '<tr style="border-bottom:1px solid #eef2f7">' +
+        '<td style="padding:8px">' + contFechaDisp(t.fecha) + '</td>' +
+        '<td style="padding:8px;color:#6b7280">' + escapeHtml(t.operacion || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(t.detalle || '') + (t.nota ? '<div style="font-size:11px;color:#9ca3af">📝 ' + escapeHtml(t.nota) + '</div>' : '') + '</td>' +
+        '<td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td>' +
+        '<td style="padding:8px">' + contTipo(t) + '</td>' +
+        '<td style="padding:8px">' + estado + '</td>' +
+        '<td style="padding:8px;white-space:nowrap">' +
+        '<button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#7c3aed;color:#fff;cursor:pointer;font-size:12px">Derivar</button> ' +
+        '<button onclick="contTxDelete(\'' + t.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button>' +
+        '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+    return h;
+  }
+  function contToggleManual() { _cont.showManual = !_cont.showManual; renderContable(); }
+  function contManualFormHtml() {
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:14px">';
+    h += '<h3 style="margin:0 0 12px;color:#2d3277;font-size:15px">Agregar transacción manual</h3>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
+    h += contField('Fecha', '<input type="date" id="ctx-fecha" value="' + contHoy() + '" style="' + contInputCss() + '">');
+    h += contField('Cuenta (si aplica)', '<select id="ctx-cuenta" style="' + contInputCss() + '">' + contCuentaOptions('') + '</select>');
+    h += contField('Detalle', '<input type="text" id="ctx-detalle" placeholder="Descripción" style="' + contInputCss() + '">');
+    h += contField('Monto *', '<input type="number" id="ctx-monto" step="0.01" placeholder="0" style="' + contInputCss() + '">');
+    h += contField('Forma de pago *', '<select id="ctx-forma" onchange="contFormaOnChange()" style="' + contInputCss() + '"><option value="">(elegí)</option><option value="tarjeta">Tarjeta</option><option value="cheque">Cheque</option><option value="efectivo">Efectivo</option></select>');
+    h += '</div>';
+    // Panel cheque
+    h += '<div id="ctx-cheque-panel" style="display:none;margin-top:10px;padding:10px;background:#f8fafc;border-radius:8px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">Datos del cheque</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">' +
+      contField('Banco', '<input type="text" id="ctx-chq-banco" style="' + contInputCss() + '">') +
+      contField('Nº cheque', '<input type="text" id="ctx-chq-num" style="' + contInputCss() + '">') +
+      contField('Titular', '<input type="text" id="ctx-chq-titular" style="' + contInputCss() + '">') +
+      contField('Fecha de cobro', '<input type="date" id="ctx-chq-fecha" style="' + contInputCss() + '">') +
+      '</div></div>';
+    // Panel tarjeta
+    h += '<div id="ctx-tarjeta-panel" style="display:none;margin-top:10px;padding:10px;background:#f8fafc;border-radius:8px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">Datos de la tarjeta</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">' +
+      contField('Qué tarjeta', '<input type="text" id="ctx-tar-cual" placeholder="Ej: Visa Galicia" style="' + contInputCss() + '">') +
+      contField('Cuotas', '<input type="text" id="ctx-tar-cuotas" placeholder="Ej: 1, 3, 6" style="' + contInputCss() + '">') +
+      '</div></div>';
+    // Derivación
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px">';
+    h += contField('Derivar a', '<select id="ctx-derivado" onchange="contDerivadoOnChange()" style="' + contInputCss() + '"><option value="">(pendiente)</option><option value="negocio">Negocio</option><option value="casa">Casa</option><option value="prestamos">Préstamos</option></select>');
+    h += '<div id="ctx-rubro-wrap">' + contField('Rubro', '<select id="ctx-rubro" style="' + contInputCss() + '" disabled><option value="">(elegí derivación primero)</option></select>') + '</div>';
+    h += '<div id="ctx-sub-wrap">' + contField('Subrubro', '<select id="ctx-sub" style="' + contInputCss() + '" disabled><option value=""></option></select>') + '</div>';
+    h += contField('Notas', '<input type="text" id="ctx-nota" placeholder="Nota" style="' + contInputCss() + '">');
+    h += '</div>';
+    h += '<div style="margin-top:12px;display:flex;gap:8px"><button onclick="contTxSaveManual()" style="padding:9px 18px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer">Guardar</button><button onclick="contToggleManual()" style="padding:9px 18px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer">Cancelar</button></div>';
+    h += '</div>';
+    return h;
+  }
+  function contFormaOnChange() {
+    var v = _cv('ctx-forma');
+    document.getElementById('ctx-cheque-panel').style.display = (v === 'cheque') ? 'block' : 'none';
+    document.getElementById('ctx-tarjeta-panel').style.display = (v === 'tarjeta') ? 'block' : 'none';
+  }
+  function contDerivadoOnChange() {
+    var dest = _cv('ctx-derivado');
+    var wrap = document.getElementById('ctx-rubro-wrap');
+    var subWrap = document.getElementById('ctx-sub-wrap');
+    if (dest === 'prestamos') {
+      wrap.innerHTML = contField('Préstamo', '<select id="ctx-rubro" style="' + contInputCss() + '">' + contPrestamoOptions('') + '</select>');
+      subWrap.innerHTML = contField('Subrubro', '<select id="ctx-sub" style="' + contInputCss() + '" disabled><option value=""></option></select>');
+    } else if (dest) {
+      wrap.innerHTML = contField('Rubro', '<select id="ctx-rubro" onchange="contManualRubroChange()" style="' + contInputCss() + '">' + contRubroOptions(dest, '') + '</select>');
+      subWrap.innerHTML = contField('Subrubro', '<select id="ctx-sub" style="' + contInputCss() + '"><option value="">(sin subrubro)</option></select>');
+    } else {
+      wrap.innerHTML = contField('Rubro', '<select id="ctx-rubro" style="' + contInputCss() + '" disabled><option value="">(elegí derivación primero)</option></select>');
+      subWrap.innerHTML = contField('Subrubro', '<select id="ctx-sub" style="' + contInputCss() + '" disabled><option value=""></option></select>');
+    }
+  }
+  function contManualRubroChange() {
+    var dest = _cv('ctx-derivado'); var rid = _cv('ctx-rubro');
+    var sub = document.getElementById('ctx-sub'); if (sub) { sub.innerHTML = contSubOptions(dest, rid, ''); sub.disabled = false; }
+  }
+  async function contTxSaveManual() {
+    var forma = _cv('ctx-forma');
+    var monto = _cv('ctx-monto');
+    if (!forma) { showToast('Elegí la forma de pago', 'error'); return; }
+    if (!monto) { showToast('Ingresá el monto', 'error'); return; }
+    var dest = _cv('ctx-derivado');
+    var payload = {
+      fecha: _cv('ctx-fecha') || contHoy(), cuenta: _cv('ctx-cuenta'), detalle: _cv('ctx-detalle'),
+      monto: monto, forma_pago: forma, derivado: dest || null,
+      nota: _cv('ctx-nota')
+    };
+    if (forma === 'cheque') payload.cheque = { banco: _cv('ctx-chq-banco'), numero: _cv('ctx-chq-num'), titular: _cv('ctx-chq-titular'), fecha_cobro: _cv('ctx-chq-fecha') };
+    if (forma === 'tarjeta') payload.tarjeta = { cual: _cv('ctx-tar-cual'), cuotas: _cv('ctx-tar-cuotas') };
+    var prestamoId = null;
+    if (dest === 'prestamos') { prestamoId = _cv('ctx-rubro'); }
+    else if (dest) { payload.rubro_id = _cv('ctx-rubro') || null; payload.subrubro_id = _cv('ctx-sub') || null; }
+    var ok = await contMutate('tx.save', payload);
+    if (!ok) return;
+    if (dest === 'prestamos' && prestamoId) {
+      await contMutate('prestamo.pago', { prestamoId: prestamoId, fecha: payload.fecha, monto: payload.monto, nota: payload.nota });
+    }
+    _cont.showManual = false;
+    showToast('Transacción guardada', 'success');
+    await contReload();
+  }
+  async function contImportMP() {
+    showToast('Trayendo movimientos de MP…', 'info');
+    try {
+      var r = await fetch('/api/contable/import-mp', { method: 'POST' });
+      var j = await r.json();
+      if (!r.ok) { showToast(j.error || 'Error', 'error'); return; }
+      showToast('Importadas ' + (j.imported || 0) + ' operaciones de MP', 'success');
+      await contReload();
+    } catch (e) { showToast('Error al importar', 'error'); }
+  }
+  // Panel de derivación de una transacción existente
+  function contDerivarOpen(id) { _cont.derivarId = id; renderContable(); var el = document.getElementById('cont-derivar-panel'); if (el) el.scrollIntoView({ block: 'center' }); }
+  function contDerivarPanelHtml(id) {
+    var t = contD().transacciones.find(function (x) { return x.id === id; }); if (!t) return '';
+    var h = '<div id="cont-derivar-panel" style="background:#faf5ff;border:1px solid #d8b4fe;border-radius:12px;padding:16px;margin-bottom:14px">';
+    h += '<h3 style="margin:0 0 4px;color:#6b21a8;font-size:15px">Derivar transacción</h3>';
+    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:12px">' + contFechaDisp(t.fecha) + ' · ' + escapeHtml(t.detalle || '') + ' · ' + contMoney(t.monto) + (t.cuenta ? ' · ' + escapeHtml(t.cuenta) : '') + '</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
+    h += contField('Derivar a', '<select id="cder-dest" onchange="contDerDestChange()" style="' + contInputCss() + '"><option value="">(pendiente)</option><option value="negocio"' + (t.derivado === 'negocio' ? ' selected' : '') + '>Negocio</option><option value="casa"' + (t.derivado === 'casa' ? ' selected' : '') + '>Casa</option><option value="prestamos"' + (t.derivado === 'prestamos' ? ' selected' : '') + '>Préstamos</option></select>');
+    var rubroInner;
+    if (t.derivado === 'prestamos') rubroInner = '<select id="cder-rubro" style="' + contInputCss() + '">' + contPrestamoOptions('') + '</select>';
+    else if (t.derivado) rubroInner = '<select id="cder-rubro" onchange="contDerRubroChange()" style="' + contInputCss() + '">' + contRubroOptions(t.derivado, t.rubro_id) + '</select>';
+    else rubroInner = '<select id="cder-rubro" style="' + contInputCss() + '" disabled><option value="">(elegí derivación)</option></select>';
+    h += '<div id="cder-rubro-wrap">' + contField('Rubro / Préstamo', rubroInner) + '</div>';
+    h += '<div id="cder-sub-wrap">' + contField('Subrubro', '<select id="cder-sub" style="' + contInputCss() + '">' + contSubOptions(t.derivado, t.rubro_id, t.subrubro_id) + '</select>') + '</div>';
+    h += contField('Notas', '<input type="text" id="cder-nota" value="' + escapeHtml(t.nota || '') + '" style="' + contInputCss() + '">');
+    h += '</div>';
+    h += '<div style="margin-top:12px;display:flex;gap:8px"><button onclick="contDerivarSave(\'' + id + '\')" style="padding:9px 18px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">Guardar derivación</button><button onclick="contDerivarCancel()" style="padding:9px 18px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer">Cancelar</button></div>';
+    h += '</div>';
+    return h;
+  }
+  function contDerDestChange() {
+    var dest = _cv('cder-dest');
+    var wrap = document.getElementById('cder-rubro-wrap'); var subWrap = document.getElementById('cder-sub-wrap');
+    if (dest === 'prestamos') { wrap.innerHTML = contField('Rubro / Préstamo', '<select id="cder-rubro" style="' + contInputCss() + '">' + contPrestamoOptions('') + '</select>'); subWrap.innerHTML = contField('Subrubro', '<select id="cder-sub" style="' + contInputCss() + '" disabled></select>'); }
+    else if (dest) { wrap.innerHTML = contField('Rubro / Préstamo', '<select id="cder-rubro" onchange="contDerRubroChange()" style="' + contInputCss() + '">' + contRubroOptions(dest, '') + '</select>'); subWrap.innerHTML = contField('Subrubro', '<select id="cder-sub" style="' + contInputCss() + '"><option value="">(sin subrubro)</option></select>'); }
+    else { wrap.innerHTML = contField('Rubro / Préstamo', '<select id="cder-rubro" style="' + contInputCss() + '" disabled><option value="">(elegí derivación)</option></select>'); subWrap.innerHTML = contField('Subrubro', '<select id="cder-sub" style="' + contInputCss() + '" disabled></select>'); }
+  }
+  function contDerRubroChange() { var dest = _cv('cder-dest'); var rid = _cv('cder-rubro'); var sub = document.getElementById('cder-sub'); if (sub) sub.innerHTML = contSubOptions(dest, rid, ''); }
+  function contDerivarCancel() { _cont.derivarId = null; renderContable(); }
+  async function contDerivarSave(id) {
+    var t = contD().transacciones.find(function (x) { return x.id === id; }); if (!t) return;
+    var dest = _cv('cder-dest');
+    var payload = { id: id, derivado: dest || null, nota: _cv('cder-nota') };
+    var prestamoId = null;
+    if (dest === 'prestamos') { prestamoId = _cv('cder-rubro'); }
+    else if (dest) { payload.rubro_id = _cv('cder-rubro') || null; payload.subrubro_id = _cv('cder-sub') || null; }
+    var ok = await contMutate('tx.derivar', payload);
+    if (!ok) return;
+    if (dest === 'prestamos' && prestamoId) await contMutate('prestamo.pago', { prestamoId: prestamoId, fecha: t.fecha, monto: t.monto, transaccion_id: id, nota: payload.nota });
+    _cont.derivarId = null;
+    showToast('Derivada', 'success');
+    await contReload();
+  }
+  async function contTxDelete(id) { if (!confirm('¿Borrar esta transacción?')) return; var ok = await contMutate('tx.delete', { id: id }); if (ok) { showToast('Borrada', 'success'); await contReload(); } }
+
+  /* ---------- Filtros reutilizables ---------- */
+  function contInputCss() { return 'width:100%;padding:7px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;box-sizing:border-box'; }
+  function contField(label, inner) { return '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">' + label + '</label>' + inner + '</div>'; }
+  function contSetFiltro(tab, key, val) { if (!_cont.filtros[tab]) _cont.filtros[tab] = {}; _cont.filtros[tab][key] = val; renderContable(); }
+  function contClearFiltros(tab) { _cont.filtros[tab] = {}; renderContable(); }
+  function contFiltroSelect(tab, key, label, opts, sel) {
+    var h = '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">' + label + '</label><select onchange="contSetFiltro(\'' + tab + '\',\'' + key + '\',this.value)" style="padding:7px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">';
+    opts.forEach(function (o) { h += '<option value="' + o[0] + '"' + (sel === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; });
+    h += '</select></div>';
+    return h;
+  }
+  function contFiltroSelectOpts(tab, key, label, optsHtml, sel) {
+    return '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">' + label + '</label><select onchange="contSetFiltro(\'' + tab + '\',\'' + key + '\',this.value)" style="padding:7px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px">' + optsHtml + '</select></div>';
+  }
+  function contFiltroTexto(tab, label, val) {
+    return '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">' + label + '</label><input type="text" value="' + escapeHtml(val || '') + '" oninput="contSetFiltroDebounced(\'' + tab + '\',\'q\',this.value)" placeholder="Buscar…" style="padding:7px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px"></div>';
+  }
+  var _contFiltroT;
+  function contSetFiltroDebounced(tab, key, val) { if (!_cont.filtros[tab]) _cont.filtros[tab] = {}; _cont.filtros[tab][key] = val; clearTimeout(_contFiltroT); _contFiltroT = setTimeout(function () { renderContable(); var el = document.querySelector('#cont-body input[oninput*="' + key + '"]'); if (el) { el.focus(); var v = el.value; el.value = ''; el.value = v; } }, 350); }
+  function contFiltroFecha(tab, f) {
+    return '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Desde</label><input type="date" value="' + (f.desde || '') + '" onchange="contSetFiltro(\'' + tab + '\',\'desde\',this.value)" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px"></div>' +
+      '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Hasta</label><input type="date" value="' + (f.hasta || '') + '" onchange="contSetFiltro(\'' + tab + '\',\'hasta\',this.value)" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:13px"></div>';
+  }
+  function contTxOfPeriod(pid) { return contD().transacciones.filter(function (t) { return pid == null || t.period_id === pid; }); }
+  function contFilterTx(list, f) {
+    f = f || {};
+    return list.filter(function (t) {
+      if (f.estado === 'pendiente' && t.derivado) return false;
+      if (f.estado === 'derivado' && !t.derivado) return false;
+      if (f.cuenta && t.cuenta !== f.cuenta) return false;
+      if (f.derivado && t.derivado !== f.derivado) return false;
+      if (f.desde && (t.fecha || '') < f.desde) return false;
+      if (f.hasta && (t.fecha || '') > f.hasta) return false;
+      if (f.q) { var q = f.q.toLowerCase(); if (((t.detalle || '') + ' ' + (t.nota || '') + ' ' + (t.operacion || '')).toLowerCase().indexOf(q) < 0) return false; }
+      return true;
+    }).sort(function (a, b) { return (b.fecha || '').localeCompare(a.fecha || ''); });
+  }
+  function contExportTransacciones() {
+    var cur = contCurPeriod();
+    var rows = contFilterTx(contTxOfPeriod(cur ? cur.id : null), _cont.filtros.tx || {});
+    var headers = ['Fecha', 'Nº operación', 'Cuenta', 'Detalle', 'Monto', 'Tipo', 'Forma pago', 'Derivado', 'Rubro', 'Subrubro', 'Nota'];
+    var data = rows.map(function (t) { return [t.fecha, t.operacion || '', t.cuenta || '', t.detalle || '', t.monto, contTipo(t), t.forma_pago || '', t.derivado ? (CONT_DEST_LABEL[t.derivado] || t.derivado) : '', t.derivado && t.rubro_id ? contRubroNombre(t.derivado, t.rubro_id) : '', t.derivado && t.subrubro_id ? contSubNombre(t.derivado, t.rubro_id, t.subrubro_id) : '', t.nota || '']; });
+    contExportXLSX('transacciones', headers, data);
+  }
+  function contExportXLSX(nombre, headers, rows) {
+    var fn = 'contable_' + nombre + '_' + new Date().toISOString().slice(0, 10);
+    _ensureXLSX(function () {
+      if (window.XLSX) { var ws = window.XLSX.utils.aoa_to_sheet([headers].concat(rows)); var wb = window.XLSX.utils.book_new(); window.XLSX.utils.book_append_sheet(wb, ws, nombre.slice(0, 28)); window.XLSX.writeFile(wb, fn + '.xlsx'); }
+      else { var esc = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }; var csv = headers.map(esc).join(';') + '\r\n'; rows.forEach(function (r) { csv += r.map(esc).join(';') + '\r\n'; }); var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' }); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fn + '.csv'; document.body.appendChild(a); a.click(); a.remove(); }
+    });
+  }
+
+  /* ---------- PLANILLA genérica (Casa / Construcción / Gastos corrientes de Negocio) ---------- */
+  function contPlanillaHtml(dest, titulo, subKey) {
+    // dest: negocio/casa/construccion ; muestra las transacciones derivadas a ese destino (gastos corrientes)
+    var f = _cont.filtros[dest] || {};
+    var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
+    var all = contD().transacciones.filter(function (t) { return t.derivado === dest && (pid == null || t.period_id === pid); });
+    if (dest === 'negocio') all = all.filter(function (t) { return contNegClass(dest, t.rubro_id) === 'gastos'; });
+    var h = '';
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px;background:#f8fafc;padding:10px;border-radius:10px">';
+    h += contFiltroSelectOpts(dest, 'cuenta', 'Cuenta', contCuentaOptions(f.cuenta), f.cuenta);
+    h += contFiltroSelect(dest, 'tipo', 'Tipo', [['', 'Todos'], ['MP', 'MP'], ['Efectivo', 'Efectivo'], ['Tarjeta', 'Tarjeta'], ['Cheque', 'Cheque']], f.tipo);
+    h += contFiltroSelectOpts(dest, 'rubro', 'Rubro', contRubroOptions(dest, f.rubro), f.rubro);
+    h += contFiltroFecha(dest, f);
+    h += contFiltroTexto(dest, 'Nota', f.q);
+    h += '<button onclick="contClearFiltros(\'' + dest + '\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Limpiar</button>';
+    h += '<button onclick="contExportPlanilla(\'' + dest + '\',\'' + titulo + '\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">📥 XLSX</button>';
+    h += '</div>';
+    var rows = contFilterPlanilla(all, f);
+    var total = rows.reduce(function (s, t) { return s + (Number(t.monto) || 0); }, 0);
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px">';
+    h += '<thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Tipo</th><th style="padding:8px">Cuenta</th><th style="padding:8px">Rubro</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Notas</th><th style="padding:8px"></th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="7" style="padding:18px;text-align:center;color:#9ca3af">Sin registros. Derivá transacciones desde la solapa Transacción.</td></tr>';
+    rows.forEach(function (t) {
+      var rub = contRubroNombre(dest, t.rubro_id); var sub = t.subrubro_id ? contSubNombre(dest, t.rubro_id, t.subrubro_id) : '';
+      h += '<tr style="border-bottom:1px solid #eef2f7">' +
+        '<td style="padding:8px">' + contFechaDisp(t.fecha) + '</td>' +
+        '<td style="padding:8px">' + contTipo(t) + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td>' +
+        '<td style="padding:8px">' + escapeHtml(rub) + (sub ? ' <span style="color:#9ca3af">/ ' + escapeHtml(sub) + '</span>' : '') + '</td>' +
+        '<td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td>' +
+        '<td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td>' +
+        '<td style="padding:8px;white-space:nowrap"><button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#eef;color:#3b3b8f;cursor:pointer;font-size:12px">Editar</button> <button onclick="contUnderivar(\'' + t.id + '\')" title="Volver a pendiente" style="padding:3px 7px;border:none;border-radius:6px;background:#fef9c3;color:#854d0e;cursor:pointer;font-size:12px">↩</button></td>' +
+        '</tr>';
+    });
+    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="4" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot>';
+    h += '</table></div>';
+    if (_cont.derivarId) h = contDerivarPanelHtml(_cont.derivarId) + h;
+    return h;
+  }
+  function contFilterPlanilla(list, f) {
+    f = f || {};
+    return list.filter(function (t) {
+      if (f.cuenta && t.cuenta !== f.cuenta) return false;
+      if (f.tipo && contTipo(t) !== f.tipo) return false;
+      if (f.rubro && t.rubro_id !== f.rubro) return false;
+      if (f.desde && (t.fecha || '') < f.desde) return false;
+      if (f.hasta && (t.fecha || '') > f.hasta) return false;
+      if (f.q) { var q = f.q.toLowerCase(); if (((t.detalle || '') + ' ' + (t.nota || '')).toLowerCase().indexOf(q) < 0) return false; }
+      return true;
+    }).sort(function (a, b) { return (b.fecha || '').localeCompare(a.fecha || ''); });
+  }
+  async function contUnderivar(id) { var ok = await contMutate('tx.derivar', { id: id, derivado: null, rubro_id: null, subrubro_id: null }); if (ok) { showToast('Volvió a pendiente', 'success'); await contReload(); } }
+  function contExportPlanilla(dest, titulo) {
+    var f = _cont.filtros[dest] || {};
+    var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
+    var all = contD().transacciones.filter(function (t) { return t.derivado === dest && (pid == null || t.period_id === pid); });
+    if (dest === 'negocio') all = all.filter(function (t) { return contNegClass(dest, t.rubro_id) === 'gastos'; });
+    var rows = contFilterPlanilla(all, f);
+    var headers = ['Fecha', 'Tipo', 'Cuenta', 'Rubro', 'Subrubro', 'Monto', 'Notas'];
+    var data = rows.map(function (t) { return [t.fecha, contTipo(t), t.cuenta || '', contRubroNombre(dest, t.rubro_id), t.subrubro_id ? contSubNombre(dest, t.rubro_id, t.subrubro_id) : '', t.monto, t.nota || '']; });
+    contExportXLSX(titulo.toLowerCase(), headers, data);
+  }
+
+  /* ---------- NEGOCIO (con sub-solapas) ---------- */
+  function contNegocioHtml() {
+    var subs = [['gastos', 'Gastos corrientes'], ['facturas', 'Facturas ML'], ['retenciones', 'Retenciones'], ['flex', 'Flex'], ['intereses', 'Intereses adelanto']];
+    var h = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">';
+    subs.forEach(function (s) { var on = _cont.negSub === s[0]; h += '<button onclick="contSetNegSub(\'' + s[0] + '\')" style="padding:6px 12px;border-radius:8px;border:1px solid ' + (on ? '#2563eb' : '#e5e7eb') + ';background:' + (on ? '#2563eb' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';font-size:12px;font-weight:600;cursor:pointer">' + s[1] + '</button>'; });
+    h += '</div>';
+    if (_cont.negSub === 'gastos') h += contPlanillaHtml('negocio', 'Negocio', 'negSub');
+    else if (_cont.negSub === 'intereses') h += contInteresesHtml();
+    else h += contNegEspecialHtml(_cont.negSub);
+    return h;
+  }
+  function contSetNegSub(s) { _cont.negSub = s; _cont.derivarId = null; renderContable(); }
+  // Facturas ML / Retenciones / Flex: columnas fecha, cuenta, $, notas
+  function contNegEspecialHtml(clase) {
+    var titulos = { facturas: 'Facturas ML', retenciones: 'Retenciones', flex: 'Flex' };
+    var f = _cont.filtros['neg_' + clase] || {};
+    var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
+    var all = contD().transacciones.filter(function (t) { return t.derivado === 'negocio' && (pid == null || t.period_id === pid) && contNegClass('negocio', t.rubro_id) === clase; });
+    var rows = contFilterPlanilla(all, f);
+    var total = rows.reduce(function (s, t) { return s + (Number(t.monto) || 0); }, 0);
+    var h = '<div style="font-size:12px;color:#6b7280;margin-bottom:8px">Se llena al derivar una transacción de Negocio con un rubro de "' + titulos[clase] + '".</div>';
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px;background:#f8fafc;padding:10px;border-radius:10px">';
+    h += contFiltroSelectOpts('neg_' + clase, 'cuenta', 'Cuenta', contCuentaOptions(f.cuenta), f.cuenta);
+    h += contFiltroFecha('neg_' + clase, f);
+    h += contFiltroTexto('neg_' + clase, 'Nota', f.q);
+    h += '<button onclick="contClearFiltros(\'neg_' + clase + '\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">Limpiar</button>';
+    h += '<button onclick="contExportNegEspecial(\'' + clase + '\')" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">📥 XLSX</button>';
+    h += '</div>';
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Cuenta</th><th style="padding:8px;text-align:right">Monto</th><th style="padding:8px">Notas</th><th style="padding:8px"></th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="5" style="padding:18px;text-align:center;color:#9ca3af">Sin registros.</td></tr>';
+    rows.forEach(function (t) {
+      h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px;text-align:right;font-weight:600">' + contMoney(t.monto) + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#eef;color:#3b3b8f;cursor:pointer;font-size:12px">Editar</button> <button onclick="contUnderivar(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fef9c3;color:#854d0e;cursor:pointer;font-size:12px">↩</button></td></tr>';
+    });
+    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="2" style="padding:8px;text-align:right">Total</td><td style="padding:8px;text-align:right">' + contMoney(total) + '</td><td colspan="2"></td></tr></tfoot></table></div>';
+    if (_cont.derivarId) h = contDerivarPanelHtml(_cont.derivarId) + h;
+    return h;
+  }
+  function contExportNegEspecial(clase) {
+    var titulos = { facturas: 'Facturas ML', retenciones: 'Retenciones', flex: 'Flex' };
+    var f = _cont.filtros['neg_' + clase] || {};
+    var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
+    var all = contD().transacciones.filter(function (t) { return t.derivado === 'negocio' && (pid == null || t.period_id === pid) && contNegClass('negocio', t.rubro_id) === clase; });
+    var rows = contFilterPlanilla(all, f);
+    contExportXLSX(clase, ['Fecha', 'Cuenta', 'Monto', 'Notas'], rows.map(function (t) { return [t.fecha, t.cuenta || '', t.monto, t.nota || '']; }));
+  }
+  // INTERESES ADELANTO (carga directa)
+  function contInteresesHtml() {
+    var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
+    var rows = contD().intereses_adelanto.filter(function (t) { return pid == null || t.period_id === pid; }).sort(function (a, b) { return (b.fecha || '').localeCompare(a.fecha || ''); });
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:14px">';
+    h += '<div style="font-weight:600;color:#2d3277;margin-bottom:10px;font-size:14px">Cargar interés por adelanto</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">';
+    h += contField('Fecha', '<input type="date" id="cia-fecha" value="' + contHoy() + '" style="' + contInputCss() + '">');
+    h += contField('Cuenta', '<select id="cia-cuenta" style="' + contInputCss() + '">' + contCuentaOptions('') + '</select>');
+    h += contField('Adelanto ($)', '<input type="number" id="cia-adelanto" step="0.01" style="' + contInputCss() + '">');
+    h += contField('Intereses ($)', '<input type="number" id="cia-intereses" step="0.01" style="' + contInputCss() + '">');
+    h += contField('Nota', '<input type="text" id="cia-nota" style="' + contInputCss() + '">');
+    h += '</div><div style="margin-top:10px"><button onclick="contInteresSave()" style="padding:8px 16px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer">Guardar</button></div></div>';
+    var tot = rows.reduce(function (s, t) { return s + (Number(t.intereses) || 0); }, 0);
+    h += '<div style="margin-bottom:8px"><button onclick="contExportIntereses()" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">📥 XLSX</button></div>';
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Cuenta</th><th style="padding:8px;text-align:right">Adelanto</th><th style="padding:8px;text-align:right">Intereses</th><th style="padding:8px">Nota</th><th style="padding:8px"></th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="6" style="padding:18px;text-align:center;color:#9ca3af">Sin registros.</td></tr>';
+    rows.forEach(function (t) { h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px;text-align:right">' + contMoney(t.adelanto) + '</td><td style="padding:8px;text-align:right;font-weight:600;color:#b91c1c">' + contMoney(t.intereses) + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contInteresDelete(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button></td></tr>'; });
+    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="3" style="padding:8px;text-align:right">Total intereses</td><td style="padding:8px;text-align:right">' + contMoney(tot) + '</td><td colspan="2"></td></tr></tfoot></table></div>';
+    return h;
+  }
+  async function contInteresSave() {
+    var ad = _cv('cia-adelanto'), it = _cv('cia-intereses');
+    if (!ad && !it) { showToast('Cargá adelanto o intereses', 'error'); return; }
+    var ok = await contMutate('interes.save', { fecha: _cv('cia-fecha') || contHoy(), cuenta: _cv('cia-cuenta'), adelanto: ad, intereses: it, nota: _cv('cia-nota') });
+    if (ok) { showToast('Guardado', 'success'); await contReload(); }
+  }
+  async function contInteresDelete(id) { if (!confirm('¿Borrar?')) return; var ok = await contMutate('interes.delete', { id: id }); if (ok) { showToast('Borrado', 'success'); await contReload(); } }
+  function contExportIntereses() {
+    var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
+    var rows = contD().intereses_adelanto.filter(function (t) { return pid == null || t.period_id === pid; });
+    contExportXLSX('intereses_adelanto', ['Fecha', 'Cuenta', 'Adelanto', 'Intereses', 'Nota'], rows.map(function (t) { return [t.fecha, t.cuenta || '', t.adelanto, t.intereses, t.nota || '']; }));
+  }
+
+  /* ---------- CHEQUES (placeholder Drive) ---------- */
+  function contChequesHtml() {
+    return '<div class="empty" style="padding:40px"><p>La solapa de Cheques va a traer los datos desde tu Excel de Drive. La conectamos en el próximo paso.</p></div>';
+  }
+
+  /* ---------- PRÉSTAMOS ---------- */
+  function contPrestamosHtml() {
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:16px">';
+    h += '<div style="font-weight:600;color:#2d3277;margin-bottom:10px;font-size:14px">Cargar préstamo</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">';
+    h += contField('Cuenta', '<select id="cpr-cuenta" style="' + contInputCss() + '">' + contCuentaOptions('') + '</select>');
+    h += contField('Fecha de cierre (débito)', '<input type="date" id="cpr-fecha" style="' + contInputCss() + '">');
+    h += contField('Cuotas restantes', '<input type="number" id="cpr-cuotas" step="1" oninput="contPrestamoCalc()" style="' + contInputCss() + '">');
+    h += contField('$ por cuota', '<input type="number" id="cpr-cuota" step="0.01" oninput="contPrestamoCalc()" style="' + contInputCss() + '">');
+    h += contField('Total', '<input type="text" id="cpr-total" readonly style="' + contInputCss() + ';background:#f8fafc">');
+    h += contField('Finaliza', '<input type="text" id="cpr-finaliza" readonly style="' + contInputCss() + ';background:#f8fafc">');
+    h += contField('Nota', '<input type="text" id="cpr-nota" style="' + contInputCss() + '">');
+    h += '</div><div style="margin-top:10px"><button onclick="contPrestamoSave()" style="padding:8px 16px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer">Guardar préstamo</button></div></div>';
+    var prs = contD().prestamos;
+    if (!prs.length) { h += '<div class="empty"><p>No hay préstamos cargados.</p></div>'; return h; }
+    prs.forEach(function (p) {
+      var pagos = p.pagos || [];
+      var pagado = pagos.reduce(function (s, x) { return s + (Number(x.monto) || 0); }, 0);
+      h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:12px">';
+      h += '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">';
+      h += '<div><strong style="color:#2d3277">' + escapeHtml(p.cuenta) + '</strong> · ' + contMoney(p.monto_cuota) + '/cuota · quedan <strong>' + p.cuotas_restantes + '</strong> · total ' + contMoney(p.total) + (p.finaliza ? ' · finaliza ' + contFechaDisp(p.finaliza) : '') + '</div>';
+      h += '<div><button onclick="contPrestamoDelete(\'' + p.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑 Borrar</button></div>';
+      h += '</div>';
+      h += '<div style="font-size:12px;color:#6b7280;margin-top:6px">Cierre: ' + (p.fecha_cierre ? contFechaDisp(p.fecha_cierre) : '—') + (p.nota ? ' · ' + escapeHtml(p.nota) : '') + ' · Pagado hasta ahora: ' + contMoney(pagado) + '</div>';
+      if (pagos.length) {
+        h += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="background:#f8fafc;text-align:left"><th style="padding:6px">Fecha</th><th style="padding:6px;text-align:right">Monto</th><th style="padding:6px">Nota</th><th style="padding:6px"></th></tr></thead><tbody>';
+        pagos.slice().sort(function (a, b) { return (b.fecha || '').localeCompare(a.fecha || ''); }).forEach(function (pg) { h += '<tr><td style="padding:6px">' + contFechaDisp(pg.fecha) + '</td><td style="padding:6px;text-align:right">' + contMoney(pg.monto) + '</td><td style="padding:6px;color:#6b7280">' + escapeHtml(pg.nota || '') + '</td><td style="padding:6px"><button onclick="contPagoDelete(\'' + p.id + '\',\'' + pg.id + '\')" style="padding:2px 6px;border:none;border-radius:5px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:11px">🗑</button></td></tr>'; });
+        h += '</tbody></table>';
+      }
+      h += '</div>';
+    });
+    return h;
+  }
+  function contPrestamoCalc() {
+    var c = parseFloat(_cv('cpr-cuota')) || 0, n = parseInt(_cv('cpr-cuotas')) || 0;
+    var t = document.getElementById('cpr-total'); if (t) t.value = contMoney(c * n);
+    var fEl = document.getElementById('cpr-finaliza'); var fc = _cv('cpr-fecha');
+    if (fEl) { if (fc && n > 0) { var d = new Date(fc + 'T12:00:00'); d.setMonth(d.getMonth() + (n - 1)); fEl.value = contFechaDisp(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')); } else fEl.value = ''; }
+  }
+  async function contPrestamoSave() {
+    var cuenta = _cv('cpr-cuenta'), fc = _cv('cpr-fecha'), n = parseInt(_cv('cpr-cuotas')) || 0, c = parseFloat(_cv('cpr-cuota')) || 0;
+    if (!cuenta) { showToast('Elegí la cuenta', 'error'); return; }
+    if (!n || !c) { showToast('Cargá cuotas y monto por cuota', 'error'); return; }
+    var finaliza = '';
+    if (fc && n > 0) { var d = new Date(fc + 'T12:00:00'); d.setMonth(d.getMonth() + (n - 1)); finaliza = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    var ok = await contMutate('prestamo.save', { cuenta: cuenta, fecha_cierre: fc, cuotas_restantes: n, monto_cuota: c, total: c * n, finaliza: finaliza, nota: _cv('cpr-nota') });
+    if (ok) { showToast('Préstamo guardado', 'success'); await contReload(); }
+  }
+  async function contPrestamoDelete(id) { if (!confirm('¿Borrar el préstamo y sus pagos?')) return; var ok = await contMutate('prestamo.delete', { id: id }); if (ok) { showToast('Borrado', 'success'); await contReload(); } }
+  async function contPagoDelete(prestamoId, id) { if (!confirm('¿Borrar este pago?')) return; var ok = await contMutate('prestamo.pago.delete', { prestamoId: prestamoId, id: id }); if (ok) { showToast('Pago borrado', 'success'); await contReload(); } }
+
+  /* ---------- PERÍODOS (archivo) ---------- */
+  function contPeriodosHtml() {
+    var c = contD();
+    var cur = contCurPeriod();
+    var h = '';
+    if (_cont.archPeriod) {
+      var p = contPeriodById(_cont.archPeriod);
+      h += '<div style="margin-bottom:12px"><button onclick="contArchClose()" style="padding:7px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer">← Volver a Períodos</button> <span style="margin-left:10px;color:#6b7280">Viendo archivo: <strong>' + escapeHtml(p ? p.label : '') + '</strong></span></div>';
+      h += '<div style="font-size:13px;color:#374151;margin-bottom:10px">Las solapas Transacción, Negocio, Casa, etc. muestran los datos de este período archivado mientras esté seleccionado.</div>';
+      return h;
+    }
+    h += '<div style="display:flex;gap:8px;margin-bottom:14px"><button onclick="contPeriodClose()" style="padding:9px 16px;border:none;border-radius:8px;background:#dc2626;color:#fff;font-weight:600;cursor:pointer">Cerrar período actual e iniciar uno nuevo</button></div>';
+    if (cur) h += '<div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:12px;margin-bottom:14px"><strong style="color:#065f46">Período actual (abierto):</strong> ' + escapeHtml(cur.label) + '</div>';
+    var closed = (c.periods || []).filter(function (p) { return p.closed; }).sort(function (a, b) { return (b.closed_at || '').localeCompare(a.closed_at || ''); });
+    h += '<h3 style="color:#2d3277;font-size:15px;margin:6px 0 10px">Períodos archivados</h3>';
+    if (!closed.length) { h += '<div class="empty"><p>Todavía no cerraste ningún período.</p></div>'; return h; }
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:560px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Período</th><th style="padding:8px">Cerrado</th><th style="padding:8px;text-align:right">Transacciones</th><th style="padding:8px"></th></tr></thead><tbody>';
+    closed.forEach(function (p) {
+      var n = c.transacciones.filter(function (t) { return t.period_id === p.id; }).length;
+      h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + escapeHtml(p.label) + '</td><td style="padding:8px;color:#6b7280">' + (p.closed_at ? contFechaDisp(p.closed_at) : '') + '</td><td style="padding:8px;text-align:right">' + n + '</td><td style="padding:8px"><button onclick="contArchOpen(\'' + p.id + '\')" style="padding:4px 10px;border:none;border-radius:6px;background:#7c3aed;color:#fff;cursor:pointer;font-size:12px">Ver</button></td></tr>';
+    });
+    h += '</tbody></table></div>';
+    return h;
+  }
+  function contArchOpen(id) { _cont.archPeriod = id; _cont.tab = 'transaccion'; renderContable(); }
+  function contArchClose() { _cont.archPeriod = null; renderContable(); }
+  async function contPeriodClose() {
+    if (!confirm('¿Cerrar el período actual y abrir uno nuevo? Los datos quedan archivados en Períodos.')) return;
+    var ok = await contMutate('period.close', {});
+    if (ok) { showToast('Período cerrado. Nuevo período iniciado.', 'success'); await contReload(); }
+  }
+
+  /* ---------- CONFIGURACIÓN ---------- */
+  function contConfigHtml() {
+    var cfg = contD().config;
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:18px">';
+    h += '<h3 style="margin:0 0 10px;color:#2d3277;font-size:15px">Definición del período</h3>';
+    h += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">';
+    h += contField('Desde el día', '<input type="number" id="ccfg-start" min="1" max="28" value="' + (cfg.period_start_day || 1) + '" style="' + contInputCss() + ';max-width:110px">');
+    h += contField('Hasta el día (0 = fin de mes)', '<input type="number" id="ccfg-end" min="0" max="28" value="' + (cfg.period_end_day != null ? cfg.period_end_day : 0) + '" style="' + contInputCss() + ';max-width:150px">');
+    h += '<button onclick="contConfigSave()" style="padding:9px 16px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer">Guardar</button>';
+    h += '</div>';
+    h += '<div style="font-size:12px;color:#6b7280;margin-top:8px">Ej: del 1 al 0 (fin de mes) = mes calendario. Del 5 al 4 = del 5 de un mes al 4 del siguiente.</div>';
+    h += '</div>';
+    // Rubros por destino
+    var dests = [['negocio', 'Negocio'], ['casa', 'Casa'], ['construccion', 'Construcción'], ['prestamos', 'Préstamos']];
+    h += '<h3 style="color:#2d3277;font-size:15px;margin:6px 0 10px">Rubros y subrubros por solapa</h3>';
+    h += '<div style="font-size:12px;color:#6b7280;margin-bottom:12px">En Negocio, poné rubros con las palabras <strong>Factura</strong>, <strong>Retención</strong> o <strong>Flex</strong> para que caigan en sus sub-solapas.</div>';
+    dests.forEach(function (d) {
+      h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:12px">';
+      h += '<div style="font-weight:700;color:#2d3277;margin-bottom:8px">' + d[1] + '</div>';
+      h += '<div style="display:flex;gap:6px;margin-bottom:10px"><input type="text" id="crub-' + d[0] + '" placeholder="Nuevo rubro" style="' + contInputCss() + ';max-width:260px"><button onclick="contRubroAdd(\'' + d[0] + '\')" style="padding:7px 12px;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer;font-size:13px">+ Rubro</button></div>';
+      var rubros = contRubros(d[0]);
+      if (!rubros.length) h += '<div style="color:#9ca3af;font-size:13px">Sin rubros.</div>';
+      rubros.forEach(function (r) {
+        h += '<div style="border:1px solid #eef2f7;border-radius:8px;padding:8px;margin-bottom:6px">';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong style="font-size:13px">' + escapeHtml(r.nombre) + '</strong><button onclick="contRubroDel(\'' + d[0] + '\',\'' + r.id + '\')" style="padding:2px 8px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button></div>';
+        var subs = r.subrubros || [];
+        h += '<div style="margin-top:6px;padding-left:8px">';
+        subs.forEach(function (s) { h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;color:#4b5563;padding:2px 0">↳ ' + escapeHtml(s.nombre) + ' <button onclick="contSubDel(\'' + d[0] + '\',\'' + r.id + '\',\'' + s.id + '\')" style="padding:1px 6px;border:none;border-radius:5px;background:#f3f4f6;color:#b91c1c;cursor:pointer;font-size:11px">✕</button></div>'; });
+        h += '<div style="display:flex;gap:6px;margin-top:6px"><input type="text" id="csub-' + r.id + '" placeholder="Nuevo subrubro (opcional)" style="' + contInputCss() + ';max-width:230px;font-size:12px"><button onclick="contSubAdd(\'' + d[0] + '\',\'' + r.id + '\')" style="padding:5px 10px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;cursor:pointer;font-size:12px">+ Subrubro</button></div>';
+        h += '</div></div>';
+      });
+      h += '</div>';
+    });
+    return h;
+  }
+  async function contConfigSave() { var ok = await contMutate('config.update', { period_start_day: _cv('ccfg-start'), period_end_day: _cv('ccfg-end') }); if (ok) { showToast('Configuración guardada', 'success'); await contReload(); } }
+  async function contRubroAdd(dest) { var v = _cv('crub-' + dest).trim(); if (!v) return; var ok = await contMutate('rubro.save', { destino: dest, nombre: v }); if (ok) { await contReload(); } }
+  async function contRubroDel(dest, id) { if (!confirm('¿Borrar rubro?')) return; var ok = await contMutate('rubro.delete', { destino: dest, id: id }); if (ok) await contReload(); }
+  async function contSubAdd(dest, rid) { var v = _cv('csub-' + rid).trim(); if (!v) return; var ok = await contMutate('subrubro.save', { destino: dest, rubroId: rid, nombre: v }); if (ok) await contReload(); }
+  async function contSubDel(dest, rid, id) { if (!confirm('¿Borrar subrubro?')) return; var ok = await contMutate('subrubro.delete', { destino: dest, rubroId: rid, id: id }); if (ok) await contReload(); }
+
   // Init
   checkAuth();
 </script>
