@@ -7464,6 +7464,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let prepAdvertCount = 0;
   let prepAdvertBannerDismissed = false;
   let prepAdvertScanning = false;
+  let prepSinPrepararCount = null;
+  function setSinPrepararCount(n) {
+    prepSinPrepararCount = n;
+    const el = document.getElementById('prep-count-sinprep');
+    if (el) { el.textContent = n; el.style.display = 'inline-block'; }
+  }
   let prepRenderedOrderIds = new Set();
   let prepAutoRefreshTimer = null;
   let acordarPendingData = { saleKey: null, btn: null };
@@ -7476,8 +7482,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
     if (!can_manage && can_operate) currentPrepTab = 'en-preparacion';
     renderPrepTabs();
-    // Detección de advertencias en segundo plano (no re-renderiza solapas).
-    if (can_manage) setTimeout(scanPrepAdvertencias, 800);
+    // El monitor global (cada 10 min) y el botón "Buscar ahora" se encargan de las advertencias,
+    // así entrar a Preparación no dispara una consulta pesada extra.
   }
   function renderPrepTabs() {
     const can_manage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
@@ -7485,7 +7491,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     let html = `
       <h2 style="margin-bottom:16px;color:#2d3277">📦 Preparación de Órdenes</h2>
       <div class="prep-tabs">
-        ${can_manage ? `<button class="prep-tab ${currentPrepTab==='sin-preparar'?'active':''}" onclick="switchPrepTab('sin-preparar')">📋 Sin Preparar</button>` : ''}
+        ${can_manage ? `<button class="prep-tab ${currentPrepTab==='sin-preparar'?'active':''}" onclick="switchPrepTab('sin-preparar')">📋 Sin Preparar <span id="prep-count-sinprep" style="display:${prepSinPrepararCount!=null?'inline-block':'none'};min-width:22px;padding:1px 8px;margin-left:6px;border-radius:11px;background:#c0392b;color:#fff;font-weight:800;font-size:13px;vertical-align:middle;box-shadow:0 1px 2px rgba(0,0,0,.2)">${prepSinPrepararCount!=null?prepSinPrepararCount:''}</span></button>` : ''}
         ${can_operate ? `<button class="prep-tab ${currentPrepTab==='en-preparacion'?'active':''}" onclick="switchPrepTab('en-preparacion')">🔄 En Preparación</button>` : ''}
         <button class="prep-tab ${currentPrepTab==='finalizadas'?'active':''}" onclick="switchPrepTab('finalizadas')">✅ Finalizadas</button>
         ${can_manage ? `<button class="prep-tab ${currentPrepTab==='advertencia'?'active':''}" onclick="switchPrepTab('advertencia')" style="${prepAdvertCount>0?'color:#b45309;border-color:#f59e0b':''}">⚠️ Advertencia${prepAdvertCount>0?` (${prepAdvertCount})`:''}</button>` : ''}
@@ -7517,7 +7523,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     prepAdvertScanning = true;
     try {
       const [salesRes, prepRes, claimsRes] = await Promise.all([
-        fetch('/api/sales?date_from=' + PREP_ADVERT_CUTOFF + '&limit=500'),
+        fetch('/api/sales?date_from=' + PREP_ADVERT_CUTOFF + '&limit=200'),
         fetch('/api/prep/list'),
         fetch('/api/prep/claims')
       ]);
@@ -7590,8 +7596,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function startPrepAdvertMonitor() {
     const canManage = currentUser?.role === 'admin' || currentUser?.can_prep_manage;
     if (!canManage || _prepAdvertMonitor) return;
-    scanPrepAdvertencias();
-    _prepAdvertMonitor = setInterval(scanPrepAdvertencias, 180000); // cada 3 min
+    setTimeout(scanPrepAdvertencias, 15000);                       // primer escaneo a los 15s (no compite con la carga inicial)
+    _prepAdvertMonitor = setInterval(scanPrepAdvertencias, 600000); // cada 10 min
   }
   async function loadAdvertencia() {
     const container = document.getElementById('prep-tab-content');
@@ -7763,6 +7769,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           return nums.some(n => n === oq || (oqd && n.includes(oqd)));
         });
       }
+      setSinPrepararCount(pendingSales.length); // contador visible en la solapa
       const listEl = document.getElementById('sinPreparar-list');
       if (!listEl) return;
       if (pendingSales.length === 0) {
@@ -7957,6 +7964,25 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     btn.style.color = 'white';
     btn.style.borderColor = colors[n];
   }
+  // Saca la tarjeta de "Sin preparar" sin recargar toda la lista (más rápido y no salta el scroll).
+  function prepRemoveCard(btn) {
+    const card = (btn && btn.closest) ? btn.closest('.sale-card') : null;
+    prepOrdersCache = null;
+    if (!card) { return; }
+    card.style.transition = 'opacity .2s ease, transform .2s ease';
+    card.style.opacity = '0';
+    card.style.transform = 'translateX(14px)';
+    setTimeout(function () {
+      const listEl = document.getElementById('sinPreparar-list');
+      card.remove();
+      if (listEl) {
+        const remaining = listEl.querySelectorAll('.sale-card').length;
+        setSinPrepararCount(remaining); // baja el contador de la solapa
+        if (remaining === 0) { listEl.innerHTML = '<div class="empty"><p>No hay órdenes pendientes de preparación</p></div>'; }
+        else { const p = listEl.querySelector('p'); if (p) p.textContent = remaining + ' orden' + (remaining !== 1 ? 'es' : '') + ' sin preparar'; }
+      }
+    }, 200);
+  }
   async function pasarAPreparacion(saleKey, btn, extraData = {}) {
     const container = btn.parentElement;
     const selectedPriorityBtn = [...container.querySelectorAll('button[data-priority]')].find(b => b.style.background && b.style.background !== 'white' && b.style.background !== 'rgb(255, 255, 255)');
@@ -7990,8 +8016,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       });
       if (res.ok) {
         showToast('Orden pasada a Preparación', 'success');
-        prepOrdersCache = null;
-        loadSinPreparar();
+        prepRemoveCard(btn);
       } else {
         const data = await res.json();
         showToast(data.error || 'Error al procesar', 'error');
@@ -8050,8 +8075,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       });
       if (res.ok) {
         showToast(`Orden marcada como ${label}`, 'success');
-        prepOrdersCache = null;
-        loadSinPreparar();
+        prepRemoveCard(btn);
       } else {
         const data = await res.json();
         showToast(data.error || 'Error al procesar', 'error');
