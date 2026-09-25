@@ -11707,27 +11707,28 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += contField('Cuenta', '<select id="cia-cuenta" style="' + contInputCss() + '">' + contCuentaOptions('') + '</select>');
     h += contField('Adelanto ($)', '<input type="number" id="cia-adelanto" step="0.01" style="' + contInputCss() + '">');
     h += contField('Intereses ($)', '<input type="number" id="cia-intereses" step="0.01" style="' + contInputCss() + '">');
+    h += contField('Costo %', '<input type="number" id="cia-costo" step="0.01" style="' + contInputCss() + '">');
     h += contField('Nota', '<input type="text" id="cia-nota" style="' + contInputCss() + '">');
     h += '</div><div style="margin-top:10px"><button onclick="contInteresSave()" style="padding:8px 16px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer">Guardar</button></div></div>';
     var tot = rows.reduce(function (s, t) { return s + (Number(t.intereses) || 0); }, 0);
     h += '<div style="margin-bottom:8px"><button onclick="contExportIntereses()" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:12px">📥 XLSX</button></div>';
-    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Cuenta</th><th style="padding:8px;text-align:right">Adelanto</th><th style="padding:8px;text-align:right">Intereses</th><th style="padding:8px">Nota</th><th style="padding:8px"></th></tr></thead><tbody>';
-    if (!rows.length) h += '<tr><td colspan="6" style="padding:18px;text-align:center;color:#9ca3af">Sin registros.</td></tr>';
-    rows.forEach(function (t) { h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px;text-align:right">' + contMoney(t.adelanto) + '</td><td style="padding:8px;text-align:right;font-weight:600;color:#b91c1c">' + contMoney(t.intereses) + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contInteresDelete(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button></td></tr>'; });
-    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="3" style="padding:8px;text-align:right">Total intereses</td><td style="padding:8px;text-align:right">' + contMoney(tot) + '</td><td colspan="2"></td></tr></tfoot></table></div>';
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px"><thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Fecha</th><th style="padding:8px">Cuenta</th><th style="padding:8px;text-align:right">Adelanto</th><th style="padding:8px;text-align:right">Intereses</th><th style="padding:8px;text-align:right">Costo %</th><th style="padding:8px">Nota</th><th style="padding:8px"></th></tr></thead><tbody>';
+    if (!rows.length) h += '<tr><td colspan="7" style="padding:18px;text-align:center;color:#9ca3af">Sin registros.</td></tr>';
+    rows.forEach(function (t) { h += '<tr style="border-bottom:1px solid #eef2f7"><td style="padding:8px">' + contFechaDisp(t.fecha) + '</td><td style="padding:8px">' + escapeHtml(t.cuenta || '') + '</td><td style="padding:8px;text-align:right">' + contMoney(t.adelanto) + '</td><td style="padding:8px;text-align:right;font-weight:600;color:#b91c1c">' + contMoney(t.intereses) + '</td><td style="padding:8px;text-align:right">' + (t.costo_pct ? (String(t.costo_pct) + '%') : '') + '</td><td style="padding:8px;color:#6b7280">' + escapeHtml(t.nota || '') + '</td><td style="padding:8px"><button onclick="contInteresDelete(\'' + t.id + '\')" style="padding:3px 7px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button></td></tr>'; });
+    h += '</tbody><tfoot><tr style="background:#f8fafc;font-weight:700"><td colspan="3" style="padding:8px;text-align:right">Total intereses</td><td style="padding:8px;text-align:right">' + contMoney(tot) + '</td><td colspan="3"></td></tr></tfoot></table></div>';
     return h;
   }
   async function contInteresSave() {
     var ad = _cv('cia-adelanto'), it = _cv('cia-intereses');
     if (!ad && !it) { showToast('Cargá adelanto o intereses', 'error'); return; }
-    var ok = await contMutate('interes.save', { fecha: _cv('cia-fecha') || contHoy(), cuenta: _cv('cia-cuenta'), adelanto: ad, intereses: it, nota: _cv('cia-nota') });
+    var ok = await contMutate('interes.save', { fecha: _cv('cia-fecha') || contHoy(), cuenta: _cv('cia-cuenta'), adelanto: ad, intereses: it, costo_pct: _cv('cia-costo'), nota: _cv('cia-nota') });
     if (ok) { showToast('Guardado', 'success'); await contReload(); }
   }
   async function contInteresDelete(id) { if (!confirm('¿Borrar?')) return; var ok = await contMutate('interes.delete', { id: id }); if (ok) { showToast('Borrado', 'success'); await contReload(); } }
   function contExportIntereses() {
     var pid = _cont.archPeriod || (contCurPeriod() ? contCurPeriod().id : null);
     var rows = contD().intereses_adelanto.filter(function (t) { return pid == null || t.period_id === pid; });
-    contExportXLSX('intereses_adelanto', ['Fecha', 'Cuenta', 'Adelanto', 'Intereses', 'Nota'], rows.map(function (t) { return [t.fecha, t.cuenta || '', t.adelanto, t.intereses, t.nota || '']; }));
+    contExportXLSX('intereses_adelanto', ['Fecha', 'Cuenta', 'Adelanto', 'Intereses', 'Costo %', 'Nota'], rows.map(function (t) { return [t.fecha, t.cuenta || '', t.adelanto, t.intereses, t.costo_pct || '', t.nota || '']; }));
   }
 
   /* ---------- CHEQUES (placeholder Drive) ---------- */
