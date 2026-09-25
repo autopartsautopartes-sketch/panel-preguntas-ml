@@ -13530,6 +13530,228 @@ function registerStock(deps) {
   console.log('[STOCK] Módulo Stock registrado (valuación por sucursal, histórico, ' + RUN_HOUR + ':' + RUN_MIN + ' ARG). file_id=' + STOCK_FILE_ID);
 }
 
+// ==================== CONTABLE (solo admin) ====================
+// Toda la data vive en db.contable y se persiste en data.json (sobrevive reinicios).
+function contLoad() {
+  const db = loadDB();
+  if (!db.contable) db.contable = {};
+  const c = db.contable;
+  if (!c.config) c.config = {};
+  if (c.config.period_start_day == null) c.config.period_start_day = 1;
+  if (c.config.period_end_day == null) c.config.period_end_day = 0; // 0 = fin de mes
+  if (!c.config.rubros) c.config.rubros = {};
+  for (const k of ['negocio', 'casa', 'construccion', 'prestamos', 'transaccion']) if (!c.config.rubros[k]) c.config.rubros[k] = [];
+  if (c.config.current_period_id === undefined) c.config.current_period_id = null;
+  if (!Array.isArray(c.periods)) c.periods = [];
+  if (!Array.isArray(c.transacciones)) c.transacciones = [];
+  if (!Array.isArray(c.intereses_adelanto)) c.intereses_adelanto = [];
+  if (!Array.isArray(c.prestamos)) c.prestamos = [];
+  if (!c.seq) c.seq = 1;
+  return db;
+}
+function contId(db, pfx) { return (pfx || 'c') + (db.contable.seq++) + '_' + Date.now().toString(36); }
+function contRequireAdmin(req, res) {
+  const s = requireAuth(req);
+  if (!s) { sendJSON(res, 401, { error: 'No autorizado' }); return null; }
+  if (s.role !== 'admin') { sendJSON(res, 403, { error: 'Solo el administrador puede ver Contable' }); return null; }
+  return s;
+}
+function _cpad(n) { return String(n).padStart(2, '0'); }
+function _cclamp(v, a, b) { v = parseInt(v); if (isNaN(v)) v = a; return Math.max(a, Math.min(b, v)); }
+function _ciso(d) { return d.getFullYear() + '-' + _cpad(d.getMonth() + 1) + '-' + _cpad(d.getDate()); }
+// Calcula el rango del período que contiene la fecha `base`, según la config (día inicio / día fin).
+function contPeriodRange(cfg, base) {
+  const sd = _cclamp(cfg.period_start_day, 1, 28);
+  let ed = (cfg.period_end_day === 0 || cfg.period_end_day == null) ? 0 : _cclamp(cfg.period_end_day, 1, 28);
+  let y = base.getFullYear(), m = base.getMonth(); // m 0-11
+  if (base.getDate() < sd) { m--; if (m < 0) { m = 11; y--; } }
+  const start = new Date(y, m, sd);
+  let end;
+  const sameMonth = (ed !== 0 && ed >= sd);
+  if (sameMonth) end = new Date(y, m, ed);
+  else if (ed === 0) end = new Date(y, m + 1, 0); // último día del mes de inicio
+  else end = new Date(y, m + 1, ed);             // cruza al mes siguiente hasta el día `ed`
+  return { start: _ciso(start), end: _ciso(end) };
+}
+function contPeriodLabel(start, end) {
+  const s = start.split('-'), e = end.split('-');
+  return s[2] + '/' + s[1] + '/' + s[0].slice(2) + ' – ' + e[2] + '/' + e[1] + '/' + e[0].slice(2);
+}
+function contCurrentPeriod(db) {
+  const c = db.contable;
+  return c.periods.find(p => p.id === c.config.current_period_id) || null;
+}
+function contOpenPeriod(db, baseDate) {
+  const c = db.contable;
+  const rng = contPeriodRange(c.config, baseDate || new Date());
+  const p = {
+    id: contId(db, 'p'),
+    label: contPeriodLabel(rng.start, rng.end),
+    start: rng.start, end: rng.end,
+    closed: false, opened_at: new Date().toISOString(), closed_at: null
+  };
+  c.periods.push(p);
+  c.config.current_period_id = p.id;
+  return p;
+}
+// GET estado completo de Contable (config + períodos + registros). Data chica: se envía todo.
+route('GET', '/api/contable/data', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  const db = contLoad();
+  let cur = contCurrentPeriod(db);
+  if (!cur) { cur = contOpenPeriod(db, new Date()); saveDB(db); }
+  sendJSON(res, 200, {
+    config: db.contable.config,
+    periods: db.contable.periods,
+    current_period_id: db.contable.config.current_period_id,
+    transacciones: db.contable.transacciones,
+    intereses_adelanto: db.contable.intereses_adelanto,
+    prestamos: db.contable.prestamos,
+    cuentas: (db.ml_accounts || []).map(a => a.name)
+  });
+});
+// POST mutaciones por acción (una sola ruta para no multiplicar endpoints).
+route('POST', '/api/contable/mutate', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  const body = await parseBody(req);
+  const action = body.action;
+  const p = body.payload || {};
+  const db = contLoad();
+  const c = db.contable;
+  const nowISO = () => new Date().toISOString();
+  try {
+    switch (action) {
+      case 'config.update': {
+        if (p.period_start_day != null) c.config.period_start_day = _cclamp(p.period_start_day, 1, 28);
+        if (p.period_end_day != null) c.config.period_end_day = (parseInt(p.period_end_day) === 0 ? 0 : _cclamp(p.period_end_day, 1, 28));
+        break;
+      }
+      case 'rubro.save': {
+        const dest = p.destino; if (!c.config.rubros[dest]) c.config.rubros[dest] = [];
+        if (p.id) { const r = c.config.rubros[dest].find(x => x.id === p.id); if (r) r.nombre = p.nombre; }
+        else c.config.rubros[dest].push({ id: contId(db, 'r'), nombre: p.nombre, subrubros: [] });
+        break;
+      }
+      case 'rubro.delete': {
+        const dest = p.destino; c.config.rubros[dest] = (c.config.rubros[dest] || []).filter(x => x.id !== p.id);
+        break;
+      }
+      case 'subrubro.save': {
+        const dest = p.destino; const r = (c.config.rubros[dest] || []).find(x => x.id === p.rubroId);
+        if (r) { if (!r.subrubros) r.subrubros = []; if (p.id) { const sr = r.subrubros.find(x => x.id === p.id); if (sr) sr.nombre = p.nombre; } else r.subrubros.push({ id: contId(db, 's'), nombre: p.nombre }); }
+        break;
+      }
+      case 'subrubro.delete': {
+        const dest = p.destino; const r = (c.config.rubros[dest] || []).find(x => x.id === p.rubroId);
+        if (r && r.subrubros) r.subrubros = r.subrubros.filter(x => x.id !== p.id);
+        break;
+      }
+      case 'period.close': {
+        const cur = contCurrentPeriod(db);
+        if (cur) { cur.closed = true; cur.closed_at = nowISO(); const next = new Date(cur.end + 'T12:00:00'); next.setDate(next.getDate() + 1); contOpenPeriod(db, next); }
+        else contOpenPeriod(db, new Date());
+        break;
+      }
+      case 'period.open': {
+        if (!contCurrentPeriod(db)) contOpenPeriod(db, new Date());
+        break;
+      }
+      case 'tx.save': {
+        const cur = contCurrentPeriod(db);
+        if (p.id) {
+          const t = c.transacciones.find(x => x.id === p.id); if (!t) throw new Error('no existe');
+          Object.assign(t, p, { id: t.id, origen: t.origen });
+        } else {
+          c.transacciones.push({
+            id: contId(db, 't'), period_id: cur ? cur.id : null, origen: 'manual',
+            fecha: p.fecha || _ciso(new Date()), operacion: p.operacion || '', cuenta: p.cuenta || '',
+            detalle: p.detalle || '', monto: Number(p.monto) || 0,
+            forma_pago: p.forma_pago || null, cheque: p.cheque || null, tarjeta: p.tarjeta || null,
+            derivado: p.derivado || null, rubro_id: p.rubro_id || null, subrubro_id: p.subrubro_id || null,
+            nota: p.nota || '', estado: (p.derivado ? 'derivado' : 'pendiente')
+          });
+        }
+        break;
+      }
+      case 'tx.derivar': {
+        const t = c.transacciones.find(x => x.id === p.id); if (!t) throw new Error('no existe');
+        t.derivado = p.derivado || null; t.rubro_id = p.rubro_id || null; t.subrubro_id = p.subrubro_id || null;
+        if (p.nota != null) t.nota = p.nota; t.estado = t.derivado ? 'derivado' : 'pendiente';
+        break;
+      }
+      case 'tx.delete': { c.transacciones = c.transacciones.filter(x => x.id !== p.id); break; }
+      case 'interes.save': {
+        const cur = contCurrentPeriod(db);
+        if (p.id) { const t = c.intereses_adelanto.find(x => x.id === p.id); if (t) Object.assign(t, p, { id: t.id }); }
+        else c.intereses_adelanto.push({ id: contId(db, 'i'), period_id: cur ? cur.id : null, fecha: p.fecha || _ciso(new Date()), cuenta: p.cuenta || '', adelanto: Number(p.adelanto) || 0, intereses: Number(p.intereses) || 0, nota: p.nota || '' });
+        break;
+      }
+      case 'interes.delete': { c.intereses_adelanto = c.intereses_adelanto.filter(x => x.id !== p.id); break; }
+      case 'prestamo.save': {
+        if (p.id) { const t = c.prestamos.find(x => x.id === p.id); if (t) Object.assign(t, p, { id: t.id, pagos: t.pagos || [] }); }
+        else c.prestamos.push({ id: contId(db, 'pr'), cuenta: p.cuenta || '', fecha_cierre: p.fecha_cierre || '', cuotas_restantes: Number(p.cuotas_restantes) || 0, monto_cuota: Number(p.monto_cuota) || 0, total: Number(p.total) || 0, finaliza: p.finaliza || '', nota: p.nota || '', creado: nowISO(), pagos: [] });
+        break;
+      }
+      case 'prestamo.delete': { c.prestamos = c.prestamos.filter(x => x.id !== p.id); break; }
+      case 'prestamo.pago': {
+        const pr = c.prestamos.find(x => x.id === p.prestamoId); if (!pr) throw new Error('no existe');
+        if (!pr.pagos) pr.pagos = [];
+        pr.pagos.push({ id: contId(db, 'pg'), fecha: p.fecha || _ciso(new Date()), monto: Number(p.monto) || 0, transaccion_id: p.transaccion_id || null, nota: p.nota || '' });
+        if (pr.cuotas_restantes > 0) pr.cuotas_restantes -= 1;
+        break;
+      }
+      case 'prestamo.pago.delete': {
+        const pr = c.prestamos.find(x => x.id === p.prestamoId); if (pr && pr.pagos) pr.pagos = pr.pagos.filter(x => x.id !== p.id);
+        break;
+      }
+      default: return sendJSON(res, 400, { error: 'Acción desconocida: ' + action });
+    }
+  } catch (e) {
+    return sendJSON(res, 400, { error: String(e.message || e) });
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true });
+});
+// POST import de movimientos de Mercado Pago (las 6 cuentas). Trae operaciones y las agrega como
+// transacciones "pendientes" para derivar. Dedupe por (cuenta + nº operación).
+route('POST', '/api/contable/import-mp', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  const db = contLoad();
+  const cur = contCurrentPeriod(db);
+  const NOMBRES = ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE'];
+  const desde = cur ? cur.start : null, hasta = cur ? cur.end : null;
+  let imported = 0; const detalle = {};
+  for (const n of NOMBRES) {
+    const token = process.env['MP_TOKEN_' + n];
+    if (!token) { detalle[n] = 'sin token'; continue; }
+    try {
+      const params = new URLSearchParams({ sort: 'date_created', criteria: 'desc', limit: '150' });
+      if (desde) { params.set('range', 'date_created'); params.set('begin_date', desde + 'T00:00:00.000-03:00'); params.set('end_date', hasta + 'T23:59:59.999-03:00'); }
+      const r = await fetch('https://api.mercadopago.com/v1/payments/search?' + params.toString(), { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } });
+      const j = await r.json();
+      if (!r.ok) { detalle[n] = 'error ' + r.status; continue; }
+      const results = j.results || [];
+      let cnt = 0;
+      for (const pmt of results) {
+        const opid = String(pmt.id);
+        if (db.contable.transacciones.some(t => t.origen === 'mp' && String(t.operacion) === opid && t.cuenta === n)) continue;
+        db.contable.transacciones.push({
+          id: contId(db, 't'), period_id: cur ? cur.id : null, origen: 'mp',
+          fecha: (pmt.date_created || '').slice(0, 10), operacion: opid, cuenta: n,
+          detalle: pmt.description || pmt.operation_type || pmt.payment_type_id || 'Movimiento MP',
+          monto: pmt.transaction_amount != null ? pmt.transaction_amount : (pmt.total_paid_amount || 0),
+          tipo_mp: pmt.operation_type || '', forma_pago: null, cheque: null, tarjeta: null,
+          derivado: null, rubro_id: null, subrubro_id: null, nota: '', estado: 'pendiente'
+        });
+        cnt++; imported++;
+      }
+      detalle[n] = cnt;
+    } catch (e) { detalle[n] = 'error'; }
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, imported, detalle, nota: 'Se traen operaciones de MP (payments). Vamos a afinar qué tipos de movimiento incluir (transferencias / compras / préstamos) en el próximo paso.' });
+});
+
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
   // Force HTTPS in production (Render terminates TLS at its edge proxy and
