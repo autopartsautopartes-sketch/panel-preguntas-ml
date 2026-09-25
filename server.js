@@ -13861,6 +13861,84 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   saveDB(db);
   return sendJSON(res, 200, { ok: true, cuenta, added, skipped });
 });
+// ===== CHEQUES: lee en vivo la planilla de Google Sheets (compartida como "cualquiera con el enlace: lector").
+let _chequesCache = { ts: 0, rows: null, hoja: '', error: null };
+function _csvParse(text) {
+  const rows = []; let i = 0, field = '', row = [], inQ = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; } else field += c; }
+    else { if (c === '"') inQ = true; else if (c === ',') { row.push(field); field = ''; } else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; } else if (c === '\r') { } else field += c; }
+    i++;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+route('GET', '/api/contable/cheques', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const refresh = q.get('refresh') === '1';
+  const hoja = q.get('hoja') || 'CHEQUES';
+  const now = Date.now();
+  if (!refresh && _chequesCache.rows && _chequesCache.hoja === hoja && (now - _chequesCache.ts < 120000)) {
+    return sendJSON(res, 200, { ok: true, rows: _chequesCache.rows, ts: _chequesCache.ts, hoja: hoja, cache: true, total_sin_relleno: _chequesCache.total_sin_relleno, total_sin_relleno_error: _chequesCache.total_sin_relleno_error });
+  }
+  const SHEET_ID = process.env.CHEQUES_SHEET_ID || '1Cek9K3lYoRWBz9hWh5oSRxS_UWJfBcaSpC9BmmPPAaM';
+  const url = 'https://docs.google.com/spreadsheets/d/' + SHEET_ID + '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent(hoja);
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+    if (!r.ok || /<html|<!doctype/i.test(text.slice(0, 300))) {
+      return sendJSON(res, 200, { ok: false, error: 'No puedo leer la planilla. Compartila en Google Sheets como "Cualquiera con el enlace → Lector".', rows: [] });
+    }
+    const m = _csvParse(text);
+    const header = (m[0] || []).map(h => String(h).trim().toLowerCase());
+    const idx = (names) => { for (const n of names) { const k = header.indexOf(n); if (k >= 0) return k; } return -1; };
+    const iAnot = idx(['anotados', 'anotado']), iNum = idx(['numero', 'número', 'nro']), iChq = idx(['chequera', 'cuenta']), iTipo = idx(['tipo']), iMonto = idx(['monto', 'importe']), iFecha = idx(['fecha']), iQuien = idx(['quien', 'quién']), iPago = idx(['fecha pago', 'fechapago', 'pago']);
+    const rows = [];
+    for (let k = 1; k < m.length; k++) {
+      const c = m[k]; if (!c) continue;
+      const g = (x) => (x >= 0 && c[x] != null) ? String(c[x]).trim() : '';
+      const numero = g(iNum), monto = g(iMonto), chequera = g(iChq);
+      if (!numero && !monto && !chequera) continue;
+      rows.push({ anotados: g(iAnot), numero: numero, chequera: chequera, tipo: g(iTipo), monto: monto, fecha: g(iFecha), quien: g(iQuien), fecha_pago: g(iPago) });
+    }
+    // TOTAL de la columna E (MONTO) sumando SOLO las celdas SIN color de relleno.
+    // El color de celda no viene en el CSV: lo leemos con la API de Sheets (necesita GOOGLE_SHEETS_API_KEY).
+    let total_sin_relleno = null, total_sin_relleno_error = null;
+    const API_KEY = process.env.GOOGLE_SHEETS_API_KEY || process.env.GOOGLE_API_KEY;
+    if (API_KEY) {
+      try {
+        const apiUrl = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID +
+          '?ranges=' + encodeURIComponent("'" + hoja + "'!E1:E2000") +
+          '&fields=' + encodeURIComponent('sheets(data(rowData(values(formattedValue,effectiveFormat(backgroundColor)))))') +
+          '&key=' + API_KEY;
+        const ar = await fetch(apiUrl);
+        const aj = await ar.json();
+        if (!ar.ok) throw new Error((aj.error && aj.error.message) || ('status ' + ar.status));
+        const rd = (((aj.sheets || [])[0] || {}).data || [])[0] || {};
+        const rowData = rd.rowData || [];
+        const isNoFill = (bg) => { if (!bg) return true; const r = bg.red == null ? 0 : bg.red, g = bg.green == null ? 0 : bg.green, b = bg.blue == null ? 0 : bg.blue; return (r >= 0.98 && g >= 0.98 && b >= 0.98); };
+        let sum = 0;
+        for (let k = 1; k < rowData.length; k++) { // saltar encabezado (fila 1)
+          const cell = ((rowData[k] || {}).values || [])[0]; if (!cell) continue;
+          const bg = cell.effectiveFormat && cell.effectiveFormat.backgroundColor;
+          if (!isNoFill(bg)) continue; // tiene relleno → no suma
+          const fv = cell.formattedValue; if (fv == null || fv === '') continue;
+          const num = parseFloat(String(fv).replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.'));
+          if (!isNaN(num)) sum += num;
+        }
+        total_sin_relleno = Math.round(sum * 100) / 100;
+      } catch (e) { total_sin_relleno_error = String(e.message || e); }
+    } else {
+      total_sin_relleno_error = 'Falta la variable GOOGLE_SHEETS_API_KEY en Render para leer los colores de celda.';
+    }
+    _chequesCache = { ts: now, rows: rows, hoja: hoja, error: null, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error };
+    return sendJSON(res, 200, { ok: true, rows: rows, ts: now, hoja: hoja, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error });
+  } catch (e) {
+    return sendJSON(res, 200, { ok: false, error: 'Error al leer la planilla: ' + String(e.message || e), rows: [] });
+  }
+});
 // El panel pide "sincronizar ahora": deja una señal (timestamp) que los userscripts consultan.
 route('POST', '/api/contable/request-sync', async (req, res) => {
   if (!contRequireAdmin(req, res)) return;
