@@ -13899,15 +13899,31 @@ route('GET', '/api/contable/cheques', async (req, res) => {
     for (let k = 1; k < m.length; k++) {
       const c = m[k]; if (!c) continue;
       const g = (x) => (x >= 0 && c[x] != null) ? String(c[x]).trim() : '';
+      const gpos = (x) => (c[x] != null) ? String(c[x]).trim() : ''; // por posición absoluta de columna
       const numero = g(iNum), monto = g(iMonto), chequera = g(iChq);
       if (!numero && !monto && !chequera) continue;
-      rows.push({ anotados: g(iAnot), numero: numero, chequera: chequera, tipo: g(iTipo), monto: monto, fecha: g(iFecha), quien: g(iQuien), fecha_pago: g(iPago) });
+      // El usuario pide agrupar por la columna H (fecha) sumando la columna E (monto), por posición.
+      rows.push({ anotados: g(iAnot), numero: numero, chequera: chequera, tipo: g(iTipo), monto: monto, fecha: g(iFecha), quien: g(iQuien), fecha_pago: g(iPago), fecha_h: gpos(7), monto_e: gpos(4) });
     }
     // TOTAL de la columna E (MONTO) sumando SOLO las celdas SIN color de relleno.
-    // El color de celda no viene en el CSV: lo leemos con la API de Sheets (necesita GOOGLE_SHEETS_API_KEY).
+    // El color de celda no viene en el CSV. Dos formas de obtenerlo:
+    //  (A) Google Apps Script Web App (SIN Google Cloud): variable CHEQUES_WEBAPP_URL en Render.
+    //  (B) API de Sheets (necesita GOOGLE_SHEETS_API_KEY).
     let total_sin_relleno = null, total_sin_relleno_error = null;
+    const WEBAPP_URL = process.env.CHEQUES_WEBAPP_URL;
     const API_KEY = process.env.GOOGLE_SHEETS_API_KEY || process.env.GOOGLE_API_KEY;
-    if (API_KEY) {
+    if (WEBAPP_URL) {
+      try {
+        const wu = WEBAPP_URL + (WEBAPP_URL.indexOf('?') >= 0 ? '&' : '?') + 'hoja=' + encodeURIComponent(hoja);
+        const wr = await fetch(wu, { redirect: 'follow' });
+        const wt = await wr.text();
+        let wj; try { wj = JSON.parse(wt); } catch (e) { throw new Error('respuesta no-JSON del Web App (¿publicado como "Cualquier persona"?)'); }
+        if (!wr.ok || wj.error) throw new Error(wj.error || ('status ' + wr.status));
+        const tv = (wj.total_sin_relleno != null) ? wj.total_sin_relleno : wj.total;
+        if (tv == null) throw new Error('el Web App no devolvió total_sin_relleno');
+        total_sin_relleno = Math.round(parseFloat(tv) * 100) / 100;
+      } catch (e) { total_sin_relleno_error = 'Web App: ' + String(e.message || e); }
+    } else if (API_KEY) {
       try {
         const apiUrl = 'https://sheets.googleapis.com/v4/spreadsheets/' + SHEET_ID +
           '?ranges=' + encodeURIComponent("'" + hoja + "'!E1:E2000") +
@@ -13931,7 +13947,7 @@ route('GET', '/api/contable/cheques', async (req, res) => {
         total_sin_relleno = Math.round(sum * 100) / 100;
       } catch (e) { total_sin_relleno_error = String(e.message || e); }
     } else {
-      total_sin_relleno_error = 'Falta la variable GOOGLE_SHEETS_API_KEY en Render para leer los colores de celda.';
+      total_sin_relleno_error = 'Falta configurar CHEQUES_WEBAPP_URL (Google Apps Script) en Render para leer los colores de celda.';
     }
     _chequesCache = { ts: now, rows: rows, hoja: hoja, error: null, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error };
     return sendJSON(res, 200, { ok: true, rows: rows, ts: now, hoja: hoja, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error });
