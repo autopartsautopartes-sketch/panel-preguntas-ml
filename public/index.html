@@ -3684,6 +3684,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         answeredQuestionIds.add(String(questionId));
         knownQuestionIds.delete(questionId);
         knownQuestionIds.delete(String(questionId));
+        renderQuestionBadge(); // baja el número YA, sin esperar el próximo chequeo
         // Quitar la tarjeta AL INSTANTE (sin esperar el reload del servidor).
         textarea.value = '';
         textarea.blur();
@@ -3706,6 +3707,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           answeredQuestionIds.add(String(questionId));
           knownQuestionIds.delete(questionId);
           knownQuestionIds.delete(String(questionId));
+          renderQuestionBadge(); // baja el número YA
           const card = textarea.closest('.card');
           if (card) { card.style.transition = 'opacity 0.15s'; card.style.opacity = '0'; setTimeout(() => card.remove(), 150); }
         } else {
@@ -4114,6 +4116,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (res.ok) {
         showToast('Mensaje enviado', 'success');
         delete msgAttachments[orderId];
+        msgMarkHandledLocally(null, orderId); // baja el badge YA (sin esperar a que ML marque leído)
         // Quitar la tarjeta al instante y refrescar en segundo plano.
         const card = textarea.closest('.card');
         if (card) { card.style.transition = 'opacity 0.15s'; card.style.opacity = '0'; setTimeout(() => card.remove(), 150); }
@@ -4146,6 +4149,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       });
       if (res.ok) {
         showToast('Movido a Respondidos', 'success');
+        msgMarkHandledLocally(packId, null); // baja el badge YA
         loadMessages();
       } else {
         const data = await res.json();
@@ -9532,6 +9536,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if(_envRemovedCards[qid]) return; _envRemovedCards[qid]=true;
       answeredQuestionIds.add(qid);
       knownQuestionIds.delete(qid); knownQuestionIds.delete(Number(qid));
+      if(typeof renderQuestionBadge==='function') renderQuestionBadge(); // baja el número YA
       const help=document.querySelector('.env-qhelp[data-qid="'+qid+'"]');
       const ta=document.getElementById('reply-'+qid);
       const card=(help&&help.closest('.card'))||(ta&&ta.closest('.card'))||null;
@@ -10925,6 +10930,44 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   let msgMissingStreak = {};
   let knownQuestionIds = new Set();
   let qMissingStreak = {};
+  // Packs (conversaciones) que YO acabo de atender (respondí o pasé a respondidos). Se descuentan del
+  // badge al instante y se filtran del conteo hasta que ML deje de marcarlos "sin leer". En cuanto ML
+  // se pone al día (el pack ya no viene en /messages/unread) se liberan, así un mensaje NUEVO del
+  // comprador vuelve a contar. Evita que el número quede "tildado" tras responder varios seguidos.
+  const handledMsgPacks = new Set();
+  // Refresca SOLO el número del badge de Mensajes desde el conteo actual (sin llamar a ML).
+  function renderMessageBadge() {
+    const n = knownMessageIds.size;
+    const b = document.getElementById('badge-unread-messages');
+    const mb = document.getElementById('mob-badge-unread-messages');
+    if (b) { if (n > 0) { b.textContent = n; b.style.display = ''; } else { b.style.display = 'none'; } }
+    if (mb) { if (n > 0) { mb.textContent = n; mb.style.display = ''; } else { mb.style.display = 'none'; } }
+    if (typeof updateTitleBadge === 'function') updateTitleBadge();
+  }
+  // Refresca SOLO el número del badge de Preguntas desde el conteo actual (sin llamar a ML).
+  function renderQuestionBadge() {
+    const n = knownQuestionIds.size;
+    const b = document.getElementById('badge-unanswered');
+    const mb = document.getElementById('mob-badge-unanswered');
+    if (b) { if (n > 0) { b.textContent = n; b.style.display = ''; } else { b.style.display = 'none'; } }
+    if (mb) { if (n > 0) { mb.textContent = n; mb.style.display = ''; } else { mb.style.display = 'none'; } }
+    if (typeof updateTitleBadge === 'function') updateTitleBadge();
+  }
+  // Marca una conversación como atendida por mí: la descuenta del badge YA y evita que rebote.
+  function msgMarkHandledLocally(packId, orderId) {
+    let conv = null;
+    try {
+      conv = (allConversationsCache || []).find(c =>
+        (packId != null && String(c.pack_id) === String(packId)) ||
+        (orderId != null && String(c.order_id) === String(orderId)));
+    } catch (e) {}
+    const pk = conv ? conv.pack_id : packId;
+    if (pk != null) handledMsgPacks.add(String(pk));
+    // Sacar su id de "conocidos" para que el número baje al instante.
+    const mid = conv && conv.messages && conv.messages[0] && conv.messages[0].id;
+    if (mid != null) { knownMessageIds.delete(mid); delete msgMissingStreak[mid]; }
+    renderMessageBadge();
+  }
   // Create notification sound using Web Audio API
   function playNotificationSound() {
     try {
@@ -11078,17 +11121,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           }
         }
       }
-      const qBadgeCount = knownQuestionIds.size;
-      const badge = document.getElementById('badge-unanswered');
-      const mobBadge = document.getElementById('mob-badge-unanswered');
-      if (qBadgeCount > 0) {
-        badge.textContent = qBadgeCount; badge.style.display = '';
-        if (mobBadge) { mobBadge.textContent = qBadgeCount; mobBadge.style.display = ''; }
-      } else {
-        badge.style.display = 'none';
-        if (mobBadge) { mobBadge.style.display = 'none'; }
-      }
-      updateTitleBadge();
+      renderQuestionBadge();
       if (notificationsReady && hadKnownBefore && newIds.length > 0) {
         // Sound + popup notification (if user has alerts enabled)
         if (currentUser?.alerts_questions) {
@@ -11113,7 +11146,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     try {
       const res = await fetch('/api/messages?account_id=&status=unread');
       if (!res.ok) return;
-      const conversations = await res.json();
+      const raw = await res.json();
+      // Liberamos los packs que YO atendí y que ML ya dejó de marcar "sin leer" (ya no vienen en la
+      // respuesta): así, si el comprador escribe algo NUEVO más tarde, vuelve a contar normalmente.
+      const rawPacks = new Set((raw || []).map(c => String(c.pack_id)));
+      for (const pk of Array.from(handledMsgPacks)) { if (!rawPacks.has(pk)) handledMsgPacks.delete(pk); }
+      // Filtramos los que acabo de atender (ML todavía los muestra por lag) para que no sumen al badge.
+      const conversations = (raw || []).filter(c => !handledMsgPacks.has(String(c.pack_id)));
       // messages[0] = newest message (ML returns newest-first) — use this for new-message detection
       const currentIds = conversations.map(c => c.messages?.[0]?.id).filter(Boolean);
       const currentSet = new Set(currentIds);
@@ -11135,17 +11174,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         }
       }
       // Update message badge in sidebar and mobile nav
-      const msgBadgeCount = knownMessageIds.size;
-      const msgBadge = document.getElementById('badge-unread-messages');
-      const mobMsgBadge = document.getElementById('mob-badge-unread-messages');
-      if (msgBadgeCount > 0) {
-        msgBadge.textContent = msgBadgeCount; msgBadge.style.display = '';
-        if (mobMsgBadge) { mobMsgBadge.textContent = msgBadgeCount; mobMsgBadge.style.display = ''; }
-      } else {
-        msgBadge.style.display = 'none';
-        if (mobMsgBadge) { mobMsgBadge.style.display = 'none'; }
-      }
-      updateTitleBadge();
+      renderMessageBadge();
       if (notificationsReady && hadKnownBefore && newIds.length > 0 && currentUser?.alerts_messages) {
         playNotificationSound();
         const newConvs = conversations.filter(c => newIds.includes(c.messages?.[0]?.id));
@@ -11160,12 +11189,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   const style = document.createElement('style');
   style.textContent = '@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }';
   document.head.appendChild(style);
-  // Check every 15 seconds
+  // Chequeo de contadores (Preguntas + Mensajes sin leer) cada 8s. Son llamadas livianas
+  // (1 por cuenta) y así el número de la izquierda se mantiene al día sin quedar "tildado".
   setInterval(() => {
     checkNewQuestions();
     checkNewMessages();
     if (!notificationsReady) notificationsReady = true;
-  }, 15000);
+  }, 8000);
   // Auto-refresh current view every 15 seconds ONLY if not typing
   // El dashboard NO se refresca automáticamente para no destruir el gráfico.
   setInterval(() => {
