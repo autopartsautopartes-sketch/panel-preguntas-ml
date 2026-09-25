@@ -4775,16 +4775,21 @@ route('GET', '/api/sales', async (req, res) => {
           shippingStatus = cached.status;
           shippingSubstatus = cached.substatus;
         }
+        // Fallback para ventas "a acordar": a veces el estado de entrega viene en la propia orden
+        // (order.shipping.status) o en order.tags, sin un envío fetcheable. Lo usamos si aplica.
+        const oShipStatus = String((order.shipping && order.shipping.status) || '').toLowerCase();
+        const effStatus = shippingStatus || oShipStatus;
+        const oTags = Array.isArray(order.tags) ? order.tags.map(t => String(t).toLowerCase()) : [];
         let displayStatus = '';
         if (order.status === 'cancelled') displayStatus = 'cancelled';
         else if (shippingSubstatus === 'delayed') displayStatus = 'delayed';
-        else if (shippingStatus === 'pending' || shippingStatus === '' || order.status === 'confirmed') displayStatus = 'pending';
-        else if (shippingStatus === 'ready_to_ship' && shippingSubstatus === 'ready_to_print') displayStatus = 'ready_to_print';
-        else if (shippingStatus === 'ready_to_ship') displayStatus = 'ready_to_ship';
-        else if (shippingStatus === 'shipped' || shippingStatus === 'delivering') displayStatus = 'in_transit';
-        else if (shippingStatus === 'delivered') displayStatus = 'delivered';
-        else if (shippingStatus === 'not_delivered') displayStatus = 'not_completed';
-        else displayStatus = shippingStatus || order.status || 'pending';
+        else if (effStatus === 'delivered' || oTags.includes('delivered')) displayStatus = 'delivered';
+        else if (effStatus === 'shipped' || effStatus === 'delivering') displayStatus = 'in_transit';
+        else if (effStatus === 'ready_to_ship' && shippingSubstatus === 'ready_to_print') displayStatus = 'ready_to_print';
+        else if (effStatus === 'ready_to_ship') displayStatus = 'ready_to_ship';
+        else if (effStatus === 'not_delivered') displayStatus = 'not_completed';
+        else if (effStatus === 'pending' || effStatus === '' || order.status === 'confirmed') displayStatus = 'pending';
+        else displayStatus = effStatus || order.status || 'pending';
         if (statusFilters.length > 0 && !statusFilters.includes(displayStatus)) continue;
         if (shippingFilters.length > 0 && !shippingFilters.includes(shippingType)) continue;
         const items = [];
