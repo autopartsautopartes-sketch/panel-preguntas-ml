@@ -2699,10 +2699,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       accounts = await res.json();
     } catch (e) {}
   }
-  function accountFilterHTML() {
-    let html = '<option value="">Todas las cuentas</option>';
+  function accountFilterHTML(selectedVal) {
+    // selectedVal: marca la opción activa para que el <select> no se resetee a "Todas" al re-dibujar.
+    const sv = (selectedVal === undefined || selectedVal === null) ? '' : String(selectedVal);
+    let html = `<option value=""${sv === '' ? ' selected' : ''}>Todas las cuentas</option>`;
     for (const a of accounts) {
-      html += `<option value="${a.id}">${a.name}</option>`;
+      html += `<option value="${a.id}"${sv === String(a.id) ? ' selected' : ''}>${a.name}</option>`;
     }
     return html;
   }
@@ -3965,8 +3967,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         <button class="${messageStatus === 'unread' ? 'active' : ''}" onclick="msgSetStatus('unread')">Sin leer</button>
         <button class="${messageStatus === 'unanswered' ? 'active' : ''}" onclick="msgSetStatus('unanswered')">Sin responder</button>
         <button class="${messageStatus === 'answered' ? 'active' : ''}" onclick="msgSetStatus('answered')">Respondidos</button>
-        <select onchange="loadMessages(this.value, true)">${accountFilterHTML()}</select>
-        <button onclick="loadMessages(undefined, true, true)" title="Volver a leer desde Mercado Libre" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">🔄 Actualizar</button>
+        <select id="msg-account-select" onchange="loadMessages(this.value, true)">${accountFilterHTML(msgAccountFilter)}</select>
+        <button onclick="loadMessages(document.getElementById('msg-account-select').value, true, true)" title="Volver a leer desde Mercado Libre" style="background:#eef;color:#3b3b8f;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">🔄 Actualizar</button>
         <input type="text" id="msg-buyer-search" placeholder="🔍 Buscar comprador..." value="${escapeHtml(msgBuyerSearch)}"
           oninput="msgBuyerSearch=this.value;renderMessagesList()"
           style="flex:1;min-width:160px;padding:6px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px">
