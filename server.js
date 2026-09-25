@@ -13855,6 +13855,22 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   saveDB(db);
   return sendJSON(res, 200, { ok: true, cuenta, added, skipped });
 });
+// El panel pide "sincronizar ahora": deja una señal (timestamp) que los userscripts consultan.
+route('POST', '/api/contable/request-sync', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  const db = contLoad();
+  db.contable.sync_request_ts = Date.now();
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, ts: db.contable.sync_request_ts });
+});
+// Los userscripts consultan esta señal (con el push token) y, si cambió, sincronizan al instante.
+route('POST', '/api/contable/sync-flag', async (req, res) => {
+  let body; try { body = await parseBody(req); } catch (e) { body = {}; }
+  const PUSH_TOKEN = process.env.CONTABLE_PUSH_TOKEN || 'autochap-contable-push';
+  if (String(body.token || '') !== PUSH_TOKEN) return sendJSON(res, 403, { error: 'token inválido' });
+  const db = contLoad();
+  sendJSON(res, 200, { ok: true, request_ts: db.contable.sync_request_ts || 0, server_now: Date.now() });
+});
 
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
