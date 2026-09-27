@@ -13887,6 +13887,88 @@ function contOpenPeriod(db, baseDate) {
   return p;
 }
 // GET estado completo de Contable (config + períodos + registros). Data chica: se envía todo.
+// ==================== FACTURACIÓN (ARCA / AFIP) — solo admin ====================
+// Etapa 1: configuración por cuenta + topes. La emisión (WSAA/WSFEv1) se agrega después.
+const FAC_CUENTAS = ['MARA', 'EXPRESS', 'MARCOS', 'DARIO', 'ANTO', 'JORGE'];
+const FAC_SEED_COND = { MARA: 'RI', EXPRESS: 'RI', MARCOS: 'RI', DARIO: 'RI', ANTO: 'MONO', JORGE: 'MONO' };
+function facLoad() {
+  const db = loadDB();
+  if (!db.facturacion) db.facturacion = {};
+  const f = db.facturacion;
+  if (!f.config) f.config = {};
+  if (!f.config.ambiente) f.config.ambiente = 'homologacion';
+  if (!f.config.cuentas) f.config.cuentas = {};
+  if (!Array.isArray(f.facturas)) f.facturas = [];
+  let changed = false;
+  for (const c of FAC_CUENTAS) {
+    if (!f.config.cuentas[c]) {
+      const cond = FAC_SEED_COND[c] || 'RI';
+      f.config.cuentas[c] = {
+        cuit: '', condicion: cond, punto_venta: '', iva_pct: cond === 'RI' ? 21 : 0,
+        cbte_default: cond === 'RI' ? 'B' : 'C', modo: 'manual',
+        tope_mensual: 0, tope_anual: 0, activa: false
+      };
+      changed = true;
+    }
+  }
+  if (changed) { try { saveDB(db); } catch (e) {} }
+  return db;
+}
+function facRequireAdmin(req, res) {
+  const s = requireAuth(req);
+  if (!s) { sendJSON(res, 401, { error: 'No autorizado' }); return null; }
+  if (s.role !== 'admin') { sendJSON(res, 403, { error: 'Solo el administrador puede ver Facturación' }); return null; }
+  return s;
+}
+// Acumulado facturado por cuenta (mes y año en curso), desde las facturas ya emitidas.
+function facAcumulado(db) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth();
+  const out = {};
+  for (const c of FAC_CUENTAS) out[c] = { mes: 0, anio: 0, cant: 0 };
+  for (const fx of (db.facturacion.facturas || [])) {
+    if (fx.anulada) continue;
+    const c = fx.cuenta; if (!out[c]) out[c] = { mes: 0, anio: 0, cant: 0 };
+    const d = new Date(fx.fecha || fx.created_at || 0);
+    const imp = Number(fx.importe_total) || 0;
+    if (d.getFullYear() === y) { out[c].anio += imp; out[c].cant++; if (d.getMonth() === m) out[c].mes += imp; }
+  }
+  return out;
+}
+route('GET', '/api/facturacion/config', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const db = facLoad();
+  sendJSON(res, 200, {
+    ambiente: db.facturacion.config.ambiente,
+    cuentas: db.facturacion.config.cuentas,
+    acumulado: facAcumulado(db),
+    orden: FAC_CUENTAS
+  });
+});
+route('POST', '/api/facturacion/config', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const b = await parseBody(req);
+  const db = facLoad();
+  const f = db.facturacion;
+  if (b.ambiente && ['homologacion', 'produccion'].includes(b.ambiente)) f.config.ambiente = b.ambiente;
+  const inc = b.cuentas || {};
+  for (const c of FAC_CUENTAS) {
+    if (!inc[c]) continue;
+    const x = inc[c];
+    const cur = f.config.cuentas[c] || {};
+    cur.condicion = (x.condicion === 'MONO') ? 'MONO' : 'RI';
+    cur.cuit = String(x.cuit || '').replace(/[^0-9]/g, '').slice(0, 11);
+    cur.punto_venta = String(x.punto_venta || '').replace(/[^0-9]/g, '').slice(0, 5);
+    cur.iva_pct = cur.condicion === 'RI' ? (isNaN(Number(x.iva_pct)) ? 21 : Number(x.iva_pct)) : 0;
+    cur.cbte_default = cur.condicion === 'RI' ? ((x.cbte_default === 'A') ? 'A' : 'B') : 'C';
+    cur.modo = (x.modo === 'auto') ? 'auto' : 'manual';
+    cur.tope_mensual = Math.max(0, Number(x.tope_mensual) || 0);
+    cur.tope_anual = Math.max(0, Number(x.tope_anual) || 0);
+    cur.activa = !!x.activa;
+    f.config.cuentas[c] = cur;
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, cuentas: f.config.cuentas, ambiente: f.config.ambiente });
+});
 route('GET', '/api/contable/data', async (req, res) => {
   if (!contRequireAdmin(req, res)) return;
   const db = contLoad();
