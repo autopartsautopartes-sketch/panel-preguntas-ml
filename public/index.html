@@ -12255,6 +12255,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<span style="font-size:13px;color:#374151">Momento: <select id="faca-mom-' + c + '" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + '"><option value="compra"' + (x.auto_momento === 'compra' ? ' selected' : '') + '>Al pagar (compra)</option><option value="camino"' + (x.auto_momento !== 'compra' ? ' selected' : '') + '>Cuando está en camino</option></select></span>';
       h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" id="faca-nc-' + c + '" ' + (x.auto_nota_credito !== false ? 'checked' : '') + ' onchange="facAutoGuardar(\'' + c + '\')"> Nota de crédito automática</label>';
       h += '</div>';
+      h += '<div style="font-size:13px;color:#374151;margin-top:8px">Facturar ventas <b>desde</b>: <input type="date" id="faca-desde-' + c + '" value="' + escapeHtml(x.auto_desde || '') + '" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + '"> <span style="font-size:11px;color:#9ca3af">(el automático ignora ventas anteriores a esta fecha)</span></div>';
       h += '<div style="font-size:12px;color:#6b7280;margin-top:8px">Facturado mes: <b>' + facMoney(a.mes) + '</b>' + (topeM > 0 ? ' / ' + facMoney(topeM) + facBar(pmes) : ' · sin tope') + '</div>';
       h += '</div>';
     });
@@ -12267,8 +12268,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var auto = !!(document.getElementById('faca-modo-' + cuenta) && document.getElementById('faca-modo-' + cuenta).checked);
     var mom = (document.getElementById('faca-mom-' + cuenta) || {}).value || 'camino';
     var nc = !!(document.getElementById('faca-nc-' + cuenta) && document.getElementById('faca-nc-' + cuenta).checked);
-    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, activa: x.activa, adjuntar_ml: x.adjuntar_ml, auto_momento: mom, auto_nota_credito: nc, razon_social: x.razon_social, nombre_fantasia: x.nombre_fantasia, domicilio: x.domicilio, ing_brutos: x.ing_brutos, inicio_actividad: x.inicio_actividad };
-    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; x.auto_momento = mom; x.auto_nota_credito = nc; showToast(cuenta + ': guardado', 'success'); }
+    var desde = (document.getElementById('faca-desde-' + cuenta) || {}).value || '';
+    // Si activás el automático y no hay fecha desde, la ponemos en HOY (para no facturar el backlog viejo).
+    if (auto && !desde) { desde = new Date().toISOString().slice(0, 10); var dEl = document.getElementById('faca-desde-' + cuenta); if (dEl) dEl.value = desde; showToast('Facturará desde hoy (' + desde + '). Podés cambiar la fecha.', 'info'); }
+    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, activa: x.activa, adjuntar_ml: x.adjuntar_ml, auto_momento: mom, auto_nota_credito: nc, auto_desde: desde, razon_social: x.razon_social, nombre_fantasia: x.nombre_fantasia, domicilio: x.domicilio, ing_brutos: x.ing_brutos, inicio_actividad: x.inicio_actividad };
+    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; x.auto_momento = mom; x.auto_nota_credito = nc; x.auto_desde = desde; showToast(cuenta + ': guardado', 'success'); }
     catch (e) { showToast('Error al guardar', 'error'); }
   }
   async function facAutoRunAhora(btn) {
@@ -12315,19 +12319,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var tipo = (document.getElementById('facc-tipo') || {}).value || '';
     var list = (_fac.comprobantes || []).filter(function (f) {
       if (tipo && f.cbte_letra !== tipo) return false;
-      if (q) { var hay = (String(f.nro) + ' ' + (f.receptor_nombre || '') + ' ' + (f.doc_nro || '') + ' ' + (f.cae || '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
+      if (q) { var hay = (String(f.nro) + ' ' + (f.receptor_nombre || '') + ' ' + (f.doc_nro || '') + ' ' + (f.cae || '') + ' ' + (f.order_id || '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
       return true;
     });
     if (!list.length) { cont.innerHTML = '<div class="empty" style="padding:30px"><p>No hay comprobantes que coincidan.</p></div>'; return; }
     var h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:6px">' + list.length + ' comprobante(s)</div>';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">';
-    h += '<thead><tr style="background:#f8fafc;text-align:left">' + ['Fecha', 'Cuenta', 'Cbte', 'N°', 'Receptor', 'Neto', 'IVA', 'Total', 'CAE', ''].map(function (x) { return '<th style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:700;color:#374151">' + x + '</th>'; }).join('') + '</tr></thead><tbody>';
+    h += '<thead><tr style="background:#f8fafc;text-align:left">' + ['Fecha', 'Cuenta', 'Cbte', 'N°', 'Venta ML', 'Receptor', 'Neto', 'IVA', 'Total', 'CAE', ''].map(function (x) { return '<th style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:700;color:#374151">' + x + '</th>'; }).join('') + '</tr></thead><tbody>';
     list.forEach(function (f) {
       h += '<tr style="border-bottom:1px solid #f1f5f9">';
       h += '<td style="padding:8px 10px">' + facFchLindo(f.cbte_fch) + '</td>';
       h += '<td style="padding:8px 10px;font-weight:600">' + f.cuenta + '</td>';
       h += '<td style="padding:8px 10px"><span style="padding:2px 8px;border-radius:7px;background:#eef2ff;color:#3730a3;font-weight:700">' + f.cbte_letra + '</span></td>';
       h += '<td style="padding:8px 10px">' + String(f.pto_vta).padStart(5, '0') + '-' + String(f.nro).padStart(8, '0') + '</td>';
+      h += '<td style="padding:8px 10px;font-size:12px">' + (f.order_id ? '<a href="https://www.mercadolibre.com.ar/ventas/' + escapeHtml(f.order_id) + '/detalle" target="_blank" style="color:#3483fa;text-decoration:none">#' + escapeHtml(f.order_id) + '</a>' : '<span style="color:#9ca3af">Manual</span>') + '</td>';
       h += '<td style="padding:8px 10px">' + escapeHtml(f.receptor_nombre || (f.doc_tipo === 99 ? 'Consumidor final' : f.doc_nro)) + '</td>';
       h += '<td style="padding:8px 10px">' + facMoney(f.importe_neto) + '</td>';
       h += '<td style="padding:8px 10px">' + facMoney(f.importe_iva) + '</td>';
