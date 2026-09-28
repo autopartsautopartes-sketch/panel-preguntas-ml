@@ -12533,11 +12533,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       card += '<div style="width:560px;max-width:100%;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px;margin-top:10px">⚠ ' + c.errs.map(escapeHtml).join(' · ') + '</div>';
     }
 
-    // Fila: ¿Cómo estoy? (izq) + Resumen total (der)
+    // Fila: ¿Cómo estoy? (izq) + Ganancia Negocio (der)
     h += '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">';
     h += '<div style="flex:0 0 auto">' + card + '</div>';
     h += '<div style="flex:1 1 300px;min-width:280px">' + contResumenTotalPanel() + '</div>';
     h += '</div>';
+    // Fila: Cash Flow + Flow
+    h += '<div style="margin-top:16px">' + contCashFlowPanels() + '</div>';
     // Debajo: SALIDA / ENTRADA del período
     h += '<div id="cont-res-periodo" style="margin-top:20px">' + contResPeriodoDetalle() + '</div>';
     // dispara la carga del resumen del período si está viejo
@@ -12555,6 +12557,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var pid = contCurPeriod() ? contCurPeriod().id : null;
     var all = (contD().transacciones || []).filter(function (t) { return t.derivado === 'negocio' && (pid == null || t.period_id === pid) && contNegClass('negocio', t.rubro_id) === clase; });
     return all.reduce(function (s, t) { return s + (Number(t.monto) || 0); }, 0);
+  }
+  function contSumBucket(dest) {
+    var pid = contCurPeriod() ? contCurPeriod().id : null;
+    return (contD().transacciones || []).filter(function (t) { return t.derivado === dest && (pid == null || t.period_id === pid); }).reduce(function (s, t) { return s + (Number(t.monto) || 0); }, 0);
   }
   function contComprasPeriodo(state, sISO, eISO) {
     var provs = (state && state.proveedores) || [], comps = (state && state.comprobantes) || [];
@@ -12595,30 +12601,88 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         dias = jv.dias_guardados || [];
       } else errs.push('No pude leer el Histórico');
     } catch (e) { errs.push('No pude leer el Histórico'); }
-    _cont.resP = { loading: false, ts: Date.now(), salida: salida, cuentas: cuentas, totStock: totStock, totDrop: totDrop, dias: dias, sISO: sISO, eISO: eISO, errs: errs };
+    // EXTRAS para el panel "Ganancia Negocio" + Cash Flow / Flow
+    var pid = cur ? cur.id : null;
+    var negocioBucket = contSumBucket('negocio');
+    var banco = contSumBucket('banco');
+    var casa = contSumBucket('casa');
+    var construccion = contSumBucket('construccion');
+    // Cuota PAGADA de préstamos dentro del período (pagos con fecha en el rango)
+    var cuotaPrestamos = 0;
+    (contD().prestamos || []).forEach(function (pr) { (pr.pagos || []).forEach(function (pg) { var d = String(pg.fecha || '').slice(0, 10); if (d && d >= sISO && d <= eISO) cuotaPrestamos += Number(pg.monto) || 0; }); });
+    var interesesAdel = (contD().intereses_adelanto || []).filter(function (t) { return pid == null || t.period_id === pid; }).reduce(function (s, t) { return s + (Number(t.intereses) || 0); }, 0);
+    var creditosPend = (contD().prestamos || []).reduce(function (s, p) { var pag = (p.pagos || []).reduce(function (a, x) { return a + (Number(x.monto) || 0); }, 0); return s + ((Number(p.total) || 0) - pag); }, 0);
+    // Cheques PAGADOS dentro del período (col. H = fecha de pago)
+    var chequesPagados = 0;
+    try {
+      var rch = await fetch('/api/contable/cheques', { credentials: 'same-origin' }); var jch = await rch.json();
+      var perC = contPeriodRangeCli(contD().config || {});
+      var pi = contParseFechaOrd(perC.start), pf = contParseFechaOrd(perC.end);
+      (jch.rows || []).forEach(function (rw) { var o = contParseFechaOrd(rw.fecha_h); if (o == null || pi == null || pf == null) return; if (o >= pi && o <= pf) chequesPagados += contMontoNum(rw.monto_e != null && rw.monto_e !== '' ? rw.monto_e : rw.monto); });
+    } catch (e) { errs.push('No pude leer Cheques del período'); }
+    _cont.resP = { loading: false, ts: Date.now(), salida: salida, cuentas: cuentas, totStock: totStock, totDrop: totDrop, dias: dias, negocioBucket: negocioBucket, banco: banco, casa: casa, construccion: construccion, cuotaPrestamos: cuotaPrestamos, interesesAdel: interesesAdel, creditosPend: creditosPend, chequesPagados: chequesPagados, sISO: sISO, eISO: eISO, errs: errs };
     if (currentSection === 'contable' && _cont.tab === 'resumen') renderContable();
   }
   function contResumenTotalPanel() {
     var r = _cont.resP;
     var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">';
-    h += '<div style="background:#2d3277;color:#fff;padding:12px 16px;font-weight:700;font-size:15px">Resumen total <span style="font-weight:400;font-size:12px;opacity:.85">· período</span></div>';
+    h += '<div style="background:#2d3277;color:#fff;padding:12px 16px;font-weight:700;font-size:15px">Ganancia Negocio <span style="font-weight:400;font-size:12px;opacity:.85">· período</span></div>';
     if (!r || !r.ts) { h += '<div style="padding:20px;color:#9ca3af;font-size:13px">Calculando…</div></div>'; return h; }
     var s = r.salida || {};
     var salidaTotal = (Number(s.gastos) || 0) + (Number(s.facturas_ml) || 0) + (Number(s.retenciones) || 0) + (Number(s.flex) || 0) + (Number(s.compras) || 0);
     var ts = r.totStock || {}, td = r.totDrop || {};
-    var entBruto = (Number(ts.venta) || 0) + (Number(td.venta) || 0);
     var entNeto = (Number(ts.queda) || 0) + (Number(td.queda) || 0);
     var costoStock = Number(ts.costo) || 0;
-    var resultado = entNeto - salidaTotal - costoStock;
+    var ganancia = entNeto - salidaTotal - costoStock; // GANANCIA DEL NEGOCIO
+    // Ganancia del negocio (destacada)
+    var gColor = ganancia >= 0 ? '#065f46' : '#b91c1c';
+    var gBg = ganancia >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
+    h += '<div style="background:' + gBg + ';padding:16px;text-align:center"><div style="font-size:12px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Ganancia del negocio</div><div style="font-size:32px;font-weight:800;color:' + gColor + ';line-height:1.1;margin-top:3px">' + contMoney2(ganancia) + '</div><div style="font-size:11px;color:#6b7280;margin-top:2px">Quedó neto − Salidas − Costos stock</div></div>';
     var rowT = function (lbl, val, color) { return '<div style="display:flex;justify-content:space-between;padding:11px 16px;border-bottom:1px solid #eef2f7"><span style="font-weight:600;color:#374151;font-size:13.5px">' + lbl + '</span><span style="font-weight:700;font-size:14px;color:' + (color || '#111') + '">' + contMoney2(val) + '</span></div>'; };
-    h += rowT('Entradas (venta bruta)', entBruto, '#374151');
-    h += rowT('Entradas (quedó neto)', entNeto, '#047857');
-    h += rowT('Salidas del período', salidaTotal, '#b91c1c');
-    h += rowT('Costos ventas de stock', costoStock, '#b91c1c');
-    var rColor = resultado >= 0 ? '#065f46' : '#b91c1c';
-    var rBg = resultado >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
-    h += '<div style="background:' + rBg + ';padding:18px 16px;text-align:center"><div style="font-size:12px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Resultado del período</div><div style="font-size:32px;font-weight:800;color:' + rColor + ';line-height:1.1;margin-top:3px">' + contMoney2(resultado) + '</div><div style="font-size:11px;color:#6b7280;margin-top:3px">Quedó neto − Salidas − Costos stock</div></div>';
+    h += rowT('Créditos pendientes (total)', Number(r.creditosPend) || 0, '#b91c1c');
+    h += rowT('Intereses adelanto (total)', Number(r.interesesAdel) || 0, '#b91c1c');
+    h += rowT('Cheques pagados (período)', Number(r.chequesPagados) || 0, '#b91c1c');
+    h += rowT('Gastos casa (total)', Number(r.casa) || 0, '#b91c1c');
+    h += rowT('Construcción (total)', Number(r.construccion) || 0, '#b91c1c');
     h += '</div>';
+    return h;
+  }
+  function contCashFlowPanels() {
+    var r = _cont.resP;
+    if (!r || !r.ts) return '';
+    var entNeto = ((r.totStock && Number(r.totStock.queda)) || 0) + ((r.totDrop && Number(r.totDrop.queda)) || 0);
+    var neg = Number(r.negocioBucket) || 0, casa = Number(r.casa) || 0, banco = Number(r.banco) || 0, cons = Number(r.construccion) || 0, cuota = Number(r.cuotaPrestamos) || 0;
+    var factComp = Number((r.salida || {}).compras) || 0;
+    var egresos = neg + casa + banco + cons + cuota;              // egresos operativos (buckets + cuota)
+    var cashFlow = entNeto - egresos;                             // CASH FLOW
+    var flow = entNeto - factComp - egresos;                      // FLOW (además resta facturas de compras)
+    var rowE = function (lbl, val, signo) { return '<div style="display:flex;justify-content:space-between;padding:8px 16px;border-bottom:1px solid #f1f5f9;font-size:13px"><span style="color:#374151">' + signo + ' ' + lbl + '</span><span style="font-weight:600;color:' + (signo === '+' ? '#047857' : '#b91c1c') + '">' + contMoney2(val) + '</span></div>'; };
+    var big = function (lbl, val) { var col = val >= 0 ? '#065f46' : '#b91c1c'; var bg = val >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)'; return '<div style="background:' + bg + ';padding:16px;text-align:center"><div style="font-size:12px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">' + lbl + '</div><div style="font-size:30px;font-weight:800;color:' + col + ';line-height:1.1;margin-top:3px">' + contMoney2(val) + '</div></div>'; };
+    var h = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">';
+    // CASH FLOW
+    var cf = '<div style="flex:1 1 340px;min-width:300px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">';
+    cf += '<div style="background:#0f766e;color:#fff;padding:11px 16px;font-weight:700;font-size:15px">Cash Flow <span style="font-weight:400;font-size:11px;opacity:.85">· caja del período</span></div>';
+    cf += rowE('Entrada neto (ventas)', entNeto, '+');
+    cf += rowE('Negocio', neg, '−');
+    cf += rowE('Casa', casa, '−');
+    cf += rowE('Banco', banco, '−');
+    cf += rowE('Construcción', cons, '−');
+    cf += rowE('Cuota préstamos (pagada)', cuota, '−');
+    cf += big('Cash Flow', cashFlow);
+    cf += '</div>';
+    // FLOW
+    var fl = '<div style="flex:1 1 340px;min-width:300px;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">';
+    fl += '<div style="background:#5b21b6;color:#fff;padding:11px 16px;font-weight:700;font-size:15px">Flow <span style="font-weight:400;font-size:11px;opacity:.85">· incluye facturas de compras</span></div>';
+    fl += rowE('Entrada neto (ventas)', entNeto, '+');
+    fl += rowE('Facturas de compras', factComp, '−');
+    fl += rowE('Negocio', neg, '−');
+    fl += rowE('Casa', casa, '−');
+    fl += rowE('Banco', banco, '−');
+    fl += rowE('Construcción', cons, '−');
+    fl += rowE('Cuota préstamos (pagada)', cuota, '−');
+    fl += big('Flow', flow);
+    fl += '</div>';
+    h += cf + fl + '</div>';
     return h;
   }
   function contResPeriodoDetalle() {
