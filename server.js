@@ -13857,7 +13857,7 @@ function contLoad() {
   if (c.config.period_start_day == null) c.config.period_start_day = 23;
   if (c.config.period_end_day == null) c.config.period_end_day = 22; // ciclo 23 → 22 del mes siguiente
   if (!c.config.rubros) c.config.rubros = {};
-  for (const k of ['negocio', 'casa', 'construccion', 'banco', 'prestamos', 'transaccion']) if (!c.config.rubros[k]) c.config.rubros[k] = [];
+  for (const k of ['negocio', 'casa', 'construccion', 'banco', 'nocontable', 'prestamos', 'transaccion']) if (!c.config.rubros[k]) c.config.rubros[k] = [];
   if (c.config.current_period_id === undefined) c.config.current_period_id = null;
   if (!Array.isArray(c.periods)) c.periods = [];
   if (!Array.isArray(c.transacciones)) c.transacciones = [];
@@ -14985,7 +14985,7 @@ input,select{width:100%;padding:14px;border:1px solid #cbd5e1;border-radius:12px
     <div id="stDatos" style="display:none">
       <div class="tot"><span id="totlbl">Total del período</span>: <b id="totv">…</b></div>
       <label>3 · Monto</label>
-      <input id="monto" type="text" inputmode="numeric" placeholder="$ 0,00" oninput="montoInput()">
+      <input id="monto" type="text" inputmode="decimal" placeholder="$ 0,00">
       <label id="rubroLbl">Rubro</label>
       <select id="rubro"><option value="">(sin rubro)</option></select>
       <label>Detalle (opcional)</label>
@@ -15012,13 +15012,23 @@ function fISO(){if(!_fecha)return '';return _fecha.getFullYear()+'-'+two(_fecha.
 function setHoy(){_fecha=new Date();document.getElementById('fecha').value=fISO();document.getElementById('hoyBtn').className='chip on';confirmarFecha();}
 function calChange(){var v=document.getElementById('fecha').value;if(v){var p=v.split('-');_fecha=new Date(+p[0],+p[1]-1,+p[2]);document.getElementById('hoyBtn').className='chip';confirmarFecha();}}
 function confirmarFecha(){document.getElementById('stForma').style.display='block';}
-// ---- monto formateado tipo $ 0,00 ----
-var _montoRaw='';
-function fmtMonto(digs){var n=Number(digs||'0')/100;return '$ '+n.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});}
-function montoInput(){var el=document.getElementById('monto');var d=el.value.replace(/\\D/g,'');_montoRaw=d;el.value=d?fmtMonto(d):'';}
-function montoVal(){return _montoRaw?Number(_montoRaw)/100:0;}
-function setMonto(n){_montoRaw=String(Math.round((Number(n)||0)*100));document.getElementById('monto').value=fmtMonto(_montoRaw);}
-function clrMonto(){_montoRaw='';document.getElementById('monto').value='';}
+// ---- monto: se escribe de izquierda a derecha; "." o "," pasa a centavos ----
+function montoBind(el){
+  el._ent='';el._cent='';el._dec=false;
+  function render(){var v='';if(el._dec){v=(el._ent?Number(el._ent).toLocaleString('es-AR'):'0')+','+el._cent;}else{v=el._ent?Number(el._ent).toLocaleString('es-AR'):'';}el.value=v?('$ '+v):'';}
+  el.addEventListener('beforeinput',function(ev){
+    var it=ev.inputType||'';
+    if(it.indexOf('insert')===0){ev.preventDefault();var data=ev.data||'';for(var i=0;i<data.length;i++){var ch=data[i];if(ch>='0'&&ch<='9'){if(el._dec){if(el._cent.length<2)el._cent+=ch;}else{el._ent+=ch;}}else if(ch==='.'||ch===','){el._dec=true;}}render();}
+    else if(it==='deleteContentBackward'||it==='deleteContentForward'||it==='deleteByCut'){ev.preventDefault();if(el._dec){if(el._cent.length>0)el._cent=el._cent.slice(0,-1);else el._dec=false;}else{el._ent=el._ent.slice(0,-1);}render();}
+  });
+  el._reset=function(){el._ent='';el._cent='';el._dec=false;el.value='';};
+  el._setval=function(n){n=Number(n)||0;el._ent=String(Math.trunc(n));var c=Math.round((n-Math.trunc(n))*100);el._cent=c?String(c).padStart(2,'0'):'';el._dec=c>0;render();};
+  el._getval=function(){var ent=el._ent?parseInt(el._ent,10):0;var cent=el._cent?parseInt((el._cent+'00').slice(0,2),10):0;return ent+cent/100;};
+}
+var _montoEl=null;
+function montoVal(){return _montoEl?_montoEl._getval():0;}
+function setMonto(n){if(_montoEl)_montoEl._setval(n);}
+function clrMonto(){if(_montoEl)_montoEl._reset();}
 var selForma='', selTx=null, guardado=false;
 function abrir(d){
   _dest=d;var cfg=DEST[d];
@@ -15100,6 +15110,7 @@ async function guardar(){
   }catch(e){msg('Error de red','err');btn.disabled=false;setBtn();}
 }
 function cargarNuevo(){volver();}
+_montoEl=document.getElementById('monto');montoBind(_montoEl);
 // Si no hay sesión, mandar al login y volver a /rapido después.
 (async function(){try{var r=await fetch('/api/me',{credentials:'same-origin'});if(r.status===401||r.status===403){location.href='/?next='+encodeURIComponent('/rapido');}}catch(e){}})();
 </script></body></html>`;
