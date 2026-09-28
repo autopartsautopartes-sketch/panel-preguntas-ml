@@ -14012,11 +14012,14 @@ async function facPostSoap(url, body, soapAction) {
     } catch (e) {
       clearTimeout(to);
       lastErr = e;
-      const msg = String((e && e.message) || e);
       const abortado = (e && e.name === 'AbortError');
+      // Causa técnica de fondo (undici mete el motivo real en e.cause).
+      const causa = (e && e.cause) ? e.cause : null;
+      const codigo = (causa && (causa.code || causa.errno)) || (e && e.code) || '';
+      const detalle = causa ? String(causa.message || causa) : String((e && e.message) || e);
       // Reintentamos sólo ante fallos de red/timeout (no ante errores de lógica).
       if (intento < 3) { await new Promise(rr => setTimeout(rr, 1200 * intento)); continue; }
-      throw new Error('No pude conectar con ARCA (' + host + ')' + (abortado ? ' — tardó demasiado (timeout)' : ' — ' + msg) + '. Suele ser un corte temporal del servidor de AFIP; probá de nuevo en unos segundos.');
+      throw new Error('No pude conectar con ARCA (' + host + ')' + (abortado ? ' — tardó demasiado (timeout de 30s)' : ' — ' + (codigo ? '[' + codigo + '] ' : '') + detalle) + '. Suele ser un corte temporal del servidor de AFIP; probá de nuevo en unos segundos.');
     }
   }
   throw (lastErr || new Error('No pude conectar con ARCA (' + host + ').'));
