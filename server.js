@@ -5428,9 +5428,12 @@ route('GET', '/api/prep/list', async (req, res) => {
   const u = (db.users || []).find(x => x.id === sess.userId);
   const mySuc = (u && u.prep_sucursal) ? String(u.prep_sucursal) : '';
   const esGestor = sess.role === 'admin' || (u && u.can_prep_manage);
+  // all=1: lista completa (todas las sucursales) SOLO para gestores. La usa "Sin preparar" para
+  // saber qué ventas ya están en preparación/finalizadas y excluirlas correctamente (igual que el admin).
+  const verTodo = url.searchParams.get('all') === '1' && esGestor;
   // Con sucursal asignada: los operarios siempre ven solo la suya. Los gestores ven todo,
-  // salvo que tengan el candado prep_lock_sucursal (ej. MARCOS → solo Rufino).
-  if (mySuc && (!esGestor || (u && u.prep_lock_sucursal))) orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
+  // salvo que tengan el candado prep_lock_sucursal (ej. MARCOS → solo Rufino en las solapas de preparación).
+  if (mySuc && !verTodo && (!esGestor || (u && u.prep_lock_sucursal))) orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
   sendJSON(res, 200, orders);
 });
 route('POST', '/api/prep/add', async (req, res) => {
