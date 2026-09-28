@@ -13916,6 +13916,7 @@ function facLoad() {
         cuit: '', condicion: cond, punto_venta: '', iva_pct: cond === 'RI' ? 21 : 0,
         cbte_default: cond === 'RI' ? 'B' : 'C', modo: 'manual',
         tope_mensual: 0, tope_anual: 0, activa: false, adjuntar_ml: true,
+        auto_momento: 'camino', auto_nota_credito: true,
         razon_social: pd.razon_social || '', nombre_fantasia: pd.nombre_fantasia || '',
         domicilio: pd.domicilio || '', ing_brutos: pd.ing_brutos || '', inicio_actividad: pd.inicio_actividad || ''
       };
@@ -13953,7 +13954,8 @@ route('GET', '/api/facturacion/config', async (req, res) => {
     ambiente: db.facturacion.config.ambiente,
     cuentas: db.facturacion.config.cuentas,
     acumulado: facAcumulado(db),
-    orden: FAC_CUENTAS
+    orden: FAC_CUENTAS,
+    auto_last: _facAutoLast
   });
 });
 route('POST', '/api/facturacion/config', async (req, res) => {
@@ -13978,6 +13980,10 @@ route('POST', '/api/facturacion/config', async (req, res) => {
     cur.activa = !!x.activa;
     if (x.adjuntar_ml != null) cur.adjuntar_ml = !!x.adjuntar_ml;
     else if (cur.adjuntar_ml == null) cur.adjuntar_ml = true;
+    if (x.auto_momento != null) cur.auto_momento = (x.auto_momento === 'compra') ? 'compra' : 'camino';
+    else if (cur.auto_momento == null) cur.auto_momento = 'camino';
+    if (x.auto_nota_credito != null) cur.auto_nota_credito = !!x.auto_nota_credito;
+    else if (cur.auto_nota_credito == null) cur.auto_nota_credito = true;
     if (x.razon_social != null) cur.razon_social = String(x.razon_social).slice(0, 80);
     if (x.nombre_fantasia != null) cur.nombre_fantasia = String(x.nombre_fantasia).slice(0, 80);
     if (x.domicilio != null) cur.domicilio = String(x.domicilio).slice(0, 160);
@@ -14686,6 +14692,116 @@ route('GET', '/api/facturacion/pdf', async (req, res) => {
     res.end(pdf);
   } catch (e) { res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end('Error al generar el PDF: ' + (e.message || e)); }
 });
+
+// ==================== MOTOR DE FACTURACIÓN AUTOMÁTICA ====================
+let _facAutoRunning = false;
+let _facAutoLast = null;
+async function facShipEnCamino(order, token) {
+  // true si el envío ya salió (shipped/delivered/en camino).
+  const st0 = String((order.shipping && order.shipping.status) || '').toLowerCase();
+  if (st0 === 'shipped' || st0 === 'delivered') return true;
+  const sid = order.shipping && order.shipping.id;
+  if (!sid) return false;
+  try { const s = await mlGet('https://api.mercadolibre.com/shipments/' + sid, token); const st = String(s.status || '').toLowerCase(); return st === 'shipped' || st === 'delivered'; }
+  catch (e) { return false; }
+}
+function facOrderCancelRefund(order) {
+  if (String(order.status || '').toLowerCase() === 'cancelled') return true;
+  for (const p of (order.payments || [])) { const st = String(p.status || '').toLowerCase(); if (st === 'refunded' || st === 'charged_back') return true; if (Number(p.transaction_amount_refunded) > 0) return true; }
+  return false;
+}
+const FAC_NC_COD = { 1: 3, 6: 8, 11: 13 }; // factura -> nota de crédito
+async function facEmitirNC(db, cuenta, factura, account, token) {
+  const cbteNC = FAC_NC_COD[Number(factura.cbte_cod)];
+  if (!cbteNC) return { ok: false, error: 'Sin NC para este tipo de comprobante' };
+  const r = await facEmitir(db, cuenta, {
+    cbte_cod: cbteNC, doc_tipo: factura.doc_tipo, doc_nro: factura.doc_nro, receptor_ri: factura.receptor_ri,
+    receptor_nombre: factura.receptor_nombre, receptor_email: factura.receptor_email, receptor_domicilio: factura.receptor_domicilio, receptor_cond_iva: factura.receptor_cond_iva,
+    items: factura.items, concepto: factura.concepto, order_id: factura.order_id,
+    cbte_asoc: { tipo: factura.cbte_cod, pto_vta: factura.pto_vta, nro: factura.nro },
+    descripcion: 'NC de Factura ' + factura.cbte_letra + ' ' + String(factura.pto_vta).padStart(4, '0') + '-' + String(factura.nro).padStart(8, '0'),
+    observaciones: factura.observaciones, saltar_tope: true
+  });
+  if (r.ok && r.factura) {
+    const orig = (db.facturacion.facturas || []).find(x => x.id === factura.id);
+    if (orig) { orig.nc_emitida = true; orig.nc_id = r.factura.id; }
+    saveDB(db);
+    const cfg = (db.facturacion.config.cuentas || {})[cuenta] || {};
+    if (cfg.adjuntar_ml !== false && factura.order_id) { try { await facAdjuntarML(account, token, factura.order_id, r.factura, cfg); } catch (e) {} }
+  }
+  return r;
+}
+async function facAutoNotasCredito(db, cuenta, account, token, cfg) {
+  const desde = Date.now() - 75 * 24 * 3600 * 1000;
+  const facturas = (db.facturacion.facturas || []).filter(f =>
+    f.cuenta === cuenta && f.order_id && !f.anulada && !f.nc_emitida &&
+    [1, 6, 11].includes(Number(f.cbte_cod)) && new Date(f.fecha || 0).getTime() > desde);
+  let hechas = 0;
+  for (const f of facturas) {
+    if (hechas >= 6) break;
+    let order; try { order = await mlGet('https://api.mercadolibre.com/orders/' + f.order_id, token); } catch (e) { continue; }
+    if (!facOrderCancelRefund(order)) continue;
+    try { const r = await facEmitirNC(db, cuenta, f, account, token); if (r.ok) hechas++; } catch (e) {}
+  }
+  return hechas;
+}
+async function facAutoFacturar(db, cuenta, account, token, cfg) {
+  const facturados = {};
+  for (const fx of (db.facturacion.facturas || [])) if (fx.order_id && !fx.anulada) facturados[String(fx.order_id)] = true;
+  let data; try { data = await mlGet('https://api.mercadolibre.com/orders/search', token, { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 40 }); } catch (e) { return 0; }
+  let hechas = 0, mirados = 0;
+  for (const o of (data.results || [])) {
+    if (hechas >= 8 || mirados >= 40) break;
+    const oid = String(o.id);
+    if (facturados[oid]) continue;
+    if (String(o.status).toLowerCase() === 'cancelled') continue;
+    mirados++;
+    if (cfg.auto_momento === 'camino') { const enCamino = await facShipEnCamino(o, token); if (!enCamino) continue; }
+    const total = Number(o.total_amount) || 0;
+    if (!(total > 0)) continue;
+    const it = (o.order_items && o.order_items[0]) || {};
+    const desc = (it.item && it.item.title) || ('Venta ML ' + oid);
+    let bill; try { bill = await facBillingML(account, token, oid); } catch (e) { bill = { doc_tipo: 99, doc_nro: '0', receptor_ri: false, nombre: '' }; }
+    let r; try {
+      r = await facEmitir(db, cuenta, { doc_tipo: bill.doc_tipo, doc_nro: bill.doc_nro, receptor_ri: bill.receptor_ri, receptor_nombre: bill.nombre || (o.buyer && o.buyer.nickname) || '', receptor_domicilio: bill.domicilio || '', importe_total: total, descripcion: desc, order_id: oid, saltar_tope: false });
+    } catch (e) { continue; }
+    if (r.tope) break; // tope alcanzado → frenar esta cuenta
+    if (r.ok && r.factura) {
+      facturados[oid] = true; hechas++;
+      if (cfg.adjuntar_ml !== false) { try { await facAdjuntarML(account, token, oid, r.factura, cfg); const fx = (db.facturacion.facturas || []).find(x => x.id === r.factura.id); if (fx) { fx.ml_adjuntada = true; saveDB(db); } } catch (e) {} }
+    }
+  }
+  return hechas;
+}
+async function facAutoTick() {
+  if (_facAutoRunning) return { skip: true };
+  _facAutoRunning = true;
+  const resumen = { facturadas: 0, notas: 0 };
+  try {
+    const db = facLoad();
+    const cuentas = db.facturacion.config.cuentas || {};
+    for (const cuenta of FAC_CUENTAS) {
+      const cfg = cuentas[cuenta];
+      if (!cfg || !cfg.activa) continue;
+      const account = facFindMLAccount(db, cuenta);
+      if (!account) continue;
+      let token; try { token = await getValidToken(account); } catch (e) { continue; }
+      if (cfg.auto_nota_credito) { try { resumen.notas += await facAutoNotasCredito(db, cuenta, account, token, cfg) || 0; } catch (e) {} }
+      if (cfg.modo === 'auto') { try { resumen.facturadas += await facAutoFacturar(db, cuenta, account, token, cfg) || 0; } catch (e) {} }
+    }
+    _facAutoLast = new Date().toISOString();
+  } catch (e) {} finally { _facAutoRunning = false; }
+  return resumen;
+}
+// Correr el motor a demanda (botón "Correr ahora").
+route('POST', '/api/facturacion/auto-run', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const r = await facAutoTick();
+  sendJSON(res, 200, { ok: true, resumen: r, last: _facAutoLast });
+});
+// Arranque diferido + ciclo cada 15 minutos.
+setTimeout(() => { facAutoTick().catch(() => {}); }, 150000);
+setInterval(() => { facAutoTick().catch(() => {}); }, 15 * 60 * 1000);
 
 route('GET', '/api/contable/data', async (req, res) => {
   if (!contRequireAdmin(req, res)) return;
