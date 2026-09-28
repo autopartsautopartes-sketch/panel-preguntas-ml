@@ -13969,6 +13969,103 @@ route('POST', '/api/facturacion/config', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, cuentas: f.config.cuentas, ambiente: f.config.ambiente });
 });
+// ---------- Conector ARCA: WSAA (login) + WSFEv1 ----------
+const _cp = require('child_process');
+const _os = require('os');
+const _facTA = {}; // cache en memoria del Ticket de Acceso por cuenta+ambiente
+function facCertPaths(cuenta) {
+  const base = process.env.FAC_CERT_DIR || '/etc/secrets';
+  const c = String(cuenta).toUpperCase();
+  return { crt: path.join(base, 'fac_' + c + '.crt'), key: path.join(base, 'fac_' + c + '.key') };
+}
+function facUrls(ambiente) {
+  return ambiente === 'produccion'
+    ? { wsaa: 'https://wsaa.afip.gov.ar/ws/services/LoginCms', wsfe: 'https://servicios1.afip.gov.ar/wsfev1/service.asmx' }
+    : { wsaa: 'https://wsaahomo.afip.gov.ar/ws/services/LoginCms', wsfe: 'https://wswhomo.afip.gov.ar/wsfev1/service.asmx' };
+}
+function _facXml(xml, tag) { const m = String(xml || '').match(new RegExp('<(?:[a-zA-Z0-9]+:)?' + tag + '(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[a-zA-Z0-9]+:)?' + tag + '>')); return m ? m[1] : ''; }
+function _facUnesc(s) { return String(s || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&apos;/g, "'"); }
+function facSignCMS(traXml, crtPath, keyPath) {
+  return new Promise((resolve, reject) => {
+    const tmp = path.join(_os.tmpdir(), 'tra_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.xml');
+    try { fs.writeFileSync(tmp, traXml); } catch (e) { return reject(e); }
+    _cp.execFile('openssl', ['smime', '-sign', '-signer', crtPath, '-inkey', keyPath, '-outform', 'DER', '-nodetach', '-in', tmp], { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      try { fs.unlinkSync(tmp); } catch (e) {}
+      if (err) return reject(new Error('No pude firmar (openssl): ' + (err.message || err)));
+      resolve(Buffer.from(stdout).toString('base64'));
+    });
+  });
+}
+async function facPostSoap(url, body, soapAction) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': soapAction || '' }, body: body });
+  const txt = await r.text();
+  return { status: r.status, txt };
+}
+async function facWsaaLogin(cuenta, ambiente) {
+  const key = cuenta + '|' + ambiente;
+  const now = Date.now();
+  // 1) memoria
+  if (_facTA[key] && _facTA[key].exp - 600000 > now) return _facTA[key];
+  // 2) disco (sobrevive reinicios; evita el error "ya posee un TA válido")
+  const taFile = path.join(DATA_DIR, 'fac_ta_' + cuenta + '_' + ambiente + '.json');
+  try { const disk = JSON.parse(fs.readFileSync(taFile, 'utf8')); if (disk && disk.exp - 600000 > now) { _facTA[key] = disk; return disk; } } catch (e) {}
+  // 3) login nuevo
+  const paths = facCertPaths(cuenta);
+  if (!fs.existsSync(paths.crt) || !fs.existsSync(paths.key)) throw new Error('Falta el certificado/clave de ' + cuenta + ' en el servidor (secret files fac_' + cuenta + '.crt / .key)');
+  const uid = Math.floor(now / 1000);
+  const gen = new Date(now - 600000).toISOString();
+  const exp = new Date(now + 600000).toISOString();
+  const tra = '<?xml version="1.0" encoding="UTF-8"?><loginTicketRequest version="1.0"><header><uniqueId>' + uid + '</uniqueId><generationTime>' + gen + '</generationTime><expirationTime>' + exp + '</expirationTime></header><service>wsfe</service></loginTicketRequest>';
+  const cms = await facSignCMS(tra, paths.crt, paths.key);
+  const soap = '<?xml version="1.0" encoding="utf-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:wsaa="http://wsaa.view.sua.dvadac.desein.afip.gov"><soapenv:Header/><soapenv:Body><wsaa:loginCms><wsaa:in0>' + cms + '</wsaa:in0></wsaa:loginCms></soapenv:Body></soapenv:Envelope>';
+  const urls = facUrls(ambiente);
+  const resp = await facPostSoap(urls.wsaa, soap, '');
+  if (/<faultstring>/.test(resp.txt)) throw new Error('WSAA: ' + _facUnesc(_facXml(resp.txt, 'faultstring')));
+  const inner = _facUnesc(_facXml(resp.txt, 'loginCmsReturn'));
+  const token = _facXml(inner, 'token'), sign = _facXml(inner, 'sign'), expTime = _facXml(inner, 'expirationTime');
+  if (!token || !sign) throw new Error('WSAA no devolvió token/sign. Respuesta: ' + resp.txt.slice(0, 300));
+  const ta = { token, sign, cuit: null, exp: expTime ? new Date(expTime).getTime() : (now + 12 * 3600000) };
+  _facTA[key] = ta;
+  try { fs.writeFileSync(taFile, JSON.stringify(ta)); } catch (e) {}
+  return ta;
+}
+async function facWsfe(cuenta, ambiente, cuit, method, innerXml) {
+  const ta = await facWsaaLogin(cuenta, ambiente);
+  const urls = facUrls(ambiente);
+  const auth = '<ar:Auth><ar:Token>' + ta.token + '</ar:Token><ar:Sign>' + ta.sign + '</ar:Sign><ar:Cuit>' + cuit + '</ar:Cuit></ar:Auth>';
+  const soap = '<?xml version="1.0" encoding="utf-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ar="http://ar.gov.afip.dif.FEV1/"><soapenv:Body><ar:' + method + '>' + (method === 'FEDummy' ? '' : auth) + (innerXml || '') + '</ar:' + method + '></soapenv:Body></soapenv:Envelope>';
+  const resp = await facPostSoap(urls.wsfe, soap, 'http://ar.gov.afip.dif.FEV1/' + method);
+  if (/<faultstring>/.test(resp.txt)) throw new Error('WSFE: ' + _facUnesc(_facXml(resp.txt, 'faultstring')));
+  return resp.txt;
+}
+const FAC_CBTE_COD = { A: 1, B: 6, C: 11 };
+// PRUEBA DE CONEXIÓN (solo lectura, NO emite): FEDummy + último comprobante autorizado.
+route('GET', '/api/facturacion/test', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const cuenta = String(q.get('cuenta') || '').toUpperCase();
+  const db = facLoad();
+  const cfg = (db.facturacion.config.cuentas || {})[cuenta];
+  if (!cfg) return sendJSON(res, 400, { ok: false, error: 'Cuenta desconocida' });
+  const ambiente = db.facturacion.config.ambiente || 'homologacion';
+  const cuit = String(cfg.cuit || '').replace(/\D/g, '');
+  if (!cuit) return sendJSON(res, 400, { ok: false, error: 'Cargá el CUIT de ' + cuenta + ' en Configuración' });
+  const out = { ok: false, cuenta, ambiente, cuit };
+  try {
+    const dummy = await facWsfe(cuenta, ambiente, cuit, 'FEDummy', '');
+    out.dummy = { app: _facXml(dummy, 'AppServer'), db: _facXml(dummy, 'DbServer'), auth: _facXml(dummy, 'AuthServer') };
+    if (cfg.punto_venta) {
+      const cbteCod = FAC_CBTE_COD[cfg.cbte_default] || 6;
+      const inner = '<ar:PtoVta>' + parseInt(cfg.punto_venta) + '</ar:PtoVta><ar:CbteTipo>' + cbteCod + '</ar:CbteTipo>';
+      const ult = await facWsfe(cuenta, ambiente, cuit, 'FECompUltimoAutorizado', inner);
+      const err = _facXml(ult, 'Errors');
+      if (err) out.ultimo_error = _facUnesc(_facXml(err, 'Msg') || err);
+      else out.ultimo = { pto_vta: parseInt(cfg.punto_venta), cbte: cfg.cbte_default, ultimo_nro: _facXml(ult, 'CbteNro') };
+    }
+    out.ok = true;
+  } catch (e) { out.error = String(e.message || e); }
+  sendJSON(res, 200, out);
+});
 route('GET', '/api/contable/data', async (req, res) => {
   if (!contRequireAdmin(req, res)) return;
   const db = contLoad();
