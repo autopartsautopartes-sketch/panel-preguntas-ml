@@ -479,7 +479,10 @@ function createSession(req, res) {
   const sid = generateSessionId();
   sessions[sid] = { created: Date.now() };
   const secureFlag = isHttps(req) ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax${secureFlag}`);
+  // Sesión de larga duración: ~400 días (máximo que aceptan los navegadores). No hay vencimiento
+  // del lado del servidor, así que la sesión no se cierra sola: solo termina si el usuario sale
+  // ("Salir") o borra los datos del navegador.
+  res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; Path=/; Max-Age=34560000; SameSite=Lax${secureFlag}`);
   saveSessions();
   return sessions[sid];
 }
@@ -14925,13 +14928,15 @@ input,select{width:100%;padding:14px;border:1px solid #cbd5e1;border-radius:12px
 .chip{flex:1;min-width:90px;text-align:center;padding:13px 8px;border-radius:12px;border:1px solid #cbd5e1;background:#fff;font-weight:700;font-size:15px;cursor:pointer;color:#374151}
 .chip.on{background:#2d3277;color:#fff;border-color:#2d3277}
 .chip.mp.on{background:#00a3e0;border-color:#00a3e0}
-.fecha-box{display:flex;gap:8px;align-items:center}
-.fecha-disp{flex:1;padding:13px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;font-size:18px;font-weight:700;text-align:center}
+.fecha-box{display:flex;gap:8px;align-items:stretch}
+#hoyBtn{flex:0 0 auto;min-width:84px}
+.fecha-inp{flex:1;font-size:20px;font-weight:700;text-align:center;color:#1e3a8a}
 .tot{background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:11px 14px;font-size:14px;color:#3730a3;margin:14px 0}
 .tot b{font-size:17px;color:#1e3a8a}
 .btn{display:block;width:100%;text-align:center;border:none;border-radius:14px;font-weight:800;cursor:pointer}
 .btn.primary{padding:16px;background:#16a34a;color:#fff;font-size:18px;margin-top:16px}
 .btn.derivar{background:#0f766e}
+.btn.nuevo{background:#2d3277}
 .msg{margin-top:14px;padding:12px 14px;border-radius:12px;font-size:15px;font-weight:600;display:none}
 .msg.ok{display:block;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}
 .msg.err{display:block;background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca}
@@ -14959,31 +14964,36 @@ input,select{width:100%;padding:14px;border:1px solid #cbd5e1;border-radius:12px
   <div id="form" style="display:none">
     <button class="volver" onclick="volver()">‹ Volver</button>
     <h1 id="titulo">Gasto</h1>
-    <label>Fecha</label>
-    <div class="fecha-box">
-      <button id="hoyBtn" class="chip on" style="flex:0 0 auto;min-width:70px" onclick="setHoy()">HOY</button>
-      <div id="fdisp" class="fecha-disp"></div>
-      <button class="chip" style="flex:0 0 auto;min-width:60px" onclick="abrirCal()">📅</button>
-      <input id="fecha" type="date" style="position:absolute;left:-9999px;width:1px;height:1px" onchange="calChange()">
+    <div id="stFecha">
+      <label>1 · Fecha</label>
+      <div class="fecha-box">
+        <button id="hoyBtn" class="chip" onclick="setHoy()">HOY</button>
+        <input id="fecha" type="date" class="fecha-inp" onchange="calChange()">
+      </div>
     </div>
-    <label>Forma de pago</label>
-    <div class="chips" id="formas">
-      <div class="chip" data-f="efectivo" onclick="setForma('efectivo')">Efectivo</div>
-      <div class="chip" data-f="transferencia" onclick="setForma('transferencia')">Transfer.</div>
-      <div class="chip" data-f="tarjeta" onclick="setForma('tarjeta')">Tarjeta</div>
-      <div class="chip" data-f="cheque" onclick="setForma('cheque')">Cheque</div>
-      <div class="chip mp" data-f="mp" onclick="setForma('mp')">MP</div>
+    <div id="stForma" style="display:none">
+      <label>2 · Forma de pago</label>
+      <div class="chips" id="formas">
+        <div class="chip" data-f="efectivo" onclick="setForma('efectivo')">Efectivo</div>
+        <div class="chip" data-f="transferencia" onclick="setForma('transferencia')">Transfer.</div>
+        <div class="chip" data-f="tarjeta" onclick="setForma('tarjeta')">Tarjeta</div>
+        <div class="chip" data-f="cheque" onclick="setForma('cheque')">Cheque</div>
+        <div class="chip mp" data-f="mp" onclick="setForma('mp')">MP</div>
+      </div>
+      <div id="selInfo" class="sel-info"></div>
     </div>
-    <div id="selInfo" class="sel-info"></div>
-    <div class="tot"><span id="totlbl">Total del período</span>: <b id="totv">…</b></div>
-    <label>Monto</label>
-    <input id="monto" type="number" inputmode="decimal" placeholder="0">
-    <label id="rubroLbl">Rubro</label>
-    <select id="rubro"><option value="">(sin rubro)</option></select>
-    <label>Detalle (opcional)</label>
-    <input id="detalle" type="text" placeholder="Ej: Supermercado">
-    <button id="save" class="btn primary" onclick="guardar()">💾 Guardar</button>
-    <div id="msg" class="msg"></div>
+    <div id="stDatos" style="display:none">
+      <div class="tot"><span id="totlbl">Total del período</span>: <b id="totv">…</b></div>
+      <label>3 · Monto</label>
+      <input id="monto" type="text" inputmode="numeric" placeholder="$ 0,00" oninput="montoInput()">
+      <label id="rubroLbl">Rubro</label>
+      <select id="rubro"><option value="">(sin rubro)</option></select>
+      <label>Detalle (opcional)</label>
+      <input id="detalle" type="text" placeholder="Ej: Supermercado">
+      <button id="save" class="btn primary" onclick="guardar()">💾 Guardar</button>
+      <button id="nuevo" class="btn primary nuevo" style="display:none" onclick="cargarNuevo()">➕ Cargar nuevo</button>
+      <div id="msg" class="msg"></div>
+    </div>
   </div>
 </div>
 <div class="ov" id="ov">
@@ -14993,37 +15003,46 @@ input,select{width:100%;padding:14px;border:1px solid #cbd5e1;border-radius:12px
   </div>
 </div>
 <script>
-var DEST={casa:{t:'🏠 Gasto de Casa',lbl:'Total Casa del período',rub:'Rubro de Casa'},negocio:{t:'🏢 Gasto de Negocio',lbl:'Total Negocio del período',rub:'Rubro de Negocio'}};
+var DEST={casa:{t:'🏠 Gasto de Casa',lbl:'Total Casa del período',rub:'Rubro de Casa',corto:'Casa'},negocio:{t:'🏢 Gasto de Negocio',lbl:'Total Negocio del período',rub:'Rubro de Negocio',corto:'Negocio'}};
 var _dest='';
 function money(n){try{return '$ '+(Number(n)||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});}catch(e){return '$'+n;}}
 function two(n){return String(n).padStart(2,'0');}
-var _fecha=new Date();
-function fISO(){return _fecha.getFullYear()+'-'+two(_fecha.getMonth()+1)+'-'+two(_fecha.getDate());}
-function fDDMM(){return two(_fecha.getDate())+'/'+two(_fecha.getMonth()+1)+'/'+_fecha.getFullYear();}
-function pintarFecha(){document.getElementById('fdisp').textContent=fDDMM();document.getElementById('fecha').value=fISO();var t=new Date();var esHoy=fISO()===(t.getFullYear()+'-'+two(t.getMonth()+1)+'-'+two(t.getDate()));document.getElementById('hoyBtn').className='chip'+(esHoy?' on':'');}
-function setHoy(){_fecha=new Date();pintarFecha();}
-function abrirCal(){var i=document.getElementById('fecha');if(i.showPicker){try{i.showPicker();return;}catch(e){}}i.focus();i.click();}
-function calChange(){var v=document.getElementById('fecha').value;if(v){var p=v.split('-');_fecha=new Date(+p[0],+p[1]-1,+p[2]);}pintarFecha();}
-var selForma='', selTx=null;
+var _fecha=null;
+function fISO(){if(!_fecha)return '';return _fecha.getFullYear()+'-'+two(_fecha.getMonth()+1)+'-'+two(_fecha.getDate());}
+function setHoy(){_fecha=new Date();document.getElementById('fecha').value=fISO();document.getElementById('hoyBtn').className='chip on';confirmarFecha();}
+function calChange(){var v=document.getElementById('fecha').value;if(v){var p=v.split('-');_fecha=new Date(+p[0],+p[1]-1,+p[2]);document.getElementById('hoyBtn').className='chip';confirmarFecha();}}
+function confirmarFecha(){document.getElementById('stForma').style.display='block';}
+// ---- monto formateado tipo $ 0,00 ----
+var _montoRaw='';
+function fmtMonto(digs){var n=Number(digs||'0')/100;return '$ '+n.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function montoInput(){var el=document.getElementById('monto');var d=el.value.replace(/\\D/g,'');_montoRaw=d;el.value=d?fmtMonto(d):'';}
+function montoVal(){return _montoRaw?Number(_montoRaw)/100:0;}
+function setMonto(n){_montoRaw=String(Math.round((Number(n)||0)*100));document.getElementById('monto').value=fmtMonto(_montoRaw);}
+function clrMonto(){_montoRaw='';document.getElementById('monto').value='';}
+var selForma='', selTx=null, guardado=false;
 function abrir(d){
   _dest=d;var cfg=DEST[d];
   document.getElementById('home').style.display='none';document.getElementById('form').style.display='block';
-  document.getElementById('titulo').textContent=cfg.t;document.getElementById('totlbl').textContent=cfg.lbl;document.getElementById('rubroLbl').textContent=cfg.rub;
+  document.getElementById('titulo').textContent=cfg.t;document.getElementById('totlbl').textContent=cfg.lbl;document.getElementById('rubroLbl').textContent='3b · '+cfg.rub;
   var sel=document.getElementById('rubro');sel.innerHTML='<option value="">(sin rubro)</option>';sel.removeAttribute('data-loaded');
-  document.getElementById('monto').value='';document.getElementById('monto').readOnly=false;document.getElementById('detalle').value='';
-  selTx=null;selForma='';document.getElementById('selInfo').style.display='none';
+  // reset pasos
+  _fecha=null;document.getElementById('fecha').value='';document.getElementById('hoyBtn').className='chip';
+  document.getElementById('stForma').style.display='none';document.getElementById('stDatos').style.display='none';
   document.querySelectorAll('#formas .chip').forEach(function(c){c.className='chip'+(c.dataset.f==='mp'?' mp':'');});
-  setHoy();setBtn();document.getElementById('msg').className='msg';document.getElementById('msg').textContent='';
-  cargarTotal();
+  document.getElementById('selInfo').style.display='none';
+  selForma='';selTx=null;guardado=false;clrMonto();document.getElementById('monto').readOnly=false;document.getElementById('detalle').value='';
+  document.getElementById('save').style.display='';document.getElementById('nuevo').style.display='none';
+  var m=document.getElementById('msg');m.className='msg';m.textContent='';
+  setBtn();cargarTotal();
 }
 function volver(){document.getElementById('form').style.display='none';document.getElementById('home').style.display='block';_dest='';}
 function setForma(f){
   selForma=f;
   document.querySelectorAll('#formas .chip').forEach(function(c){c.className='chip'+(c.dataset.f==='mp'?' mp':'')+(c.dataset.f===f?' on':'');});
   if(f==='mp'){abrirDlg();}
-  else{selTx=null;var mo=document.getElementById('monto');mo.readOnly=false;mo.value='';document.getElementById('selInfo').style.display='none';setBtn();}
+  else{selTx=null;var mo=document.getElementById('monto');mo.readOnly=false;clrMonto();document.getElementById('selInfo').style.display='none';document.getElementById('stDatos').style.display='block';setBtn();mo.focus();}
 }
-function setBtn(){var b=document.getElementById('save');if(selTx){b.textContent='➡ Derivar a '+(DEST[_dest]?DEST[_dest].t.split(' ').pop():'');b.className='btn primary derivar';}else{b.textContent='💾 Guardar';b.className='btn primary';}}
+function setBtn(){var b=document.getElementById('save');if(selTx){b.textContent='➡ Derivar a '+(DEST[_dest]?DEST[_dest].corto:'');b.className='btn primary derivar';}else{b.textContent='💾 Guardar';b.className='btn primary';}}
 function msg(t,tipo){var m=document.getElementById('msg');m.innerHTML=t;m.className='msg '+(tipo||'');}
 async function cargarTotal(){
   try{var r=await fetch('/api/contable/bucket-total?dest='+_dest,{credentials:'same-origin'});
@@ -15036,11 +15055,13 @@ function abrirDlg(){document.getElementById('ov').classList.add('on');cargarPend
 function cerrarDlg(){document.getElementById('ov').classList.remove('on');if(!selTx&&selForma==='mp'){selForma='';document.querySelectorAll('#formas .chip').forEach(function(c){c.className='chip'+(c.dataset.f==='mp'?' mp':'');});}}
 async function cargarPend(){
   var box=document.getElementById('txlist');box.innerHTML='<div style="padding:20px;text-align:center;color:#9ca3af">Cargando…</div>';
-  try{var r=await fetch('/api/contable/pendientes',{credentials:'same-origin'});var d=await r.json();var ps=d.pendientes||[];
+  try{var r=await fetch('/api/contable/pendientes',{credentials:'same-origin'});
+    if(r.status===401||r.status===403){box.innerHTML='<div style="padding:24px;text-align:center;color:#b45309">Iniciá sesión en el panel primero.<br><a href="/">Ir a iniciar sesión</a></div>';return;}
+    var d=await r.json();var ps=d.pendientes||[];
     if(!ps.length){box.innerHTML='<div style="padding:24px;text-align:center;color:#9ca3af">No hay transacciones pendientes.<br>Tocá ↻ Actualizar para traer las últimas de MP.</div>';return;}
     var h='';ps.forEach(function(t){h+='<div class="txrow"><div class="info"><div class="d">'+(t.detalle||'(sin detalle)').replace(/</g,'&lt;')+'</div><div class="m">'+(t.fecha||'')+(t.cuenta?(' · '+t.cuenta):'')+(t.origen==='mp'?' · MP':'')+'</div></div><div class="amt">'+money(t.monto)+'</div><button class="pickbtn" data-id="'+t.id+'" data-monto="'+t.monto+'">Derivar</button></div>';});
     box.innerHTML=h;
-    box.querySelectorAll('.pickbtn').forEach(function(b){b.onclick=function(){elegirTx(b.dataset.id,Number(b.dataset.monto),b);};var id=b.dataset.id;var t=ps.filter(function(x){return String(x.id)===String(id);})[0];if(t)b._tx=t;});
+    box.querySelectorAll('.pickbtn').forEach(function(b){var id=b.dataset.id;var t=ps.filter(function(x){return String(x.id)===String(id);})[0];b._tx=t;b.onclick=function(){elegirTx(b._tx);};});
   }catch(e){box.innerHTML='<div style="padding:20px;text-align:center;color:#b91c1c">Error al cargar.</div>';}
 }
 async function actualizar(btn){
@@ -15048,18 +15069,19 @@ async function actualizar(btn){
   try{await fetch('/api/contable/request-sync',{method:'POST',credentials:'same-origin'});}catch(e){}
   setTimeout(async function(){await cargarPend();if(btn){btn.disabled=false;btn.textContent='↻ Actualizar';}},2500);
 }
-function elegirTx(id,monto,btn){
-  var t=(btn&&btn._tx)?btn._tx:{id:id,monto:monto};
+function elegirTx(t){
   selTx=t;
-  var mo=document.getElementById('monto');mo.value=Number(t.monto)||monto;mo.readOnly=true;
+  var mo=document.getElementById('monto');setMonto(t.monto);mo.readOnly=true;
   if(t.detalle)document.getElementById('detalle').value=t.detalle;
   var si=document.getElementById('selInfo');si.style.display='block';si.textContent='MP: '+(t.detalle||'')+' · '+money(t.monto);
+  document.getElementById('stDatos').style.display='block';
   setBtn();cerrarDlg();
 }
 async function guardar(){
-  var monto=parseFloat(document.getElementById('monto').value);
+  if(guardado)return;
+  var monto=montoVal();
   if(!(monto>0)){msg('Poné el monto','err');return;}
-  if(!_dest){return;}
+  if(!_dest||!_fecha){return;}
   var rubro=document.getElementById('rubro').value||null;
   var detalle=document.getElementById('detalle').value||'';
   var btn=document.getElementById('save');btn.disabled=true;btn.textContent='Guardando…';
@@ -15071,12 +15093,15 @@ async function guardar(){
     var d={};try{d=await r.json();}catch(e){}
     if(r.status===401||r.status===403){msg('Iniciá sesión en el panel primero.','err');btn.disabled=false;setBtn();return;}
     if(!r.ok||d.error){msg(d.error||'No se pudo guardar','err');btn.disabled=false;setBtn();return;}
-    document.getElementById('monto').value='';document.getElementById('detalle').value='';document.getElementById('monto').readOnly=false;selTx=null;
+    guardado=true;
     await cargarTotal();
     msg('✓ Guardado. '+(DEST[_dest]?DEST[_dest].lbl:'Total')+': '+document.getElementById('totv').textContent,'ok');
-    btn.disabled=false;setBtn();
+    btn.style.display='none';document.getElementById('nuevo').style.display='';
   }catch(e){msg('Error de red','err');btn.disabled=false;setBtn();}
 }
+function cargarNuevo(){volver();}
+// Si no hay sesión, mandar al login y volver a /rapido después.
+(async function(){try{var r=await fetch('/api/me',{credentials:'same-origin'});if(r.status===401||r.status===403){location.href='/?next='+encodeURIComponent('/rapido');}}catch(e){}})();
 </script></body></html>`;
 route('GET', '/rapido', async (req, res) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(RAPIDO_HTML); });
 // POST mutaciones por acción (una sola ruta para no multiplicar endpoints).
