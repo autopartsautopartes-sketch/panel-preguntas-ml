@@ -13899,6 +13899,7 @@ function facLoad() {
   if (!f.config.ambiente) f.config.ambiente = 'homologacion';
   if (!f.config.cuentas) f.config.cuentas = {};
   if (!Array.isArray(f.facturas)) f.facturas = [];
+  if (!Array.isArray(f.clientes)) f.clientes = [];
   let changed = false;
   for (const c of FAC_CUENTAS) {
     if (!f.config.cuentas[c]) {
@@ -13929,7 +13930,8 @@ function facAcumulado(db) {
     if (fx.anulada) continue;
     const c = fx.cuenta; if (!out[c]) out[c] = { mes: 0, anio: 0, cant: 0 };
     const d = new Date(fx.fecha || fx.created_at || 0);
-    const imp = Number(fx.importe_total) || 0;
+    const esNC = [3, 8, 13].includes(Number(fx.cbte_cod)); // las NC restan del acumulado
+    const imp = (Number(fx.importe_total) || 0) * (esNC ? -1 : 1);
     if (d.getFullYear() === y) { out[c].anio += imp; out[c].cant++; if (d.getMonth() === m) out[c].mes += imp; }
   }
   return out;
@@ -14103,6 +14105,330 @@ route('GET', '/api/facturacion/test', async (req, res) => {
   } catch (e) { out.error = String(e.message || e); }
   sendJSON(res, 200, out);
 });
+
+// ==================== EMISIÓN REAL (Etapa 2) — FECAESolicitar ====================
+const FAC_IVA_ID = { 0: 3, 10.5: 4, 21: 5, 27: 6, 5: 8, 2.5: 9 }; // alícuotas AFIP
+function _facR2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+function _facF2(n) { return (_facR2(n)).toFixed(2); }
+function _facFchHoy() {
+  // Fecha de Argentina en formato yyyymmdd (AFIP exige la fecha local).
+  try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).replace(/-/g, ''); }
+  catch (e) { const d = new Date(); return '' + d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'); }
+}
+function _facMsgs(xml, tag) {
+  const block = _facXml(xml, tag); if (!block) return [];
+  const out = []; const re = /<(?:\w+:)?Msg>([\s\S]*?)<\/(?:\w+:)?Msg>/g; let m;
+  while ((m = re.exec(block))) out.push(_facUnesc(m[1]).trim());
+  return out;
+}
+// Devuelve el próximo número de comprobante para (pto_vta, cbteCod).
+async function facProximoNro(cuenta, ambiente, cuit, ptoVta, cbteCod) {
+  const inner = '<ar:PtoVta>' + ptoVta + '</ar:PtoVta><ar:CbteTipo>' + cbteCod + '</ar:CbteTipo>';
+  const ult = await facWsfe(cuenta, ambiente, cuit, 'FECompUltimoAutorizado', inner);
+  const errs = _facMsgs(ult, 'Errors');
+  if (errs.length) throw new Error('AFIP (último nro): ' + errs.join(' | '));
+  const n = parseInt(_facXml(ult, 'CbteNro') || '0', 10);
+  return (isNaN(n) ? 0 : n) + 1;
+}
+// Emite un comprobante. opts: { doc_tipo, doc_nro, receptor_ri, receptor_nombre,
+//   importe_total, iva_pct, concepto, descripcion, order_id, saltar_tope }
+async function facEmitir(db, cuenta, opts) {
+  cuenta = String(cuenta).toUpperCase();
+  const cfg = (db.facturacion.config.cuentas || {})[cuenta];
+  if (!cfg) throw new Error('Cuenta desconocida: ' + cuenta);
+  const ambiente = db.facturacion.config.ambiente || 'homologacion';
+  const cuit = String(cfg.cuit || '').replace(/\D/g, '');
+  if (!cuit) throw new Error('Falta el CUIT de ' + cuenta + ' en Configuración.');
+  const ptoVta = parseInt(String(cfg.punto_venta || '').replace(/\D/g, ''), 10);
+  if (!ptoVta) throw new Error('Falta el punto de venta de ' + cuenta + '.');
+  if (!cfg.activa) throw new Error('La cuenta ' + cuenta + ' no está activa. Activala en Configuración.');
+
+  // ---- Tipo de comprobante ----
+  const esMono = cfg.condicion === 'MONO';
+  let docTipo = parseInt(opts.doc_tipo || 99, 10);
+  let docNro = String(opts.doc_nro || '0').replace(/\D/g, '') || '0';
+  if (docTipo === 99) docNro = '0';
+  const LETRA_BY_COD = { 1: 'A', 2: 'A', 3: 'A', 4: 'A', 6: 'B', 7: 'B', 8: 'B', 9: 'B', 11: 'C', 12: 'C', 13: 'C', 15: 'C' };
+  let cbteLetra, cbteCod;
+  if (opts.cbte_cod) {
+    cbteCod = parseInt(opts.cbte_cod, 10);
+    cbteLetra = LETRA_BY_COD[cbteCod] || 'B';
+    if (esMono && cbteLetra !== 'C') throw new Error('La cuenta ' + cuenta + ' es Monotributo: solo puede emitir comprobantes C.');
+  } else {
+    // Autodetección de Factura (A/B/C) según receptor y condición del emisor.
+    if (esMono) { cbteLetra = 'C'; cbteCod = 11; }
+    else {
+      const receptorRIconCuit = (docTipo === 80 && docNro && docNro !== '0' && opts.receptor_ri === true);
+      if (receptorRIconCuit) { cbteLetra = 'A'; cbteCod = 1; } else { cbteLetra = 'B'; cbteCod = 6; }
+    }
+  }
+  const esNCND = [2, 3, 7, 8, 12, 13].includes(cbteCod); // notas de crédito/débito
+  const esNC = [3, 8, 13].includes(cbteCod);             // nota de crédito (resta)
+
+  // ---- Renglones / importes ----
+  // items: [{cantidad, precio_unit, bonif_pct, iva_pct, descripcion, codigo}] (precios NETOS para A/B; importe para C)
+  let items = Array.isArray(opts.items) ? opts.items.filter(x => x) : [];
+  let neto = 0, ivaImp = 0;
+  const ivaGroups = {}; // iva_pct -> {base, imp}
+  let descPrincipal = String(opts.descripcion || '');
+  if (items.length) {
+    items = items.map(it => {
+      const cant = Number(it.cantidad) || 1;
+      const pu = Number(it.precio_unit) || 0;
+      const bonif = Number(it.bonif_pct) || 0;
+      const ivaPctL = (cbteLetra === 'C') ? 0 : (it.iva_pct != null ? Number(it.iva_pct) : (Number(cfg.iva_pct) || 21));
+      const sub = _facR2(cant * pu * (1 - bonif / 100));
+      const ivaL = (cbteLetra === 'C') ? 0 : _facR2(sub * ivaPctL / 100);
+      neto = _facR2(neto + sub); ivaImp = _facR2(ivaImp + ivaL);
+      if (cbteLetra !== 'C') { const k = ivaPctL; if (!ivaGroups[k]) ivaGroups[k] = { base: 0, imp: 0 }; ivaGroups[k].base = _facR2(ivaGroups[k].base + sub); ivaGroups[k].imp = _facR2(ivaGroups[k].imp + ivaL); }
+      return { cantidad: cant, codigo: String(it.codigo || ''), descripcion: String(it.descripcion || '').slice(0, 200), precio_unit: pu, bonif_pct: bonif, iva_pct: ivaPctL, subtotal: sub };
+    });
+    if (!descPrincipal) descPrincipal = items.map(i => i.descripcion).filter(Boolean).slice(0, 3).join(', ');
+  } else {
+    // Path simple: importe_total (bruto/IVA incluido para A/B; total para C).
+    const total = _facR2(opts.importe_total);
+    if (!(total > 0)) throw new Error('El importe total debe ser mayor a 0.');
+    if (cbteLetra === 'C') { neto = total; ivaImp = 0; }
+    else {
+      const ivaPct = Number(opts.iva_pct != null ? opts.iva_pct : cfg.iva_pct) || 21;
+      neto = _facR2(total / (1 + ivaPct / 100)); ivaImp = _facR2(total - neto);
+      ivaGroups[ivaPct] = { base: neto, imp: ivaImp };
+    }
+    const ivaU = (cbteLetra === 'C') ? 0 : (Number(opts.iva_pct != null ? opts.iva_pct : cfg.iva_pct) || 21);
+    items = [{ cantidad: 1, codigo: '', descripcion: descPrincipal || 'Venta', precio_unit: neto, bonif_pct: 0, iva_pct: ivaU, subtotal: neto }];
+  }
+  const totalFinal = _facR2(neto + ivaImp);
+  if (!(totalFinal > 0)) throw new Error('El total debe ser mayor a 0.');
+  const ivaPct = (cbteLetra === 'C') ? 0 : (Object.keys(ivaGroups)[0] != null ? Number(Object.keys(ivaGroups)[0]) : 21);
+
+  // Iva array (puede tener varias alícuotas)
+  let ivaArr = '';
+  if (cbteLetra !== 'C') {
+    const parts = Object.keys(ivaGroups).map(k => '<ar:AlicIva><ar:Id>' + (FAC_IVA_ID[Number(k)] || 5) + '</ar:Id><ar:BaseImp>' + _facF2(ivaGroups[k].base) + '</ar:BaseImp><ar:Importe>' + _facF2(ivaGroups[k].imp) + '</ar:Importe></ar:AlicIva>');
+    if (parts.length) ivaArr = '<ar:Iva>' + parts.join('') + '</ar:Iva>';
+  }
+
+  // ---- Comprobante asociado (obligatorio para NC/ND) ----
+  let cbtesAsocXml = '', asocInfo = null;
+  if (esNCND) {
+    const a = opts.cbte_asoc || {};
+    const aTipo = parseInt(a.tipo || 0, 10), aPv = parseInt(a.pto_vta || ptoVta, 10), aNro = parseInt(a.nro || 0, 10);
+    if (!aTipo || !aNro) throw new Error('Para Nota de Crédito/Débito indicá el comprobante asociado (tipo, punto de venta y número).');
+    cbtesAsocXml = '<ar:CbtesAsoc><ar:CbteAsoc><ar:Tipo>' + aTipo + '</ar:Tipo><ar:PtoVta>' + aPv + '</ar:PtoVta><ar:Nro>' + aNro + '</ar:Nro></ar:CbteAsoc></ar:CbtesAsoc>';
+    asocInfo = { tipo: aTipo, pto_vta: aPv, nro: aNro };
+  }
+
+  // ---- Tope por monto (las notas de crédito no controlan tope) ----
+  if (!esNC) {
+    const ac = facAcumulado(db)[cuenta] || { mes: 0, anio: 0 };
+    const topeM = Number(cfg.tope_mensual) || 0, topeA = Number(cfg.tope_anual) || 0;
+    let topeAviso = '';
+    if (topeM > 0 && (ac.mes + totalFinal) > topeM) topeAviso = 'Supera el tope MENSUAL (' + _facF2(topeM) + '). Facturado mes: ' + _facF2(ac.mes) + ', este comprobante: ' + _facF2(totalFinal) + '.';
+    else if (topeA > 0 && (ac.anio + totalFinal) > topeA) topeAviso = 'Supera el tope ANUAL (' + _facF2(topeA) + '). Facturado año: ' + _facF2(ac.anio) + ', este comprobante: ' + _facF2(totalFinal) + '.';
+    if (topeAviso && !opts.saltar_tope) return { ok: false, tope: true, mensaje: topeAviso };
+  }
+
+  // ---- Próximo número ----
+  const nro = await facProximoNro(cuenta, ambiente, cuit, ptoVta, cbteCod);
+  const hoy = _facFchHoy();
+  const fch = (opts.fch_emision && /^\d{8}$/.test(String(opts.fch_emision))) ? String(opts.fch_emision) : hoy;
+  const concepto = parseInt(opts.concepto || 1, 10) || 1; // 1=Productos 2=Servicios 3=Prod+Serv
+  const esServicio = (concepto === 2 || concepto === 3);
+  // Fechas de servicio (AFIP las exige si concepto 2 o 3).
+  const servDesde = esServicio ? ((opts.serv_desde && /^\d{8}$/.test(String(opts.serv_desde))) ? String(opts.serv_desde) : fch) : '';
+  const servHasta = esServicio ? ((opts.serv_hasta && /^\d{8}$/.test(String(opts.serv_hasta))) ? String(opts.serv_hasta) : fch) : '';
+  const vtoPago = esServicio ? ((opts.venc_pago && /^\d{8}$/.test(String(opts.venc_pago))) ? String(opts.venc_pago) : fch) : '';
+
+  // ---- Armado FECAESolicitar (orden de campos según esquema WSFEv1) ----
+  let det = '<ar:Concepto>' + concepto + '</ar:Concepto>';
+  det += '<ar:DocTipo>' + docTipo + '</ar:DocTipo><ar:DocNro>' + docNro + '</ar:DocNro>';
+  det += '<ar:CbteDesde>' + nro + '</ar:CbteDesde><ar:CbteHasta>' + nro + '</ar:CbteHasta>';
+  det += '<ar:CbteFch>' + fch + '</ar:CbteFch>';
+  det += '<ar:ImpTotal>' + _facF2(totalFinal) + '</ar:ImpTotal><ar:ImpTotConc>0.00</ar:ImpTotConc>';
+  det += '<ar:ImpNeto>' + _facF2(neto) + '</ar:ImpNeto><ar:ImpOpEx>0.00</ar:ImpOpEx>';
+  det += '<ar:ImpIVA>' + _facF2(ivaImp) + '</ar:ImpIVA><ar:ImpTrib>0.00</ar:ImpTrib>';
+  if (esServicio) det += '<ar:FchServDesde>' + servDesde + '</ar:FchServDesde><ar:FchServHasta>' + servHasta + '</ar:FchServHasta><ar:FchVtoPago>' + vtoPago + '</ar:FchVtoPago>';
+  if (cbtesAsocXml) det += cbtesAsocXml;
+  det += '<ar:MonId>PES</ar:MonId><ar:MonCotiz>1</ar:MonCotiz>';
+  det += ivaArr;
+  const inner = '<ar:FeCAEReq><ar:FeCabReq><ar:CantReg>1</ar:CantReg><ar:PtoVta>' + ptoVta + '</ar:PtoVta><ar:CbteTipo>' + cbteCod + '</ar:CbteTipo></ar:FeCabReq>' +
+    '<ar:FeDetReq><ar:FECAEDetRequest>' + det + '</ar:FECAEDetRequest></ar:FeDetReq></ar:FeCAEReq>';
+
+  const resp = await facWsfe(cuenta, ambiente, cuit, 'FECAESolicitar', inner);
+  const errs = _facMsgs(resp, 'Errors');
+  const obs = _facMsgs(resp, 'Observaciones');
+  const resultado = _facXml(resp, 'Resultado') || '';
+  const cae = _facXml(resp, 'CAE') || '';
+  const caeVto = _facXml(resp, 'CAEFchVto') || '';
+
+  if (resultado !== 'A' || !cae) {
+    const msg = (errs.concat(obs)).join(' | ') || ('AFIP rechazó el comprobante (Resultado ' + (resultado || '?') + ').');
+    return { ok: false, rechazado: true, mensaje: msg, resultado };
+  }
+  // ---- Guardar comprobante ----
+  const rec = {
+    id: 'fac_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    cuenta, cuit, ambiente, pto_vta: ptoVta, cbte_letra: cbteLetra, cbte_cod: cbteCod, nro,
+    doc_tipo: docTipo, doc_nro: docNro, receptor_nombre: opts.receptor_nombre || '', receptor_ri: !!opts.receptor_ri,
+    receptor_email: opts.receptor_email || '', receptor_domicilio: opts.receptor_domicilio || '', receptor_cond_iva: opts.receptor_cond_iva || '',
+    concepto, descripcion: String(descPrincipal || '').slice(0, 300), items: items,
+    cbte_asoc: asocInfo, observaciones: String(opts.observaciones || '').slice(0, 500),
+    iva_pct: ivaPct, importe_neto: neto, importe_iva: ivaImp, importe_total: totalFinal,
+    cae, cae_vto: caeVto, cbte_fch: fch, fecha: new Date().toISOString(),
+    order_id: opts.order_id ? String(opts.order_id) : null,
+    obs: obs.join(' | ') || '', origen: opts.order_id ? 'ml' : 'manual', anulada: false
+  };
+  db.facturacion.facturas.push(rec);
+  saveDB(db);
+  return { ok: true, factura: rec, obs: obs };
+}
+
+// Emisión MANUAL (admin). Soporta renglones (items), tipo de comprobante explícito y NC/ND.
+route('POST', '/api/facturacion/emitir-manual', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const b = await parseBody(req);
+  const cuenta = String(b.cuenta || '').toUpperCase();
+  const db = facLoad();
+  try {
+    const r = await facEmitir(db, cuenta, {
+      cbte_cod: b.cbte_cod, doc_tipo: b.doc_tipo, doc_nro: b.doc_nro,
+      receptor_ri: b.receptor_ri === true || b.receptor_ri === 'true',
+      receptor_nombre: b.receptor_nombre, receptor_email: b.receptor_email, receptor_domicilio: b.receptor_domicilio, receptor_cond_iva: b.receptor_cond_iva,
+      items: b.items, importe_total: b.importe_total, iva_pct: b.iva_pct,
+      concepto: b.concepto, fch_emision: b.fch_emision, serv_desde: b.serv_desde, serv_hasta: b.serv_hasta, venc_pago: b.venc_pago,
+      cbte_asoc: b.cbte_asoc, descripcion: b.descripcion, observaciones: b.observaciones, saltar_tope: !!b.saltar_tope
+    });
+    sendJSON(res, 200, r);
+  } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
+});
+
+// ---- Libreta de clientes (guardados a mano) ----
+route('GET', '/api/facturacion/clientes', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const db = facLoad();
+  sendJSON(res, 200, { ok: true, clientes: db.facturacion.clientes || [] });
+});
+route('POST', '/api/facturacion/cliente', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const b = await parseBody(req);
+  const db = facLoad();
+  if (!db.facturacion.clientes) db.facturacion.clientes = [];
+  const accion = b.accion || 'guardar';
+  if (accion === 'borrar') {
+    db.facturacion.clientes = db.facturacion.clientes.filter(c => c.id !== b.id);
+    saveDB(db); return sendJSON(res, 200, { ok: true, clientes: db.facturacion.clientes });
+  }
+  const cli = {
+    id: b.id || ('cli_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)),
+    razon_social: String(b.razon_social || '').slice(0, 120),
+    doc_tipo: parseInt(b.doc_tipo || 99, 10),
+    doc_nro: String(b.doc_nro || '').replace(/\D/g, ''),
+    cond_iva: ['RI', 'MONO', 'CF', 'EX'].includes(b.cond_iva) ? b.cond_iva : 'CF',
+    email: String(b.email || '').slice(0, 120),
+    domicilio: String(b.domicilio || '').slice(0, 160),
+    cond_pago: String(b.cond_pago || 'Contado').slice(0, 40)
+  };
+  if (!cli.razon_social) return sendJSON(res, 200, { ok: false, error: 'Falta la razón social.' });
+  const i = db.facturacion.clientes.findIndex(c => c.id === cli.id);
+  if (i >= 0) db.facturacion.clientes[i] = cli; else db.facturacion.clientes.push(cli);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, cliente: cli, clientes: db.facturacion.clientes });
+});
+
+// Lista de ventas de ML candidatas a facturar (por cuenta), con flag de ya facturado.
+route('GET', '/api/facturacion/ventas', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const cuenta = String(q.get('cuenta') || '').toUpperCase();
+  const db = facLoad();
+  const account = (db.ml_accounts || []).find(a => String(a.name).toUpperCase() === cuenta);
+  if (!account) return sendJSON(res, 200, { ok: false, error: 'No encuentro la cuenta de ML "' + cuenta + '".' });
+  // Set de order_id ya facturados
+  const facturados = {};
+  for (const fx of (db.facturacion.facturas || [])) if (fx.order_id && !fx.anulada) facturados[String(fx.order_id)] = fx;
+  // Rango de fechas opcional (yyyy-mm-dd). Por defecto, últimos 30 días.
+  const dISO = (s, endOfDay) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s || ''))) return null; return s + (endOfDay ? 'T23:59:59.999-03:00' : 'T00:00:00.000-03:00'); };
+  const desdeQ = dISO(q.get('desde'), false), hastaQ = dISO(q.get('hasta'), true);
+  try {
+    const token = await getValidToken(account);
+    const params = { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 50 };
+    if (desdeQ) params['order.date_created.from'] = desdeQ;
+    if (hastaQ) params['order.date_created.to'] = hastaQ;
+    const data = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+    const ventas = (data.results || []).map(o => {
+      const it = (o.order_items && o.order_items[0]) || {};
+      const oid = String(o.id);
+      const fx = facturados[oid];
+      return {
+        order_id: oid, fecha: o.date_created, total: Number(o.total_amount) || 0,
+        titulo: (it.item && it.item.title) || '', cantidad: it.quantity || 1,
+        comprador: (o.buyer && (o.buyer.nickname || ((o.buyer.first_name || '') + ' ' + (o.buyer.last_name || '')).trim())) || '',
+        facturado: !!fx, factura: fx ? { cbte: fx.cbte_letra, nro: fx.nro, cae: fx.cae, total: fx.importe_total } : null
+      };
+    });
+    sendJSON(res, 200, { ok: true, ventas });
+  } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
+});
+
+// Trae datos fiscales del comprador de una orden ML (best-effort).
+async function facBillingML(account, token, orderId) {
+  const out = { doc_tipo: 99, doc_nro: '0', receptor_ri: false, nombre: '' };
+  try {
+    const bi = await mlGet('https://api.mercadolibre.com/orders/' + orderId + '/billing_info', token, {}, { 'x-version': '2' });
+    const b = (bi && bi.buyer && bi.buyer.billing_info) ? bi.buyer.billing_info : (bi && bi.billing_info) || bi || {};
+    const dt = String(b.doc_type || (b.identification && b.identification.type) || '').toUpperCase();
+    const dn = String(b.doc_number || (b.identification && b.identification.number) || '').replace(/\D/g, '');
+    if (dt === 'CUIT' && dn) { out.doc_tipo = 80; out.doc_nro = dn; }
+    else if ((dt === 'DNI') && dn) { out.doc_tipo = 96; out.doc_nro = dn; }
+    // Condición fiscal (si viene). Buscamos indicios de Responsable Inscripto.
+    const addl = JSON.stringify(b.additional_info || b || {}).toUpperCase();
+    if (/RESPONSABLE.?INSCRIP|"IVA_RESP|"RI"/.test(addl)) out.receptor_ri = true;
+    out.nombre = ((b.first_name || '') + ' ' + (b.last_name || '')).trim() || b.name || b.doc_number || '';
+  } catch (e) { /* si falla, queda consumidor final → Factura B */ }
+  return out;
+}
+
+// Emitir factura de UNA venta de ML.
+route('POST', '/api/facturacion/emitir-venta', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const b = await parseBody(req);
+  const cuenta = String(b.cuenta || '').toUpperCase();
+  const orderId = String(b.order_id || '');
+  if (!orderId) return sendJSON(res, 200, { ok: false, error: 'Falta order_id.' });
+  const db = facLoad();
+  // ya facturado?
+  const ya = (db.facturacion.facturas || []).find(f => f.order_id === orderId && !f.anulada);
+  if (ya) return sendJSON(res, 200, { ok: false, error: 'La venta ' + orderId + ' ya fue facturada (' + ya.cbte_letra + ' N° ' + ya.nro + ').' });
+  const account = (db.ml_accounts || []).find(a => String(a.name).toUpperCase() === cuenta);
+  if (!account) return sendJSON(res, 200, { ok: false, error: 'No encuentro la cuenta de ML "' + cuenta + '".' });
+  try {
+    const token = await getValidToken(account);
+    const order = await mlGet('https://api.mercadolibre.com/orders/' + orderId, token);
+    const total = Number(order.total_amount) || Number(b.total) || 0;
+    const it = (order.order_items && order.order_items[0]) || {};
+    const desc = (it.item && it.item.title) || 'Venta ML ' + orderId;
+    const bill = await facBillingML(account, token, orderId);
+    const r = await facEmitir(db, cuenta, {
+      doc_tipo: bill.doc_tipo, doc_nro: bill.doc_nro, receptor_ri: bill.receptor_ri,
+      receptor_nombre: bill.nombre || (order.buyer && order.buyer.nickname) || '',
+      importe_total: total, descripcion: desc, order_id: orderId, saltar_tope: !!b.saltar_tope
+    });
+    sendJSON(res, 200, r);
+  } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
+});
+
+// Lista de comprobantes emitidos (por cuenta, o todas).
+route('GET', '/api/facturacion/comprobantes', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const cuenta = String(q.get('cuenta') || '').toUpperCase();
+  const db = facLoad();
+  let list = (db.facturacion.facturas || []).slice();
+  if (cuenta) list = list.filter(f => String(f.cuenta).toUpperCase() === cuenta);
+  list.sort((a, b) => new Date(b.fecha || 0) - new Date(a.fecha || 0));
+  sendJSON(res, 200, { ok: true, comprobantes: list.slice(0, 300), acumulado: facAcumulado(db) });
+});
+
 route('GET', '/api/contable/data', async (req, res) => {
   if (!contRequireAdmin(req, res)) return;
   const db = contLoad();
