@@ -13996,30 +13996,44 @@ function facSignCMS(traXml, crtPath, keyPath) {
     });
   });
 }
+// AFIP (wsaa/servicios1) negocia TLS con una clave Diffie-Hellman de 1024 bits, que
+// OpenSSL 3 (Node 18+) rechaza por default (SECLEVEL 2 → "dh key too small"). Bajamos
+// el nivel de seguridad a SECLEVEL 1 SÓLO para estas conexiones a ARCA, usando el
+// módulo https nativo con un agente propio (no toca el resto del servidor).
+const _https = require('https');
+const _facAgent = new _https.Agent({ keepAlive: true, ciphers: 'DEFAULT@SECLEVEL=1', minVersion: 'TLSv1.2' });
+function _facHttpsPost(url, body, soapAction) {
+  return new Promise((resolve, reject) => {
+    let u; try { u = new URL(url); } catch (e) { return reject(e); }
+    const data = Buffer.from(body, 'utf8');
+    const req = _https.request({
+      protocol: u.protocol, hostname: u.hostname, port: u.port || 443,
+      path: u.pathname + (u.search || ''), method: 'POST', agent: _facAgent,
+      headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': soapAction || '', 'Content-Length': data.length }
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, txt: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.setTimeout(30000, () => { try { req.destroy(new Error('timeout')); } catch (e) {} });
+    req.on('error', reject);
+    req.write(data); req.end();
+  });
+}
 async function facPostSoap(url, body, soapAction) {
-  // AFIP (producción) suele cortar/resetear conexiones. Damos timeout + reintentos
-  // para que un "fetch failed" transitorio no tumbe la operación.
+  // AFIP (producción) suele cortar/resetear conexiones. Damos timeout + reintentos.
   let host = url; try { host = new URL(url).host; } catch (e) {}
   let lastErr = null;
   for (let intento = 1; intento <= 3; intento++) {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 30000);
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': soapAction || '' }, body: body, signal: ctrl.signal });
-      const txt = await r.text();
-      clearTimeout(to);
-      return { status: r.status, txt };
+      return await _facHttpsPost(url, body, soapAction);
     } catch (e) {
-      clearTimeout(to);
       lastErr = e;
-      const abortado = (e && e.name === 'AbortError');
-      // Causa técnica de fondo (undici mete el motivo real en e.cause).
-      const causa = (e && e.cause) ? e.cause : null;
-      const codigo = (causa && (causa.code || causa.errno)) || (e && e.code) || '';
-      const detalle = causa ? String(causa.message || causa) : String((e && e.message) || e);
-      // Reintentamos sólo ante fallos de red/timeout (no ante errores de lógica).
+      const timeout = e && String(e.message || '').indexOf('timeout') >= 0;
+      const codigo = (e && (e.code || e.errno)) || '';
+      const detalle = String((e && e.message) || e);
       if (intento < 3) { await new Promise(rr => setTimeout(rr, 1200 * intento)); continue; }
-      throw new Error('No pude conectar con ARCA (' + host + ')' + (abortado ? ' — tardó demasiado (timeout de 30s)' : ' — ' + (codigo ? '[' + codigo + '] ' : '') + detalle) + '. Suele ser un corte temporal del servidor de AFIP; probá de nuevo en unos segundos.');
+      throw new Error('No pude conectar con ARCA (' + host + ')' + (timeout ? ' — tardó demasiado (timeout de 30s)' : ' — ' + (codigo ? '[' + codigo + '] ' : '') + detalle) + '. Suele ser un corte temporal del servidor de AFIP; probá de nuevo en unos segundos.');
     }
   }
   throw (lastErr || new Error('No pude conectar con ARCA (' + host + ').'));
