@@ -12511,14 +12511,21 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var h = '';
     // Barra superior
     var cuando = c.ts ? new Date(c.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-    h += '<h3 style="margin:0;color:#2d3277;font-size:18px">¿Cómo estoy?</h3>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px">';
+    h += '<h3 style="margin:0;color:#2d3277;font-size:20px">Resumen</h3>';
     h += '<button onclick="contLoadComoEstoy(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">' + (c.loading ? '⏳' : '↻') + ' Actualizar</button>';
     if (cuando) h += '<span style="font-size:12px;color:#9ca3af">En vivo · ' + cuando + '</span>';
     h += '</div>';
 
+    // ===== TIRA DE KPIs (resumen de un vistazo) =====
+    h += contResumenKpis(saldo);
+
+    // ===== SECCIÓN "Detalle" =====
+    h += '<div style="display:flex;align-items:center;gap:8px;margin:4px 0 12px"><span style="font-size:13px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.6px">Detalle</span><span style="flex:1;height:1px;background:#e5e7eb"></span></div>';
+
     // Tarjeta de composición (¿Cómo estoy?)
-    var card = '<div style="width:560px;max-width:100%;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">';
+    var card = '<div style="width:100%;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+    card += '<div style="background:#2d3277;color:#fff;padding:12px 16px;font-weight:700;font-size:15px">¿Cómo estoy? <span style="font-weight:400;font-size:12px;opacity:.85">· composición del saldo</span></div>';
     card += row('SALDOS MP', mp, '+ ', '#047857');
     card += row('CHEQUES', cheques, '− ', '#b91c1c');
     card += row('PRÉSTAMOS', prestamos, '− ', '#b91c1c');
@@ -12530,18 +12537,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '<span style="font-weight:700;font-size:15px;color:#b91c1c">− ' + contMoney2(Math.abs(prov)) + '</span></div>';
     var sColor = saldo >= 0 ? '#065f46' : '#b91c1c';
     var sBg = saldo >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
-    card += '<div style="background:' + sBg + ';padding:20px 16px;text-align:center">' +
+    card += '<div style="background:' + sBg + ';padding:18px 16px;text-align:center">' +
       '<div style="font-size:13px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Saldo</div>' +
-      '<div style="font-size:40px;font-weight:800;color:' + sColor + ';line-height:1.1;margin-top:4px">' + contMoney2(saldo) + '</div></div>';
+      '<div style="font-size:36px;font-weight:800;color:' + sColor + ';line-height:1.1;margin-top:4px">' + contMoney2(saldo) + '</div></div>';
     card += '</div>';
     if (c.errs && c.errs.length) {
-      card += '<div style="width:560px;max-width:100%;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px;margin-top:10px">⚠ ' + c.errs.map(escapeHtml).join(' · ') + '</div>';
+      card += '<div style="width:100%;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 12px;margin-top:10px">⚠ ' + c.errs.map(escapeHtml).join(' · ') + '</div>';
     }
 
-    // Fila: ¿Cómo estoy? (izq) + Ganancia Negocio (der)
+    // Fila: ¿Cómo estoy? (izq) + Resumen parcial de gastos (der) — dos columnas proporcionales
     h += '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">';
-    h += '<div style="flex:0 0 auto">' + card + '</div>';
-    h += '<div style="flex:1 1 300px;min-width:280px">' + contResumenTotalPanel() + '</div>';
+    h += '<div style="flex:1 1 360px;min-width:300px">' + card + '</div>';
+    h += '<div style="flex:1 1 360px;min-width:300px">' + contResumenTotalPanel() + '</div>';
     h += '</div>';
     // Fila: Cash Flow + Flow
     h += '<div style="margin-top:16px">' + contCashFlowPanels() + '</div>';
@@ -12549,6 +12556,42 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div id="cont-res-periodo" style="margin-top:20px">' + contResPeriodoDetalle() + '</div>';
     // dispara la carga del resumen del período si está viejo
     contResPeriodoAuto();
+    return h;
+  }
+  /* KPI card individual (proporcional) */
+  function contKpiCard(label, val, sub, pending) {
+    var col, valStr, bar;
+    if (pending) { col = '#9ca3af'; valStr = '…'; bar = '#cbd5e1'; }
+    else { col = val >= 0 ? '#065f46' : '#b91c1c'; valStr = contMoney2(val); bar = val >= 0 ? '#10b981' : '#ef4444'; }
+    return '<div style="flex:1 1 190px;min-width:180px;background:#fff;border:1px solid #e5e7eb;border-top:3px solid ' + bar + ';border-radius:14px;padding:15px 18px;box-shadow:0 1px 2px rgba(0,0,0,.04)">' +
+      '<div style="font-size:11.5px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px">' + label + '</div>' +
+      '<div style="font-size:25px;font-weight:800;color:' + col + ';line-height:1.15;margin-top:6px;word-break:break-word">' + valStr + '</div>' +
+      (sub ? '<div style="font-size:11px;color:#9ca3af;margin-top:3px">' + sub + '</div>' : '') +
+      '</div>';
+  }
+  /* Tira superior de KPIs: Ganancia del negocio, Saldo, Cash Flow, Flow */
+  function contResumenKpis(saldo) {
+    var r = _cont.resP;
+    var loaded = !!(r && r.ts);
+    var gan = 0, cash = 0, flow = 0;
+    if (loaded) {
+      var s = r.salida || {};
+      var salidaTotal = (Number(s.gastos) || 0) + (Number(s.facturas_ml) || 0) + (Number(s.retenciones) || 0) + (Number(s.flex) || 0) + (Number(s.compras) || 0);
+      var ts = r.totStock || {}, td = r.totDrop || {};
+      var entNeto = (Number(ts.queda) || 0) + (Number(td.queda) || 0);
+      var costoStock = Number(ts.costo) || 0;
+      gan = entNeto - salidaTotal - costoStock;                 // ENTRADA NETO TOTAL − SALIDA − COSTO TOTAL DE STOCK
+      var neg = Number(r.negocioBucket) || 0, casa = Number(r.casa) || 0, banco = Number(r.banco) || 0, cons = Number(r.construccion) || 0, cuota = Number(r.cuotaPrestamos) || 0;
+      var egresos = neg + casa + banco + cons + cuota;
+      cash = entNeto - egresos;
+      flow = cash - (Number(s.compras) || 0);
+    }
+    var h = '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px">';
+    h += contKpiCard('Ganancia del negocio', gan, loaded ? 'Entrada neto − Salida − Costo stock' : 'Calculando…', !loaded);
+    h += contKpiCard('Saldo', saldo, 'MP − cheques − préstamos − deuda', false);
+    h += contKpiCard('Cash Flow', cash, loaded ? 'Entradas − egresos operativos' : 'Calculando…', !loaded);
+    h += contKpiCard('Flow', flow, loaded ? 'Cash flow − facturas compras' : 'Calculando…', !loaded);
+    h += '</div>';
     return h;
   }
   /* ---------- RESUMEN DEL PERÍODO (SALIDA / ENTRADA / Resumen total) ---------- */
@@ -12630,20 +12673,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function contResumenTotalPanel() {
     var r = _cont.resP;
-    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">';
-    h += '<div style="background:#2d3277;color:#fff;padding:12px 16px;font-weight:700;font-size:15px">Ganancia Negocio <span style="font-weight:400;font-size:12px;opacity:.85">· período</span></div>';
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+    h += '<div style="background:#b45309;color:#fff;padding:12px 16px;font-weight:700;font-size:15px">Resumen parcial de gastos <span style="font-weight:400;font-size:12px;opacity:.85">· período</span></div>';
     if (!r || !r.ts) { h += '<div style="padding:20px;color:#9ca3af;font-size:13px">Calculando…</div></div>'; return h; }
-    var s = r.salida || {};
-    var salidaTotal = (Number(s.gastos) || 0) + (Number(s.facturas_ml) || 0) + (Number(s.retenciones) || 0) + (Number(s.flex) || 0) + (Number(s.compras) || 0);
-    var ts = r.totStock || {}, td = r.totDrop || {};
-    var entNeto = (Number(ts.queda) || 0) + (Number(td.queda) || 0);
-    var costoStock = Number(ts.costo) || 0;
-    var ganancia = entNeto - salidaTotal - costoStock; // GANANCIA DEL NEGOCIO
-    // Ganancia del negocio (destacada)
-    var gColor = ganancia >= 0 ? '#065f46' : '#b91c1c';
-    var gBg = ganancia >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
-    h += '<div style="background:' + gBg + ';padding:16px;text-align:center"><div style="font-size:12px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Ganancia del negocio</div><div style="font-size:32px;font-weight:800;color:' + gColor + ';line-height:1.1;margin-top:3px">' + contMoney2(ganancia) + '</div><div style="font-size:11px;color:#6b7280;margin-top:2px">Quedó neto − Salidas − Costos stock</div></div>';
-    var rowT = function (lbl, val, color) { return '<div style="display:flex;justify-content:space-between;padding:11px 16px;border-bottom:1px solid #eef2f7"><span style="font-weight:600;color:#374151;font-size:13.5px">' + lbl + '</span><span style="font-weight:700;font-size:14px;color:' + (color || '#111') + '">' + contMoney2(val) + '</span></div>'; };
+    var rowT = function (lbl, val, color) { return '<div style="display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #eef2f7"><span style="font-weight:600;color:#374151;font-size:13.5px">' + lbl + '</span><span style="font-weight:700;font-size:14px;color:' + (color || '#111') + '">' + contMoney2(val) + '</span></div>'; };
     h += rowT('Créditos pendientes (total)', Number(r.creditosPend) || 0, '#b91c1c');
     h += rowT('Intereses adelanto (total)', Number(r.interesesAdel) || 0, '#b91c1c');
     h += rowT('Cheques pagados (período)', Number(r.chequesPagados) || 0, '#b91c1c');
@@ -12847,14 +12880,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</tbody></table></div>';
     return h;
   }
-  function contToggleManual() { _ctxMontoRaw = ''; _cont.showManual = !_cont.showManual; renderContable(); }
+  function contToggleManual() { _cont.showManual = !_cont.showManual; renderContable(); if (_cont.showManual) setTimeout(function () { var el = document.getElementById('ctx-monto'); if (el && !el._bound) ctxMontoBind(el); }, 0); }
   function contManualFormHtml() {
     var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:14px">';
     h += '<h3 style="margin:0 0 12px;color:#2d3277;font-size:15px">Agregar transacción manual</h3>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
     h += contField('Fecha', '<input type="date" id="ctx-fecha" value="' + contHoy() + '" style="' + contInputCss() + '">');
     h += contField('Detalle', '<input type="text" id="ctx-detalle" placeholder="Descripción" style="' + contInputCss() + '">');
-    h += contField('Monto *', '<input type="text" id="ctx-monto" inputmode="numeric" placeholder="$ 0,00" oninput="ctxMontoInput()" style="' + contInputCss() + '">');
+    h += contField('Monto *', '<input type="text" id="ctx-monto" inputmode="decimal" placeholder="$ 0,00" style="' + contInputCss() + '">');
     h += contField('Forma de pago *', '<select id="ctx-forma" onchange="contFormaOnChange()" style="' + contInputCss() + '"><option value="">(elegí)</option><option value="tarjeta">Tarjeta</option><option value="cheque">Cheque</option><option value="efectivo">Efectivo</option></select>');
     h += '</div>';
     // Panel cheque
@@ -12904,9 +12937,18 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var dest = _cv('ctx-derivado'); var rid = _cv('ctx-rubro');
     var sub = document.getElementById('ctx-sub'); if (sub) { sub.innerHTML = contSubOptions(dest, rid, ''); sub.disabled = false; }
   }
-  var _ctxMontoRaw = '';
-  function ctxMontoInput() { var el = document.getElementById('ctx-monto'); if (!el) return; var d = el.value.replace(/\D/g, ''); _ctxMontoRaw = d; el.value = d ? ('$ ' + (Number(d) / 100).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) : ''; }
-  function ctxMontoVal() { return _ctxMontoRaw ? Number(_ctxMontoRaw) / 100 : 0; }
+  function ctxMontoBind(el) {
+    el._ent = ''; el._cent = ''; el._dec = false;
+    function render() { var v = ''; if (el._dec) { v = (el._ent ? Number(el._ent).toLocaleString('es-AR') : '0') + ',' + el._cent; } else { v = el._ent ? Number(el._ent).toLocaleString('es-AR') : ''; } el.value = v ? ('$ ' + v) : ''; }
+    el.addEventListener('beforeinput', function (ev) {
+      var it = ev.inputType || '';
+      if (it.indexOf('insert') === 0) { ev.preventDefault(); var data = ev.data || ''; for (var i = 0; i < data.length; i++) { var ch = data[i]; if (ch >= '0' && ch <= '9') { if (el._dec) { if (el._cent.length < 2) el._cent += ch; } else { el._ent += ch; } } else if (ch === '.' || ch === ',') { el._dec = true; } } render(); }
+      else if (it === 'deleteContentBackward' || it === 'deleteContentForward' || it === 'deleteByCut') { ev.preventDefault(); if (el._dec) { if (el._cent.length > 0) el._cent = el._cent.slice(0, -1); else el._dec = false; } else { el._ent = el._ent.slice(0, -1); } render(); }
+    });
+    el._getval = function () { var ent = el._ent ? parseInt(el._ent, 10) : 0; var cent = el._cent ? parseInt((el._cent + '00').slice(0, 2), 10) : 0; return ent + cent / 100; };
+    el._bound = true;
+  }
+  function ctxMontoVal() { var el = document.getElementById('ctx-monto'); return (el && el._getval) ? el._getval() : 0; }
   async function contTxSaveManual() {
     var forma = _cv('ctx-forma');
     var monto = ctxMontoVal();
