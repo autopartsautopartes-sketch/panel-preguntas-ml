@@ -788,6 +788,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       loadSalesForBuyer(urlBuyerId, urlAccountId);
     } else if (targetSection === 'sales') {
       showSection('sales');
+    } else if (targetSection === 'contable') {
+      var _ct = urlParams.get('tab'); if (_ct && typeof _cont !== 'undefined') _cont.tab = _ct;
+      showSection('contable');
     } else {
       // Go to the first section this user has access to
       if (currentUser?.role === 'admin' || currentUser?.can_view_dashboard) {
@@ -12848,7 +12851,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<h3 style="margin:0 0 12px;color:#2d3277;font-size:15px">Agregar transacción manual</h3>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
     h += contField('Fecha', '<input type="date" id="ctx-fecha" value="' + contHoy() + '" style="' + contInputCss() + '">');
-    h += contField('Cuenta (si aplica)', '<select id="ctx-cuenta" style="' + contInputCss() + '">' + contCuentaOptions('') + '</select>');
     h += contField('Detalle', '<input type="text" id="ctx-detalle" placeholder="Descripción" style="' + contInputCss() + '">');
     h += contField('Monto *', '<input type="number" id="ctx-monto" step="0.01" placeholder="0" style="' + contInputCss() + '">');
     h += contField('Forma de pago *', '<select id="ctx-forma" onchange="contFormaOnChange()" style="' + contInputCss() + '"><option value="">(elegí)</option><option value="tarjeta">Tarjeta</option><option value="cheque">Cheque</option><option value="efectivo">Efectivo</option></select>');
@@ -12907,7 +12909,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!monto) { showToast('Ingresá el monto', 'error'); return; }
     var dest = _cv('ctx-derivado');
     var payload = {
-      fecha: _cv('ctx-fecha') || contHoy(), cuenta: _cv('ctx-cuenta'), detalle: _cv('ctx-detalle'),
+      fecha: _cv('ctx-fecha') || contHoy(), detalle: _cv('ctx-detalle'),
       monto: monto, forma_pago: forma, derivado: dest || null,
       nota: _cv('ctx-nota')
     };
