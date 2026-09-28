@@ -11735,6 +11735,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<span style="padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700;background:' + (esRI ? '#eef2ff;color:#3730a3' : '#ecfdf5;color:#065f46') + '">' + (esRI ? 'Responsable Inscripto' : 'Monotributo') + '</span>';
       h += '<button onclick="facTest(\'' + c + '\',this)" style="margin-left:auto;padding:5px 11px;border:1px solid #7c3aed;border-radius:8px;background:#fff;color:#7c3aed;font-weight:600;font-size:12px;cursor:pointer">🔌 Probar conexión ARCA</button>';
       h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" id="fac-activa-' + c + '"' + (x.activa ? ' checked' : '') + '> Activa</label>';
+      h += '<label style="font-size:13px;cursor:pointer" title="Sube el PDF de la factura a la venta de ML para que el comprador la descargue"><input type="checkbox" id="fac-adjml-' + c + '"' + (x.adjuntar_ml !== false ? ' checked' : '') + '> Adjuntar a ML</label>';
       h += '</div>';
       h += '<div id="fac-test-' + c + '" style="display:none;margin:0 0 10px;padding:8px 12px;border-radius:8px;font-size:12.5px"></div>';
       h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">';
@@ -11757,6 +11758,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         '<div style="font-size:11px;color:#6b7280;margin-top:3px">Facturado mes: <b>' + facMoney(a.mes) + '</b>' + (topeM > 0 ? ' / ' + facMoney(topeM) + facBar(pmes) : '') + '</div></div>';
       h += '<div>' + facField('Tope anual', '<input id="fac-tanio-' + c + '" type="number" value="' + topeA + '" step="10000" style="' + css + '">') +
         '<div style="font-size:11px;color:#6b7280;margin-top:3px">Facturado año: <b>' + facMoney(a.anio) + '</b>' + (topeA > 0 ? ' / ' + facMoney(topeA) + facBar(panio) : '') + '</div></div>';
+      h += '</div></div>';
+      // Datos del emisor para el PDF de la factura
+      h += '<div style="margin-top:12px;padding-top:10px;border-top:1px dashed #e5e7eb">';
+      h += '<div style="font-size:12px;color:#6b7280;font-weight:600;margin-bottom:6px">Datos para el PDF de la factura</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">';
+      h += facField('Razón social', '<input id="fac-razon-' + c + '" value="' + escapeHtml(x.razon_social || '') + '" style="' + css + '">');
+      h += facField('Nombre de fantasía', '<input id="fac-fant-' + c + '" value="' + escapeHtml(x.nombre_fantasia || '') + '" style="' + css + '">');
+      h += facField('Domicilio', '<input id="fac-dom-' + c + '" value="' + escapeHtml(x.domicilio || '') + '" style="' + css + '">');
+      h += facField('Ing. Brutos', '<input id="fac-iibb-' + c + '" value="' + escapeHtml(x.ing_brutos || '') + '" style="' + css + '">');
+      h += facField('Inicio de actividad', '<input id="fac-inicio-' + c + '" value="' + escapeHtml(x.inicio_actividad || '') + '" placeholder="dd/mm/aaaa" style="' + css + '">');
       h += '</div></div>';
       h += '</div>';
     });
@@ -11784,7 +11795,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         modo: g('fac-modo-' + c) || 'manual',
         tope_mensual: parseFloat(g('fac-tmes-' + c)) || 0,
         tope_anual: parseFloat(g('fac-tanio-' + c)) || 0,
-        activa: !!(document.getElementById('fac-activa-' + c) && document.getElementById('fac-activa-' + c).checked)
+        activa: !!(document.getElementById('fac-activa-' + c) && document.getElementById('fac-activa-' + c).checked),
+        adjuntar_ml: !!(document.getElementById('fac-adjml-' + c) && document.getElementById('fac-adjml-' + c).checked),
+        razon_social: g('fac-razon-' + c), nombre_fantasia: g('fac-fant-' + c), domicilio: g('fac-dom-' + c),
+        ing_brutos: g('fac-iibb-' + c), inicio_actividad: g('fac-inicio-' + c)
       };
     });
     try {
@@ -12314,13 +12328,19 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<td style="padding:8px 10px">' + facMoney(f.importe_iva) + '</td>';
       h += '<td style="padding:8px 10px;font-weight:700">' + facMoney(f.importe_total) + '</td>';
       h += '<td style="padding:8px 10px;font-size:12px;color:#6b7280">' + escapeHtml(f.cae || '') + '<br><span style="font-size:11px">vto ' + facFchLindo(f.cae_vto) + '</span></td>';
-      h += '<td style="padding:8px 10px"><button onclick="facImprimirComprobante(\'' + f.id + '\')" style="padding:6px 12px;border:1px solid #16a34a;border-radius:7px;background:#fff;color:#16a34a;font-weight:700;font-size:12px;cursor:pointer">📄 Ver / Descargar</button></td>';
+      var mlBtn = '';
+      if (f.origen === 'ml') { mlBtn = f.ml_adjuntada ? '<div style="font-size:11px;color:#065f46;margin-top:4px">✓ En ML</div>' : '<button onclick="facAdjuntarMLBtn(\'' + f.id + '\',this)" style="margin-top:4px;padding:5px 10px;border:1px solid #3483fa;border-radius:7px;background:#fff;color:#3483fa;font-weight:700;font-size:11px;cursor:pointer">📎 Adjuntar a ML</button>'; }
+      h += '<td style="padding:8px 10px"><button onclick="facImprimirComprobante(\'' + f.id + '\')" style="padding:6px 12px;border:1px solid #16a34a;border-radius:7px;background:#fff;color:#16a34a;font-weight:700;font-size:12px;cursor:pointer">📄 Ver / Descargar</button>' + mlBtn + '</td>';
       h += '</tr>';
     });
     h += '</tbody></table></div>';
     cont.innerHTML = h;
   }
   function facImprimirComprobante(id) {
+    // Abre el PDF generado por el server (mismo formato AFIP que se adjunta a ML).
+    window.open('/api/facturacion/pdf?id=' + encodeURIComponent(id), '_blank');
+  }
+  function facImprimirComprobanteHTML(id) {
     var f = (_fac.comprobantes || []).find(function (x) { return x.id === id; }); if (!f) return;
     var cfg = ((_fac.data || {}).cuentas || {})[f.cuenta] || {};
     var docTxt = f.doc_tipo === 80 ? 'CUIT ' + f.doc_nro : (f.doc_tipo === 96 ? 'DNI ' + f.doc_nro : 'Consumidor Final');
@@ -12343,6 +12363,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     html += '<script>try{new QRCode(document.getElementById("qrcode"),{text:' + JSON.stringify(qrUrl) + ',width:110,height:110});}catch(e){document.getElementById("qrcode").textContent="QR: "+' + JSON.stringify(qrUrl) + ';}setTimeout(function(){window.print();},600);<\/script>';
     html += '</body></html>';
     w.document.write(html); w.document.close();
+  }
+  async function facAdjuntarMLBtn(id, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Subiendo…'; }
+    try {
+      var r = await fetch('/api/facturacion/adjuntar-ml', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+      var d = await r.json();
+      if (d.ok) { showToast('Factura adjuntada a la venta de ML ✓', 'success'); facCargarComprobantes(); }
+      else { showToast(d.error || 'No se pudo adjuntar', 'error'); if (btn) { btn.disabled = false; btn.textContent = '📎 Adjuntar a ML'; } }
+    } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '📎 Adjuntar a ML'; } }
   }
   async function loadContable() {
     var myNav = navToken;
