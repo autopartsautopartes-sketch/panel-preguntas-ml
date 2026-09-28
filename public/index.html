@@ -11672,12 +11672,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
 
   /* ==================== FACTURACIÓN (ARCA) ==================== */
-  var _fac = { data: null, tab: 'config' };
+  var _fac = { data: null, tab: 'config', cuentaSel: null, ventas: null, comprobantes: null };
   async function loadFacturacion() {
     if (!(currentUser && currentUser.role === 'admin')) { document.getElementById('content').innerHTML = '<div class="empty"><p>Solo el administrador puede ver Facturación.</p></div>'; return; }
     document.getElementById('content').innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando Facturación…</p></div>';
     try { var r = await fetch('/api/facturacion/config'); _fac.data = await r.json(); }
     catch (e) { document.getElementById('content').innerHTML = '<div class="empty"><p>Error al cargar Facturación</p></div>'; return; }
+    try { var rc = await fetch('/api/facturacion/clientes'); var dc = await rc.json(); _fac.clientes = dc.clientes || []; } catch (e) { _fac.clientes = _fac.clientes || []; }
     renderFacturacion();
   }
   function facSetTab(t) { _fac.tab = t; renderFacturacion(); }
@@ -11685,9 +11686,29 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function renderFacturacion() {
     var h = '<h2 style="margin-bottom:12px;color:#2d3277">🧾 Facturación (ARCA)</h2>';
     var tab = function (id, lbl) { var on = _fac.tab === id; return '<button onclick="facSetTab(\'' + id + '\')" style="padding:7px 13px;border-radius:9px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';font-weight:' + (on ? '700' : '600') + ';font-size:13px;cursor:pointer">' + lbl + '</button>'; };
-    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">' + tab('config', '⚙️ Configuración') + tab('comprobantes', '📄 Comprobantes') + '</div>';
-    h += '<div id="fac-body">' + (_fac.tab === 'config' ? facConfigHtml() : facComprobantesHtml()) + '</div>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">' + tab('config', '⚙️ Configuración') + tab('manual', '✍️ Facturación manual') + tab('auto', '🤖 Facturación automática') + tab('comprobantes', '📄 Comprobantes') + '</div>';
+    var body;
+    if (_fac.tab === 'config') body = facConfigHtml();
+    else if (_fac.tab === 'manual') body = facManualHtml();
+    else if (_fac.tab === 'auto') body = facAutoHtml();
+    else body = facComprobantesHtml();
+    h += '<div id="fac-body">' + body + '</div>';
     document.getElementById('content').innerHTML = h;
+    if (_fac.tab === 'comprobantes') facCargarComprobantes();
+  }
+  // Cuentas activas (para los selectores de emisión).
+  function facCuentasActivas() {
+    var d = _fac.data || {}; var cts = d.cuentas || {}; var orden = d.orden || [];
+    return orden.filter(function (c) { return cts[c] && cts[c].activa; });
+  }
+  function facCuentaSelect(id, sel) {
+    var act = facCuentasActivas();
+    var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;min-width:160px';
+    if (!act.length) return '<span style="color:#b45309;font-size:13px">No hay cuentas activas. Activá al menos una en Configuración.</span>';
+    var h = '<select id="' + id + '" style="' + css + '"' + (sel ? ' onchange="' + sel + '"' : '') + '>';
+    act.forEach(function (c) { h += '<option value="' + c + '"' + (_fac.cuentaSel === c ? ' selected' : '') + '>' + c + '</option>'; });
+    h += '</select>';
+    return h;
   }
   function facConfigHtml() {
     var d = _fac.data || {}; var cts = d.cuentas || {}; var ac = d.acumulado || {}; var orden = d.orden || [];
@@ -11797,16 +11818,531 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     }
     if (btn) { btn.disabled = false; btn.textContent = '🔌 Probar conexión ARCA'; }
   }
+  /* ===== helpers comunes ===== */
+  function facAmbBanner(amb) {
+    var prod = amb === 'produccion';
+    return '<div style="background:' + (prod ? '#fef2f2' : '#eff6ff') + ';border:1px solid ' + (prod ? '#fecaca' : '#bfdbfe') + ';border-radius:10px;padding:9px 13px;margin-bottom:14px;font-size:13px;color:#374151"><b>Ambiente:</b> ' + (prod ? '⚠ Producción (real, valen fiscalmente)' : 'Homologación (pruebas)') + '. <span style="color:#6b7280">Se cambia en Configuración.</span></div>';
+  }
+  function facFchLindo(yyyymmdd) { var s = String(yyyymmdd || ''); return s.length === 8 ? (s.slice(6, 8) + '/' + s.slice(4, 6) + '/' + s.slice(0, 4)) : s; }
+  function facFechaCorta(iso) { try { var d = new Date(iso); return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' }); } catch (e) { return ''; } }
+  function facPaso(n, titulo, activo) {
+    var col = activo ? '#16a34a' : '#9ca3af';
+    return '<div style="display:flex;align-items:center;gap:12px;margin:18px 0 12px"><span style="width:34px;height:34px;border-radius:50%;border:2px solid ' + col + ';color:' + col + ';display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex:0 0 auto">' + n + '</span><span style="font-weight:700;letter-spacing:.5px;color:' + col + ';font-size:15px">' + titulo + '</span></div>';
+  }
+  function facMostrarResultado(box, d, reintentarSaltandoTope) {
+    if (!box) return; box.style.display = '';
+    if (d.ok && d.factura) {
+      var f = d.factura;
+      box.style.background = '#ecfdf5'; box.style.color = '#065f46';
+      box.innerHTML = '<b>✓ Factura ' + f.cbte_letra + ' N° ' + String(f.nro).padStart(8, '0') + ' emitida</b><br>CAE: <b>' + f.cae + '</b> (vence ' + facFchLindo(f.cae_vto) + ')<br>Total: ' + facMoney(f.importe_total) + (f.obs ? '<br><span style="color:#b45309">Obs: ' + escapeHtml(f.obs) + '</span>' : '');
+      showToast('Factura ' + f.cbte_letra + ' N° ' + f.nro + ' emitida ✓', 'success');
+    } else if (d.tope) {
+      box.style.background = '#fffbeb'; box.style.color = '#92400e';
+      box.innerHTML = '⚠ <b>' + escapeHtml(d.mensaje || 'Supera el tope.') + '</b><br>';
+      if (reintentarSaltandoTope) { var b2 = document.createElement('button'); b2.textContent = 'Emitir igual (saltar tope)'; b2.style.cssText = 'margin-top:8px;padding:8px 14px;border:1px solid #f59e0b;border-radius:8px;background:#fff;color:#92400e;font-weight:700;cursor:pointer'; b2.onclick = reintentarSaltandoTope; box.appendChild(b2); }
+    } else {
+      box.style.background = '#fef2f2'; box.style.color = '#7f1d1d';
+      box.innerHTML = '<b>✗ No se emitió</b><br>' + escapeHtml(d.mensaje || d.error || 'Error desconocido');
+    }
+  }
+
+  /* ==================== FACTURACIÓN MANUAL (masiva desde ML + factura libre) ==================== */
+  function facManualHtml() {
+    var d = _fac.data || {}; var amb = d.ambiente || 'homologacion';
+    if (!_fac.manModo) _fac.manModo = 'ml';
+    var h = '<div style="max-width:1050px">';
+    h += facAmbBanner(amb);
+    // sub-toggle
+    var subBtn = function (id, lbl) { var on = _fac.manModo === id; return '<button onclick="facManualSetModo(\'' + id + '\')" style="padding:7px 14px;border-radius:8px;border:1px solid ' + (on ? '#16a34a' : '#e5e7eb') + ';background:' + (on ? '#16a34a' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';font-weight:600;font-size:13px;cursor:pointer">' + lbl + '</button>'; };
+    h += '<div style="display:flex;gap:8px;margin-bottom:8px">' + subBtn('ml', '🛒 Desde ventas de ML') + subBtn('libre', '✍️ Factura libre') + '</div>';
+    h += (_fac.manModo === 'libre') ? facLibreHtml(amb) : facManualMLHtml(amb);
+    h += '</div>';
+    return h;
+  }
+  function facManualSetModo(m) { _fac.manModo = m; renderFacturacion(); }
+  function facManualMLHtml(amb) {
+    if (!facCuentasActivas().length) return '<p style="color:#b45309">Activá al menos una cuenta en Configuración.</p>';
+    var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px';
+    var hoy = new Date(); var hace7 = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+    var fmt = function (dt) { return dt.toISOString().slice(0, 10); };
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:6px 18px 18px">';
+    // Paso 1
+    h += facPaso('1', 'IMPORTAR', true);
+    h += '<div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;padding-left:46px">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Cuenta</label>' + facCuentaSelect('facml-cuenta', '') + '</div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Desde</label><input type="date" id="facml-desde" value="' + fmt(hace7) + '" style="' + css + '"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Hasta</label><input type="date" id="facml-hasta" value="' + fmt(hoy) + '" style="' + css + '"></div>';
+    h += '<button onclick="facImportarOps()" style="padding:9px 18px;border:1px solid #16a34a;border-radius:8px;background:#fff;color:#16a34a;font-weight:700;cursor:pointer">Importar ítems</button>';
+    h += '</div>';
+    // Paso 2
+    h += '<div style="border-top:1px solid #eef2f7;margin-top:16px"></div>';
+    h += facPaso('2', 'SELECCIONAR OPERACIONES', true);
+    h += '<div id="facml-ops" style="padding-left:46px"><p style="color:#6b7280;font-size:13px">Importá los ítems para ver las operaciones.</p></div>';
+    // Paso 3
+    h += '<div style="border-top:1px solid #eef2f7;margin-top:16px"></div>';
+    h += facPaso('3', 'GENERAR COMPROBANTES', true);
+    h += '<div style="display:flex;gap:16px;align-items:end;flex-wrap:wrap;padding-left:46px">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Producto / Servicio</label><select id="facml-concepto" style="' + css + '"><option value="1">Productos</option><option value="2">Servicios</option><option value="3">Productos y Servicios</option></select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Fecha de emisión</label>';
+    h += '<label style="font-size:13px;margin-right:8px"><input type="radio" name="facml-fch" value="cobro" checked onchange="facMlFchToggle()"> Con fecha del cobro</label>';
+    h += '<label style="font-size:13px"><input type="radio" name="facml-fch" value="fija" onchange="facMlFchToggle()"> <input type="date" id="facml-fchfija" value="' + fmt(hoy) + '" disabled style="' + css + '"></label></div>';
+    h += '<button onclick="facGenerarLote()" style="padding:10px 22px;border:none;border-radius:9px;background:#16a34a;color:#fff;font-weight:700;font-size:14px;cursor:pointer">Generar</button>';
+    h += '</div>';
+    h += '<div id="facml-result" style="display:none;margin:14px 0 0 46px;font-size:13px"></div>';
+    h += '</div>';
+    return h;
+  }
+  function facMlFchToggle() { var r = document.querySelector('input[name="facml-fch"]:checked'); var inp = document.getElementById('facml-fchfija'); if (inp) inp.disabled = (r && r.value === 'fija') ? false : true; }
+  async function facImportarOps() {
+    var cont = document.getElementById('facml-ops'); if (!cont) return;
+    var c = (document.getElementById('facml-cuenta') || {}).value;
+    var desde = (document.getElementById('facml-desde') || {}).value;
+    var hasta = (document.getElementById('facml-hasta') || {}).value;
+    _fac.manCuenta = c;
+    cont.innerHTML = '<div class="loading"><div class="spinner"></div><p>Importando operaciones de ' + c + '…</p></div>';
+    try {
+      var r = await fetch('/api/facturacion/ventas?cuenta=' + encodeURIComponent(c) + '&desde=' + desde + '&hasta=' + hasta);
+      var d = await r.json();
+      if (!d.ok) { cont.innerHTML = '<p style="color:#b91c1c">' + escapeHtml(d.error || 'Error') + '</p>'; return; }
+      _fac.manualOps = d.ventas || []; _fac.manualSel = {};
+      facRenderOps();
+    } catch (e) { cont.innerHTML = '<p style="color:#b91c1c">Error de red al importar</p>'; }
+  }
+  function facRenderOps() {
+    var cont = document.getElementById('facml-ops'); if (!cont) return;
+    var ops = _fac.manualOps || [];
+    if (!ops.length) { cont.innerHTML = '<p style="color:#6b7280;font-size:13px">No hay operaciones pagadas en ese rango.</p>'; return; }
+    var pend = ops.filter(function (o) { return !o.facturado; });
+    var h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:6px">' + ops.length + ' operaciones · <b>' + pend.length + ' pendientes</b>. Tildá las que querés facturar.</div>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+    h += '<thead><tr style="background:#f8fafc;text-align:left;color:#6b7280">';
+    h += '<th style="padding:8px 8px"><input type="checkbox" id="facml-todas" onchange="facToggleTodas(this)"></th>';
+    ['Fecha', 'Id Operación', 'Cliente', 'Detalle', 'Total', 'Estado'].forEach(function (x) { h += '<th style="padding:8px 8px;font-weight:700">' + x + '</th>'; });
+    h += '</tr></thead><tbody>';
+    ops.forEach(function (o, i) {
+      h += '<tr style="border-bottom:1px solid #f1f5f9">';
+      if (o.facturado) h += '<td style="padding:7px 8px"></td>';
+      else h += '<td style="padding:7px 8px"><input type="checkbox" data-i="' + i + '" onchange="facToggleOp(' + i + ',this)"' + (_fac.manualSel && _fac.manualSel[o.order_id] ? ' checked' : '') + '></td>';
+      h += '<td style="padding:7px 8px">' + facFechaCorta(o.fecha) + '</td>';
+      h += '<td style="padding:7px 8px">' + o.order_id + '</td>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(o.comprador || '') + '</td>';
+      h += '<td style="padding:7px 8px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(o.titulo || '') + '</td>';
+      h += '<td style="padding:7px 8px;font-weight:700">' + facMoney(o.total) + '</td>';
+      if (o.facturado) h += '<td style="padding:7px 8px"><span style="padding:2px 8px;border-radius:7px;background:#ecfdf5;color:#065f46;font-weight:700;font-size:11px">✓ ' + (o.factura ? o.factura.cbte + ' N° ' + o.factura.nro : 'Facturado') + '</span></td>';
+      else h += '<td style="padding:7px 8px;color:#b45309;font-size:12px">Pendiente</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    cont.innerHTML = h;
+  }
+  function facToggleTodas(chk) { (_fac.manualOps || []).forEach(function (o) { if (!o.facturado) _fac.manualSel[o.order_id] = chk.checked; }); facRenderOps(); var t = document.getElementById('facml-todas'); if (t) t.checked = chk.checked; }
+  function facToggleOp(i, chk) { var o = (_fac.manualOps || [])[i]; if (o) _fac.manualSel[o.order_id] = chk.checked; }
+  async function facGenerarLote() {
+    var sel = Object.keys(_fac.manualSel || {}).filter(function (k) { return _fac.manualSel[k]; });
+    if (!sel.length) { showToast('Tildá al menos una operación.', 'error'); return; }
+    var amb = (_fac.data || {}).ambiente;
+    var concepto = (document.getElementById('facml-concepto') || {}).value || '1';
+    var fchModo = (document.querySelector('input[name="facml-fch"]:checked') || {}).value || 'cobro';
+    var fchFija = (document.getElementById('facml-fchfija') || {}).value || '';
+    var fchEmision = (fchModo === 'fija' && fchFija) ? fchFija.replace(/-/g, '') : '';
+    if (amb === 'produccion') { if (!confirm('Vas a emitir ' + sel.length + ' factura(s) REAL(es) con validez fiscal desde ' + _fac.manCuenta + '. ¿Confirmás?')) return; }
+    var box = document.getElementById('facml-result'); if (box) { box.style.display = ''; box.style.background = '#f8fafc'; box.style.color = '#374151'; box.textContent = 'Generando ' + sel.length + ' comprobante(s)…'; }
+    var okc = 0, fail = 0, freno = false, msgs = [];
+    for (var i = 0; i < sel.length; i++) {
+      try {
+        var r = await fetch('/api/facturacion/emitir-venta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuenta: _fac.manCuenta, order_id: sel[i], concepto: concepto, fch_emision: fchEmision, saltar_tope: false }) });
+        var d = await r.json();
+        if (d.ok) { okc++; }
+        else if (d.tope) { freno = true; msgs.push('Tope: ' + d.mensaje); break; }
+        else { fail++; msgs.push('#' + sel[i] + ': ' + (d.mensaje || d.error || 'error')); }
+      } catch (e) { fail++; }
+    }
+    if (box) {
+      box.style.background = okc ? '#ecfdf5' : '#fef2f2'; box.style.color = okc ? '#065f46' : '#7f1d1d';
+      box.innerHTML = '<b>' + okc + ' comprobante(s) generado(s)</b>' + (fail ? ' · ' + fail + ' con error' : '') + (freno ? ' · frenó por tope' : '') + (msgs.length ? '<br><span style="font-size:12px;color:#b45309">' + escapeHtml(msgs.slice(0, 5).join(' | ')) + '</span>' : '');
+    }
+    facImportarOps();
+  }
+
+  /* ---------- COMPROBANTE MANUAL (renglones + clientes + NC/ND) ---------- */
+  function facTipoCbteOpts(cuenta) {
+    var cfg = ((_fac.data || {}).cuentas || {})[cuenta] || {};
+    if (cfg.condicion === 'MONO') return [[11, 'FACTURA C'], [13, 'NOTA DE CRÉDITO C'], [12, 'NOTA DE DÉBITO C']];
+    return [[1, 'FACTURA A'], [6, 'FACTURA B'], [3, 'NOTA DE CRÉDITO A'], [8, 'NOTA DE CRÉDITO B'], [2, 'NOTA DE DÉBITO A'], [7, 'NOTA DE DÉBITO B']];
+  }
+  function facCbteEsNota(cod) { return [2, 3, 7, 8, 12, 13].indexOf(Number(cod)) >= 0; }
+  function facCbteEsC(cod) { return [11, 12, 13, 15].indexOf(Number(cod)) >= 0; }
+  function facLibreHtml(amb) {
+    var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;box-sizing:border-box';
+    if (!facCuentasActivas().length) return '<p style="color:#b45309">Activá al menos una cuenta en Configuración.</p>';
+    if (!_fac.manItems) _fac.manItems = [];
+    var hoy = new Date().toISOString().slice(0, 10);
+    var act = facCuentasActivas();
+    var curCuenta = _fac.manCuentaLibre && act.indexOf(_fac.manCuentaLibre) >= 0 ? _fac.manCuentaLibre : act[0];
+    _fac.manCuentaLibre = curCuenta;
+    var tipos = facTipoCbteOpts(curCuenta);
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px;max-width:1050px">';
+    // encabezado: cuenta emisor + tipo comprobante
+    h += '<div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:14px">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Cuenta (emisor)</label><select id="facl-cuenta" onchange="facLibreCuentaChange()" style="' + css + '">' + act.map(function (c) { return '<option value="' + c + '"' + (c === curCuenta ? ' selected' : '') + '>' + c + '</option>'; }).join('') + '</select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Tipo de comprobante</label><select id="facl-cbte" onchange="facLibreCbteChange()" style="' + css + '">' + tipos.map(function (t) { return '<option value="' + t[0] + '">' + t[1] + '</option>'; }).join('') + '</select></div>';
+    h += '<label style="font-size:13px;margin-bottom:8px"><input type="checkbox" id="facl-email"> Se envía por correo</label>';
+    h += '</div>';
+    // cliente
+    h += '<div style="border:1px solid #eef2f7;border-radius:10px;padding:12px;margin-bottom:14px;background:#fafbfc">';
+    h += '<div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">';
+    h += '<div style="flex:1;min-width:240px"><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Cliente</label>' + facClienteSelect() + '</div>';
+    h += '<button onclick="facNuevoClienteToggle(true)" style="padding:8px 14px;border:1px solid #16a34a;border-radius:8px;background:#fff;color:#16a34a;font-weight:700;cursor:pointer">＋ Nuevo</button>';
+    h += '</div>';
+    h += '<div id="facl-cliente-info" style="margin-top:8px;font-size:12.5px;color:#374151"></div>';
+    h += '</div>';
+    // panel nuevo cliente (oculto)
+    h += facNuevoClientePanel(css);
+    // comprobante asociado (NC/ND) - oculto salvo nota
+    h += '<div id="facl-asoc" style="display:none;border:1px solid #fde68a;background:#fffbeb;border-radius:10px;padding:12px;margin-bottom:14px">';
+    h += '<div style="font-size:12.5px;font-weight:700;color:#92400e;margin-bottom:8px">Comprobante asociado (obligatorio para Nota de Crédito/Débito)</div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Elegir de emitidos</label><select id="facl-asoc-sel" onchange="facAsocPick()" style="' + css + ';min-width:220px"><option value="">— manual —</option></select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Tipo</label><select id="facl-asoc-tipo" style="' + css + '"><option value="1">Factura A</option><option value="6">Factura B</option><option value="11">Factura C</option><option value="2">ND A</option><option value="7">ND B</option></select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Pto Vta</label><input id="facl-asoc-pv" style="' + css + ';width:80px"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Número</label><input id="facl-asoc-nro" style="' + css + ';width:110px"></div>';
+    h += '</div></div>';
+    // fechas / concepto
+    h += '<div style="display:flex;gap:14px;align-items:end;flex-wrap:wrap;margin-bottom:12px">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Producto / Servicio</label><select id="facl-concepto" onchange="facLibreConceptoChange()" style="' + css + '"><option value="1">Productos</option><option value="2">Servicios</option><option value="3">Productos y Servicios</option></select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Fecha de emisión</label><input type="date" id="facl-fch" value="' + hoy + '" style="' + css + '"></div>';
+    h += '<div id="facl-serv" style="display:none;gap:10px;align-items:end">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Inicio servicio</label><input type="date" id="facl-servd" value="' + hoy + '" style="' + css + '"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Fin servicio</label><input type="date" id="facl-servh" value="' + hoy + '" style="' + css + '"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Vto pago</label><input type="date" id="facl-vto" value="' + hoy + '" style="' + css + '"></div>';
+    h += '</div></div>';
+    // renglones - cargador
+    h += '<div style="border-top:1px solid #eef2f7;padding-top:12px">';
+    h += '<div style="font-size:12.5px;font-weight:700;color:#374151;margin-bottom:8px">Renglones <span id="facl-neto-hint" style="font-weight:400;color:#9ca3af"></span></div>';
+    h += '<div style="display:grid;grid-template-columns:70px 90px 1fr 110px 70px 90px 40px;gap:8px;align-items:end">';
+    h += '<div><label style="font-size:11px;color:#6b7280">Cant.</label><input id="fi-cant" type="number" value="1" step="1" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Código</label><input id="fi-cod" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Descripción</label><input id="fi-desc" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">P. unit.</label><input id="fi-pu" type="number" step="0.01" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">% Bonif</label><input id="fi-bon" type="number" step="0.01" value="0" style="' + css + ';width:100%"></div>';
+    h += '<div id="fi-iva-wrap"><label style="font-size:11px;color:#6b7280">% IVA</label><select id="fi-iva" style="' + css + ';width:100%"><option value="21">21</option><option value="10.5">10.5</option><option value="27">27</option><option value="5">5</option><option value="2.5">2.5</option><option value="0">0</option></select></div>';
+    h += '<div><button onclick="facItemAdd()" style="padding:8px 10px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:700;cursor:pointer;width:100%">＋</button></div>';
+    h += '</div>';
+    h += '<div id="facl-items" style="margin-top:12px"></div>';
+    h += '</div>';
+    // observaciones + totales + botones
+    h += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;align-items:start">';
+    h += '<div style="flex:1;min-width:240px"><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Observaciones</label><textarea id="facl-obs" rows="3" style="' + css + ';width:100%"></textarea></div>';
+    h += '<div id="facl-totales" style="min-width:240px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:12px"></div>';
+    h += '</div>';
+    h += '<div id="facl-result" style="display:none;margin-top:12px;padding:10px 12px;border-radius:8px;font-size:13px"></div>';
+    h += '<div style="margin-top:16px;display:flex;gap:10px"><button id="facl-btn" onclick="facManualProcesar(false)" style="padding:11px 26px;border:none;border-radius:9px;background:' + (amb === 'produccion' ? '#dc2626' : '#16a34a') + ';color:#fff;font-weight:700;font-size:14px;cursor:pointer">Procesar' + (amb === 'produccion' ? ' (REAL)' : ' (prueba)') + '</button>';
+    h += '<button onclick="facManualCancelar()" style="padding:11px 22px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#374151;font-weight:600;cursor:pointer">Cancelar</button></div>';
+    h += '</div>';
+    setTimeout(function () { facLibreConceptoChange(); facLibreCbteChange(); facItemsRender(); facClienteChange(); }, 0);
+    return h;
+  }
+  function facClienteSelect() {
+    var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;width:100%;box-sizing:border-box';
+    var h = '<select id="facl-cliente" onchange="facClienteChange()" style="' + css + '">';
+    h += '<option value="">Consumidor final (sin cliente)</option>';
+    (_fac.clientes || []).forEach(function (c) { h += '<option value="' + c.id + '"' + (_fac.manClienteId === c.id ? ' selected' : '') + '>' + escapeHtml(c.razon_social) + (c.doc_nro ? ' — ' + c.doc_nro : '') + '</option>'; });
+    h += '</select>';
+    return h;
+  }
+  function facNuevoClientePanel(css) {
+    var h = '<div id="facl-nuevo" style="display:none;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:10px;padding:14px;margin-bottom:14px">';
+    h += '<div style="font-weight:700;color:#166534;font-size:13.5px;margin-bottom:10px">Nuevo cliente</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
+    h += '<div><label style="font-size:11px;color:#6b7280">Razón social / Nombre</label><input id="fnc-razon" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Condición IVA</label><select id="fnc-cond" style="' + css + ';width:100%"><option value="CF">Consumidor Final</option><option value="RI">Responsable Inscripto</option><option value="MONO">Monotributo</option><option value="EX">Exento</option></select></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Tipo doc</label><select id="fnc-doctipo" style="' + css + ';width:100%"><option value="80">CUIT</option><option value="96">DNI</option><option value="99">Sin identificar</option></select></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">N° documento</label><input id="fnc-docnro" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Email</label><input id="fnc-email" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Domicilio</label><input id="fnc-dom" style="' + css + ';width:100%"></div>';
+    h += '<div><label style="font-size:11px;color:#6b7280">Cond. pago</label><input id="fnc-pago" value="Contado" style="' + css + ';width:100%"></div>';
+    h += '</div>';
+    h += '<div style="margin-top:10px;display:flex;gap:8px"><button onclick="facGuardarClienteNuevo(this)" style="padding:8px 16px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:700;cursor:pointer">Guardar cliente</button><button onclick="facNuevoClienteToggle(false)" style="padding:8px 14px;border:1px solid #d1d5db;border-radius:8px;background:#fff;color:#374151;cursor:pointer">Cerrar</button></div>';
+    h += '</div>';
+    return h;
+  }
+  function facNuevoClienteToggle(show) { var el = document.getElementById('facl-nuevo'); if (el) el.style.display = show ? '' : 'none'; }
+  async function facGuardarClienteNuevo(btn) {
+    var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+    var payload = { razon_social: g('fnc-razon'), cond_iva: g('fnc-cond'), doc_tipo: g('fnc-doctipo'), doc_nro: g('fnc-docnro'), email: g('fnc-email'), domicilio: g('fnc-dom'), cond_pago: g('fnc-pago') };
+    if (!payload.razon_social) { showToast('Poné la razón social.', 'error'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+    try {
+      var r = await fetch('/api/facturacion/cliente', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      var d = await r.json();
+      if (!d.ok) { showToast(d.error || 'Error', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Guardar cliente'; } return; }
+      _fac.clientes = d.clientes || []; _fac.manClienteId = d.cliente ? d.cliente.id : null;
+      showToast('Cliente guardado ✓', 'success');
+      renderFacturacion();
+    } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Guardar cliente'; } }
+  }
+  function facClienteActual() {
+    var id = (document.getElementById('facl-cliente') || {}).value || '';
+    return (_fac.clientes || []).find(function (c) { return c.id === id; }) || null;
+  }
+  function facClienteChange() {
+    _fac.manClienteId = (document.getElementById('facl-cliente') || {}).value || null;
+    var info = document.getElementById('facl-cliente-info'); if (!info) return;
+    var c = facClienteActual();
+    if (!c) { info.innerHTML = '<span style="color:#6b7280">Consumidor Final — sin identificar</span>'; }
+    else {
+      var cond = { RI: 'IVA Responsable Inscripto', MONO: 'Monotributo', CF: 'Consumidor Final', EX: 'Exento' }[c.cond_iva] || c.cond_iva;
+      var doct = c.doc_tipo === 80 ? 'CUIT' : (c.doc_tipo === 96 ? 'DNI' : 'S/ident');
+      info.innerHTML = '<b>' + escapeHtml(c.razon_social) + '</b> · ' + doct + ' ' + escapeHtml(c.doc_nro || '') + ' · ' + cond + (c.domicilio ? ' · ' + escapeHtml(c.domicilio) : '') + (c.email ? ' · ' + escapeHtml(c.email) : '');
+    }
+    facItemsRender();
+  }
+  function facLibreCuentaChange() { _fac.manCuentaLibre = (document.getElementById('facl-cuenta') || {}).value; _fac.manItems = []; renderFacturacion(); }
+  function facLibreCbteChange() {
+    var cod = Number((document.getElementById('facl-cbte') || {}).value || 0);
+    var asoc = document.getElementById('facl-asoc'); if (asoc) asoc.style.display = facCbteEsNota(cod) ? '' : 'none';
+    if (facCbteEsNota(cod)) facAsocCargar();
+    var ivaWrap = document.getElementById('fi-iva-wrap'); if (ivaWrap) ivaWrap.style.display = facCbteEsC(cod) ? 'none' : '';
+    var hint = document.getElementById('facl-neto-hint'); if (hint) hint.textContent = facCbteEsC(cod) ? '(precio unitario = importe final, sin IVA)' : '(precio unitario NETO, sin IVA)';
+    facItemsRender();
+  }
+  function facLibreConceptoChange() { var v = (document.getElementById('facl-concepto') || {}).value; var s = document.getElementById('facl-serv'); if (s) s.style.display = (v === '2' || v === '3') ? 'flex' : 'none'; }
+  async function facAsocCargar() {
+    var sel = document.getElementById('facl-asoc-sel'); if (!sel) return;
+    var c = _fac.manCuentaLibre;
+    try {
+      var r = await fetch('/api/facturacion/comprobantes?cuenta=' + encodeURIComponent(c));
+      var d = await r.json();
+      var fac = (d.comprobantes || []).filter(function (f) { return [1, 6, 11, 2, 7, 12].indexOf(Number(f.cbte_cod)) >= 0; });
+      var h = '<option value="">— manual —</option>';
+      fac.forEach(function (f) { h += '<option value="' + f.cbte_cod + '|' + f.pto_vta + '|' + f.nro + '">' + f.cbte_letra + ' ' + String(f.pto_vta).padStart(5, '0') + '-' + String(f.nro).padStart(8, '0') + ' (' + facMoney(f.importe_total) + ')</option>'; });
+      sel.innerHTML = h;
+    } catch (e) { }
+  }
+  function facAsocPick() {
+    var v = (document.getElementById('facl-asoc-sel') || {}).value || ''; if (!v) return;
+    var p = v.split('|');
+    var t = document.getElementById('facl-asoc-tipo'); if (t) t.value = p[0];
+    var pv = document.getElementById('facl-asoc-pv'); if (pv) pv.value = p[1];
+    var nro = document.getElementById('facl-asoc-nro'); if (nro) nro.value = p[2];
+  }
+  function facItemAdd() {
+    var cod = Number((document.getElementById('facl-cbte') || {}).value || 0);
+    var esC = facCbteEsC(cod);
+    var g = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+    var cant = parseFloat(g('fi-cant')) || 1;
+    var pu = parseFloat(g('fi-pu')) || 0;
+    if (!(pu > 0)) { showToast('Poné el precio unitario.', 'error'); return; }
+    var it = { cantidad: cant, codigo: g('fi-cod'), descripcion: g('fi-desc') || 'Ítem', precio_unit: pu, bonif_pct: parseFloat(g('fi-bon')) || 0, iva_pct: esC ? 0 : (parseFloat(g('fi-iva')) || 21) };
+    _fac.manItems.push(it);
+    ['fi-cod', 'fi-desc', 'fi-pu'].forEach(function (id) { var e = document.getElementById(id); if (e) e.value = ''; });
+    var e = document.getElementById('fi-cant'); if (e) e.value = '1';
+    var b = document.getElementById('fi-bon'); if (b) b.value = '0';
+    facItemsRender();
+  }
+  function facItemDel(i) { _fac.manItems.splice(i, 1); facItemsRender(); }
+  function facItemsRender() {
+    var cont = document.getElementById('facl-items'); var tot = document.getElementById('facl-totales'); if (!cont) return;
+    var cod = Number((document.getElementById('facl-cbte') || {}).value || 0);
+    var esC = facCbteEsC(cod);
+    var items = _fac.manItems || [];
+    if (!items.length) { cont.innerHTML = '<p style="color:#9ca3af;font-size:13px">Sin renglones. Agregá al menos uno.</p>'; }
+    else {
+      var h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f8fafc;text-align:left;color:#6b7280">';
+      ['Cant', 'Código', 'Descripción', 'P.unit', 'Bonif%', 'IVA%', 'Subtotal', ''].forEach(function (x) { h += '<th style="padding:6px 8px;font-weight:700">' + x + '</th>'; });
+      h += '</tr></thead><tbody>';
+      items.forEach(function (it, i) {
+        var sub = it.cantidad * it.precio_unit * (1 - it.bonif_pct / 100);
+        h += '<tr style="border-bottom:1px solid #f1f5f9">';
+        h += '<td style="padding:6px 8px">' + it.cantidad + '</td><td style="padding:6px 8px">' + escapeHtml(it.codigo || '') + '</td>';
+        h += '<td style="padding:6px 8px">' + escapeHtml(it.descripcion) + '</td>';
+        h += '<td style="padding:6px 8px">' + facMoney(it.precio_unit) + '</td><td style="padding:6px 8px">' + it.bonif_pct + '</td>';
+        h += '<td style="padding:6px 8px">' + (esC ? '—' : it.iva_pct) + '</td><td style="padding:6px 8px;font-weight:700">' + facMoney(sub) + '</td>';
+        h += '<td style="padding:6px 8px"><button onclick="facItemDel(' + i + ')" style="border:none;background:#fee2e2;color:#b91c1c;border-radius:6px;padding:3px 9px;cursor:pointer;font-weight:700">✕</button></td>';
+        h += '</tr>';
+      });
+      h += '</tbody></table></div>';
+      cont.innerHTML = h;
+    }
+    // totales
+    var neto = 0, ivaTot = 0, ivaMap = {};
+    items.forEach(function (it) { var sub = it.cantidad * it.precio_unit * (1 - it.bonif_pct / 100); neto += sub; if (!esC) { var iv = sub * it.iva_pct / 100; ivaTot += iv; ivaMap[it.iva_pct] = (ivaMap[it.iva_pct] || 0) + iv; } });
+    var total = neto + ivaTot;
+    if (tot) {
+      var th = '';
+      if (esC) { th += '<div style="display:flex;justify-content:space-between"><span>Subtotal</span><b>' + facMoney(neto) + '</b></div>'; }
+      else {
+        th += '<div style="display:flex;justify-content:space-between"><span>Neto</span><b>' + facMoney(neto) + '</b></div>';
+        Object.keys(ivaMap).forEach(function (k) { th += '<div style="display:flex;justify-content:space-between;font-size:12px;color:#6b7280"><span>IVA ' + k + '%</span><span>' + facMoney(ivaMap[k]) + '</span></div>'; });
+      }
+      th += '<div style="display:flex;justify-content:space-between;margin-top:6px;padding-top:6px;border-top:1px solid #e5e7eb;font-size:16px"><span style="font-weight:700;color:#16a34a">TOTAL</span><b style="color:#16a34a">' + facMoney(total) + '</b></div>';
+      tot.innerHTML = th;
+    }
+  }
+  async function facManualProcesar(saltarTope) {
+    var cod = Number((document.getElementById('facl-cbte') || {}).value || 0);
+    if (!_fac.manItems || !_fac.manItems.length) { showToast('Agregá al menos un renglón.', 'error'); return; }
+    var c = _fac.manCuentaLibre;
+    var cli = facClienteActual();
+    var docTipo = 99, docNro = '0', receptorRI = false, nombre = '', email = '', dom = '', condIva = 'CF';
+    if (cli) { docTipo = cli.doc_tipo || 99; docNro = cli.doc_nro || '0'; receptorRI = (cli.cond_iva === 'RI'); nombre = cli.razon_social; email = cli.email; dom = cli.domicilio; condIva = cli.cond_iva; }
+    var concepto = (document.getElementById('facl-concepto') || {}).value || '1';
+    var fch = (document.getElementById('facl-fch') || {}).value || '';
+    var obs = (document.getElementById('facl-obs') || {}).value || '';
+    var payload = {
+      cuenta: c, cbte_cod: cod, doc_tipo: docTipo, doc_nro: docNro, receptor_ri: receptorRI,
+      receptor_nombre: nombre, receptor_email: email, receptor_domicilio: dom, receptor_cond_iva: condIva,
+      items: _fac.manItems, concepto: concepto, fch_emision: fch ? fch.replace(/-/g, '') : '', observaciones: obs, saltar_tope: !!saltarTope
+    };
+    if (concepto === '2' || concepto === '3') {
+      var sd = (document.getElementById('facl-servd') || {}).value, sh = (document.getElementById('facl-servh') || {}).value, vt = (document.getElementById('facl-vto') || {}).value;
+      payload.serv_desde = sd ? sd.replace(/-/g, '') : ''; payload.serv_hasta = sh ? sh.replace(/-/g, '') : ''; payload.venc_pago = vt ? vt.replace(/-/g, '') : '';
+    }
+    if (facCbteEsNota(cod)) {
+      payload.cbte_asoc = { tipo: (document.getElementById('facl-asoc-tipo') || {}).value, pto_vta: (document.getElementById('facl-asoc-pv') || {}).value, nro: (document.getElementById('facl-asoc-nro') || {}).value };
+      if (!payload.cbte_asoc.nro) { showToast('Indicá el comprobante asociado (tipo, pto vta y número).', 'error'); return; }
+    }
+    var amb = (_fac.data || {}).ambiente;
+    if (amb === 'produccion' && !saltarTope) { if (!confirm('Vas a emitir un comprobante REAL con validez fiscal desde ' + c + '. ¿Confirmás?')) return; }
+    var btn = document.getElementById('facl-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Procesando…'; }
+    var box = document.getElementById('facl-result');
+    try {
+      var r = await fetch('/api/facturacion/emitir-manual', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      var d = await r.json();
+      facMostrarResultado(box, d, function () { facManualProcesar(true); });
+      if (d.ok) { _fac.manItems = []; facItemsRender(); }
+    } catch (e) { if (box) { box.style.display = ''; box.style.background = '#fef2f2'; box.style.color = '#7f1d1d'; box.textContent = 'Error de red.'; } }
+    if (btn) { btn.disabled = false; btn.textContent = 'Procesar' + (amb === 'produccion' ? ' (REAL)' : ' (prueba)'); }
+  }
+  function facManualCancelar() { _fac.manItems = []; _fac.manClienteId = null; renderFacturacion(); }
+  /* ==================== FACTURACIÓN AUTOMÁTICA (con tope) ==================== */
+  function facAutoHtml() {
+    var d = _fac.data || {}; var cts = d.cuentas || {}; var ac = d.acumulado || {}; var orden = d.orden || [];
+    var h = '<div style="max-width:820px">';
+    h += facAmbBanner(d.ambiente || 'homologacion');
+    h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px">';
+    h += '<div style="font-weight:700;color:#16a34a;font-size:15px;margin-bottom:6px">🤖 Facturación automática (con tope)</div>';
+    h += '<p style="font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:14px">Las cuentas en modo <b>Automático</b> facturan las ventas de ML respetando el tope. Al llegar al tope, se frena y te avisa (seguís desde <b>Facturación manual</b>). El modo y los topes se configuran por cuenta.</p>';
+    orden.forEach(function (c) {
+      var x = cts[c] || {}; var a = ac[c] || { mes: 0, anio: 0 };
+      if (!x.activa) return;
+      var auto = x.modo === 'auto';
+      var topeM = Number(x.tope_mensual) || 0;
+      var pmes = topeM > 0 ? Math.min(100, Math.round(a.mes / topeM * 100)) : 0;
+      h += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">';
+      h += '<strong style="color:#2d3277;min-width:70px">' + c + '</strong>';
+      h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" ' + (auto ? 'checked' : '') + ' onchange="facAutoToggleModo(\'' + c + '\',this.checked)"> Automático</label>';
+      h += '<span style="font-size:12px;color:#6b7280;flex:1">Facturado mes: <b>' + facMoney(a.mes) + '</b>' + (topeM > 0 ? ' / ' + facMoney(topeM) + facBar(pmes) : ' · sin tope') + '</span>';
+      if (auto) h += '<button onclick="facAutoCorrer(\'' + c + '\',this)" style="padding:7px 13px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:700;font-size:12px;cursor:pointer">⚡ Facturar pendientes ahora</button>';
+      h += '</div>';
+    });
+    if (!facCuentasActivas().length) h += '<p style="color:#b45309">No hay cuentas activas.</p>';
+    h += '<p style="font-size:12px;color:#9ca3af;margin-top:8px">Nota: la emisión automática al instante de cada venta se habilita luego de validar los primeros comprobantes reales con tu contador. Por ahora, el botón factura las pendientes del período respetando el tope.</p>';
+    h += '</div></div>';
+    return h;
+  }
+  async function facAutoToggleModo(cuenta, auto) {
+    var cts = ((_fac.data || {}).cuentas) || {}; var x = cts[cuenta] || {};
+    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, activa: x.activa };
+    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; showToast(cuenta + ': modo ' + (auto ? 'automático' : 'manual'), 'success'); renderFacturacion(); }
+    catch (e) { showToast('Error al guardar', 'error'); }
+  }
+  async function facAutoCorrer(cuenta, btn) {
+    if (!confirm('Facturar automáticamente las ventas pendientes de ' + cuenta + ' (frena al llegar al tope)?')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Facturando…'; }
+    try {
+      var r = await fetch('/api/facturacion/ventas?cuenta=' + encodeURIComponent(cuenta));
+      var d = await r.json(); var pend = (d.ventas || []).filter(function (v) { return !v.facturado; });
+      var okc = 0, freno = false;
+      for (var i = 0; i < pend.length; i++) {
+        var rr = await fetch('/api/facturacion/emitir-venta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuenta: cuenta, order_id: pend[i].order_id, saltar_tope: false }) });
+        var dd = await rr.json(); if (dd.ok) okc++; else if (dd.tope) { freno = true; break; }
+      }
+      showToast(cuenta + ': ' + okc + ' facturadas' + (freno ? ' · frenó por tope' : ''), okc ? 'success' : 'info');
+    } catch (e) { showToast('Error', 'error'); }
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Facturar pendientes ahora'; }
+    loadFacturacion();
+  }
+
+  /* ==================== COMPROBANTES (buscar + descargar) ==================== */
   function facComprobantesHtml() {
-    return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;max-width:720px">' +
-      '<div style="font-weight:700;color:#2d3277;font-size:15px;margin-bottom:8px">Emisión de comprobantes — próxima etapa</div>' +
-      '<p style="font-size:13.5px;color:#374151;line-height:1.6">Acá vas a ver las ventas de ML pendientes de facturar y vas a poder emitir (manual, por lote o automático). Para activarlo necesito de cada CUIT:</p>' +
-      '<ul style="font-size:13.5px;color:#374151;line-height:1.7">' +
-      '<li>El <b>certificado digital</b> de ARCA (con el web service <code>wsfe</code> habilitado).</li>' +
-      '<li>El <b>punto de venta electrónico</b> (lo cargás en Configuración).</li>' +
-      '</ul>' +
-      '<p style="font-size:13px;color:#6b7280">Los certificados y claves privadas se cargan como <b>secret files</b> en Render (nunca por chat), igual que los tokens de MP. Empezamos en <b>homologación</b> para probar sin validez fiscal.</p>' +
-      '</div>';
+    var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px';
+    var h = '<div style="max-width:1100px">';
+    h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;gap:12px;align-items:end;flex-wrap:wrap">';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Cuenta</label><select id="facc-cuenta" style="' + css + '"><option value="">Todas</option>';
+    ((_fac.data || {}).orden || []).forEach(function (c) { h += '<option value="' + c + '"' + (_fac.compCuenta === c ? ' selected' : '') + '>' + c + '</option>'; });
+    h += '</select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Buscar (receptor / N°)</label><input id="facc-q" style="' + css + '" placeholder="Nombre, CUIT o N°" oninput="facFiltrarComp()"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Tipo</label><select id="facc-tipo" onchange="facFiltrarComp()" style="' + css + '"><option value="">Todos</option><option value="A">Factura A</option><option value="B">Factura B</option><option value="C">Factura C</option></select></div>';
+    h += '<button onclick="facCargarComprobantes()" style="padding:9px 16px;border:1px solid #16a34a;border-radius:8px;background:#fff;color:#16a34a;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
+    h += '</div>';
+    h += '<div id="facc-lista"><div class="loading"><div class="spinner"></div><p>Cargando comprobantes…</p></div></div>';
+    h += '</div>';
+    return h;
+  }
+  async function facCargarComprobantes() {
+    var cont = document.getElementById('facc-lista'); if (!cont) return;
+    var c = (document.getElementById('facc-cuenta') || {}).value || ''; _fac.compCuenta = c;
+    cont.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando…</p></div>';
+    try {
+      var r = await fetch('/api/facturacion/comprobantes' + (c ? '?cuenta=' + encodeURIComponent(c) : ''));
+      var d = await r.json(); _fac.comprobantes = d.comprobantes || [];
+      facFiltrarComp();
+    } catch (e) { cont.innerHTML = '<div class="empty"><p>Error al cargar comprobantes</p></div>'; }
+  }
+  function facFiltrarComp() {
+    var cont = document.getElementById('facc-lista'); if (!cont) return;
+    var q = ((document.getElementById('facc-q') || {}).value || '').toLowerCase().trim();
+    var tipo = (document.getElementById('facc-tipo') || {}).value || '';
+    var list = (_fac.comprobantes || []).filter(function (f) {
+      if (tipo && f.cbte_letra !== tipo) return false;
+      if (q) { var hay = (String(f.nro) + ' ' + (f.receptor_nombre || '') + ' ' + (f.doc_nro || '') + ' ' + (f.cae || '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
+      return true;
+    });
+    if (!list.length) { cont.innerHTML = '<div class="empty" style="padding:30px"><p>No hay comprobantes que coincidan.</p></div>'; return; }
+    var h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:6px">' + list.length + ' comprobante(s)</div>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">';
+    h += '<thead><tr style="background:#f8fafc;text-align:left">' + ['Fecha', 'Cuenta', 'Cbte', 'N°', 'Receptor', 'Neto', 'IVA', 'Total', 'CAE', ''].map(function (x) { return '<th style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:700;color:#374151">' + x + '</th>'; }).join('') + '</tr></thead><tbody>';
+    list.forEach(function (f) {
+      h += '<tr style="border-bottom:1px solid #f1f5f9">';
+      h += '<td style="padding:8px 10px">' + facFchLindo(f.cbte_fch) + '</td>';
+      h += '<td style="padding:8px 10px;font-weight:600">' + f.cuenta + '</td>';
+      h += '<td style="padding:8px 10px"><span style="padding:2px 8px;border-radius:7px;background:#eef2ff;color:#3730a3;font-weight:700">' + f.cbte_letra + '</span></td>';
+      h += '<td style="padding:8px 10px">' + String(f.pto_vta).padStart(5, '0') + '-' + String(f.nro).padStart(8, '0') + '</td>';
+      h += '<td style="padding:8px 10px">' + escapeHtml(f.receptor_nombre || (f.doc_tipo === 99 ? 'Consumidor final' : f.doc_nro)) + '</td>';
+      h += '<td style="padding:8px 10px">' + facMoney(f.importe_neto) + '</td>';
+      h += '<td style="padding:8px 10px">' + facMoney(f.importe_iva) + '</td>';
+      h += '<td style="padding:8px 10px;font-weight:700">' + facMoney(f.importe_total) + '</td>';
+      h += '<td style="padding:8px 10px;font-size:12px;color:#6b7280">' + escapeHtml(f.cae || '') + '<br><span style="font-size:11px">vto ' + facFchLindo(f.cae_vto) + '</span></td>';
+      h += '<td style="padding:8px 10px"><button onclick="facImprimirComprobante(\'' + f.id + '\')" style="padding:6px 12px;border:1px solid #16a34a;border-radius:7px;background:#fff;color:#16a34a;font-weight:700;font-size:12px;cursor:pointer">📄 Ver / Descargar</button></td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    cont.innerHTML = h;
+  }
+  function facImprimirComprobante(id) {
+    var f = (_fac.comprobantes || []).find(function (x) { return x.id === id; }); if (!f) return;
+    var cfg = ((_fac.data || {}).cuentas || {})[f.cuenta] || {};
+    var docTxt = f.doc_tipo === 80 ? 'CUIT ' + f.doc_nro : (f.doc_tipo === 96 ? 'DNI ' + f.doc_nro : 'Consumidor Final');
+    var qrData = { ver: 1, fecha: (String(f.cbte_fch).slice(0, 4) + '-' + String(f.cbte_fch).slice(4, 6) + '-' + String(f.cbte_fch).slice(6, 8)), cuit: Number(f.cuit), ptoVta: f.pto_vta, tipoCmp: f.cbte_cod, nroCmp: f.nro, importe: f.importe_total, moneda: 'PES', ctz: 1, tipoDocRec: f.doc_tipo, nroDocRec: Number(f.doc_nro) || 0, tipoCodAut: 'E', codAut: Number(f.cae) };
+    var qrUrl = 'https://www.afip.gob.ar/fe/qr/?p=' + btoa(JSON.stringify(qrData));
+    var w = window.open('', '_blank'); if (!w) { showToast('Permití las ventanas emergentes para descargar.', 'error'); return; }
+    var estilo = 'body{font-family:Arial,Helvetica,sans-serif;color:#111;max-width:760px;margin:20px auto;padding:0 16px}.box{border:2px solid #111;border-radius:6px;padding:16px}.row{display:flex;justify-content:space-between;gap:16px}.letra{font-size:44px;font-weight:800;border:2px solid #111;width:60px;text-align:center;line-height:1}.tt{font-size:12px;color:#333}.h1{font-size:20px;font-weight:800;margin:0}table.det{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}table.det th,table.det td{border:1px solid #999;padding:6px 8px;text-align:left}.tot{text-align:right;font-size:15px;margin-top:10px}.cae{margin-top:14px;font-size:13px}';
+    var html = '<!doctype html><html><head><meta charset="utf-8"><title>Factura ' + f.cbte_letra + ' ' + String(f.pto_vta).padStart(5, '0') + '-' + String(f.nro).padStart(8, '0') + '</title><style>' + estilo + '</style></head><body>';
+    html += '<div class="box"><div class="row"><div><p class="h1">' + escapeHtml(f.cuenta) + '</p><p class="tt">' + (cfg.condicion === 'MONO' ? 'Responsable Monotributo' : 'IVA Responsable Inscripto') + '</p><p class="tt">CUIT: ' + escapeHtml(f.cuit) + ' · Pto Vta: ' + String(f.pto_vta).padStart(5, '0') + '</p></div>';
+    html += '<div style="text-align:center"><div class="letra">' + f.cbte_letra + '</div><div class="tt">COD ' + String(f.cbte_cod).padStart(2, '0') + '</div></div>';
+    html += '<div style="text-align:right"><p class="h1">FACTURA</p><p class="tt">N° ' + String(f.pto_vta).padStart(5, '0') + '-' + String(f.nro).padStart(8, '0') + '</p><p class="tt">Fecha: ' + facFchLindo(f.cbte_fch) + '</p></div></div>';
+    html += '<hr><p class="tt"><b>Receptor:</b> ' + escapeHtml(f.receptor_nombre || '') + ' &nbsp; ' + docTxt + '</p>';
+    html += '<table class="det"><thead><tr><th>Descripción</th><th style="text-align:right">Importe</th></tr></thead><tbody>';
+    html += '<tr><td>' + escapeHtml(f.descripcion || 'Venta') + '</td><td style="text-align:right">' + facMoney(f.importe_total) + '</td></tr></tbody></table>';
+    if (f.cbte_letra !== 'C') { html += '<p class="tot">Neto: ' + facMoney(f.importe_neto) + '<br>IVA ' + (f.iva_pct || 21) + '%: ' + facMoney(f.importe_iva) + '</p>'; }
+    html += '<p class="tot"><b>TOTAL: ' + facMoney(f.importe_total) + '</b></p>';
+    html += '<div class="cae"><div id="qrcode"></div><p><b>CAE:</b> ' + escapeHtml(f.cae || '') + ' &nbsp; <b>Vto CAE:</b> ' + facFchLindo(f.cae_vto) + '</p></div>';
+    html += '</div>';
+    html += '<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>';
+    html += '<script>try{new QRCode(document.getElementById("qrcode"),{text:' + JSON.stringify(qrUrl) + ',width:110,height:110});}catch(e){document.getElementById("qrcode").textContent="QR: "+' + JSON.stringify(qrUrl) + ';}setTimeout(function(){window.print();},600);<\/script>';
+    html += '</body></html>';
+    w.document.write(html); w.document.close();
   }
   async function loadContable() {
     var myNav = navToken;
