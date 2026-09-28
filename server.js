@@ -15368,22 +15368,18 @@ function _csvParse(text) {
   if (field.length || row.length) { row.push(field); rows.push(row); }
   return rows;
 }
-route('GET', '/api/contable/cheques', async (req, res) => {
-  if (!contRequireAdmin(req, res)) return;
-  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
-  const refresh = q.get('refresh') === '1';
-  const hoja = q.get('hoja') || 'CHEQUES';
+// Lee la planilla de cheques (Drive) y calcula el total sin relleno. Actualiza _chequesCache.
+// Reutilizable por la ruta y por el scheduler de segundo plano.
+async function contFetchCheques(hoja) {
+  hoja = hoja || 'CHEQUES';
   const now = Date.now();
-  if (!refresh && _chequesCache.rows && _chequesCache.hoja === hoja && (now - _chequesCache.ts < 120000)) {
-    return sendJSON(res, 200, { ok: true, rows: _chequesCache.rows, ts: _chequesCache.ts, hoja: hoja, cache: true, total_sin_relleno: _chequesCache.total_sin_relleno, total_sin_relleno_error: _chequesCache.total_sin_relleno_error });
-  }
   const SHEET_ID = process.env.CHEQUES_SHEET_ID || '1Cek9K3lYoRWBz9hWh5oSRxS_UWJfBcaSpC9BmmPPAaM';
   const url = 'https://docs.google.com/spreadsheets/d/' + SHEET_ID + '/gviz/tq?tqx=out:csv&sheet=' + encodeURIComponent(hoja);
   try {
     const r = await fetch(url);
     const text = await r.text();
     if (!r.ok || /<html|<!doctype/i.test(text.slice(0, 300))) {
-      return sendJSON(res, 200, { ok: false, error: 'No puedo leer la planilla. Compartila en Google Sheets como "Cualquiera con el enlace → Lector".', rows: [] });
+      return { ok: false, error: 'No puedo leer la planilla. Compartila en Google Sheets como "Cualquiera con el enlace → Lector".', rows: [] };
     }
     const m = _csvParse(text);
     const header = (m[0] || []).map(h => String(h).trim().toLowerCase());
@@ -15444,10 +15440,22 @@ route('GET', '/api/contable/cheques', async (req, res) => {
       total_sin_relleno_error = 'Falta configurar CHEQUES_WEBAPP_URL (Google Apps Script) en Render para leer los colores de celda.';
     }
     _chequesCache = { ts: now, rows: rows, hoja: hoja, error: null, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error };
-    return sendJSON(res, 200, { ok: true, rows: rows, ts: now, hoja: hoja, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error });
+    return { ok: true, rows: rows, ts: now, hoja: hoja, total_sin_relleno: total_sin_relleno, total_sin_relleno_error: total_sin_relleno_error };
   } catch (e) {
-    return sendJSON(res, 200, { ok: false, error: 'Error al leer la planilla: ' + String(e.message || e), rows: [] });
+    return { ok: false, error: 'Error al leer la planilla: ' + String(e.message || e), rows: [] };
   }
+}
+route('GET', '/api/contable/cheques', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const refresh = q.get('refresh') === '1';
+  const hoja = q.get('hoja') || 'CHEQUES';
+  const now = Date.now();
+  if (!refresh && _chequesCache.rows && _chequesCache.hoja === hoja && (now - _chequesCache.ts < 120000)) {
+    return sendJSON(res, 200, { ok: true, rows: _chequesCache.rows, ts: _chequesCache.ts, hoja: hoja, cache: true, total_sin_relleno: _chequesCache.total_sin_relleno, total_sin_relleno_error: _chequesCache.total_sin_relleno_error });
+  }
+  const payload = await contFetchCheques(hoja);
+  return sendJSON(res, 200, payload);
 });
 // El panel pide "sincronizar ahora": deja una señal (timestamp) que los userscripts consultan.
 route('POST', '/api/contable/request-sync', async (req, res) => {
@@ -15465,6 +15473,267 @@ route('POST', '/api/contable/sync-flag', async (req, res) => {
   const db = contLoad();
   sendJSON(res, 200, { ok: true, request_ts: db.contable.sync_request_ts || 0, server_now: Date.now() });
 });
+
+/* ============================================================
+   RESUMEN CONTABLE — snapshot en el SERVER + histórico diario
+   ------------------------------------------------------------
+   - contComputeResumenSnapshot(): calcula TODOS los números del
+     Resumen (¿Cómo estoy?, período, Cash Flow, Ganancia) del lado
+     del server, para que no dependa de tener el navegador abierto.
+   - _resumenLiveCache: última foto calculada (se refresca en 2° plano).
+   - db.contable.resumen_historico: una foto por día (hora ARG), sin
+     duplicar (se pisa la del mismo día).
+   - Schedulers (hora Argentina):
+       · cheques: refresco cada ~20 min (cache tibio).
+       · resumen live: refresco cada ~15 min + a las 14:28.
+       · grabar histórico: 14:30.
+   ============================================================ */
+let _resumenLiveCache = { ts: 0, data: null, loading: false };
+
+// Hora ARG con minutos (arParts() sólo da la hora).
+function arNow() {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+    const p = {}; for (const x of fmt.formatToParts(new Date())) p[x.type] = x.value;
+    return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) % 24, minute: Number(p.minute) % 60 };
+  } catch (e) {
+    const d = new Date(Date.now() - 3 * 3600 * 1000);
+    return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours(), minute: d.getUTCMinutes() };
+  }
+}
+// "dd/mm/aaaa" | "aaaa-mm-dd" | "dd/mm" -> entero AAAAMMDD (igual que el cliente).
+function _contFechaOrd(s) {
+  if (!s) return null;
+  const t = String(s).trim();
+  let m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m) { let d = +m[1], mo = +m[2], y = +m[3]; if (y < 100) y += 2000; return y * 10000 + mo * 100 + d; }
+  m = t.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if (m) return (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]);
+  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})$/);
+  if (m) { const d2 = +m[1], mo2 = +m[2]; if (mo2 < 1 || mo2 > 12 || d2 < 1 || d2 > 31) return null; return (new Date().getFullYear()) * 10000 + mo2 * 100 + d2; }
+  return null;
+}
+function _contMontoNum(s) {
+  if (s == null) return 0;
+  const t = String(s).replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+  const v = parseFloat(t); return isNaN(v) ? 0 : v;
+}
+// Calcula toda la foto del Resumen. No lanza: los faltantes quedan en 0 + errs[].
+async function contComputeResumenSnapshot() {
+  const num = v => Number(v) || 0;
+  const db = contLoad();
+  const c = db.contable;
+  const cur = contCurrentPeriod(db);
+  const sISO = cur ? String(cur.start).slice(0, 10) : '';
+  const eISO = cur ? String(cur.end).slice(0, 10) : '';
+  const pid = cur ? cur.id : null;
+  const errs = [];
+
+  // ---------- ¿Cómo estoy? ----------
+  const pushMap = db.saldos_push || {};
+  let mp = 0;
+  ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'].forEach(n => { const p = pushMap[n]; if (p) mp += (num(p.disponible) + num(p.a_liberar)); });
+  mp = Math.round(mp * 100) / 100;
+
+  // Cheques (del cache tibio; si está vacío, refrescar ahora).
+  if (!(_chequesCache && _chequesCache.rows)) { try { await contFetchCheques('CHEQUES'); } catch (e) {} }
+  const cheques = (_chequesCache && _chequesCache.total_sin_relleno != null) ? num(_chequesCache.total_sin_relleno) : 0;
+  if (_chequesCache && _chequesCache.total_sin_relleno == null) errs.push('Cheques: total sin relleno no disponible');
+
+  // Préstamos (deuda = total − pagado) == Créditos pendientes.
+  let prestamosDeuda = 0;
+  (c.prestamos || []).forEach(p => { const pag = (p.pagos || []).reduce((s, x) => s + num(x.monto), 0); prestamosDeuda += num(p.total) - pag; });
+
+  // Deuda proveedores (facturado / con descuento).
+  let provFacturado = 0, provReal = 0;
+  try {
+    const cs = loadCompras();
+    const by = {};
+    (cs.proveedores || []).forEach(p => { by[p.id] = { d1: num(p.descuento_pct), d2: num(p.descuento_pct2), fact: 0, nc: 0, pag: 0 }; });
+    (cs.comprobantes || []).forEach(x => { const b = by[x.proveedor_id]; if (!b) return; if (x.tipo === 'factura') b.fact += num(x.importe); else if (x.tipo === 'nc') b.nc += num(x.importe); });
+    (cs.pagos || []).forEach(pg => { const b = by[pg.proveedor_id]; if (!b) return; b.pag += num(pg.importe); });
+    Object.keys(by).forEach(k => { const b = by[k]; const bruto = b.fact - b.nc - b.pag; provFacturado += bruto; const f = (1 - b.d1 / 100) * (1 - b.d2 / 100); provReal += (bruto > 0 ? bruto * f : bruto); });
+  } catch (e) { errs.push('No pude leer Deuda proveedores'); }
+  const prov = provReal;                         // por defecto CON descuento
+  const saldo = mp - cheques - prestamosDeuda - prov;
+
+  // ---------- SALIDA (Negocio) ----------
+  const negRubros = (c.config.rubros || {}).negocio || [];
+  const negClass = (rubroId) => { const rub = negRubros.find(r => r.id === rubroId); const nom = String(rub ? rub.nombre : '').toLowerCase(); if (/factura/.test(nom)) return 'facturas'; if (/retenc/.test(nom)) return 'retenciones'; if (/flex/.test(nom)) return 'flex'; return 'gastos'; };
+  const salida = { gastos: 0, facturas_ml: 0, retenciones: 0, flex: 0, compras: 0 };
+  (c.transacciones || []).forEach(t => {
+    if (t.derivado === 'negocio' && (pid == null || t.period_id === pid)) {
+      const cl = negClass(t.rubro_id);
+      const key = cl === 'facturas' ? 'facturas_ml' : cl;
+      salida[key] += num(t.monto);
+    }
+  });
+  // Facturas de compras del período (con descuento en cascada).
+  try {
+    const cs = loadCompras();
+    const by = {};
+    (cs.proveedores || []).forEach(p => { by[p.id] = { d1: num(p.descuento_pct), d2: num(p.descuento_pct2), fact: 0, nc: 0 }; });
+    const inR = f => { const d = String(f || '').slice(0, 10); return d && d >= sISO && d <= eISO; };
+    (cs.comprobantes || []).forEach(x => { if (!inR(x.fecha)) return; const b = by[x.proveedor_id]; if (!b) return; if (x.tipo === 'factura') b.fact += num(x.importe); else if (x.tipo === 'nc') b.nc += num(x.importe); });
+    let tot = 0; Object.keys(by).forEach(k => { const b = by[k]; const bruto = b.fact - b.nc; const f = (1 - b.d1 / 100) * (1 - b.d2 / 100); tot += (bruto > 0 ? bruto * f : bruto); });
+    salida.compras = tot;
+  } catch (e) { errs.push('No pude leer Compras del período'); }
+  const salidaTotal = salida.gastos + salida.facturas_ml + salida.retenciones + salida.flex + salida.compras;
+
+  // ---------- ENTRADA (Histórico de Gestión) ----------
+  let cuentas = [], totStock = { venta: 0, queda: 0, costo: 0 }, totDrop = { venta: 0, queda: 0 }, dias = [];
+  try {
+    const store = loadGestionDays();
+    const days = Object.values(store.days || {}).filter(d => (!sISO || d.date >= sISO) && (!eISO || d.date <= eISO));
+    const acc = {};
+    days.forEach(d => {
+      (d.sales || []).forEach(s => {
+        const name = s.account_name || (s.account_id === 'local' ? 'Venta local' : '—');
+        if (!acc[name]) acc[name] = { stock: { venta: 0, queda: 0, costo: 0, n: 0 }, drop: { venta: 0, queda: 0, n: 0 } };
+        const g = s.stock ? 'stock' : 'drop';
+        acc[name][g].venta += num(s.revenue); acc[name][g].queda += num(s.queda); acc[name][g].n++;
+        if (g === 'stock') acc[name].stock.costo += (s.known && s.cost != null) ? num(s.cost) : 0;
+      });
+    });
+    Object.keys(acc).forEach(k => { const a = acc[k]; totStock.venta += a.stock.venta; totStock.queda += a.stock.queda; totStock.costo += a.stock.costo; totDrop.venta += a.drop.venta; totDrop.queda += a.drop.queda; });
+    cuentas = Object.keys(acc).sort().map(k => ({ cuenta: k, stock: acc[k].stock, drop: acc[k].drop }));
+    dias = Object.keys(store.days || {}).sort().filter(dd => (!sISO || dd >= sISO) && (!eISO || dd <= eISO));
+  } catch (e) { errs.push('No pude leer el Histórico de Gestión'); }
+  const entNeto = totStock.queda + totDrop.queda;
+  const costoStock = totStock.costo;
+  const ganancia = entNeto - salidaTotal - costoStock;         // GANANCIA DEL NEGOCIO
+
+  // ---------- Buckets + extras ----------
+  const sumBucket = dest => (c.transacciones || []).filter(t => t.derivado === dest && (pid == null || t.period_id === pid)).reduce((s, t) => s + num(t.monto), 0);
+  const negocioBucket = sumBucket('negocio'), banco = sumBucket('banco'), casa = sumBucket('casa'), construccion = sumBucket('construccion');
+  let cuotaPrestamos = 0;
+  (c.prestamos || []).forEach(pr => { (pr.pagos || []).forEach(pg => { const d = String(pg.fecha || '').slice(0, 10); if (d && d >= sISO && d <= eISO) cuotaPrestamos += num(pg.monto); }); });
+  const interesesAdel = (c.intereses_adelanto || []).filter(t => pid == null || t.period_id === pid).reduce((s, t) => s + num(t.intereses), 0);
+  const creditosPend = prestamosDeuda;
+  // Cheques PAGADOS dentro del período (col. H = fecha de pago, col. E = monto).
+  let chequesPagados = 0;
+  try {
+    const rows = (_chequesCache && _chequesCache.rows) || [];
+    const pi = sISO ? Number(sISO.replace(/-/g, '')) : null;
+    const pf = eISO ? Number(eISO.replace(/-/g, '')) : null;
+    rows.forEach(rw => { const o = _contFechaOrd(rw.fecha_h); if (o == null || pi == null || pf == null) return; if (o >= pi && o <= pf) chequesPagados += _contMontoNum(rw.monto_e != null && rw.monto_e !== '' ? rw.monto_e : rw.monto); });
+  } catch (e) {}
+
+  // Cash Flow = entradas netas − egresos operativos (buckets + cuota).
+  const egresos = negocioBucket + casa + banco + construccion + cuotaPrestamos;
+  const cashFlow = entNeto - egresos;
+
+  return {
+    ts: Date.now(), fecha_ar: arNow().date,
+    period: cur ? { id: cur.id, label: cur.label, start: sISO, end: eISO } : null,
+    // ¿Cómo estoy?
+    mp, cheques, prestamos: prestamosDeuda, provFacturado, provReal, saldo,
+    // Período
+    salida, salidaTotal,
+    entrada: { cuentas, totStock, totDrop, entNeto, costoStock, dias: dias.length },
+    ganancia,
+    // Resumen parcial de gastos
+    negocioBucket, banco, casa, construccion, cuotaPrestamos, interesesAdel, creditosPend, chequesPagados,
+    // Cash Flow
+    cashFlow,
+    errs
+  };
+}
+// Refresca la foto viva y la cachea (para /api/contable/resumen-live).
+async function contRefreshResumenLive() {
+  if (_resumenLiveCache.loading) return _resumenLiveCache.data;
+  _resumenLiveCache.loading = true;
+  try { const snap = await contComputeResumenSnapshot(); _resumenLiveCache = { ts: Date.now(), data: snap, loading: false }; return snap; }
+  catch (e) { _resumenLiveCache.loading = false; return _resumenLiveCache.data; }
+}
+// Guarda (o pisa) la foto del día en el histórico. Una por fecha ARG → sin duplicar.
+function contSaveResumenHistorico(snap) {
+  const db = contLoad();
+  if (!Array.isArray(db.contable.resumen_historico)) db.contable.resumen_historico = [];
+  const fecha = (snap && snap.fecha_ar) || arNow().date;
+  const rec = Object.assign({}, snap, { fecha_ar: fecha });
+  const arr = db.contable.resumen_historico;
+  const i = arr.findIndex(x => x.fecha_ar === fecha);
+  if (i >= 0) arr[i] = rec; else arr.push(rec);
+  arr.sort((a, b) => (a.fecha_ar < b.fecha_ar ? 1 : -1));   // más nuevo primero
+  if (arr.length > 800) arr.length = 800;                    // tope de seguridad
+  saveDB(db);
+  return rec;
+}
+
+// GET foto viva del Resumen (cacheada; refresca si tiene +90s). Para el cliente.
+route('GET', '/api/contable/resumen-live', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const force = q.get('force') === '1';
+  const now = Date.now();
+  if (!force && _resumenLiveCache.data && (now - _resumenLiveCache.ts < 90000)) {
+    return sendJSON(res, 200, { ok: true, data: _resumenLiveCache.data, cache: true });
+  }
+  const snap = await contRefreshResumenLive();
+  return sendJSON(res, 200, { ok: true, data: snap || _resumenLiveCache.data, cache: false });
+});
+// GET histórico de snapshots (la planilla resumen).
+route('GET', '/api/contable/resumen-historico', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  const db = contLoad();
+  const rows = (db.contable.resumen_historico || []).slice();
+  sendJSON(res, 200, { ok: true, rows, count: rows.length });
+});
+// POST grabar ahora una foto al histórico (manual / prueba). Recalcula en vivo.
+route('POST', '/api/contable/resumen-historico/grabar', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  const snap = await contRefreshResumenLive();
+  if (!snap) return sendJSON(res, 200, { ok: false, error: 'No pude calcular el resumen' });
+  const rec = contSaveResumenHistorico(snap);
+  sendJSON(res, 200, { ok: true, saved: rec.fecha_ar, ts: rec.ts });
+});
+// DELETE una fila del histórico por fecha (limpieza puntual).
+route('POST', '/api/contable/resumen-historico/borrar', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  let body; try { body = await parseBody(req); } catch (e) { body = {}; }
+  const fecha = String(body.fecha || '').slice(0, 10);
+  const db = contLoad();
+  const arr = db.contable.resumen_historico || [];
+  const before = arr.length;
+  db.contable.resumen_historico = arr.filter(x => x.fecha_ar !== fecha);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, removed: before - db.contable.resumen_historico.length });
+});
+
+// ===== Schedulers de segundo plano (hora Argentina) =====
+(function startContableSchedulers() {
+  // 1) Cheques: mantener el cache tibio (para que el Resumen muestre cheques sin abrir la pestaña).
+  const CHQ_MIN = Number(process.env.CHEQUES_REFRESH_MIN || 20);
+  setInterval(() => { contFetchCheques('CHEQUES').catch(() => {}); }, CHQ_MIN * 60 * 1000);
+  setTimeout(() => { contFetchCheques('CHEQUES').catch(() => {}); }, 25 * 1000);   // primer calentamiento al arrancar
+
+  // 2) Resumen vivo: refresco periódico + tareas a horario fijo (14:28 refresco / 14:30 grabar).
+  let lastRefreshDate = '', lastSaveDate = '';
+  const REFRESH_MIN = Number(process.env.RESUMEN_REFRESH_MIN || 15);
+  setInterval(() => { contRefreshResumenLive().catch(() => {}); }, REFRESH_MIN * 60 * 1000);
+  setTimeout(() => { contRefreshResumenLive().catch(() => {}); }, 40 * 1000);       // primera foto al arrancar
+
+  async function minuteTick() {
+    try {
+      const t = arNow();                          // { date, hour, minute } ARG
+      // 14:28 → refresco completo en segundo plano (una vez por día).
+      if (t.hour === 14 && t.minute >= 28 && t.minute < 30 && lastRefreshDate !== t.date) {
+        lastRefreshDate = t.date;
+        await contRefreshResumenLive();
+        console.log('[RESUMEN] refresco previo a grabar (14:28 ARG):', t.date);
+      }
+      // 14:30 → grabar la foto del día al histórico (una vez por día).
+      if (t.hour === 14 && t.minute >= 30 && t.minute < 33 && lastSaveDate !== t.date) {
+        lastSaveDate = t.date;
+        const snap = await contRefreshResumenLive();
+        if (snap) { contSaveResumenHistorico(snap); console.log('[RESUMEN] histórico grabado (14:30 ARG):', t.date); }
+      }
+    } catch (e) { console.error('[RESUMEN] scheduler error:', (e && e.message) || e); }
+  }
+  setInterval(minuteTick, 60 * 1000);              // cada minuto (para pegarle a 14:28 / 14:30)
+  setTimeout(minuteTick, 55 * 1000);
+})();
 
 const server = http.createServer(async (req, res) => {
   setSecurityHeaders(res);
