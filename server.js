@@ -13916,7 +13916,7 @@ function facLoad() {
         cuit: '', condicion: cond, punto_venta: '', iva_pct: cond === 'RI' ? 21 : 0,
         cbte_default: cond === 'RI' ? 'B' : 'C', modo: 'manual',
         tope_mensual: 0, tope_anual: 0, activa: false, adjuntar_ml: true,
-        auto_momento: 'camino', auto_nota_credito: true,
+        auto_momento: 'camino', auto_nota_credito: true, auto_desde: '',
         razon_social: pd.razon_social || '', nombre_fantasia: pd.nombre_fantasia || '',
         domicilio: pd.domicilio || '', ing_brutos: pd.ing_brutos || '', inicio_actividad: pd.inicio_actividad || ''
       };
@@ -13984,6 +13984,8 @@ route('POST', '/api/facturacion/config', async (req, res) => {
     else if (cur.auto_momento == null) cur.auto_momento = 'camino';
     if (x.auto_nota_credito != null) cur.auto_nota_credito = !!x.auto_nota_credito;
     else if (cur.auto_nota_credito == null) cur.auto_nota_credito = true;
+    if (x.auto_desde != null) cur.auto_desde = /^\d{4}-\d{2}-\d{2}$/.test(String(x.auto_desde)) ? String(x.auto_desde) : '';
+    else if (cur.auto_desde == null) cur.auto_desde = '';
     if (x.razon_social != null) cur.razon_social = String(x.razon_social).slice(0, 80);
     if (x.nombre_fantasia != null) cur.nombre_fantasia = String(x.nombre_fantasia).slice(0, 80);
     if (x.domicilio != null) cur.domicilio = String(x.domicilio).slice(0, 160);
@@ -14748,13 +14750,18 @@ async function facAutoNotasCredito(db, cuenta, account, token, cfg) {
 async function facAutoFacturar(db, cuenta, account, token, cfg) {
   const facturados = {};
   for (const fx of (db.facturacion.facturas || [])) if (fx.order_id && !fx.anulada) facturados[String(fx.order_id)] = true;
-  let data; try { data = await mlGet('https://api.mercadolibre.com/orders/search', token, { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 40 }); } catch (e) { return 0; }
+  // Fecha de corte: el automático ignora ventas anteriores a esta fecha (evita facturar el backlog viejo).
+  const desdeTs = /^\d{4}-\d{2}-\d{2}$/.test(String(cfg.auto_desde || '')) ? new Date(cfg.auto_desde + 'T00:00:00-03:00').getTime() : 0;
+  const params = { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 40 };
+  if (desdeTs) params['order.date_created.from'] = cfg.auto_desde + 'T00:00:00.000-03:00';
+  let data; try { data = await mlGet('https://api.mercadolibre.com/orders/search', token, params); } catch (e) { return 0; }
   let hechas = 0, mirados = 0;
   for (const o of (data.results || [])) {
     if (hechas >= 8 || mirados >= 40) break;
     const oid = String(o.id);
     if (facturados[oid]) continue;
     if (String(o.status).toLowerCase() === 'cancelled') continue;
+    if (desdeTs && new Date(o.date_created || 0).getTime() < desdeTs) continue;
     mirados++;
     if (cfg.auto_momento === 'camino') { const enCamino = await facShipEnCamino(o, token); if (!enCamino) continue; }
     const total = Number(o.total_amount) || 0;
