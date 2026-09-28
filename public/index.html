@@ -12232,50 +12232,55 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   /* ==================== FACTURACIÓN AUTOMÁTICA (con tope) ==================== */
   function facAutoHtml() {
     var d = _fac.data || {}; var cts = d.cuentas || {}; var ac = d.acumulado || {}; var orden = d.orden || [];
-    var h = '<div style="max-width:820px">';
+    var css = 'padding:6px 8px;border:1px solid #d1d5db;border-radius:7px;font-size:13px';
+    var h = '<div style="max-width:900px">';
     h += facAmbBanner(d.ambiente || 'homologacion');
     h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px">';
-    h += '<div style="font-weight:700;color:#16a34a;font-size:15px;margin-bottom:6px">🤖 Facturación automática (con tope)</div>';
-    h += '<p style="font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:14px">Las cuentas en modo <b>Automático</b> facturan las ventas de ML respetando el tope. Al llegar al tope, se frena y te avisa (seguís desde <b>Facturación manual</b>). El modo y los topes se configuran por cuenta.</p>';
+    h += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">';
+    h += '<div style="font-weight:700;color:#16a34a;font-size:15px">🤖 Facturación automática</div>';
+    h += '<button onclick="facAutoRunAhora(this)" style="margin-left:auto;padding:8px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:700;font-size:13px;cursor:pointer">⚡ Correr ahora</button>';
+    h += '</div>';
+    h += '<p style="font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:6px">El motor revisa las ventas cada ~15 min. Por cada cuenta en <b>Automático</b>: factura según el momento elegido (al pagar o al estar en camino), respetando el tope, y si una venta ya facturada se cancela o se devuelve, emite la <b>Nota de Crédito</b> automáticamente.</p>';
+    if (d.auto_last) h += '<p style="font-size:12px;color:#9ca3af;margin-bottom:12px">Última corrida: ' + new Date(d.auto_last).toLocaleString('es-AR') + '</p>';
     orden.forEach(function (c) {
       var x = cts[c] || {}; var a = ac[c] || { mes: 0, anio: 0 };
       if (!x.activa) return;
       var auto = x.modo === 'auto';
       var topeM = Number(x.tope_mensual) || 0;
       var pmes = topeM > 0 ? Math.min(100, Math.round(a.mes / topeM * 100)) : 0;
-      h += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">';
+      h += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:10px">';
+      h += '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">';
       h += '<strong style="color:#2d3277;min-width:70px">' + c + '</strong>';
-      h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" ' + (auto ? 'checked' : '') + ' onchange="facAutoToggleModo(\'' + c + '\',this.checked)"> Automático</label>';
-      h += '<span style="font-size:12px;color:#6b7280;flex:1">Facturado mes: <b>' + facMoney(a.mes) + '</b>' + (topeM > 0 ? ' / ' + facMoney(topeM) + facBar(pmes) : ' · sin tope') + '</span>';
-      if (auto) h += '<button onclick="facAutoCorrer(\'' + c + '\',this)" style="padding:7px 13px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:700;font-size:12px;cursor:pointer">⚡ Facturar pendientes ahora</button>';
+      h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" id="faca-modo-' + c + '" ' + (auto ? 'checked' : '') + ' onchange="facAutoGuardar(\'' + c + '\')"> Facturar automático</label>';
+      h += '<span style="font-size:13px;color:#374151">Momento: <select id="faca-mom-' + c + '" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + '"><option value="compra"' + (x.auto_momento === 'compra' ? ' selected' : '') + '>Al pagar (compra)</option><option value="camino"' + (x.auto_momento !== 'compra' ? ' selected' : '') + '>Cuando está en camino</option></select></span>';
+      h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" id="faca-nc-' + c + '" ' + (x.auto_nota_credito !== false ? 'checked' : '') + ' onchange="facAutoGuardar(\'' + c + '\')"> Nota de crédito automática</label>';
+      h += '</div>';
+      h += '<div style="font-size:12px;color:#6b7280;margin-top:8px">Facturado mes: <b>' + facMoney(a.mes) + '</b>' + (topeM > 0 ? ' / ' + facMoney(topeM) + facBar(pmes) : ' · sin tope') + '</div>';
       h += '</div>';
     });
-    if (!facCuentasActivas().length) h += '<p style="color:#b45309">No hay cuentas activas.</p>';
-    h += '<p style="font-size:12px;color:#9ca3af;margin-top:8px">Nota: la emisión automática al instante de cada venta se habilita luego de validar los primeros comprobantes reales con tu contador. Por ahora, el botón factura las pendientes del período respetando el tope.</p>';
+    if (!facCuentasActivas().length) h += '<p style="color:#b45309">No hay cuentas activas. Activá alguna en Configuración.</p>';
     h += '</div></div>';
     return h;
   }
-  async function facAutoToggleModo(cuenta, auto) {
+  async function facAutoGuardar(cuenta) {
     var cts = ((_fac.data || {}).cuentas) || {}; var x = cts[cuenta] || {};
-    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, activa: x.activa };
-    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; showToast(cuenta + ': modo ' + (auto ? 'automático' : 'manual'), 'success'); renderFacturacion(); }
+    var auto = !!(document.getElementById('faca-modo-' + cuenta) && document.getElementById('faca-modo-' + cuenta).checked);
+    var mom = (document.getElementById('faca-mom-' + cuenta) || {}).value || 'camino';
+    var nc = !!(document.getElementById('faca-nc-' + cuenta) && document.getElementById('faca-nc-' + cuenta).checked);
+    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, activa: x.activa, adjuntar_ml: x.adjuntar_ml, auto_momento: mom, auto_nota_credito: nc, razon_social: x.razon_social, nombre_fantasia: x.nombre_fantasia, domicilio: x.domicilio, ing_brutos: x.ing_brutos, inicio_actividad: x.inicio_actividad };
+    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; x.auto_momento = mom; x.auto_nota_credito = nc; showToast(cuenta + ': guardado', 'success'); }
     catch (e) { showToast('Error al guardar', 'error'); }
   }
-  async function facAutoCorrer(cuenta, btn) {
-    if (!confirm('Facturar automáticamente las ventas pendientes de ' + cuenta + ' (frena al llegar al tope)?')) return;
-    if (btn) { btn.disabled = true; btn.textContent = 'Facturando…'; }
+  async function facAutoRunAhora(btn) {
+    if (!confirm('Correr el motor de facturación automática ahora? Va a facturar las ventas que correspondan y emitir notas de crédito de las canceladas (respetando el tope).')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Corriendo…'; }
     try {
-      var r = await fetch('/api/facturacion/ventas?cuenta=' + encodeURIComponent(cuenta));
-      var d = await r.json(); var pend = (d.ventas || []).filter(function (v) { return !v.facturado; });
-      var okc = 0, freno = false;
-      for (var i = 0; i < pend.length; i++) {
-        var rr = await fetch('/api/facturacion/emitir-venta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuenta: cuenta, order_id: pend[i].order_id, saltar_tope: false }) });
-        var dd = await rr.json(); if (dd.ok) okc++; else if (dd.tope) { freno = true; break; }
-      }
-      showToast(cuenta + ': ' + okc + ' facturadas' + (freno ? ' · frenó por tope' : ''), okc ? 'success' : 'info');
-    } catch (e) { showToast('Error', 'error'); }
-    if (btn) { btn.disabled = false; btn.textContent = '⚡ Facturar pendientes ahora'; }
-    loadFacturacion();
+      var r = await fetch('/api/facturacion/auto-run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      var d = await r.json();
+      var rs = d.resumen || {};
+      showToast('Listo: ' + (rs.facturadas || 0) + ' facturadas, ' + (rs.notas || 0) + ' notas de crédito', 'success');
+      loadFacturacion();
+    } catch (e) { showToast('Error', 'error'); if (btn) { btn.disabled = false; btn.textContent = '⚡ Correr ahora'; } }
   }
 
   /* ==================== COMPROBANTES (buscar + descargar) ==================== */
