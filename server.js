@@ -279,6 +279,15 @@ if (!dbMigrate16.prep_sucursal_seeded) {
   migrated16 = true;
 }
 if (migrated16) saveDB(dbMigrate16);
+// Migrate: MARCOS ve solo la sucursal Rufino en Preparación (candado prep_lock_sucursal).
+const dbMigrateMarcos = loadDB();
+if (!dbMigrateMarcos.marcos_rufino_lock_v1) {
+  for (const u of (dbMigrateMarcos.users || [])) {
+    if (String(u.username || '').toUpperCase() === 'MARCOS') { u.prep_sucursal = 'Rufino'; u.prep_lock_sucursal = true; }
+  }
+  dbMigrateMarcos.marcos_rufino_lock_v1 = true;
+  saveDB(dbMigrateMarcos);
+}
 // Migrate: corregir el link de seguimiento de Vía Cargo si quedó sin {guia} (iba a la página genérica).
 const dbMigrate17 = loadDB();
 let migrated17 = false;
@@ -807,6 +816,7 @@ route('GET', '/api/me', async (req, res) => {
     can_prep_manage: user?.can_prep_manage === true,
     can_prep_operate: user?.can_prep_operate === true,
     prep_sucursal: user?.prep_sucursal || '',
+    prep_lock_sucursal: user?.prep_lock_sucursal === true,
     can_search_update: isAdmin || user?.can_search_update === true,
     can_bulk_update: isAdmin || user?.can_bulk_update === true,
     can_view_promos: isAdmin || user?.can_view_promos === true,
@@ -838,6 +848,7 @@ route('GET', '/api/users', async (req, res) => {
     can_prep_manage: u.can_prep_manage === true,
     can_prep_operate: u.can_prep_operate === true,
     prep_sucursal: u.prep_sucursal || '',
+    prep_lock_sucursal: u.prep_lock_sucursal === true,
     can_search_update: u.role === 'admin' || u.can_search_update === true,
     can_bulk_update: u.role === 'admin' || u.can_bulk_update === true,
     can_view_promos: u.role === 'admin' || u.can_view_promos === true,
@@ -855,11 +866,12 @@ route('GET', '/api/users', async (req, res) => {
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
-  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, prep_sucursal, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_devoluciones, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
+  const { id, alerts_questions, alerts_messages, view_dashboard, can_view_dashboard, can_view_questions, can_view_messages, can_view_sales, can_prep_manage, can_prep_operate, prep_sucursal, prep_lock_sucursal, can_search_update, can_bulk_update, can_view_promos, can_view_orders, can_local, can_parabrisas, can_devoluciones, can_envios, can_tracking, can_compras_cargar, can_compras_saldos } = await parseBody(req);
   const db = loadDB();
   const user = db.users.find(u => u.id === parseInt(id));
   if (!user) return sendJSON(res, 404, { error: 'Usuario no encontrado' });
   if (prep_sucursal !== undefined) user.prep_sucursal = ['Rufino', 'San Martin'].includes(String(prep_sucursal)) ? String(prep_sucursal) : '';
+  if (prep_lock_sucursal !== undefined) user.prep_lock_sucursal = !!prep_lock_sucursal;
   if (alerts_questions !== undefined) user.alerts_questions = !!alerts_questions;
   if (alerts_messages !== undefined) user.alerts_messages = !!alerts_messages;
   if (view_dashboard !== undefined) user.view_dashboard = !!view_dashboard;
@@ -5416,7 +5428,9 @@ route('GET', '/api/prep/list', async (req, res) => {
   const u = (db.users || []).find(x => x.id === sess.userId);
   const mySuc = (u && u.prep_sucursal) ? String(u.prep_sucursal) : '';
   const esGestor = sess.role === 'admin' || (u && u.can_prep_manage);
-  if (mySuc && !esGestor) orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
+  // Con sucursal asignada: los operarios siempre ven solo la suya. Los gestores ven todo,
+  // salvo que tengan el candado prep_lock_sucursal (ej. MARCOS → solo Rufino).
+  if (mySuc && (!esGestor || (u && u.prep_lock_sucursal))) orders = orders.filter(o => String(o.sucursal || 'Rufino') === mySuc);
   sendJSON(res, 200, orders);
 });
 route('POST', '/api/prep/add', async (req, res) => {
