@@ -11475,7 +11475,7 @@ function registerAds(deps) {
         facturaTotal += v.facturaTotal; quedaTotal += v.quedaTotal; costTotal += v.costTotal; costStockTotal += v.costStockTotal;
         gananciaSinFlex += v.gananciaSinFlex; perdidaMonto += v.perdidaMonto; cuotasCount += v.cuotasCount; bonoTotal += v.bonoTotal;
         const proy = v.days > 0 ? v.facturacion / v.days * 30 : 0;
-        porCuenta.push({ account_name: account.name, objetivo: cfg.objetivo, facturacion: v.facturacion, ganancia: v.ganancia, margin: v.margin, orders: v.orders, perdida: v.perdida, proy_mensual: proy });
+        porCuenta.push({ account_name: account.name, objetivo: cfg.objetivo, facturacion: v.facturacion, ganancia: v.ganancia, margin: v.margin, orders: v.orders, perdida: v.perdida, proy_mensual: proy, queda: v.quedaTotal, fee_total: v.feeTotal, envio_total: v.envioTotal, tax_total: v.taxTotal, unidades: v.unidades });
       }
       if (!soloCanceladas && (fresh > 0 || taxFixed > 0 || costFixed > 0)) { hist.updated = new Date().toISOString(); saveHistFile(hist); }
       // ===== VENTAS LOCALES (cuenta sintética "Venta local"). Aditivo: NO toca el cálculo de ML.
@@ -11491,7 +11491,7 @@ function registerAds(deps) {
         // Las locales cuentan como STOCK propio (mostrador).
         gAll.stock.ventas += L.T.orders; gAll.stock.fact += L.T.facturacion; gAll.stock.queda += L.T.quedaTotal;
         gAll.stock.unidades += L.T.unidades; gAll.stock.ganancia += L.T.ganancia; gAll.stock.factConoc += L.T.factConocida;
-        if (L.T.count > 0) porCuenta.push({ account_name: 'Venta local', es_local: true, objetivo: 0, facturacion: L.T.facturacion, ganancia: L.T.ganancia, margin: L.T.factConocida > 0 ? (L.T.ganancia / L.T.factConocida) * 100 : null, orders: L.T.orders, perdida: L.T.perdida, proy_mensual: 0 });
+        if (L.T.count > 0) porCuenta.push({ account_name: 'Venta local', es_local: true, objetivo: 0, facturacion: L.T.facturacion, ganancia: L.T.ganancia, margin: L.T.factConocida > 0 ? (L.T.ganancia / L.T.factConocida) * 100 : null, orders: L.T.orders, perdida: L.T.perdida, proy_mensual: 0, queda: L.T.quedaTotal, fee_total: 0, envio_total: 0, tax_total: 0, unidades: L.T.unidades });
       }
       const days = daysBetween(from, to);
       const proyMensual = days > 0 ? facturacion / days * 30 : 0;
@@ -11648,6 +11648,34 @@ function registerAds(deps) {
     days.sort((a, b) => (a.date < b.date ? -1 : 1));
     const out = days.map(d => detail ? d : { date: d.date, savedAt: d.savedAt, savedBy: d.savedBy, taxPct: d.taxPct, scope: d.scope, totals: d.totals, count: (d.sales || []).length });
     sendJSON(res, 200, { days: out, saved_dates: Object.keys(store.days || {}).sort() });
+  });
+
+  // RESUMEN del Histórico por rango: agrega las ventas guardadas separando STOCK vs NO STOCK, por cuenta.
+  // Stock → venta bruta + quedó + costo. No stock (dropshipping) → venta bruta + quedó.
+  route('GET', '/api/gestion/history-resumen', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const u = new URL(req.url, 'http://x');
+    const from = u.searchParams.get('from'), to = u.searchParams.get('to');
+    const store = loadGestionDays();
+    let days = Object.values(store.days || {});
+    if (from) days = days.filter(d => d.date >= from);
+    if (to) days = days.filter(d => d.date <= to);
+    const acc = {};
+    const tot = { stock: { venta: 0, queda: 0, costo: 0, unid: 0, n: 0 }, drop: { venta: 0, queda: 0, unid: 0, n: 0 } };
+    for (const d of days) {
+      for (const s of (d.sales || [])) {
+        const name = s.account_name || (s.account_id === 'local' ? 'Venta local' : '—');
+        if (!acc[name]) acc[name] = { stock: { venta: 0, queda: 0, costo: 0, unid: 0, n: 0 }, drop: { venta: 0, queda: 0, unid: 0, n: 0 } };
+        const g = s.stock ? 'stock' : 'drop';
+        const rev = Number(s.revenue) || 0, qd = Number(s.queda) || 0, qty = Number(s.qty) || 1;
+        acc[name][g].venta += rev; acc[name][g].queda += qd; acc[name][g].unid += qty; acc[name][g].n++;
+        tot[g].venta += rev; tot[g].queda += qd; tot[g].unid += qty; tot[g].n++;
+        if (g === 'stock') { const c = (s.known && s.cost != null) ? (Number(s.cost) || 0) : 0; acc[name].stock.costo += c; tot.stock.costo += c; }
+      }
+    }
+    const cuentas = Object.keys(acc).sort().map(name => ({ cuenta: name, stock: acc[name].stock, drop: acc[name].drop }));
+    const saved = Object.keys(store.days || {}).sort().filter(dd => (!from || dd >= from) && (!to || dd <= to));
+    sendJSON(res, 200, { ok: true, cuentas, totales: tot, dias_guardados: saved });
   });
 
   // REVALIDAR días guardados: en este segmento NO trabajamos con ventas canceladas ni reclamos
@@ -13842,6 +13870,17 @@ function contLoad() {
     c.config._seeded_negocio = true;
     try { saveDB(db); } catch (e) {}
   }
+  // Corrección única (v2): recalcular el período ABIERTO con la definición actual de config,
+  // para arreglar rangos viejos que quedaron desfasados aunque haya períodos cerrados. Corre una vez.
+  if (!c.config._period_recalc_v2) {
+    c.config._period_recalc_v2 = true;
+    const curP2 = c.periods.find(pp => pp.id === c.config.current_period_id);
+    if (curP2 && !curP2.closed) {
+      const rng2 = contPeriodRange(c.config, new Date());
+      curP2.start = rng2.start; curP2.end = rng2.end; curP2.label = contPeriodLabel(rng2.start, rng2.end);
+    }
+    try { saveDB(db); } catch (e) {}
+  }
   // Corrección única: si el período seguía en el default viejo (1 → fin de mes), pasarlo a 23 → 22
   // y recalcular el período abierto (si no cerraste ninguno todavía). Corre una sola vez.
   if (!c.config._period_2322_v1) {
@@ -14857,11 +14896,10 @@ route('POST', '/api/contable/mutate', async (req, res) => {
       case 'config.update': {
         if (p.period_start_day != null) c.config.period_start_day = _cclamp(p.period_start_day, 1, 28);
         if (p.period_end_day != null) c.config.period_end_day = (parseInt(p.period_end_day) === 0 ? 0 : _cclamp(p.period_end_day, 1, 28));
-        // Si todavía no cerraste ningún período, recalculamos el período actual (abierto) con la nueva
-        // definición, para que 23→22 aplique ya (sin tener que cerrar/abrir).
-        const hayCerrados = c.periods.some(pp => pp.closed);
+        // Recalculamos SIEMPRE el período ABIERTO (actual) con la nueva definición, para que el rango
+        // que muestra coincida con lo configurado. Los períodos CERRADOS quedan como están (histórico).
         const curP = contCurrentPeriod(db);
-        if (!hayCerrados && curP) {
+        if (curP && !curP.closed) {
           const rng = contPeriodRange(c.config, new Date());
           curP.start = rng.start; curP.end = rng.end; curP.label = contPeriodLabel(rng.start, rng.end);
         }
