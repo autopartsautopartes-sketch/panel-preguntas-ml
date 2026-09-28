@@ -5642,7 +5642,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                     <option value=""${!u.prep_sucursal ? ' selected' : ''}>Todas</option>
                     <option value="Rufino"${u.prep_sucursal === 'Rufino' ? ' selected' : ''}>Rufino</option>
                     <option value="San Martin"${u.prep_sucursal === 'San Martin' ? ' selected' : ''}>San Martin</option>
-                  </select></label>` : ''}
+                  </select></label>
+                <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer" title="Aunque gestione preparación, en 'En preparación' solo verá la sucursal asignada (no toca 'Sin preparar').">
+                  <input type="checkbox" ${u.prep_lock_sucursal ? 'checked' : ''} onchange="toggleAlert(${u.id}, 'prep_lock_sucursal', this.checked)" style="width:16px;height:16px;cursor:pointer">
+                  🔒 Fijar a su sucursal
+                </label>` : ''}
                 <button onclick="openChangePassword(${u.id}, '${escapeHtml(u.username)}')" style="padding:5px 10px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px">🔑 Contraseña</button>
                 ${u.role !== 'admin' ? `<button class="btn-danger" style="padding:5px 10px;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px" onclick="removeUser(${u.id})">Eliminar</button>` : ''}
               </div>
