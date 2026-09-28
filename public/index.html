@@ -11712,8 +11712,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">';
       h += '<strong style="color:#2d3277;font-size:15px">' + c + '</strong>';
       h += '<span style="padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700;background:' + (esRI ? '#eef2ff;color:#3730a3' : '#ecfdf5;color:#065f46') + '">' + (esRI ? 'Responsable Inscripto' : 'Monotributo') + '</span>';
-      h += '<label style="margin-left:auto;font-size:13px;cursor:pointer"><input type="checkbox" id="fac-activa-' + c + '"' + (x.activa ? ' checked' : '') + '> Activa</label>';
+      h += '<button onclick="facTest(\'' + c + '\',this)" style="margin-left:auto;padding:5px 11px;border:1px solid #7c3aed;border-radius:8px;background:#fff;color:#7c3aed;font-weight:600;font-size:12px;cursor:pointer">🔌 Probar conexión ARCA</button>';
+      h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" id="fac-activa-' + c + '"' + (x.activa ? ' checked' : '') + '> Activa</label>';
       h += '</div>';
+      h += '<div id="fac-test-' + c + '" style="display:none;margin:0 0 10px;padding:8px 12px;border-radius:8px;font-size:12.5px"></div>';
       h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">';
       h += facField('CUIT', '<input id="fac-cuit-' + c + '" value="' + escapeHtml(x.cuit || '') + '" maxlength="11" placeholder="sin guiones" style="' + css + '">');
       h += facField('Condición', '<select id="fac-cond-' + c + '" onchange="renderFacturacion()" style="' + css + '"><option value="RI"' + (esRI ? ' selected' : '') + '>Responsable Inscripto</option><option value="MONO"' + (!esRI ? ' selected' : '') + '>Monotributo</option></select>');
@@ -11770,6 +11772,30 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       showToast('Configuración guardada', 'success');
       await loadFacturacion();
     } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '💾 Guardar configuración'; } }
+  }
+  async function facTest(cuenta, btn) {
+    var box = document.getElementById('fac-test-' + cuenta);
+    if (btn) { btn.disabled = true; btn.textContent = 'Probando…'; }
+    if (box) { box.style.display = ''; box.style.background = '#f8fafc'; box.style.color = '#374151'; box.innerHTML = 'Conectando con ARCA…'; }
+    try {
+      var r = await fetch('/api/facturacion/test?cuenta=' + encodeURIComponent(cuenta));
+      var d = await r.json();
+      if (d.ok) {
+        var okAll = d.dummy && d.dummy.app === 'OK' && d.dummy.db === 'OK' && d.dummy.auth === 'OK';
+        var h = '<b style="color:' + (okAll ? '#065f46' : '#b45309') + '">' + (okAll ? '✓ Conexión OK' : '⚠ Conectó con avisos') + '</b> · ' + (d.ambiente === 'produccion' ? 'Producción' : 'Homologación') +
+          '<div style="margin-top:4px">Servidores ARCA — App: <b>' + (d.dummy ? d.dummy.app : '?') + '</b> · Base: <b>' + (d.dummy ? d.dummy.db : '?') + '</b> · Auth: <b>' + (d.dummy ? d.dummy.auth : '?') + '</b></div>';
+        if (d.ultimo) h += '<div style="margin-top:3px">Último comprobante autorizado (PV ' + d.ultimo.pto_vta + ', Factura ' + d.ultimo.cbte + '): <b>N° ' + d.ultimo.ultimo_nro + '</b> → la próxima sería la ' + (Number(d.ultimo.ultimo_nro) + 1) + '</div>';
+        else if (d.ultimo_error) h += '<div style="margin-top:3px;color:#b45309">Punto de venta: ' + escapeHtml(d.ultimo_error) + '</div>';
+        else h += '<div style="margin-top:3px;color:#6b7280">Cargá el punto de venta para verificar la numeración.</div>';
+        box.style.background = okAll ? '#ecfdf5' : '#fffbeb'; box.style.color = '#374151'; box.innerHTML = h;
+      } else {
+        box.style.background = '#fef2f2'; box.style.color = '#7f1d1d';
+        box.innerHTML = '<b>✗ No se pudo conectar</b><div style="margin-top:4px">' + escapeHtml(d.error || 'Error desconocido') + '</div>';
+      }
+    } catch (e) {
+      if (box) { box.style.background = '#fef2f2'; box.style.color = '#7f1d1d'; box.innerHTML = '✗ Error de red'; }
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '🔌 Probar conexión ARCA'; }
   }
   function facComprobantesHtml() {
     return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;max-width:720px">' +
