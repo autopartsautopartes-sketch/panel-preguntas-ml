@@ -13997,9 +13997,29 @@ function facSignCMS(traXml, crtPath, keyPath) {
   });
 }
 async function facPostSoap(url, body, soapAction) {
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': soapAction || '' }, body: body });
-  const txt = await r.text();
-  return { status: r.status, txt };
+  // AFIP (producción) suele cortar/resetear conexiones. Damos timeout + reintentos
+  // para que un "fetch failed" transitorio no tumbe la operación.
+  let host = url; try { host = new URL(url).host; } catch (e) {}
+  let lastErr = null;
+  for (let intento = 1; intento <= 3; intento++) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 30000);
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': soapAction || '' }, body: body, signal: ctrl.signal });
+      const txt = await r.text();
+      clearTimeout(to);
+      return { status: r.status, txt };
+    } catch (e) {
+      clearTimeout(to);
+      lastErr = e;
+      const msg = String((e && e.message) || e);
+      const abortado = (e && e.name === 'AbortError');
+      // Reintentamos sólo ante fallos de red/timeout (no ante errores de lógica).
+      if (intento < 3) { await new Promise(rr => setTimeout(rr, 1200 * intento)); continue; }
+      throw new Error('No pude conectar con ARCA (' + host + ')' + (abortado ? ' — tardó demasiado (timeout)' : ' — ' + msg) + '. Suele ser un corte temporal del servidor de AFIP; probá de nuevo en unos segundos.');
+    }
+  }
+  throw (lastErr || new Error('No pude conectar con ARCA (' + host + ').'));
 }
 async function facWsaaLogin(cuenta, ambiente) {
   const key = cuenta + '|' + ambiente;
