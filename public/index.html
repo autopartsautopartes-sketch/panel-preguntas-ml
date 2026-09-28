@@ -5453,7 +5453,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   async function applyPrepStatusBadges(sales) {
     try {
-      const res = await fetch('/api/prep/list');
+      const res = await fetch('/api/prep/list?all=1');
       if (!res.ok) return;
       const prepOrders = await res.json();
       const prepMap = {};
@@ -7865,7 +7865,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       params.set('limit', '300');   // Preparación mira más atrás que Ventas: así no se pierden las viejas pendientes
       const [salesRes, prepRes, claimsRes] = await Promise.all([
         fetch('/api/sales?' + params.toString()),
-        fetch('/api/prep/list'),
+        fetch('/api/prep/list?all=1'),   // lista COMPLETA (todas las sucursales) para excluir bien en "Sin preparar"
         fetch('/api/prep/claims')
       ]);
       const allSales = await salesRes.json();
