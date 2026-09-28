@@ -12608,14 +12608,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var ts = r.totStock || {}, td = r.totDrop || {};
     var entBruto = (Number(ts.venta) || 0) + (Number(td.venta) || 0);
     var entNeto = (Number(ts.queda) || 0) + (Number(td.queda) || 0);
-    var resultado = entNeto - salidaTotal;
+    var costoStock = Number(ts.costo) || 0;
+    var resultado = entNeto - salidaTotal - costoStock;
     var rowT = function (lbl, val, color) { return '<div style="display:flex;justify-content:space-between;padding:11px 16px;border-bottom:1px solid #eef2f7"><span style="font-weight:600;color:#374151;font-size:13.5px">' + lbl + '</span><span style="font-weight:700;font-size:14px;color:' + (color || '#111') + '">' + contMoney2(val) + '</span></div>'; };
     h += rowT('Entradas (venta bruta)', entBruto, '#374151');
     h += rowT('Entradas (quedó neto)', entNeto, '#047857');
     h += rowT('Salidas del período', salidaTotal, '#b91c1c');
+    h += rowT('Costos ventas de stock', costoStock, '#b91c1c');
     var rColor = resultado >= 0 ? '#065f46' : '#b91c1c';
     var rBg = resultado >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
-    h += '<div style="background:' + rBg + ';padding:18px 16px;text-align:center"><div style="font-size:12px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Resultado del período</div><div style="font-size:32px;font-weight:800;color:' + rColor + ';line-height:1.1;margin-top:3px">' + contMoney2(resultado) + '</div><div style="font-size:11px;color:#6b7280;margin-top:3px">Quedó neto − Salidas</div></div>';
+    h += '<div style="background:' + rBg + ';padding:18px 16px;text-align:center"><div style="font-size:12px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.5px">Resultado del período</div><div style="font-size:32px;font-weight:800;color:' + rColor + ';line-height:1.1;margin-top:3px">' + contMoney2(resultado) + '</div><div style="font-size:11px;color:#6b7280;margin-top:3px">Quedó neto − Salidas − Costos stock</div></div>';
     h += '</div>';
     return h;
   }
