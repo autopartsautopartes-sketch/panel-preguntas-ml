@@ -678,6 +678,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const res = await fetch('/api/me');
       if (res.ok) {
         currentUser = await res.json();
+        { const _n = new URLSearchParams(location.search).get('next'); if (_n && _n.charAt(0) === '/' && _n.indexOf('//') < 0) { location.href = _n; return; } }
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('app').style.display = 'block';
         document.getElementById('currentUser').textContent = currentUser.username;
@@ -820,6 +821,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       });
       if (res.ok) {
         currentUser = await res.json();
+        { const _n = new URLSearchParams(location.search).get('next'); if (_n && _n.charAt(0) === '/' && _n.indexOf('//') < 0) { location.href = _n; return; } }
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('app').style.display = 'block';
         document.getElementById('currentUser').textContent = currentUser.username;
@@ -12845,14 +12847,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</tbody></table></div>';
     return h;
   }
-  function contToggleManual() { _cont.showManual = !_cont.showManual; renderContable(); }
+  function contToggleManual() { _ctxMontoRaw = ''; _cont.showManual = !_cont.showManual; renderContable(); }
   function contManualFormHtml() {
     var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:14px">';
     h += '<h3 style="margin:0 0 12px;color:#2d3277;font-size:15px">Agregar transacción manual</h3>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
     h += contField('Fecha', '<input type="date" id="ctx-fecha" value="' + contHoy() + '" style="' + contInputCss() + '">');
     h += contField('Detalle', '<input type="text" id="ctx-detalle" placeholder="Descripción" style="' + contInputCss() + '">');
-    h += contField('Monto *', '<input type="number" id="ctx-monto" step="0.01" placeholder="0" style="' + contInputCss() + '">');
+    h += contField('Monto *', '<input type="text" id="ctx-monto" inputmode="numeric" placeholder="$ 0,00" oninput="ctxMontoInput()" style="' + contInputCss() + '">');
     h += contField('Forma de pago *', '<select id="ctx-forma" onchange="contFormaOnChange()" style="' + contInputCss() + '"><option value="">(elegí)</option><option value="tarjeta">Tarjeta</option><option value="cheque">Cheque</option><option value="efectivo">Efectivo</option></select>');
     h += '</div>';
     // Panel cheque
@@ -12902,11 +12904,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var dest = _cv('ctx-derivado'); var rid = _cv('ctx-rubro');
     var sub = document.getElementById('ctx-sub'); if (sub) { sub.innerHTML = contSubOptions(dest, rid, ''); sub.disabled = false; }
   }
+  var _ctxMontoRaw = '';
+  function ctxMontoInput() { var el = document.getElementById('ctx-monto'); if (!el) return; var d = el.value.replace(/\D/g, ''); _ctxMontoRaw = d; el.value = d ? ('$ ' + (Number(d) / 100).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) : ''; }
+  function ctxMontoVal() { return _ctxMontoRaw ? Number(_ctxMontoRaw) / 100 : 0; }
   async function contTxSaveManual() {
     var forma = _cv('ctx-forma');
-    var monto = _cv('ctx-monto');
+    var monto = ctxMontoVal();
     if (!forma) { showToast('Elegí la forma de pago', 'error'); return; }
-    if (!monto) { showToast('Ingresá el monto', 'error'); return; }
+    if (!(monto > 0)) { showToast('Ingresá el monto', 'error'); return; }
     var dest = _cv('ctx-derivado');
     var payload = {
       fecha: _cv('ctx-fecha') || contHoy(), detalle: _cv('ctx-detalle'),
