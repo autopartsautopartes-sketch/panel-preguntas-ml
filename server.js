@@ -15207,7 +15207,7 @@ route('POST', '/api/contable/mutate', async (req, res) => {
       case 'interes.delete': { c.intereses_adelanto = c.intereses_adelanto.filter(x => x.id !== p.id); break; }
       case 'prestamo.save': {
         if (p.id) { const t = c.prestamos.find(x => x.id === p.id); if (t) Object.assign(t, p, { id: t.id, pagos: t.pagos || [] }); }
-        else c.prestamos.push({ id: contId(db, 'pr'), cuenta: p.cuenta || '', fecha_cierre: p.fecha_cierre || '', cuotas_restantes: Number(p.cuotas_restantes) || 0, monto_cuota: Number(p.monto_cuota) || 0, total: Number(p.total) || 0, finaliza: p.finaliza || '', nota: p.nota || '', creado: nowISO(), pagos: [] });
+        else c.prestamos.push({ id: contId(db, 'pr'), cuenta: p.cuenta || '', fecha_cierre: p.fecha_cierre || '', cuotas_total: Number(p.cuotas_restantes) || 0, cuotas_restantes: Number(p.cuotas_restantes) || 0, monto_cuota: Number(p.monto_cuota) || 0, total: Number(p.total) || 0, finaliza: p.finaliza || '', nota: p.nota || '', creado: nowISO(), pagos: [] });
         break;
       }
       case 'prestamo.delete': { c.prestamos = c.prestamos.filter(x => x.id !== p.id); break; }
@@ -15215,7 +15215,9 @@ route('POST', '/api/contable/mutate', async (req, res) => {
         const pr = c.prestamos.find(x => x.id === p.prestamoId); if (!pr) throw new Error('no existe');
         if (!pr.pagos) pr.pagos = [];
         pr.pagos.push({ id: contId(db, 'pg'), fecha: p.fecha || _ciso(new Date()), monto: Number(p.monto) || 0, transaccion_id: p.transaccion_id || null, nota: p.nota || '' });
-        if (pr.cuotas_restantes > 0) pr.cuotas_restantes -= 1;
+        // NOTA: "cuotas restantes" YA NO se decrementa por pago. Se calcula por MONTO:
+        // cuotas completas = piso(pagado / monto_cuota). Así varios pagos parciales de una
+        // misma cuota cuentan como UNA sola cuota (se descuenta recién al completarla).
         break;
       }
       case 'prestamo.pago.delete': {
