@@ -12878,7 +12878,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function contPrestamoOptions(sel) {
     var h = '<option value="">(elegí préstamo)</option>';
-    contD().prestamos.forEach(function (p) { h += '<option value="' + p.id + '"' + (sel === p.id ? ' selected' : '') + '>' + escapeHtml(p.cuenta + ' · cuota ' + contMoney(p.monto_cuota) + ' · quedan ' + p.cuotas_restantes) + '</option>'; });
+    contD().prestamos.forEach(function (p) { var _st = contPrestamoState(p); h += '<option value="' + p.id + '"' + (sel === p.id ? ' selected' : '') + '>' + escapeHtml(p.cuenta + ' · cuota ' + contMoney(p.monto_cuota) + ' · quedan ' + _st.quedan) + '</option>'; });
     return h;
   }
 
@@ -13498,13 +13498,42 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
 
   /* ---------- PRÉSTAMOS ---------- */
+  // Estado de un préstamo calculado POR MONTO (no por cantidad de pagos):
+  // cuotas completas = piso(pagado / monto_cuota). Varios pagos parciales de una misma
+  // cuota cuentan como UNA sola; recién al juntar el monto se descuenta.
+  function contPrestamoState(pr) {
+    var cuota = Number(pr.monto_cuota) || 0;
+    var total = Number(pr.total) || 0;
+    var cuotasTotal = cuota > 0 ? Math.round(total / cuota) : (Number(pr.cuotas_total) || Number(pr.cuotas_restantes) || 0);
+    if (!(cuotasTotal > 0)) cuotasTotal = Number(pr.cuotas_total) || Number(pr.cuotas_restantes) || 0;
+    var pagado = (pr.pagos || []).reduce(function (s, x) { return s + (Number(x.monto) || 0); }, 0);
+    var completas = cuota > 0 ? Math.floor(pagado / cuota + 1e-6) : 0;
+    if (completas > cuotasTotal) completas = cuotasTotal;
+    var quedan = cuotasTotal - completas;
+    var enCurso = pagado - completas * cuota; if (enCurso < 0) enCurso = 0;
+    return { cuota: cuota, total: total, cuotasTotal: cuotasTotal, pagado: pagado, completas: completas, quedan: quedan, enCursoPagado: enCurso, numEnCurso: completas + 1 };
+  }
+  // Chips de cuotas: verde = pagada, amarillo = en curso (con %), gris = pendiente.
+  function contPrestamoChips(st) {
+    var n = st.cuotasTotal; if (!(n > 0)) return '';
+    var h = '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">';
+    for (var i = 1; i <= n; i++) {
+      var bg, col, bd, txt;
+      if (i <= st.completas) { bg = '#dcfce7'; col = '#166534'; bd = '#86efac'; txt = i + ' ✓'; }
+      else if (i === st.completas + 1 && st.quedan > 0) { var pc = st.cuota > 0 ? Math.round(st.enCursoPagado / st.cuota * 100) : 0; bg = '#fef9c3'; col = '#854d0e'; bd = '#fde047'; txt = i + ' · ' + pc + '%'; }
+      else { bg = '#f1f5f9'; col = '#94a3b8'; bd = '#e2e8f0'; txt = String(i); }
+      h += '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:' + bg + ';color:' + col + ';border:1px solid ' + bd + '">' + txt + '</span>';
+    }
+    h += '</div>';
+    return h;
+  }
   function contPrestamosHtml() {
     var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:16px">';
     h += '<div style="font-weight:600;color:#2d3277;margin-bottom:10px;font-size:14px">Cargar préstamo</div>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">';
     h += contField('Cuenta', '<select id="cpr-cuenta" style="' + contInputCss() + '">' + contCuentaOptions('') + '</select>');
     h += contField('Fecha de cierre (débito)', '<input type="date" id="cpr-fecha" style="' + contInputCss() + '">');
-    h += contField('Cuotas restantes', '<input type="number" id="cpr-cuotas" step="1" oninput="contPrestamoCalc()" style="' + contInputCss() + '">');
+    h += contField('Cantidad de cuotas', '<input type="number" id="cpr-cuotas" step="1" oninput="contPrestamoCalc()" style="' + contInputCss() + '">');
     h += contField('$ por cuota', '<input type="number" id="cpr-cuota" step="0.01" oninput="contPrestamoCalc()" style="' + contInputCss() + '">');
     h += contField('Total', '<input type="text" id="cpr-total" readonly style="' + contInputCss() + ';background:#f8fafc">');
     h += contField('Finaliza', '<input type="text" id="cpr-finaliza" readonly style="' + contInputCss() + ';background:#f8fafc">');
@@ -13514,13 +13543,23 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (!prs.length) { h += '<div class="empty"><p>No hay préstamos cargados.</p></div>'; return h; }
     prs.forEach(function (p) {
       var pagos = p.pagos || [];
-      var pagado = pagos.reduce(function (s, x) { return s + (Number(x.monto) || 0); }, 0);
+      var st = contPrestamoState(p);
+      var cancelado = st.quedan <= 0;
+      var qColor = cancelado ? '#166534' : '#2d3277';
       h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin-bottom:12px">';
       h += '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">';
-      h += '<div><strong style="color:#2d3277">' + escapeHtml(p.cuenta) + '</strong> · ' + contMoney(p.monto_cuota) + '/cuota · quedan <strong>' + p.cuotas_restantes + '</strong> · total ' + contMoney(p.total) + (p.finaliza ? ' · finaliza ' + contFechaDisp(p.finaliza) : '') + '</div>';
+      h += '<div><strong style="color:#2d3277">' + escapeHtml(p.cuenta) + '</strong> · ' + contMoney(p.monto_cuota) + '/cuota · quedan <strong style="color:' + qColor + '">' + st.quedan + '</strong> de ' + st.cuotasTotal + ' · total ' + contMoney(p.total) + (p.finaliza ? ' · finaliza ' + contFechaDisp(p.finaliza) : '') + '</div>';
       h += '<div><button onclick="contPrestamoDelete(\'' + p.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑 Borrar</button></div>';
       h += '</div>';
-      h += '<div style="font-size:12px;color:#6b7280;margin-top:6px">Cierre: ' + (p.fecha_cierre ? contFechaDisp(p.fecha_cierre) : '—') + (p.nota ? ' · ' + escapeHtml(p.nota) : '') + ' · Pagado hasta ahora: ' + contMoney(pagado) + '</div>';
+      h += '<div style="font-size:12px;color:#6b7280;margin-top:6px">Cierre: ' + (p.fecha_cierre ? contFechaDisp(p.fecha_cierre) : '—') + (p.nota ? ' · ' + escapeHtml(p.nota) : '') + ' · Pagado hasta ahora: ' + contMoney(st.pagado) + '</div>';
+      // Chips de cuotas + línea de la cuota en curso
+      h += contPrestamoChips(st);
+      if (cancelado) {
+        h += '<div style="margin-top:8px;font-size:13px;font-weight:700;color:#166534">✓ Préstamo cancelado (todas las cuotas pagadas)</div>';
+      } else {
+        var pcCur = st.cuota > 0 ? Math.round(st.enCursoPagado / st.cuota * 100) : 0;
+        h += '<div style="margin-top:8px;font-size:12.5px;color:#374151">Cuota <strong>' + st.numEnCurso + '</strong> en curso: <strong>' + contMoney(st.enCursoPagado) + '</strong> de ' + contMoney(st.cuota) + ' <span style="color:#9ca3af">(' + pcCur + '%)</span> · falta <strong>' + contMoney(Math.max(0, st.cuota - st.enCursoPagado)) + '</strong></div>';
+      }
       if (pagos.length) {
         h += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="background:#f8fafc;text-align:left"><th style="padding:6px">Fecha</th><th style="padding:6px;text-align:right">Monto</th><th style="padding:6px">Nota</th><th style="padding:6px"></th></tr></thead><tbody>';
         pagos.slice().sort(function (a, b) { return (b.fecha || '').localeCompare(a.fecha || ''); }).forEach(function (pg) { h += '<tr><td style="padding:6px">' + contFechaDisp(pg.fecha) + '</td><td style="padding:6px;text-align:right">' + contMoney(pg.monto) + '</td><td style="padding:6px;color:#6b7280">' + escapeHtml(pg.nota || '') + '</td><td style="padding:6px"><button onclick="contPagoDelete(\'' + p.id + '\',\'' + pg.id + '\')" style="padding:2px 6px;border:none;border-radius:5px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:11px">🗑</button></td></tr>'; });
