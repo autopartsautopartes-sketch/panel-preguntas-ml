@@ -15625,6 +15625,14 @@ async function contComputeResumenSnapshot() {
   const egresos = negocioBucket + casa + banco + construccion + cuotaPrestamos;
   const cashFlow = entNeto - egresos;
 
+  // ---------- Total del panel de Stock (valuación BsAs + Rufino) ----------
+  // Se lee del mismo archivo que usa /api/stock/data (stock_last.json -> total.valor).
+  let stockTotal = 0, stockBsAs = 0, stockRufino = 0;
+  try {
+    const sl = JSON.parse(fs.readFileSync(DATA_DIR + '/stock_last.json', 'utf8'));
+    if (sl) { stockTotal = (sl.total && num(sl.total.valor)) || 0; stockBsAs = (sl.bsas && num(sl.bsas.valor)) || 0; stockRufino = (sl.rufino && num(sl.rufino.valor)) || 0; }
+  } catch (e) {}
+
   return {
     ts: Date.now(), fecha_ar: arNow().date,
     period: cur ? { id: cur.id, label: cur.label, start: sISO, end: eISO } : null,
@@ -15638,6 +15646,8 @@ async function contComputeResumenSnapshot() {
     negocioBucket, banco, casa, construccion, cuotaPrestamos, interesesAdel, creditosPend, chequesPagados,
     // Cash Flow
     cashFlow,
+    // Stock (valuación del panel de Stock)
+    stockTotal, stockBsAs, stockRufino,
     errs
   };
 }
