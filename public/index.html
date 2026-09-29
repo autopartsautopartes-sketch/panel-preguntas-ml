@@ -12756,7 +12756,91 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     return h;
   }
   /* ---------- HISTÓRICO (planilla resumen, snapshots diarios) ---------- */
+  // Métricas del Histórico (una sola serie por gráfico): [clave, etiqueta, getter(row), esConSigno]
+  var CONT_HIST_METRICS = [
+    ['ganancia', 'Ganancia negocio', function (r) { return Number(r.ganancia) || 0; }, true],
+    ['saldo', 'Estado (saldo)', function (r) { return Number(r.saldo) || 0; }, true],
+    ['cashFlow', 'Cash Flow', function (r) { return Number(r.cashFlow) || 0; }, true],
+    ['entNeto', 'Entrada neto', function (r) { return Number(r.entrada && r.entrada.entNeto) || 0; }, false],
+    ['costoStock', 'Costo stock', function (r) { return Number(r.entrada && r.entrada.costoStock) || 0; }, false],
+    ['salidaTotal', 'Salida total', function (r) { return Number(r.salidaTotal) || 0; }, false],
+    ['stockTotal', 'Stock (total valuado)', function (r) { return Number(r.stockTotal) || 0; }, false],
+    ['mp', 'Saldos MP', function (r) { return Number(r.mp) || 0; }, false],
+    ['cheques', 'Cheques', function (r) { return Number(r.cheques) || 0; }, false],
+    ['provReal', 'Deuda proveedores', function (r) { return Number(r.provReal) || 0; }, false],
+    ['prestamos', 'Préstamos', function (r) { return Number(r.prestamos) || 0; }, false],
+    ['casa', 'Gastos casa', function (r) { return Number(r.casa) || 0; }, false],
+    ['construccion', 'Construcción', function (r) { return Number(r.construccion) || 0; }, false]
+  ];
+  function contHistMetric() { return CONT_HIST_METRICS.find(function (x) { return x[0] === (_cont.histMetric || 'ganancia'); }) || CONT_HIST_METRICS[0]; }
+  function contHistSetMetric(v) { _cont.histMetric = v; contHistRenderChart(); }
+  function contHistSetFrom(v) { _cont.histFrom = v; contHistRenderChart(); }
+  function contHistSetTo(v) { _cont.histTo = v; contHistRenderChart(); }
+  function contHistUsePeriodo() { var p = contCurPeriod(); if (p) { _cont.histFrom = String(p.start).slice(0, 10); _cont.histTo = String(p.end).slice(0, 10); } else { _cont.histFrom = ''; _cont.histTo = ''; } renderContable(); }
+  function contHistChartCard() {
+    var m = _cont.histMetric || 'ganancia';
+    var inp = 'padding:6px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px';
+    var sel = '<select onchange="contHistSetMetric(this.value)" style="' + inp + ';font-weight:600;color:#2d3277">';
+    CONT_HIST_METRICS.forEach(function (x) { sel += '<option value="' + x[0] + '"' + (x[0] === m ? ' selected' : '') + '>' + x[1] + '</option>'; });
+    sel += '</select>';
+    var from = _cont.histFrom || '', to = _cont.histTo || '';
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px;margin-bottom:14px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
+    h += '<span style="font-size:13px;font-weight:700;color:#374151">Estadística:</span>' + sel;
+    h += '<span style="font-size:12px;color:#6b7280;margin-left:6px">Desde</span><input type="date" value="' + from + '" onchange="contHistSetFrom(this.value)" style="' + inp + '">';
+    h += '<span style="font-size:12px;color:#6b7280">Hasta</span><input type="date" value="' + to + '" onchange="contHistSetTo(this.value)" style="' + inp + '">';
+    h += '<button onclick="contHistUsePeriodo()" style="padding:6px 11px;border:none;border-radius:8px;background:#eef2ff;color:#4f46e5;font-weight:600;cursor:pointer;font-size:12px">📅 Período actual</button>';
+    h += '</div>';
+    // KPIs de la serie
+    h += '<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:10px">';
+    h += '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;font-weight:700">Último</div><div id="chs-last" style="font-size:18px;font-weight:800;color:#2d3277">—</div></div>';
+    h += '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;font-weight:700">Promedio</div><div id="chs-avg" style="font-size:18px;font-weight:800;color:#2d3277">—</div></div>';
+    h += '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;font-weight:700">Máximo</div><div id="chs-max" style="font-size:18px;font-weight:800;color:#065f46">—</div></div>';
+    h += '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;font-weight:700">Mínimo</div><div id="chs-min" style="font-size:18px;font-weight:800;color:#b91c1c">—</div></div>';
+    h += '</div>';
+    h += '<div style="position:relative;height:240px"><canvas id="contHistChart"></canvas></div>';
+    h += '<div id="chs-empty" style="display:none;color:#9ca3af;font-size:13px;text-align:center;padding:20px">No hay fotos guardadas en ese rango de fechas.</div>';
+    h += '</div>';
+    return h;
+  }
+  function contHistRenderChart() {
+    var rows = _cont.histData || [];
+    var m = contHistMetric();
+    var from = _cont.histFrom || '', to = _cont.histTo || '';
+    var data = rows.filter(function (r) { var d = String(r.fecha_ar || ''); return (!from || d >= from) && (!to || d <= to); })
+      .slice().sort(function (a, b) { return String(a.fecha_ar) < String(b.fecha_ar) ? -1 : 1; });
+    var labels = data.map(function (r) { var p = String(r.fecha_ar).split('-'); return p[2] + '/' + p[1]; });
+    var vals = data.map(m[2]);
+    var setTxt = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+    if (vals.length) {
+      var last = vals[vals.length - 1];
+      var avg = vals.reduce(function (s, v) { return s + v; }, 0) / vals.length;
+      setTxt('chs-last', contMoney(last)); setTxt('chs-avg', contMoney(Math.round(avg)));
+      setTxt('chs-max', contMoney(Math.max.apply(null, vals))); setTxt('chs-min', contMoney(Math.min.apply(null, vals)));
+    } else { setTxt('chs-last', '—'); setTxt('chs-avg', '—'); setTxt('chs-max', '—'); setTxt('chs-min', '—'); }
+    var cv = document.getElementById('contHistChart');
+    var emptyEl = document.getElementById('chs-empty');
+    if (emptyEl) emptyEl.style.display = vals.length ? 'none' : 'block';
+    if (cv) cv.style.display = vals.length ? '' : 'none';
+    if (!cv || typeof Chart === 'undefined' || !vals.length) { if (_cont.histChart) { _cont.histChart.destroy(); _cont.histChart = null; } return; }
+    if (_cont.histChart) { _cont.histChart.destroy(); _cont.histChart = null; }
+    var color = '#4f46e5';
+    _cont.histChart = new Chart(cv.getContext('2d'), {
+      type: 'line',
+      data: { labels: labels, datasets: [{ label: m[1], data: vals, borderColor: color, backgroundColor: 'rgba(79,70,229,0.08)', borderWidth: 2.5, pointRadius: vals.length <= 20 ? 4 : 2, pointBackgroundColor: color, tension: 0.3, fill: true }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (ctx) { return ' ' + contMoney(Math.round(ctx.raw)); } } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#94a3b8' } },
+          y: { grid: { color: '#f1f5f9' }, ticks: { font: { size: 11 }, color: '#94a3b8', callback: function (v) { return '$' + Number(v).toLocaleString('es-AR'); } }, beginAtZero: false }
+        }
+      }
+    });
+  }
   function contHistoricoHtml() {
+    if (_cont.histMetric === undefined) _cont.histMetric = 'ganancia';
+    if (_cont.histFrom === undefined) { var _p = contCurPeriod(); _cont.histFrom = _p ? String(_p.start).slice(0, 10) : ''; _cont.histTo = _p ? String(_p.end).slice(0, 10) : ''; }
     var h = '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
     h += '<h3 style="margin:0;color:#2d3277;font-size:18px">Histórico</h3>';
     h += '<button onclick="contLoadHist(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">↻ Actualizar</button>';
@@ -12767,7 +12851,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       if (!_cont.histLoading) { _cont.histLoading = true; setTimeout(function () { contLoadHist(); }, 10); }
       return h + '<div class="loading"><div class="spinner"></div><p>Cargando histórico…</p></div>';
     }
-    return h + contHistTable();
+    h += contHistChartCard();
+    h += contHistTable();
+    setTimeout(contHistRenderChart, 30);   // dibujar el gráfico cuando el canvas ya está en el DOM
+    return h;
   }
   async function contLoadHist(force) {
     _cont.histLoading = true;
@@ -12793,11 +12880,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var cols = [
       ['Fecha', function (r) { return '<td style="padding:8px 12px;font-weight:700;white-space:nowrap">' + contFechaDisp(r.fecha_ar) + '</td>'; }],
       ['Ganancia negocio', function (r) { return mny(r.ganancia, true); }],
-      ['Saldo', function (r) { return mny(r.saldo, true); }],
+      ['Estado (saldo)', function (r) { return mny(r.saldo, true); }],
       ['Cash Flow', function (r) { return mny(r.cashFlow, true); }],
       ['Entrada neto', function (r) { return mny(r.entrada && r.entrada.entNeto); }],
       ['Costo stock', function (r) { return mny(r.entrada && r.entrada.costoStock); }],
       ['Salida total', function (r) { return mny(r.salidaTotal); }],
+      ['Stock total', function (r) { return mny(r.stockTotal); }],
       ['MP', function (r) { return mny(r.mp); }],
       ['Cheques', function (r) { return mny(r.cheques); }],
       ['Deuda prov.', function (r) { return mny(r.provReal); }],
