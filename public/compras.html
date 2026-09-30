@@ -74,7 +74,7 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v67</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v68</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
@@ -443,7 +443,9 @@ function viewResumen(){
 function onResumenProv(){ $('r_cta').innerHTML='<option value="">— Todos los números —</option>'+cuentaOptions($('r_prov').value).replace('<option value="">— N° cliente —</option>',''); renderResumen(); }
 function movimientos(pid,cid){
   var arr=[];
-  ST.comprobantes.forEach(function(c){ if(c.proveedor_id===pid&&(!cid||c.cuenta_id===cid)){ arr.push({id:c.id,kind:'comprobante',fecha:c.fecha||'',cuenta_id:c.cuenta_id,tipo:c.tipo==='factura'?'Factura':'Nota de crédito',numero:c.numero||'',debe:c.tipo==='factura'?facturaNeta(c):0,haber:c.tipo==='nc'?compNeto(c):0,orden:c.created_at||''}); } });
+  // La tabla del resumen va en BRUTO (igual que el resumen del proveedor): Debe/Haber = importe tal cual.
+  // El descuento por pronto pago se aplica SOLO en la tarjeta "Saldo actual (real)".
+  ST.comprobantes.forEach(function(c){ if(c.proveedor_id===pid&&(!cid||c.cuenta_id===cid)){ arr.push({id:c.id,kind:'comprobante',fecha:c.fecha||'',cuenta_id:c.cuenta_id,tipo:c.tipo==='factura'?'Factura':'Nota de crédito',numero:c.numero||'',debe:c.tipo==='factura'?(Number(c.importe)||0):0,haber:c.tipo==='nc'?(Number(c.importe)||0):0,orden:c.created_at||''}); } });
   ST.pagos.forEach(function(p){ if(p.proveedor_id===pid&&(!cid||p.cuenta_id===cid)){ arr.push({id:p.id,kind:'pago',fecha:p.fecha||'',cuenta_id:p.cuenta_id,tipo:'Pago '+(p.medio?('('+p.medio+')'):''),numero:p.numero||'',debe:0,haber:Number(p.importe)||0,orden:p.created_at||''}); } });
   arr.sort(function(a,b){ return (a.fecha||'').localeCompare(b.fecha||'') || (a.orden||'').localeCompare(b.orden||''); });
   return arr;
@@ -469,21 +471,24 @@ function renderResumen(){
     }
     if(okF&&okE) filtered.push(row);
   });
-  var saldoFinal=cid?saldoCuenta(pid,cid):saldoProveedor(pid);
+  var saldoFinal=cid?saldoCuenta(pid,cid):saldoProveedor(pid);          // REAL (con pronto pago aplicado)
+  var saldoBruto=cid?saldoCuentaBruto(pid,cid):saldoProveedorBruto(pid); // BRUTO (como el proveedor)
   var totDebe=0,totHaber=0; mov.forEach(function(m){totDebe+=m.debe;totHaber+=m.haber;});
   // "Pendiente de pago" = deuda NETA real (ya descuenta NC y pagos). Si el saldo quedó a favor, no hay
-  // nada pendiente → muestra 0 y avisa el saldo a favor. (Antes sumaba solo facturas e ignoraba las NC,
-  // por eso decía "debés" aunque en realidad tuvieras saldo a favor.)
+  // nada pendiente → muestra 0 y avisa el saldo a favor.
   var pendReal = Math.max(0, saldoFinal);
   var aFavor = saldoFinal < -0.01 ? -saldoFinal : 0;
   var pctR=descuentoPct(pid); var dTxtR=descTexto(pid);
-  out.innerHTML='<div class="kpi"><div class="box"><div class="lbl">Saldo actual (real)</div><div class="val" style="color:'+(saldoFinal>0?'var(--red)':'var(--green)')+'">'+money(saldoFinal)+'</div>'+(pctR>0?('<div style="font-size:11px;color:var(--green)">✓ con '+dTxtR+' pronto pago aplicado</div>'):'')+'</div>'
-    + '<div class="box"><div class="lbl">Total facturado (Debe)</div><div class="val">'+money(totDebe)+'</div></div>'
-    + '<div class="box"><div class="lbl">Pendiente de pago</div><div class="val" style="color:'+(pendReal>0.01?'var(--red)':'var(--green)')+'">'+money(pendReal)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">'+(aFavor>0.01?('✓ sin deuda · a favor: '+money(aFavor)):'saldo real a pagar (neto, con NC y pagos)')+'</div></div></div>'
+  var factorTxt = factorDesc(pid).toString().replace('.',',');
+  out.innerHTML='<div class="kpi"><div class="box"><div class="lbl">Saldo actual (real)</div><div class="val" style="color:'+(saldoFinal>0?'var(--red)':'var(--green)')+'">'+money(saldoFinal)+'</div>'+(pctR>0?('<div style="font-size:11px;color:var(--green)">✓ con '+dTxtR+' pronto pago (= bruto × '+factorTxt+')</div>'):'')+'</div>'
+    + (pctR>0?('<div class="box"><div class="lbl">Saldo facturado (bruto)</div><div class="val" style="color:'+(saldoBruto>0?'var(--red)':'var(--green)')+'">'+money(saldoBruto)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">como el resumen del proveedor</div></div>'):('<div class="box"><div class="lbl">Total facturado (Debe)</div><div class="val">'+money(totDebe)+'</div></div>'))
+    + '<div class="box"><div class="lbl">Pendiente de pago</div><div class="val" style="color:'+(pendReal>0.01?'var(--red)':'var(--green)')+'">'+money(pendReal)+'</div><div style="font-size:11px;color:var(--mut);margin-top:2px">'+(aFavor>0.01?('✓ sin deuda · a favor: '+money(aFavor)):'saldo real a pagar (con descuento)')+'</div></div></div>'
     + '<div class="card"><h2>'+esc(provById(pid).nombre)+(cid?(' · N° '+esc(cuentaById(provById(pid),cid).numero_cliente)):' · todas las cuentas')+(estadoF!=='todas'?(' <span class="muted" style="font-size:13px;font-weight:400">· filtro: '+(estadoF==='pend'?'pendientes de pago':(estadoF==='parcial'?'parciales':'pagadas'))+'</span>'):'')+'</h2>'
     + '<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th>'+(cid?'':'<th>N° cliente</th>')+'<th>Comprobante</th><th>N°</th><th class="num">Debe</th><th class="num">Haber</th><th>Estado pago</th><th class="num">Saldo</th><th></th></tr></thead><tbody>'
-    + (filtered.length?filtered.map(function(m){var pr=provById(pid);var cc=cuentaById(pr,m.cuenta_id);var estHtml=m.est?('<span class="pill '+m.est.cls+'">'+m.est.estado+'</span>'+(m.est.pend>0.01?(' <span class="muted" style="font-size:11px">falta '+money(m.est.pend)+'</span>'):'')):'';return '<tr><td>'+fmtF(m.fecha)+'</td>'+(cid?'':'<td>'+esc(cc?cc.numero_cliente:'')+'</td>')+'<td>'+esc(m.tipo)+'</td><td>'+esc(m.numero)+'</td><td class="num">'+(m.debe?money(m.debe):'')+'</td><td class="num">'+(m.haber?money(m.haber):'')+'</td><td>'+estHtml+'</td><td class="num"><b>'+money(m.saldo)+'</b></td><td><button class="mini" title="Editar" onclick="'+(m.kind==='pago'?('editPago(\''+m.id+'\')'):('editComprobante(\''+m.id+'\')'))+'">✏️</button></td></tr>';}).join(''):'<tr><td colspan="'+(cid?8:9)+'" class="empty">Sin movimientos con esos filtros.</td></tr>')
-    + '</tbody></table></div></div>';
+    + (filtered.length?filtered.map(function(m){var pr=provById(pid);var cc=cuentaById(pr,m.cuenta_id);var estHtml=m.est?('<span class="pill '+m.est.cls+'">'+m.est.estado+'</span>'+(m.est.pend>0.01?(' <span class="muted" style="font-size:11px">falta '+money(m.est.pagado<=0.01?m.debe:m.est.pend)+'</span>'):'')):'';return '<tr><td>'+fmtF(m.fecha)+'</td>'+(cid?'':'<td>'+esc(cc?cc.numero_cliente:'')+'</td>')+'<td>'+esc(m.tipo)+'</td><td>'+esc(m.numero)+'</td><td class="num">'+(m.debe?money(m.debe):'')+'</td><td class="num">'+(m.haber?money(m.haber):'')+'</td><td>'+estHtml+'</td><td class="num"><b>'+money(m.saldo)+'</b></td><td><button class="mini" title="Editar" onclick="'+(m.kind==='pago'?('editPago(\''+m.id+'\')'):('editComprobante(\''+m.id+'\')'))+'">✏️</button></td></tr>';}).join(''):'<tr><td colspan="'+(cid?8:9)+'" class="empty">Sin movimientos con esos filtros.</td></tr>')
+    + '</tbody></table></div>'
+    + (pctR>0?('<div class="hint" style="margin-top:10px">📌 La tabla (Debe / Haber / Saldo) va en <b>bruto</b>, igual que el resumen del proveedor. El <b>«Saldo actual (real)»</b> de arriba le aplica el '+dTxtR+' de pronto pago sobre el saldo (bruto × '+factorTxt+'). Verificá: '+money(saldoBruto)+' × '+factorTxt+' = '+money(saldoFinal)+'.</div>'):'')
+    + '</div>';
 }
 // ============================ EXPORT XLSX ============================
 function ensureXLSX(){ if(typeof XLSX==='undefined'){ toast('La librería Excel no cargó, recargá la página','err'); return false;} return true; }
