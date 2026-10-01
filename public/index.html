@@ -5787,6 +5787,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     document.getElementById('content').innerHTML = `
       <h2 style="margin-bottom:20px;color:#2d3277">🔄 Actualización masiva de publicaciones</h2>
       ${isAdmin ? `
+      <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);border:1px solid #ffe0b2">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+          <div style="flex:1;min-width:240px">
+            <h3 style="font-size:15px;color:#333;margin-bottom:4px">⚡ Forzar enriquecimiento (costos reales de ML)</h3>
+            <p style="font-size:12px;color:#888;margin:0">Re-consulta a ML el costo real (comisión, envío, cuotas e impuestos) de TODAS las publicaciones de las 6 cuentas, una por una. Abre otra ventana para ver el avance. No cambia precios en ML; solo actualiza los costos del panel.</p>
+          </div>
+          <button onclick="window.open('/admin/enriquecer-todo?auto=1','_blank','width=760,height=820')" style="padding:12px 20px;background:#f57c00;color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:700;white-space:nowrap">⚡ FORZAR ENRIQUECIMIENTO</button>
+        </div>
+      </div>` : ''}
+      ${isAdmin ? `
       <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)">
         <h3 style="margin-bottom:12px;font-size:15px;color:#333">1. Seleccioná la cuenta ML</h3>
         <select id="updateAccount" style="padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;width:100%;max-width:320px">
