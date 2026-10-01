@@ -866,6 +866,214 @@ route('GET', '/api/users', async (req, res) => {
     created_at: u.created_at
   })));
 });
+// ============================================================================
+// CHAT INTERNO (mensajería entre usuarios + avisos del sistema).
+// Modelo de HILOS (conversaciones). Cada hilo tiene participantes (ids de
+// usuario; SISTEMA = id 0), opcionalmente una venta de referencia (ref), y un
+// estado abierto/cerrado. Un hilo se cierra cuando TODOS los participantes
+// humanos tocaron "Cerrar"; si alguien vuelve a escribir, se reabre solo.
+//   - kind 'directo' : chat 1 a 1 entre dos usuarios.
+//   - kind 'venta'   : conversación sobre una venta puntual (botón "Enviar a chat").
+//   - kind 'sistema' : bandeja de avisos automáticos para un usuario (de SISTEMA).
+// Se guarda dentro de la misma base (db.chat), así entra en el DB_BACKUP.
+// ============================================================================
+function ensureChat(db) {
+  if (!db.chat || typeof db.chat !== 'object') db.chat = { seq: 0, tseq: 0, threads: [], messages: [] };
+  if (!Array.isArray(db.chat.threads)) db.chat.threads = [];
+  if (!Array.isArray(db.chat.messages)) db.chat.messages = [];
+  if (typeof db.chat.seq !== 'number') db.chat.seq = 0;
+  if (typeof db.chat.tseq !== 'number') db.chat.tseq = 0;
+  return db.chat;
+}
+function chatUserName(db, uid) {
+  if (uid === 0) return 'SISTEMA';
+  const u = (db.users || []).find(x => x.id === uid);
+  return u ? u.username : ('usuario#' + uid);
+}
+// Agrega un mensaje a un hilo. Si lo manda un humano (no SISTEMA) y el hilo
+// estaba cerrado, lo reabre. Marca el mensaje como leído por quien lo envía.
+function pushChatMsg(db, threadId, fromId, fromName, text) {
+  const c = ensureChat(db);
+  const m = { id: ++c.seq, thread_id: threadId, from: fromId, fromName: fromName, text: String(text == null ? '' : text).slice(0, 4000), ts: new Date().toISOString(), read_by: [fromId] };
+  c.messages.push(m);
+  if (c.messages.length > 6000) c.messages = c.messages.slice(-6000);
+  const t = c.threads.find(x => x.id === threadId);
+  if (t) {
+    t.last_ts = m.ts;
+    if (fromId !== 0 && t.closed) { t.closed = false; t.closed_by = []; }   // reabrir al escribir un humano
+  }
+  return m;
+}
+function findOrCreateDirect(db, a, b) {
+  const c = ensureChat(db);
+  let t = c.threads.find(x => x.kind === 'directo' && x.participants.length === 2 && x.participants.includes(a) && x.participants.includes(b));
+  if (!t) {
+    t = { id: ++c.tseq, kind: 'directo', participants: [a, b], ref: null, subject: '', created_by: a, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), closed: false, closed_by: [] };
+    c.threads.push(t);
+  }
+  return t;
+}
+function getSistemaThread(db, uid) {
+  const c = ensureChat(db);
+  let t = c.threads.find(x => x.kind === 'sistema' && x.participants.length === 1 && x.participants[0] === uid);
+  if (!t) {
+    t = { id: ++c.tseq, kind: 'sistema', participants: [uid], ref: null, subject: 'Avisos del sistema', created_by: 0, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), closed: false, closed_by: [] };
+    c.threads.push(t);
+  }
+  return t;
+}
+// Postea un aviso de SISTEMA a un usuario puntual (en su bandeja "SISTEMA").
+function postSistema(uid, text) {
+  try { const db = loadDB(); const t = getSistemaThread(db, uid); pushChatMsg(db, t.id, 0, 'SISTEMA', text); saveDB(db); }
+  catch (e) { console.error('[CHAT] postSistema:', (e && e.message) || e); }
+}
+// Postea un aviso de SISTEMA a TODOS los admins (p. ej. resultado de la rotación nocturna).
+function postSistemaToAdmins(text) {
+  try {
+    const db = loadDB();
+    for (const u of (db.users || [])) { if (u.role === 'admin') { const t = getSistemaThread(db, u.id); pushChatMsg(db, t.id, 0, 'SISTEMA', text); } }
+    saveDB(db);
+  } catch (e) { console.error('[CHAT] postSistemaToAdmins:', (e && e.message) || e); }
+}
+// Lista de usuarios para elegir destinatario (cualquier usuario logueado).
+route('GET', '/api/chat/users', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB();
+  sendJSON(res, 200, (db.users || []).filter(u => u.id !== sess.userId).map(u => ({ id: u.id, username: u.username, role: u.role })));
+});
+// Lista mis conversaciones + total de no leídos (para el contador).
+route('GET', '/api/chat/threads', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const db = loadDB(); const c = ensureChat(db); const me = sess.userId;
+  const mine = c.threads.filter(t => t.participants.includes(me));
+  const byThread = {};
+  for (const m of c.messages) { (byThread[m.thread_id] = byThread[m.thread_id] || []).push(m); }
+  const out = mine.map(t => {
+    const msgs = byThread[t.id] || [];
+    const last = msgs.length ? msgs[msgs.length - 1] : null;
+    const unread = msgs.filter(m => m.from !== me && !(m.read_by || []).includes(me)).length;
+    const others = t.participants.filter(p => p !== me);
+    const title = t.kind === 'sistema' ? 'SISTEMA' : (others.map(p => chatUserName(db, p)).join(', ') || 'SISTEMA');
+    return { id: t.id, kind: t.kind, title: title, ref: t.ref || null, subject: t.subject || '', closed: !!t.closed, i_closed: (t.closed_by || []).includes(me), last_text: last ? last.text : '', last_from: last ? last.fromName : '', last_ts: t.last_ts || t.created_at, unread: unread };
+  }).sort((a, b) => new Date(b.last_ts) - new Date(a.last_ts));
+  const totalUnread = out.reduce((s, t) => s + t.unread, 0);
+  sendJSON(res, 200, { threads: out, unread: totalUnread, me: { id: me, username: sess.username } });
+});
+// Contador liviano de no leídos (para el polling cada pocos segundos).
+route('GET', '/api/chat/unread', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 200, { unread: 0 });
+  const db = loadDB(); const c = ensureChat(db); const me = sess.userId;
+  const mineIds = new Set(c.threads.filter(t => t.participants.includes(me)).map(t => t.id));
+  let n = 0;
+  for (const m of c.messages) { if (mineIds.has(m.thread_id) && m.from !== me && !(m.read_by || []).includes(me)) n++; }
+  sendJSON(res, 200, { unread: n });
+});
+// Detalle de una conversación (y marca como leídos los mensajes dirigidos a mí).
+route('GET', '/api/chat/thread', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const u = new URL(req.url, 'http://localhost'); const id = parseInt(u.searchParams.get('id'));
+  const db = loadDB(); const c = ensureChat(db); const me = sess.userId;
+  const t = c.threads.find(x => x.id === id);
+  if (!t || !t.participants.includes(me)) return sendJSON(res, 404, { error: 'Conversación no encontrada' });
+  let changed = false;
+  const msgs = c.messages.filter(m => m.thread_id === id).map(m => {
+    if (m.from !== me && !(m.read_by || []).includes(me)) { m.read_by = m.read_by || []; m.read_by.push(me); changed = true; }
+    return { id: m.id, from: m.from, fromName: m.fromName, text: m.text, ts: m.ts, mine: m.from === me };
+  });
+  if (changed) saveDB(db);
+  const others = t.participants.filter(p => p !== me);
+  sendJSON(res, 200, { id: t.id, kind: t.kind, ref: t.ref || null, subject: t.subject || '', title: t.kind === 'sistema' ? 'SISTEMA' : others.map(p => chatUserName(db, p)).join(', '), closed: !!t.closed, i_closed: (t.closed_by || []).includes(me), participants: t.participants, messages: msgs });
+});
+// Enviar mensaje. Formas de uso:
+//   { thread_id, text }        → responder en un hilo existente (reabre si estaba cerrado)
+//   { to, text }               → chat directo 1 a 1 (crea/reusa el hilo directo)
+//   { to, text, ref:{...} }    → "Enviar a chat": crea un hilo NUEVO sobre esa venta
+route('POST', '/api/chat/send', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const body = await parseBody(req); const me = sess.userId;
+  const text = String(body.text == null ? '' : body.text).trim();
+  if (!text) return sendJSON(res, 400, { error: 'El mensaje está vacío' });
+  const db = loadDB(); const c = ensureChat(db);
+  let t = null;
+  if (body.thread_id) {
+    t = c.threads.find(x => x.id === parseInt(body.thread_id));
+    if (!t || !t.participants.includes(me)) return sendJSON(res, 404, { error: 'Conversación no encontrada' });
+  } else {
+    const to = parseInt(body.to);
+    if (!to || to === me) return sendJSON(res, 400, { error: 'Destinatario inválido' });
+    const target = (db.users || []).find(x => x.id === to);
+    if (!target) return sendJSON(res, 400, { error: 'El destinatario no existe' });
+    if (body.ref && typeof body.ref === 'object') {
+      const r = body.ref;
+      const ref = { order_id: String(r.order_id || ''), account_id: (r.account_id != null ? r.account_id : null), account_name: String(r.account_name || ''), buyer: String(r.buyer || ''), title: String(r.title || '').slice(0, 200), total: (r.total != null ? r.total : null), section: String(r.section || '') };
+      t = { id: ++c.tseq, kind: 'venta', participants: [me, to], ref: ref, subject: (ref.title || ('Venta ' + ref.order_id)), created_by: me, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), closed: false, closed_by: [] };
+      c.threads.push(t);
+    } else {
+      t = findOrCreateDirect(db, me, to);
+    }
+  }
+  const m = pushChatMsg(db, t.id, me, sess.username, text);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, thread_id: t.id, message: { id: m.id, from: m.from, fromName: m.fromName, text: m.text, ts: m.ts, mine: true } });
+});
+// Cerrar una conversación. Queda CERRADA solo cuando todos los participantes
+// humanos la cerraron. Deja un aviso de SISTEMA en el hilo (sin reabrirlo).
+route('POST', '/api/chat/close', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const body = await parseBody(req); const me = sess.userId;
+  const db = loadDB(); const c = ensureChat(db);
+  const t = c.threads.find(x => x.id === parseInt(body.thread_id));
+  if (!t || !t.participants.includes(me)) return sendJSON(res, 404, { error: 'Conversación no encontrada' });
+  t.closed_by = t.closed_by || [];
+  if (!t.closed_by.includes(me)) t.closed_by.push(me);
+  const humanos = t.participants.filter(p => p !== 0);
+  const allClosed = humanos.length > 0 && humanos.every(p => t.closed_by.includes(p));
+  pushChatMsg(db, t.id, 0, 'SISTEMA', allClosed
+    ? (chatUserName(db, me) + ' cerró la conversación. Quedó CERRADA (ambos cerraron).')
+    : (chatUserName(db, me) + ' marcó cerrar. Falta que el otro también cierre.'));
+  t.closed = allClosed;   // se setea DESPUÉS del aviso (SISTEMA no reabre)
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, closed: t.closed, i_closed: true });
+});
+// SUPERVISIÓN (solo admin): lista TODAS las conversaciones del sistema, incluidas las
+// que son entre otros usuarios. No cuenta no-leídos (es vista de supervisión).
+route('GET', '/api/chat/all', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const db = loadDB(); const c = ensureChat(db);
+  const byThread = {};
+  for (const m of c.messages) { (byThread[m.thread_id] = byThread[m.thread_id] || []).push(m); }
+  const out = c.threads.map(t => {
+    const msgs = byThread[t.id] || [];
+    const last = msgs.length ? msgs[msgs.length - 1] : null;
+    let title;
+    if (t.kind === 'sistema') title = 'SISTEMA → ' + chatUserName(db, t.participants[0]);
+    else title = t.participants.filter(p => p !== 0).map(p => chatUserName(db, p)).join(' ↔ ');
+    return { id: t.id, kind: t.kind, title: title, ref: t.ref || null, subject: t.subject || '', closed: !!t.closed, msg_count: msgs.length, last_text: last ? last.text : '', last_from: last ? last.fromName : '', last_ts: t.last_ts || t.created_at };
+  }).sort((a, b) => new Date(b.last_ts) - new Date(a.last_ts));
+  sendJSON(res, 200, { threads: out });
+});
+// SUPERVISIÓN (solo admin): ver CUALQUIER conversación en solo lectura. NO marca leídos
+// (no interfiere con los contadores de los participantes).
+route('GET', '/api/chat/thread-admin', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Solo admin' });
+  const u = new URL(req.url, 'http://localhost'); const id = parseInt(u.searchParams.get('id'));
+  const db = loadDB(); const c = ensureChat(db);
+  const t = c.threads.find(x => x.id === id);
+  if (!t) return sendJSON(res, 404, { error: 'Conversación no encontrada' });
+  const msgs = c.messages.filter(m => m.thread_id === id).map(m => ({ id: m.id, from: m.from, fromName: m.fromName, text: m.text, ts: m.ts }));
+  let title;
+  if (t.kind === 'sistema') title = 'SISTEMA → ' + chatUserName(db, t.participants[0]);
+  else title = t.participants.filter(p => p !== 0).map(p => chatUserName(db, p)).join(' ↔ ');
+  sendJSON(res, 200, { id: t.id, kind: t.kind, ref: t.ref || null, subject: t.subject || '', title: title, closed: !!t.closed, participants: t.participants, admin_view: true, messages: msgs });
+});
 route('POST', '/api/users/alerts', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess || sess.role !== 'admin') return sendJSON(res, 403, { error: 'Acceso denegado' });
@@ -8810,6 +9018,13 @@ route('POST', '/api/cotizador/costos', async (req, res) => {
     }
   }
   saveCotizadorCostos({ updated: new Date().toISOString(), codigos });
+  // Aviso al chat (SISTEMA → admins): el automatizador reportó una corrida (push del cotizador).
+  try {
+    if (typeof postSistemaToAdmins === 'function') {
+      const via = (s && s.role === 'admin') ? ('usuario ' + s.username) : 'token de API (automatizador)';
+      postSistemaToAdmins('🤖 Automatizador — cotizador actualizado\n' + Object.keys(codigos).length + ' códigos (' + filas + ' filas de proveedores) recibidos vía ' + via + '.');
+    }
+  } catch (e) {}
   sendJSON(res, 200, { ok: true, codigos: Object.keys(codigos).length, filas });
 });
 // Cotizar: cualquier usuario logueado. Devuelve SOLO el precio de venta + si está en stock.
@@ -12409,6 +12624,16 @@ function registerAds(deps) {
       saveDB(db);
     } catch (e) {}
     console.log('[ENRICH-ROTA] día', wd, '→', summary.cuentas.map(c => (c.account || c.matcher) + ':' + (c.refrescadas || 0)).join(' '));
+    // Aviso al chat (SISTEMA → admins) con el resultado de la rotación.
+    try {
+      if (typeof postSistemaToAdmins === 'function') {
+        const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+        const detalle = summary.cuentas.length
+          ? summary.cuentas.map(c => '• ' + (c.account || c.matcher) + ': ' + (c.refrescadas || 0) + ' publicaciones' + (c.error ? (' ⚠ ' + c.error) : '')).join('\n')
+          : '• (ninguna cuenta asignada a este día)';
+        postSistemaToAdmins('🌙 Rotación de costos ML — ' + (dias[wd] || '') + ' ' + (summary.at_ar || '') + ' (01:00 AR)\nRe-consulté a ML el costo real de:\n' + detalle);
+      }
+    } catch (e) {}
     return summary;
   }
   function startRotaScheduler() {
