@@ -953,7 +953,9 @@ route('GET', '/api/chat/threads', async (req, res) => {
   const out = mine.map(t => {
     const msgs = byThread[t.id] || [];
     const last = msgs.length ? msgs[msgs.length - 1] : null;
-    const unread = msgs.filter(m => m.from !== me && !(m.read_by || []).includes(me)).length;
+    // No leídos = mensajes de OTRA persona que no leí. Los avisos internos de SISTEMA
+    // (from 0) dentro de una conversación normal NO cuentan; en la bandeja SISTEMA sí.
+    const unread = msgs.filter(m => m.from !== me && !(m.read_by || []).includes(me) && !(m.from === 0 && t.kind !== 'sistema')).length;
     const others = t.participants.filter(p => p !== me);
     const title = t.kind === 'sistema' ? 'SISTEMA' : (others.map(p => chatUserName(db, p)).join(', ') || 'SISTEMA');
     return { id: t.id, kind: t.kind, title: title, ref: t.ref || null, subject: t.subject || '', closed: !!t.closed, i_closed: (t.closed_by || []).includes(me), last_text: last ? last.text : '', last_from: last ? last.fromName : '', last_ts: t.last_ts || t.created_at, unread: unread };
@@ -966,9 +968,10 @@ route('GET', '/api/chat/unread', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 200, { unread: 0 });
   const db = loadDB(); const c = ensureChat(db); const me = sess.userId;
-  const mineIds = new Set(c.threads.filter(t => t.participants.includes(me)).map(t => t.id));
+  const kindById = {}; const mineIds = new Set();
+  for (const t of c.threads) { if (t.participants.includes(me)) { mineIds.add(t.id); kindById[t.id] = t.kind; } }
   let n = 0;
-  for (const m of c.messages) { if (mineIds.has(m.thread_id) && m.from !== me && !(m.read_by || []).includes(me)) n++; }
+  for (const m of c.messages) { if (mineIds.has(m.thread_id) && m.from !== me && !(m.read_by || []).includes(me) && !(m.from === 0 && kindById[m.thread_id] !== 'sistema')) n++; }
   sendJSON(res, 200, { unread: n });
 });
 // Detalle de una conversación (y marca como leídos los mensajes dirigidos a mí).
