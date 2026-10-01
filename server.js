@@ -900,7 +900,7 @@ function pushChatMsg(db, threadId, fromId, fromName, text) {
   const t = c.threads.find(x => x.id === threadId);
   if (t) {
     t.last_ts = m.ts;
-    if (fromId !== 0 && t.closed) { t.closed = false; t.closed_by = []; }   // reabrir al escribir un humano
+    t.archived_by = [];   // cualquier mensaje nuevo devuelve la conversación a Principal (para todos)
   }
   return m;
 }
@@ -908,7 +908,7 @@ function findOrCreateDirect(db, a, b) {
   const c = ensureChat(db);
   let t = c.threads.find(x => x.kind === 'directo' && x.participants.length === 2 && x.participants.includes(a) && x.participants.includes(b));
   if (!t) {
-    t = { id: ++c.tseq, kind: 'directo', participants: [a, b], ref: null, subject: '', created_by: a, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), closed: false, closed_by: [] };
+    t = { id: ++c.tseq, kind: 'directo', participants: [a, b], ref: null, subject: '', created_by: a, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), archived_by: [] };
     c.threads.push(t);
   }
   return t;
@@ -917,7 +917,7 @@ function getSistemaThread(db, uid) {
   const c = ensureChat(db);
   let t = c.threads.find(x => x.kind === 'sistema' && x.participants.length === 1 && x.participants[0] === uid);
   if (!t) {
-    t = { id: ++c.tseq, kind: 'sistema', participants: [uid], ref: null, subject: 'Avisos del sistema', created_by: 0, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), closed: false, closed_by: [] };
+    t = { id: ++c.tseq, kind: 'sistema', participants: [uid], ref: null, subject: 'Avisos del sistema', created_by: 0, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), archived_by: [] };
     c.threads.push(t);
   }
   return t;
@@ -958,7 +958,7 @@ route('GET', '/api/chat/threads', async (req, res) => {
     const unread = msgs.filter(m => m.from !== me && !(m.read_by || []).includes(me) && !(m.from === 0 && t.kind !== 'sistema')).length;
     const others = t.participants.filter(p => p !== me);
     const title = t.kind === 'sistema' ? 'SISTEMA' : (others.map(p => chatUserName(db, p)).join(', ') || 'SISTEMA');
-    return { id: t.id, kind: t.kind, title: title, ref: t.ref || null, subject: t.subject || '', closed: !!t.closed, i_closed: (t.closed_by || []).includes(me), last_text: last ? last.text : '', last_from: last ? last.fromName : '', last_ts: t.last_ts || t.created_at, unread: unread };
+    return { id: t.id, kind: t.kind, title: title, ref: t.ref || null, subject: t.subject || '', archived: (t.archived_by || []).includes(me), last_text: last ? last.text : '', last_from: last ? last.fromName : '', last_ts: t.last_ts || t.created_at, unread: unread };
   }).sort((a, b) => new Date(b.last_ts) - new Date(a.last_ts));
   const totalUnread = out.reduce((s, t) => s + t.unread, 0);
   sendJSON(res, 200, { threads: out, unread: totalUnread, me: { id: me, username: sess.username } });
@@ -989,7 +989,7 @@ route('GET', '/api/chat/thread', async (req, res) => {
   });
   if (changed) saveDB(db);
   const others = t.participants.filter(p => p !== me);
-  sendJSON(res, 200, { id: t.id, kind: t.kind, ref: t.ref || null, subject: t.subject || '', title: t.kind === 'sistema' ? 'SISTEMA' : others.map(p => chatUserName(db, p)).join(', '), closed: !!t.closed, i_closed: (t.closed_by || []).includes(me), participants: t.participants, messages: msgs });
+  sendJSON(res, 200, { id: t.id, kind: t.kind, ref: t.ref || null, subject: t.subject || '', title: t.kind === 'sistema' ? 'SISTEMA' : others.map(p => chatUserName(db, p)).join(', '), archived: (t.archived_by || []).includes(me), participants: t.participants, messages: msgs });
 });
 // Enviar mensaje. Formas de uso:
 //   { thread_id, text }        → responder en un hilo existente (reabre si estaba cerrado)
@@ -1014,7 +1014,7 @@ route('POST', '/api/chat/send', async (req, res) => {
     if (body.ref && typeof body.ref === 'object') {
       const r = body.ref;
       const ref = { order_id: String(r.order_id || ''), account_id: (r.account_id != null ? r.account_id : null), account_name: String(r.account_name || ''), buyer: String(r.buyer || ''), title: String(r.title || '').slice(0, 200), total: (r.total != null ? r.total : null), section: String(r.section || '') };
-      t = { id: ++c.tseq, kind: 'venta', participants: [me, to], ref: ref, subject: (ref.title || ('Venta ' + ref.order_id)), created_by: me, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), closed: false, closed_by: [] };
+      t = { id: ++c.tseq, kind: 'venta', participants: [me, to], ref: ref, subject: (ref.title || ('Venta ' + ref.order_id)), created_by: me, created_at: new Date().toISOString(), last_ts: new Date().toISOString(), archived_by: [] };
       c.threads.push(t);
     } else {
       t = findOrCreateDirect(db, me, to);
@@ -1024,25 +1024,31 @@ route('POST', '/api/chat/send', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, thread_id: t.id, message: { id: m.id, from: m.from, fromName: m.fromName, text: m.text, ts: m.ts, mine: true } });
 });
-// Cerrar una conversación. Queda CERRADA solo cuando todos los participantes
-// humanos la cerraron. Deja un aviso de SISTEMA en el hilo (sin reabrirlo).
-route('POST', '/api/chat/close', async (req, res) => {
+// Archivar una conversación (personal). La saca de "Principal" y la manda al buzón
+// "Archivados" SOLO para este usuario. Si llega un mensaje nuevo, vuelve a Principal.
+route('POST', '/api/chat/archive', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
   const body = await parseBody(req); const me = sess.userId;
   const db = loadDB(); const c = ensureChat(db);
   const t = c.threads.find(x => x.id === parseInt(body.thread_id));
   if (!t || !t.participants.includes(me)) return sendJSON(res, 404, { error: 'Conversación no encontrada' });
-  t.closed_by = t.closed_by || [];
-  if (!t.closed_by.includes(me)) t.closed_by.push(me);
-  const humanos = t.participants.filter(p => p !== 0);
-  const allClosed = humanos.length > 0 && humanos.every(p => t.closed_by.includes(p));
-  pushChatMsg(db, t.id, 0, 'SISTEMA', allClosed
-    ? (chatUserName(db, me) + ' cerró la conversación. Quedó CERRADA (ambos cerraron).')
-    : (chatUserName(db, me) + ' marcó cerrar. Falta que el otro también cierre.'));
-  t.closed = allClosed;   // se setea DESPUÉS del aviso (SISTEMA no reabre)
+  t.archived_by = t.archived_by || [];
+  if (!t.archived_by.includes(me)) t.archived_by.push(me);
   saveDB(db);
-  sendJSON(res, 200, { ok: true, closed: t.closed, i_closed: true });
+  sendJSON(res, 200, { ok: true, archived: true });
+});
+// Desarchivar (volver a traer a Principal manualmente).
+route('POST', '/api/chat/unarchive', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const body = await parseBody(req); const me = sess.userId;
+  const db = loadDB(); const c = ensureChat(db);
+  const t = c.threads.find(x => x.id === parseInt(body.thread_id));
+  if (!t || !t.participants.includes(me)) return sendJSON(res, 404, { error: 'Conversación no encontrada' });
+  t.archived_by = (t.archived_by || []).filter(p => p !== me);
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, archived: false });
 });
 // SUPERVISIÓN (solo admin): lista TODAS las conversaciones del sistema, incluidas las
 // que son entre otros usuarios. No cuenta no-leídos (es vista de supervisión).
