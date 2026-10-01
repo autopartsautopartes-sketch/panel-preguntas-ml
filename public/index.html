@@ -7608,6 +7608,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           '</div>';
         html += '<div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
           '<span>| Orden: <a onclick="verVentaPrep(\'' + oid + '\',\'' + order.account_id + '\')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#' + oid + '</a></span>' +
+          prepChatBtn(oid, order) +
           '<button onclick="cancelarQuitar(\'' + oid + '\',this)" style="padding:6px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-size:12.5px;font-weight:600;cursor:pointer">↩️ Quitar</button>' +
           '<button id="cancbtn-' + oid + '" onclick="cancelarConfirmar(\'' + oid + '\',this)" ' + ((order.cancel_motivo || '').trim() ? '' : 'disabled') + ' style="margin-left:auto;padding:6px 16px;background:' + ((order.cancel_motivo || '').trim() ? '#c0392b' : '#e5b4b0') + ';color:#fff;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer">✔ Confirmar cancelación</button>' +
           '</div></div>';
@@ -7780,6 +7781,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         html += '<div style="margin-top:8px;font-size:12px;color:#888;display:flex;flex-wrap:wrap;gap:12px;align-items:center">' +
           '<span>Detectada: ' + formatDateTime(order.advertencia_at) + '</span>' +
           '<span>| Orden: <a onclick="verVentaPrep(\'' + escapeHtml(order.order_id) + '\',\'' + order.account_id + '\')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#' + escapeHtml(order.order_id) + '</a></span>' +
+          prepChatBtn(order.order_id, order) +
           '<button onclick="resolverAdvertencia(\'' + escapeHtml(order.order_id) + '\',this)" style="margin-left:auto;padding:6px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer">✓ Resuelto</button>' +
           '</div></div>';
       }
@@ -8012,6 +8014,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                 <a href="/?section=sales&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank" title="Abrir esta venta en el panel (nueva ventana)">👁️ Ver venta</a>
                 <a href="#" onclick="openPrepDialog('messages','${firstOrderId}','${sale.account_id}','${sale.buyer_id}');return false">💬 Mensajes</a>
                 <a href="#" onclick="openPrepDialog('questions','${firstOrderId}','${sale.account_id}','${sale.buyer_id}');return false">❓ Preguntas</a>
+                ${prepChatBtn(displayId, sale)}
               </div>
               <div style="font-weight:700;color:#2d3277;font-size:16px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR',{minimumFractionDigits:2})}</div>
             </div>
@@ -8375,6 +8378,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       } catch(e) {}
     }));
   }
+  // Botón "📨 Enviar a chat" para las tarjetas de Preparación (todas las solapas, todos los usuarios).
+  // Registra la referencia de la venta y devuelve el HTML del botón.
+  function prepChatBtn(idRaw, o) {
+    const id = String(idRaw);
+    const key = 'prep-' + id;
+    _chatRefs[key] = { order_id: id, account_id: o.account_id, account_name: o.account_name, buyer: (o.buyer_name || ''), title: (o.items && o.items[0] ? o.items[0].title : (o.item_title || '')), total: (o.total_amount != null ? o.total_amount : null), section: 'prep' };
+    return '<button onclick="event.stopPropagation();abrirEnviarChat(\'' + key + '\')" style="padding:7px 12px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📨 Enviar a chat</button>';
+  }
   function renderEnPrepCard(order, expanded, can_manage, can_operate) {
     const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
     const oid = escapeHtml(String(order.order_id));
@@ -8597,6 +8608,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
               ${order.finish_type==='cancelada' ? `<span style="padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;background:#fee2e2;color:#b91c1c">🚫 Cancelada${order.cancel_motivo?': '+escapeHtml(order.cancel_motivo):''}</span>` : ''}
               <span>Finalizado por: <strong style="color:#333">${escapeHtml(order.done_by || '-')}</strong></span>
               <span>${formatDateTime(order.done_at)}</span>
+              ${prepChatBtn(order.order_id, order)}
               ${can_manage ? `<span>| Orden: <a onclick="verVentaPrep('${escapeHtml(order.order_id)}','${order.account_id}')" style="color:#3483fa;cursor:pointer;text-decoration:underline">#${escapeHtml(order.order_id)}</a></span>` : ''}
               ${can_track ? `<button onclick="pasarATracking('${escapeHtml(order.order_id)}',this)" title="Pasar esta venta al panel de Tracking (seguimiento de envío)" style="margin-left:auto;padding:5px 12px;background:white;color:#8e44ad;border:1.5px solid #8e44ad;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">📍 Tracking</button>` : ''}
               ${can_manage ? `<button onclick="volverASinPreparar('${escapeHtml(order.order_id)}',this)" style="${can_track?'':'margin-left:auto;'}padding:5px 12px;background:white;color:#e74c3c;border:1.5px solid #e74c3c;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
