@@ -10134,9 +10134,10 @@ pre{background:#0f1424;color:#d7e0ff;padding:12px;border-radius:8px;overflow:aut
 small{color:#666}
 </style></head><body>
 <h1>🔄 Enriquecer todo (envío + comisión + impuestos reales)</h1>
-<p><small>Re-enriquece TODAS las publicaciones activas de las 6 cuentas trayendo el envío REAL de ML (además de comisión, cuotas e impuestos). Es pesado (muchas consultas a ML) y va por tandas — se puede cortar y retomar: lo ya hecho no se repite. No cambia precios en ML; solo actualiza los costos del panel.</small></p>
+<p><small>Re-enriquece TODAS las publicaciones activas de las 6 cuentas trayendo el envío REAL de ML (además de comisión, cuotas e impuestos). Con <b>"Forzar re-consulta a ML"</b> tildado (por defecto) vuelve a consultar a ML el costo de TODAS aunque ya estén enriquecidas — es lo que querés para actualizar comisiones/envíos. Es pesado (muchas consultas a ML) y va por tandas — se puede cortar y retomar. No cambia precios en ML; solo actualiza los costos del panel.</small></p>
 <div class="card">
   <label>Ítems por tanda: <input id="cap" type="number" value="50" min="10" max="300" style="width:70px"></label>
+  &nbsp;<label title="Re-consulta a ML el costo real (comisión/envío/impuestos) de TODAS, aunque ya estén enriquecidas."><input type="checkbox" id="forzar" checked> Forzar re-consulta a ML (recomendado)</label>
   &nbsp;<button id="go" onclick="run()">Enriquecer todo</button>
   &nbsp;<button id="stop" onclick="STOP=true" disabled style="background:#e5484d">Parar</button>
 </div>
@@ -10150,15 +10151,18 @@ const log=document.getElementById('log'),st=document.getElementById('status'),ac
 function line(s){log.textContent=(log.textContent==='—'?'':log.textContent+'\\n')+s}
 const ui={};
 for(const a of ACCS){const d=document.createElement('div');d.className='card';d.innerHTML='<div class="row"><b>'+a.name+'</b><span id="t_'+a.id+'">esperando…</span></div><div class="bar"><div class="fill" id="f_'+a.id+'"></div></div>';accsDiv.appendChild(d);ui[a.id]={t:d.querySelector('#t_'+a.id),f:d.querySelector('#f_'+a.id)};}
-async function refinar(accId,cap){const r=await fetch('/api/ads/estrategia/refinar?account_id='+accId+'&cap='+cap);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function refinar(accId,cap,desde){let url='/api/ads/estrategia/refinar?account_id='+accId+'&cap='+cap;if(desde)url+='&desde='+encodeURIComponent(desde);const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
 function setBtns(run){document.getElementById('go').disabled=run;document.getElementById('stop').disabled=!run;}
 async function run(){STOP=false;setBtns(true);log.textContent='—';
+  const FORZAR=document.getElementById('forzar').checked;
+  const DESDE=FORZAR?new Date().toISOString():null;
+  if(FORZAR)line('Modo FORZAR: se re-consulta a ML el costo real de TODAS las publicaciones.');
   for(const a of ACCS){
     if(STOP){line('DETENIDO.');break;}
     const cap=Math.max(10,Math.min(300,Number(document.getElementById('cap').value)||50));
     ui[a.id].t.textContent='enriqueciendo…';let guard=0,tot=null,done=0,prevDone=-1,stall=0;
     while(true){guard++;if(guard>8000){line(a.name+': corte de seguridad');break;}
-      let j;try{j=await refinar(a.id,cap);}catch(e){line(a.name+': ERROR '+e.message+' (reintento en 3s)');await new Promise(s=>setTimeout(s,3000));continue;}
+      let j;try{j=await refinar(a.id,cap,DESDE);}catch(e){line(a.name+': ERROR '+e.message+' (reintento en 3s)');await new Promise(s=>setTimeout(s,3000));continue;}
       if(j.busy){await new Promise(s=>setTimeout(s,2000));continue;}
       if(j.error){line(a.name+': ERROR '+JSON.stringify(j.error));break;}
       tot=j.account_total||j.activas||tot;done=j.enriched_total!=null?j.enriched_total:done;
@@ -10174,6 +10178,8 @@ async function run(){STOP=false;setBtns(true);log.textContent='—';
   }
   st.innerHTML='<small>'+(STOP?'Detenido.':'✔ Terminó el enriquecido de todas las cuentas.')+'</small>';setBtns(false);
 }
+// Auto-arranque si se abre con ?auto=1 (desde el botón "FORZAR ENRIQUECIMIENTO" del panel): fuerza y arranca solo.
+try{if(new URLSearchParams(location.search).get('auto')==='1'){document.getElementById('forzar').checked=true;line('Arranque automático desde el panel — modo FORZAR.');setTimeout(run,500);}}catch(e){}
 </script></body></html>`;
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);
@@ -11358,6 +11364,8 @@ function registerAds(deps) {
   // CANDADO de enriquecimiento por cuenta: evita que corran DOS refinar de la misma cuenta a la vez
   // (cada uno carga y reescribe el archivo de ~42k ítems → doble memoria → crash). Serializa el acceso.
   const _enrichLocks = {};
+  // CANDADO de la rotación nocturna (01:00 AR): evita que dos corridas de rotación se pisen.
+  let _rotaRunning = false;
 
   const getAccount = (req) => {
     const q = new URL(req.url, 'http://localhost').searchParams;
@@ -12066,6 +12074,12 @@ function registerAds(deps) {
     // Trabajamos SOLO con el archivo de esta cuenta (rápido, no toca las demás).
     const file = loadAccountCosts(account.seller_id);
     const table = file.costs || {};
+    // FORZAR REFRESCO: si viene opts.staleBefore (un instante ISO/ms), una publicación "necesita refresco"
+    // cuando su enrichAt es ANTERIOR a ese instante (o no tiene), sin importar la versión. Sirve para
+    // re-consultar a ML los costos reales (comisión/envío/impuestos) de TODO y para la rotación 1-cuenta-por-noche.
+    const staleBeforeMs = opts.staleBefore ? new Date(opts.staleBefore).getTime() : null;
+    const enrichMs = (id) => { const t = table[id] && table[id].enrichAt; return t ? new Date(t).getTime() : 0; };
+    const isStale = (id) => staleBeforeMs ? !(enrichMs(id) >= staleBeforeMs) : false;   // aún NO refrescada en esta corrida
     const needsRefresh = (id) => (!table[id].enrichAt || (Number(table[id].enrichVer) || 0) < ENRICH_VER) ? 0 : 1;
     const isFaltante = (id) => table[id].simFee == null;
     let _discAdded = 0;
@@ -12097,7 +12111,9 @@ function registerAds(deps) {
       const soldUnits = (() => { try { const c = (loadSold90File().accounts || {})[account.id]; return (c && c.map) || {}; } catch (e) { return {}; } })();
       // POOL: modo "faltantes" (automático / botón Completar faltantes) → SOLO las que no tienen costo.
       //       modo normal (🎯 clásico) → TODAS las activas (refresco completo para estrategia).
-      const pool = opts.onlyFaltantes ? mine.filter(isFaltante) : mine;
+      const pool = opts.onlyFaltantes ? mine.filter(isFaltante)
+                 : staleBeforeMs ? mine.filter(isStale)   // forzar: solo las que todavía no se refrescaron en esta corrida
+                 : mine;
       ids = pool
         .sort((a, b) =>
           needsRefresh(a) - needsRefresh(b) ||
@@ -12110,11 +12126,16 @@ function registerAds(deps) {
       _enrichLocks[account.id] = false;
       const conCosto0 = mine.filter(id => table[id].simFee != null).length;
       const faltantes0 = mine.length - conCosto0;
-      return { refined: 0, nuevas: _discAdded, faltantes: faltantes0, account_total: mine.length, file_total: allMLA.length, pausadas,
+      const enrichedByVer0 = mine.filter(id => table[id].enrichAt && (Number(table[id].enrichVer) || 0) >= ENRICH_VER).length;
+      const refreshedNow0 = staleBeforeMs ? mine.filter(id => enrichMs(id) >= staleBeforeMs).length : null;
+      const enrichedTotal0 = opts.onlyFaltantes ? conCosto0 : (staleBeforeMs ? refreshedNow0 : enrichedByVer0);
+      return { refined: 0, nuevas: _discAdded, faltantes: faltantes0, account_total: mine.length, enriched_total: enrichedTotal0, file_total: allMLA.length, pausadas,
         note: opts.ids
           ? 'No se pasaron IDs válidos (MLA...) para enriquecer.'
           : opts.onlyFaltantes
           ? `No quedan faltantes por completar en esta cuenta (${mine.length} activas, todas con costo).`
+          : staleBeforeMs
+          ? `Refresco completo: todas las ACTIVAS ya se re-consultaron a ML en esta corrida (${mine.length}).`
           : `No hay publicaciones activas para enriquecer. En el archivo hay ${allMLA.length} (${pausadas} pausadas). Si esperabas más, puede que la importación del _COMPLETO de esta cuenta haya quedado incompleta.` };
     }
     try {
@@ -12227,9 +12248,12 @@ function registerAds(deps) {
       const conCosto = mine.filter(id => table[id].simFee != null).length;
       const faltantes = mine.length - conCosto;
       const enrichedByVer = mine.filter(id => table[id].enrichAt && (Number(table[id].enrichVer) || 0) >= ENRICH_VER).length;
-      const enrichedTotal = opts.onlyFaltantes ? conCosto : enrichedByVer;
+      const refreshedNow = staleBeforeMs ? mine.filter(id => enrichMs(id) >= staleBeforeMs).length : null;
+      const enrichedTotal = opts.onlyFaltantes ? conCosto : (staleBeforeMs ? refreshedNow : enrichedByVer);
       const note = opts.onlyFaltantes
         ? (faltantes > 0 ? `Completé costos: faltan ${faltantes} de ${mine.length}. Volvé a tocar para seguir.` : `Todas las ACTIVAS tienen costo (${mine.length}). No falta ninguna.`)
+        : staleBeforeMs
+        ? (enrichedTotal < mine.length ? `Refresqué en ML ${enrichedTotal} de ${mine.length} ACTIVAS. Seguí para el resto.` : `Refresqué en ML TODAS las ACTIVAS (${mine.length}).`)
         : (enrichedTotal < mine.length ? `Enriquecí ${enrichedTotal} de ${mine.length} ACTIVAS. Volvé a tocar 🎯 para seguir con el resto.` : `Enriquecí TODAS las ACTIVAS (${mine.length}).`);
       return { refined, failed, scanned: ids.length, cap, account: account.name, enriched_total: enrichedTotal, account_total: mine.length,
         nuevas: _discAdded, faltantes, file_total: allMLA.length, activas: mine.length, pausadas, note };
@@ -12248,9 +12272,12 @@ function registerAds(deps) {
     if (!account) return sendJSON(res, 404, { error: 'account_id inválido' });
     const u = new URL(req.url, 'http://x');
     const onlyFaltantes = u.searchParams.get('faltantes') === '1';
+    // FORZAR: ?desde=<ISO> → re-consulta a ML todo lo que tenga enrichAt anterior a ese instante (ignora versión).
+    const desde = u.searchParams.get('desde') || null;
     const result = await refinarAccount(account, {
       cap: Number(u.searchParams.get('cap')) || 12,
       onlyFaltantes,
+      staleBefore: desde,
       cuotasPct: u.searchParams.get('cuotasPct') != null ? Number(u.searchParams.get('cuotasPct')) : null,
       retencionPct: u.searchParams.get('retencionPct') != null ? Number(u.searchParams.get('retencionPct')) : null,
     });
@@ -12325,6 +12352,91 @@ function registerAds(deps) {
       return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours() };
     }
   }
+  // Día de la semana en hora Argentina: 0=Domingo .. 6=Sábado.
+  function arWeekday() {
+    try {
+      const s = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Argentina/Buenos_Aires', weekday: 'short' }).format(new Date());
+      const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      return map[s] != null ? map[s] : new Date().getDay();
+    } catch (e) { return new Date().getDay(); }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
+  // ROTACIÓN NOCTURNA DE REFRESCO COMPLETO (01:00 AR). Re-consulta a ML el costo REAL
+  // (comisión + envío + cuotas + impuestos) de TODAS las publicaciones activas de las cuentas
+  // asignadas a ESE día de la semana. Así en la semana se recorre toda la base sin corridas
+  // pesadas. NO cambia precios en ML; solo actualiza los costos del panel. Resiste reinicios.
+  //   Lunes:     MARA + EXPRESS
+  //   Martes:    MARCOS (Autochap) + ANTO (AutopartesARG)
+  //   Miércoles: DARIO + JORGE
+  // El match es por substring del NOMBRE de la cuenta en ML (case-insensitive) — editable acá.
+  // ───────────────────────────────────────────────────────────────────────────
+  const ROTA_REFRESCO = {
+    1: ['MARA', 'EXPRESS'],                       // Lunes
+    2: ['AUTOCHAPAUTOPARTES', 'AUTOPARTESARG'],   // Martes  → MARCOS, ANTO
+    3: ['RUIZDARIO', 'JORGE'],                    // Miércoles → DARIO, JORGE
+  };
+  async function nightlyRotateJob() {
+    const accounts = loadDB().ml_accounts || [];
+    const wd = arWeekday();
+    const matchers = ROTA_REFRESCO[wd] || [];
+    const summary = { at: new Date().toISOString(), at_ar: arParts().date, weekday: wd, cuentas: [] };
+    const desde = new Date().toISOString();   // fuerza: refresca lo que tenga enrichAt anterior a este instante
+    for (const sub of matchers) {
+      const acc = accounts.find(a => String(a.name || '').toUpperCase().includes(sub.toUpperCase()));
+      if (!acc) { summary.cuentas.push({ matcher: sub, error: 'no se encontró la cuenta' }); continue; }
+      let refreshed = 0, guard = 0, rerr = null;
+      for (; guard < 4000; guard++) {
+        let r;
+        try { r = await refinarAccount(acc, { cap: 60, staleBefore: desde }); }
+        catch (e) { rerr = String((e && e.message) || e); break; }
+        if (!r || r.busy) { await new Promise(s => setTimeout(s, 2500)); continue; }
+        if (r.error) { rerr = r.error; break; }
+        refreshed += r.refined || 0;
+        if ((r.refined || 0) < 1) break;   // ya no quedan viejas → cuenta al día
+        await new Promise(s => setTimeout(s, 1200));
+        if (global.gc) { try { global.gc(); } catch (e) {} }
+      }
+      summary.cuentas.push({ account: acc.name, refrescadas: refreshed, error: rerr });
+      console.log('[ENRICH-ROTA]', acc.name, 'refrescadas', refreshed, rerr ? ('ERR ' + rerr) : '');
+      await new Promise(s => setTimeout(s, 1500));
+    }
+    try {
+      const db = loadDB();
+      db.ads_rota_last_run = summary.at;
+      db.ads_rota_last_run_ar = summary.at_ar;
+      db.ads_rota_log = (db.ads_rota_log || []).slice(-13);
+      db.ads_rota_log.push(summary);
+      saveDB(db);
+    } catch (e) {}
+    console.log('[ENRICH-ROTA] día', wd, '→', summary.cuentas.map(c => (c.account || c.matcher) + ':' + (c.refrescadas || 0)).join(' '));
+    return summary;
+  }
+  function startRotaScheduler() {
+    const HOUR = Number(process.env.ROTA_RUN_HOUR || 1);   // 01:00 hora ARGENTINA (default). Cambiable por env.
+    async function tick() {
+      try {
+        const db = loadDB();
+        const { date, hour } = arParts();
+        const ranToday = db.ads_rota_last_run_ar === date;   // ya corrió HOY (fecha argentina)
+        if (hour >= HOUR && !ranToday && !_rotaRunning) {
+          _rotaRunning = true;
+          try { await nightlyRotateJob(); } finally { _rotaRunning = false; }
+        }
+      } catch (e) { console.error('[ENRICH-ROTA] scheduler error:', (e && e.message) || e); }
+    }
+    setInterval(tick, 20 * 60 * 1000);   // cada 20 min
+    setTimeout(tick, 150 * 1000);        // primer chequeo ~2.5 min tras arrancar
+  }
+  startRotaScheduler();
+  // DISPARO MANUAL de la rotación de hoy (para probarla sin esperar la 01:00). Solo admin.
+  route('GET', '/api/ads/estrategia/rota-now', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    if (_rotaRunning) return sendJSON(res, 200, { ok: false, busy: true, note: 'Ya hay una rotación en curso.' });
+    _rotaRunning = true;
+    try { const s = await nightlyRotateJob(); sendJSON(res, 200, { ok: true, summary: s }); }
+    catch (e) { sendJSON(res, 500, { error: String((e && e.message) || e) }); }
+    finally { _rotaRunning = false; }
+  });
   function startEnrichScheduler() {
     const HOUR = Number(process.env.ENRICH_RUN_HOUR || 20);   // 20:00 hora ARGENTINA (default). Cambiable por env.
     async function tick() {
