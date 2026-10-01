@@ -14817,115 +14817,156 @@ async function facBuildPDFBuffer(f, cfg) {
   const esC = f.cbte_letra === 'C';
   const ops = ['0.7 w', '0 0 0 RG', '0 0 0 rg'];
   const n2 = (v) => (Math.round(v * 100) / 100).toString();
+  // Anchos de carácter Helvetica (unidades/1000) para alinear a la derecha con precisión.
+  const _HW = { ' ': 278, '!': 278, '"': 355, '#': 556, '$': 556, '%': 889, '&': 667, "'": 191, '(': 333, ')': 333, '*': 389, '+': 584, ',': 278, '-': 333, '.': 278, '/': 278, '0': 556, '1': 556, '2': 556, '3': 556, '4': 556, '5': 556, '6': 556, '7': 556, '8': 556, '9': 556, ':': 278, ';': 278, '<': 584, '=': 584, '>': 584, '?': 556, '@': 1015, 'A': 667, 'B': 667, 'C': 722, 'D': 722, 'E': 667, 'F': 611, 'G': 778, 'H': 722, 'I': 278, 'J': 500, 'K': 667, 'L': 556, 'M': 833, 'N': 722, 'O': 778, 'P': 667, 'Q': 778, 'R': 722, 'S': 667, 'T': 611, 'U': 722, 'V': 667, 'W': 944, 'X': 667, 'Y': 667, 'Z': 611, '[': 278, '\\': 278, ']': 278, '^': 469, '_': 556, '`': 333, 'a': 556, 'b': 556, 'c': 500, 'd': 556, 'e': 556, 'f': 278, 'g': 556, 'h': 556, 'i': 222, 'j': 222, 'k': 500, 'l': 222, 'm': 833, 'n': 556, 'o': 556, 'p': 556, 'q': 556, 'r': 333, 's': 500, 't': 278, 'u': 556, 'v': 500, 'w': 722, 'x': 500, 'y': 500, 'z': 500, '{': 334, '|': 260, '}': 334, '~': 584 };
+  const W = (s, size) => { s = _pdfTxt(s); let w = 0; for (let i = 0; i < s.length; i++) w += (_HW[s[i]] != null ? _HW[s[i]] : 556); return w / 1000 * size; };
   const T = (x, y, size, txt, font) => ops.push('BT /' + (font || 'F1') + ' ' + size + ' Tf ' + n2(x) + ' ' + n2(y) + ' Td (' + _pdfTxt(txt) + ') Tj ET');
-  const TR = (xr, y, size, txt, font) => { const w = String(txt).length * size * 0.6; T(xr - w, y, size, txt, font); };
+  const TR = (xr, y, size, txt, font) => T(xr - W(txt, size), y, size, txt, font);
+  const GY = (g) => ops.push(n2(g) + ' g');   // color de texto/relleno (gris 0=negro, 1=blanco)
+  const Tg = (x, y, size, txt, font, g) => { if (g != null) GY(g); T(x, y, size, txt, font); if (g != null) GY(0); };
+  const TRg = (xr, y, size, txt, font, g) => { if (g != null) GY(g); TR(xr, y, size, txt, font); if (g != null) GY(0); };
   const rectS = (x, y, w, h) => ops.push(n2(x) + ' ' + n2(y) + ' ' + n2(w) + ' ' + n2(h) + ' re S');
   const rectF = (x, y, w, h, g) => ops.push((g != null ? g + ' g ' : '') + n2(x) + ' ' + n2(y) + ' ' + n2(w) + ' ' + n2(h) + ' re f' + (g != null ? ' 0 g' : ''));
+  const SG = (g) => ops.push(n2(g) + ' G');    // color de línea (gris)
   const line = (x1, y1, x2, y2) => ops.push(n2(x1) + ' ' + n2(y1) + ' m ' + n2(x2) + ' ' + n2(y2) + ' l S');
   const LX = 28, RX = 567;
   const num = String(f.pto_vta).padStart(4, '0') + '-' + String(f.nro).padStart(8, '0');
   const cod3 = String(f.cbte_cod).padStart(3, '0');
-  const condEmisor = (cfg.condicion === 'MONO') ? 'Responsable Monotributo' : 'Responsable Inscripto';
+  const fmtCuit = (d) => { d = String(d == null ? '' : d).replace(/\D/g, ''); return d.length === 11 ? (d.slice(0, 2) + '-' + d.slice(2, 10) + '-' + d.slice(10)) : String(d || ''); };
+  const condEmisor = (cfg.condicion === 'MONO') ? 'RESPONSABLE MONOTRIBUTO' : 'IVA RESPONSABLE INSCRIPTO';
   const razon = cfg.razon_social || f.cuenta;
-  const fantasia = cfg.nombre_fantasia || f.cuenta;
+  const fantasia = cfg.nombre_fantasia || '';
   const vtoTxt = _facFchSrv(f.venc_pago && /^\d{8}$/.test(String(f.venc_pago)) ? f.venc_pago : f.cbte_fch);
 
-  // ===== HEADER =====
-  rectS(LX, 700, RX - LX, 112);
-  line(347, 700, 347, 812);
-  // izquierda: emisor
-  T(60, 796, 9, razon, 'F1');
-  T(45, 780, 12, fantasia, 'F3');
-  T(85, 765, 9, condEmisor, 'F1');
-  const domE = String(cfg.domicilio || '').slice(0, 90);
-  const domE1 = domE.slice(0, 46), domE2 = domE.slice(46);
-  T(50, 750, 8, domE1, 'F1'); if (domE2) T(50, 741, 8, domE2, 'F1');
-  // centro: Original + letra
-  T(300, 802, 10, 'Original', 'F1');
-  rectS(297, 744, 50, 48);
-  T(312, 758, 26, f.cbte_letra, 'F3');
-  TR(340, 748, 9, cod3, 'F1');
-  // derecha: datos comprobante
-  const rrows = [['FACTURA:', num].concat(), ['Fecha de Emision:', _facFchSrv(f.cbte_fch)], ['Fecha de Vto:', vtoTxt], ['CUIT:', f.cuit], ['Ing. Brutos:', cfg.ing_brutos || f.cuit], ['Inicio de Activ.:', cfg.inicio_actividad || ''], ['Razon social:', razon]];
-  rrows[0][1] = num; rrows[0][0] = (NOMBRE_CBTE[f.cbte_cod] || 'FACTURA') + ':';
-  let ry = 802; rrows.forEach(rw => { T(353, ry, 8, rw[0], 'F2'); T(453, ry, 8, String(rw[1]), 'F1'); ry -= 13.5; });
+  // ============ ENCABEZADO (3 columnas) ============
+  // --- izquierda: emisor (razón social grande) ---
+  const nameLines = (() => { const s = String(razon); if (W(s, 13) <= 300) return [s]; const words = s.split(' '); let a = '', b = ''; for (const w of words) { if (!b && W((a ? a + ' ' + w : w), 13) <= 300) a = a ? a + ' ' + w : w; else b = b ? b + ' ' + w : w; } return b ? [a, b] : [a]; })();
+  let ny = 802; nameLines.slice(0, 2).forEach(ln => { T(40, ny, 13, ln, 'F2'); ny -= 15; });
+  let ey = ny - 2;
+  const emisorLines = [];
+  if (cfg.domicilio) emisorLines.push('Direccion: ' + String(cfg.domicilio).slice(0, 60));
+  if (cfg.localidad || cfg.cp) emisorLines.push([cfg.localidad, (cfg.cp ? 'CP: ' + cfg.cp : '')].filter(Boolean).join(' - '));
+  if (cfg.telefono) emisorLines.push('Telefono: ' + cfg.telefono);
+  if (cfg.email) emisorLines.push('Email: ' + cfg.email);
+  emisorLines.push(condEmisor);
+  emisorLines.forEach(ln => { Tg(40, ey, 8, ln, 'F1', 0.25); ey -= 11; });
+  // --- centro: recuadro con la letra ---
+  rectS(276, 774, 44, 36);
+  { const L = f.cbte_letra || 'B'; T(298 - W(L, 24) / 2, 784, 24, L, 'F2'); const cc = 'COD. ' + String(f.cbte_cod).padStart(2, '0'); Tg(298 - W(cc, 6) / 2, 777, 6, cc, 'F1', 0.3); }
+  SG(0.6); line(298, 704, 298, 772); SG(0);
+  // --- derecha: datos del comprobante ---
+  const titulo = (NOMBRE_CBTE[f.cbte_cod] || 'FACTURA') + ' ' + (f.cbte_letra || '') + ' Nro ' + num;
+  T(RX - W(titulo, 12), 802, 12, titulo, 'F2');
+  const rrows = [
+    ['Fecha:', _facFchSrv(f.cbte_fch)],
+    ['CUIT:', fmtCuit(f.cuit)],
+    ['IIBB:', String(cfg.ing_brutos || fmtCuit(f.cuit))],
+    ['Inicio de Actividades:', String(cfg.inicio_actividad || '')],
+    ['Razon social:', String(razon)]
+  ];
+  let ry = 784; rrows.forEach(rw => { if (!rw[1]) { ry -= 13; return; } const vw = W(rw[1], 8.5); TR(RX, ry, 8.5, rw[1], 'F1'); TRg(RX - vw - 7, ry, 8.5, rw[0], 'F2', 0.2); ry -= 13; });
 
-  // ===== RECEPTOR =====
-  rectS(LX, 620, RX - LX, 74);
-  line(347, 620, 347, 694);
-  const condR = { RI: 'IVA Responsable Inscripto', MONO: 'Responsable Monotributo', CF: 'Consumidor Final', EX: 'Exento' }[f.receptor_cond_iva] || 'Consumidor Final';
-  const docLbl = f.doc_tipo === 80 ? 'CUIT:' : (f.doc_tipo === 96 ? 'DNI:' : 'Doc:');
-  let ly = 684;
-  const Lrow = (lbl, val) => { T(36, ly, 8.5, lbl, 'F2'); T(120, ly, 8.5, String(val || ''), 'F1'); ly -= 14; };
-  Lrow('Nombre:', f.receptor_nombre || 'Consumidor Final');
-  Lrow(docLbl, f.doc_tipo === 99 ? '-' : (f.doc_nro || ''));
-  Lrow('Direccion:', String(f.receptor_domicilio || '').slice(0, 40));
-  Lrow('Cond. venta:', f.cond_venta || 'Contado');
-  let ry2 = 684;
-  const Rrow = (lbl, val) => { T(355, ry2, 8.5, lbl, 'F2'); T(440, ry2, 8.5, String(val || ''), 'F1'); ry2 -= 14; };
-  Rrow('IVA:', condR);
-  Rrow('Email:', String(f.receptor_email || '').slice(0, 34));
-  Rrow('Metodo pago:', f.metodo_pago || '');
+  // ============ BANDA DATOS DEL CLIENTE (gris) ============
+  const bandTop = 700, bandBot = 610;
+  rectF(LX, bandBot, RX - LX, bandTop - bandBot, 0.94);
+  Tg(36, bandTop - 12, 8, 'INFORMACION DEL CLIENTE', 'F2', 0.45);
+  TRg(RX - 10, bandTop - 12, 8, 'CONDICIONES DE VENTA', 'F2', 0.45);
+  const condR = { RI: 'IVA RESPONSABLE INSCRIPTO', MONO: 'RESPONSABLE MONOTRIBUTO', CF: 'CONSUMIDOR FINAL', EX: 'IVA EXENTO' }[f.receptor_cond_iva] || 'CONSUMIDOR FINAL';
+  const docVal = f.doc_tipo === 99 ? '-' : (f.doc_tipo === 80 ? fmtCuit(f.doc_nro) : String(f.doc_nro || ''));
+  const domR = String(f.receptor_domicilio || '');
+  const domRL = []; { let cur = ''; domR.split(' ').forEach(w => { if (W((cur ? cur + ' ' + w : w), 8.5) > 225 && cur) { domRL.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w; }); if (cur) domRL.push(cur); }
+  let cly = bandTop - 28;
+  const Lrow = (lbl, val, bold) => { Tg(36, cly, 8.5, lbl, 'F1', 0.5); T(96, cly, 8.5, String(val || ''), bold ? 'F2' : 'F1'); cly -= 14; };
+  Lrow('Cliente:', f.receptor_nombre || 'Consumidor Final', true);
+  { Tg(36, cly, 8.5, 'Direccion:', 'F1', 0.5); (domRL.length ? domRL : ['-']).slice(0, 2).forEach(ln => { T(96, cly, 8.5, ln, 'F1'); cly -= 12; }); cly -= 2; }
+  Lrow(f.doc_tipo === 96 ? 'DNI:' : 'CUIT:', docVal);
+  Lrow('Condicion:', condR);
+  const cvTxt = f.metodo_pago || f.cond_venta || 'Contado';
+  const fSrv = _facFchSrv(f.cbte_fch);
+  const rrow = [
+    ['Condicion de venta:', cvTxt],
+    ['Tipo:', 'Productos y Servicios'],
+    ['Fecha de inicio del servicio:', _facFchSrv(f.serv_desde) || fSrv],
+    ['Fecha de fin del servicio:', _facFchSrv(f.serv_hasta) || fSrv],
+    ['Fecha de vencimiento del pago del servicio:', vtoTxt]
+  ];
+  let rry = bandTop - 28;
+  rrow.forEach(rw => { const vw = W(rw[1], 8.5); TR(RX - 10, rry, 8.5, rw[1], 'F2'); TRg(RX - 10 - vw - 5, rry, 8.5, rw[0], 'F1', 0.5); rry -= 14; });
 
-  // ===== ITEMS =====
-  rectS(LX, 320, RX - LX, 296);
-  T(34, 606, 8, 'SKU', 'F2'); T(90, 606, 8, 'DESCRIPCION', 'F2'); TR(372, 606, 8, 'CANT', 'F2'); TR(452, 606, 8, 'P. UNIT', 'F2'); TR(524, 606, 8, 'SUBTOTAL', 'F2'); T(530, 606, 8, '%IVA', 'F2');
-  line(LX, 600, RX, 600);
-  let iy = 588;
-  (f.items || []).slice(0, 16).forEach(it => {
-    const sub = (Number(it.subtotal) != null ? Number(it.subtotal) : (it.cantidad * it.precio_unit));
-    T(34, iy, 8, String(it.codigo || '-').slice(0, 9), 'F1');
-    T(90, iy, 8, String(it.descripcion || '').slice(0, 42), 'F1');
-    TR(372, iy, 8, String(it.cantidad), 'F1');
-    TR(452, iy, 8, (Number(it.precio_unit) || 0).toFixed(2), 'F1');
-    TR(524, iy, 8, (Number(sub) || 0).toFixed(2), 'F1');
-    T(532, iy, 8, esC ? '-' : String(it.iva_pct), 'F1');
-    iy -= 14;
+  // ============ CONCEPTOS ============
+  Tg(32, 601, 8.5, 'CONCEPTOS', 'F2', 0.4);
+  const b1 = 80, b2 = 136, b3 = 286, b4 = 342, b5 = 396, b6 = 484;
+  rectF(LX, 580, RX - LX, 18, 0.42);
+  GY(1);
+  T(34, 586, 8, 'Cantidad', 'F2');
+  T(b1 + 5, 586, 8, 'Codigo', 'F2');
+  T(b2 + 4, 586, 8, 'Descripcion', 'F2');
+  TR(b4 - 4, 586, 8, '% Bonif.', 'F2');
+  TR(b5 - 4, 586, 8, '% IVA', 'F2');
+  TR(b6 - 4, 586, 8, 'Precio Unitario', 'F2');
+  TR(RX - 6, 586, 8, 'Subtotal Neto', 'F2');
+  GY(0);
+  const items = (f.items || []).slice(0, 15);
+  let ry0 = 580;
+  SG(0.85);
+  items.forEach(it => {
+    const cant = (Number(it.cantidad) || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const sub = (Number(it.subtotal) != null && it.subtotal !== '' ? Number(it.subtotal) : (Number(it.cantidad) * Number(it.precio_unit)));
+    const dl = []; { let cur = ''; String(it.descripcion || '').split(' ').forEach(w => { if (W((cur ? cur + ' ' + w : w), 8) > (b3 - b2 - 8) && cur) { dl.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w; }); if (cur) dl.push(cur); }
+    const nL = Math.max(1, Math.min(3, dl.length));
+    const rowH = Math.max(17, nL * 10 + 6);
+    const topY = ry0 - 11;
+    T(34, topY, 8, cant, 'F1');
+    T(b1 + 5, topY, 8, String(it.codigo || '-').slice(0, 10), 'F1');
+    dl.slice(0, 3).forEach((ln, i) => T(b2 + 4, topY - i * 10, 8, ln, 'F1'));
+    TR(b4 - 4, topY, 8, (Number(it.bonif) || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 }), 'F1');
+    TR(b5 - 4, topY, 8, esC ? '-' : (Number(it.iva_pct) || 0).toLocaleString('es-AR', { minimumFractionDigits: 2 }), 'F1');
+    TR(b6 - 4, topY, 8, _facMoneySrv(it.precio_unit), 'F1');
+    TR(RX - 6, topY, 8, _facMoneySrv(sub), 'F1');
+    ry0 -= rowH;
+    line(LX, ry0, RX, ry0);
   });
+  const tableBot = ry0;
+  SG(0.85);
+  [b1, b2, b3, b4, b5, b6].forEach(x => line(x, 598, x, tableBot));
+  line(LX, 598, LX, tableBot); line(RX, 598, RX, tableBot); line(LX, 598, RX, 598);
+  SG(0);
 
-  // ===== TOTALES (box derecha) =====
+  // ============ TOTALES ============
   let iva21 = 0, iva105 = 0, iva27 = 0, grav = 0, exento = 0;
-  (f.items || []).forEach(it => { const sub = Number(it.subtotal) || 0; if (esC) { grav += sub; } else { const p = Number(it.iva_pct) || 0; if (p === 0) exento += sub; else grav += sub; const iv = sub * p / 100; if (p === 21) iva21 += iv; else if (p === 10.5) iva105 += iv; else if (p === 27) iva27 += iv; } });
-  const bx = 300, bw = RX - bx;
-  rectS(bx, 150, bw, 165);
-  const dash = '-';
-  const totRows = esC
-    ? [['Subtotal', grav], ['Importe Total', f.importe_total, true]]
-    : [['Importe Neto Gravado', grav], ['Importe Neto No Gravado', 0], ['Importe IVA 10.5%', iva105], ['Importe IVA 21%', iva21], ['Importe IVA 27%', iva27], ['Importe Exento', exento], ['Descuentos', 0], ['Importe Total', f.importe_total, true]];
-  let ty = 302;
-  totRows.forEach(rw => {
-    const isTot = rw[2];
-    if (isTot) { rectF(bx + 1, ty - 5, bw - 2, 20, 0.9); }
-    T(bx + 8, ty, isTot ? 11 : 9, rw[0], isTot ? 'F2' : 'F1');
-    const val = (Number(rw[1]) > 0 || isTot) ? _facMoneySrv(rw[1]) : dash;
-    TR(RX - 8, ty, isTot ? 11 : 9, val, isTot ? 'F2' : 'F1');
-    ty -= (isTot ? 22 : 19);
-  });
-  T(bx, 128, 8, 'Son: ' + _facEnLetras(f.importe_total), 'F1');
-  T(bx, 116, 8, 'Moneda: Pesos Argentinos', 'F1');
+  (f.items || []).forEach(it => { const sub = (Number(it.subtotal) != null && it.subtotal !== '' ? Number(it.subtotal) : (Number(it.cantidad) * Number(it.precio_unit))) || 0; if (esC) { grav += sub; } else { const p = Number(it.iva_pct) || 0; if (p === 0) exento += sub; else grav += sub; const iv = sub * p / 100; if (p === 21) iva21 += iv; else if (p === 10.5) iva105 += iv; else if (p === 27) iva27 += iv; } });
+  let tyT = tableBot - 22;
+  const totRow = (lbl, val) => { Tg(414, tyT, 9.5, lbl, 'F1', 0.45); TR(RX - 8, tyT, 9.5, _facMoneySrv(val), 'F1'); tyT -= 17; };
+  if (esC) { totRow('Subtotal', grav); }
+  else {
+    totRow('Subtotal Gravado', grav);
+    if (exento > 0) totRow('Importe Exento', exento);
+    if (iva105 > 0) totRow('IVA 10,5%', iva105);
+    if (iva21 > 0) totRow('IVA 21%', iva21);
+    if (iva27 > 0) totRow('IVA 27%', iva27);
+  }
+  tyT -= 2;
+  rectF(360, tyT - 6, RX - 360, 24, 0.42);
+  GY(1);
+  T(372, tyT + 2, 13, 'TOTAL', 'F2');
+  TR(RX - 10, tyT + 2, 14, _facMoneySrv(f.importe_total), 'F2');
+  GY(0);
 
-  // ===== QR + CAE (abajo izquierda) =====
+  // ============ PIE: QR + CAE ============
   let qrDrawn = false;
   try {
     const qrData = { ver: 1, fecha: (String(f.cbte_fch).slice(0, 4) + '-' + String(f.cbte_fch).slice(4, 6) + '-' + String(f.cbte_fch).slice(6, 8)), cuit: Number(f.cuit), ptoVta: Number(f.pto_vta), tipoCmp: Number(f.cbte_cod), nroCmp: Number(f.nro), importe: Number(f.importe_total), moneda: 'PES', ctz: 1, tipoDocRec: Number(f.doc_tipo), nroDocRec: Number(f.doc_nro) || 0, tipoCodAut: 'E', codAut: Number(f.cae) };
     const qrUrl = 'https://www.afip.gob.ar/fe/qr/?p=' + Buffer.from(JSON.stringify(qrData)).toString('base64');
     const { n, m } = await _facQRMatrix(qrUrl);
-    const size = 108, x0 = 34, yTop = 300, ms = size / n;
+    const size = 104, x0 = 34, yTop = 150, ms = size / n;
     ops.push('0 0 0 rg');
     for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (m[r][c]) ops.push(n2(x0 + c * ms) + ' ' + n2(yTop - (r + 1) * ms) + ' ' + n2(ms + 0.3) + ' ' + n2(ms + 0.3) + ' re');
     ops.push('f'); qrDrawn = true;
   } catch (e) { /* sin QR si falla la librería */ }
-  const cy = qrDrawn ? 178 : 290;
-  T(34, cy, 10, 'CAE: ' + (f.cae || ''), 'F2');
-  T(34, cy - 14, 10, 'Vencimiento CAE: ' + _facFchSrv(f.cae_vto), 'F2');
-  if (f.ambiente === 'homologacion') T(34, cy - 28, 8, '(HOMOLOGACION - sin validez fiscal)', 'F2');
-
-  // ===== OBSERVACIONES =====
-  rectS(LX, 30, RX - LX, 78);
-  T(34, 96, 9, 'Observaciones:', 'F2');
-  const obs = String(f.observaciones || 'El consumidor tiene derecho a revocar la aceptacion durante los 10 dias de recibido el producto.');
-  const wrap = (s, w) => { const out = []; let cur = ''; s.split(' ').forEach(word => { if ((cur + ' ' + word).length > w) { out.push(cur); cur = word; } else cur = cur ? cur + ' ' + word : word; }); if (cur) out.push(cur); return out; };
-  let oy = 82; wrap(obs, 95).slice(0, 4).forEach(ln => { T(34, oy, 8, ln, 'F1'); oy -= 12; });
+  const caeX = qrDrawn ? 150 : 34, caeY = 118;
+  T(caeX, caeY, 11, 'CAE Nro: ' + (f.cae || ''), 'F2');
+  Tg(caeX, caeY - 15, 8.5, 'Fecha de Vto. de CAE: ' + _facFchSrv(f.cae_vto), 'F1', 0.3);
+  if (f.ambiente === 'homologacion') Tg(caeX, caeY - 30, 8, '(HOMOLOGACION - sin validez fiscal)', 'F2', 0.5);
 
   // ===== ENSAMBLADO PDF =====
   const content = ops.join('\n');
@@ -14934,9 +14975,9 @@ async function facBuildPDFBuffer(f, cfg) {
   objs.push('<</Type/Pages/Kids[3 0 R]/Count 1>>');
   objs.push('<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Resources<</Font<</F1 5 0 R/F2 6 0 R/F3 7 0 R>>>>/Contents 4 0 R>>');
   objs.push('<</Length ' + Buffer.byteLength(content, 'latin1') + '>>\nstream\n' + content + '\nendstream');
-  objs.push('<</Type/Font/Subtype/Type1/BaseFont/Courier/Encoding/WinAnsiEncoding>>');
-  objs.push('<</Type/Font/Subtype/Type1/BaseFont/Courier-Bold/Encoding/WinAnsiEncoding>>');
-  objs.push('<</Type/Font/Subtype/Type1/BaseFont/Times-Bold/Encoding/WinAnsiEncoding>>');
+  objs.push('<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>');
+  objs.push('<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold/Encoding/WinAnsiEncoding>>');
+  objs.push('<</Type/Font/Subtype/Type1/BaseFont/Helvetica-Bold/Encoding/WinAnsiEncoding>>');
   let pdf = '%PDF-1.4\n'; const offs = [];
   objs.forEach((o, i) => { offs.push(pdf.length); pdf += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; });
   const xref = pdf.length;
