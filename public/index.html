@@ -441,6 +441,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       <a class="active" onclick="showSection('dashboard')" id="nav-dashboard">
         <svg class="nvic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Dashboard</span>
       </a>
+      <a onclick="showSection('chat')" id="nav-chat">
+        <svg class="nvic" viewBox="0 0 24 24"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg><span>Chat</span>
+        <span class="badge" id="badge-chat" style="display:none;background:#ef4444">0</span>
+      </a>
       <a onclick="showSection('questions')" id="nav-questions">
         <svg class="nvic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .8-1 1.7"/></svg><span>Preguntas</span>
         <span class="badge" id="badge-unanswered" style="display:none">0</span>
@@ -984,6 +988,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       case 'cotizador': loadCotizador(); break;
       case 'questions': loadQuestions(); break;
       case 'messages': loadMessages(undefined, true); break;
+      case 'chat': loadChat(); break;
       case 'sales': loadSales(); break;
       case 'local': loadLocal(); break;
       case 'parabrisas': loadParabrisas(); break;
@@ -4661,6 +4666,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           // Collect SKU data for SKU OK button
           const saleSkuItems = sale.items.filter(i => i.sku).map(i => ({ sku: i.sku, qty: i.quantity }));
           if (saleSkuItems.length) saleSKUs[String(orderId)] = saleSkuItems;
+          // Referencia de la venta para "Enviar a chat"
+          _chatRefs['venta-' + orderId] = { order_id: String(orderId), account_id: sale.account_id, account_name: sale.account_name, buyer: sale.buyer_name, title: (sale.items && sale.items[0] ? sale.items[0].title : ''), total: sale.total_amount, section: 'ventas' };
           fullHtml += `
             <div class="sale-card">
               <div id="prep-badge-${firstOrderId}" style="float:right;margin-bottom:4px"></div>
@@ -4696,6 +4703,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
                   ${sale.shipping_id ? `<button class="btn-print" onclick="printLabel(${sale.shipping_id}, ${sale.account_id})">🖨️ Imprimir etiqueta</button>` : ''}
                   <a href="/?section=messages&order_id=${firstOrderId}&account_id=${sale.account_id}" target="_blank">💬 Mensajes</a>
                   <a href="/?section=questions&buyer_id=${sale.buyer_id}&account_id=${sale.account_id}" target="_blank">❓ Preguntas</a>
+                  <button onclick="abrirEnviarChat('venta-${orderId}')" style="padding:7px 12px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📨 Enviar a chat</button>
                 </div>
                 <div style="font-weight:700;color:#2d3277;font-size:18px">Total: $ ${Number(sale.total_amount).toLocaleString('es-AR', {minimumFractionDigits:2})}</div>
               </div>
@@ -8371,6 +8379,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const colors = ['','#e74c3c','#e67e22','#f5a623','#27ae60','#95a5a6'];
     const oid = escapeHtml(String(order.order_id));
     const shippingDataStr = escapeHtml(JSON.stringify(order.shipping_data || {}));
+    // Referencia de la venta para "Enviar a chat"
+    _chatRefs['prep-' + oid] = { order_id: String(order.order_id), account_id: order.account_id, account_name: order.account_name, buyer: order.buyer_name, title: (order.items && order.items[0] ? order.items[0].title : ''), total: null, section: 'prep' };
     return `
       <div class="sale-card" id="prep-card-${oid}" data-shipping-data="${shippingDataStr}" style="border-left:4px solid ${colors[order.priority||3]}">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:${expanded?'10':'0'}px;flex-wrap:wrap;cursor:pointer;user-select:none" onclick="togglePrepCard('${oid}')">
@@ -8417,6 +8427,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:8px">
             <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button onclick="event.stopPropagation();abrirEnviarChat('prep-${oid}')" style="padding:8px 14px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📨 Enviar a chat</button>
               ${order.shipping_id ? `<button class="btn-print" onclick="event.stopPropagation();printLabel(${order.shipping_id}, ${order.account_id})">🖨️ Etiqueta ML</button>` : ''}
               ${can_operate ? `<button onclick="event.stopPropagation();imprimirEtiquetaEnvio('${oid}')" style="padding:8px 14px;background:#2c3e50;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">🖨️ Imprimir envío</button>` : ''}
               ${can_manage ? `<button onclick="event.stopPropagation();volverASinPreparar('${oid}',this)" style="padding:8px 14px;background:white;color:#e74c3c;border:2px solid #e74c3c;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">↩️ Sin preparar</button>` : ''}
@@ -11492,7 +11503,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   // Badge en la PESTAÑA del navegador (estilo WhatsApp): muestra las preguntas + mensajes pendientes.
   const _baseTitle = 'AUTOCHAP VENTAS';
   function updateTitleBadge() {
-    const total = (knownQuestionIds ? knownQuestionIds.size : 0) + (knownMessageIds ? knownMessageIds.size : 0);
+    const total = (knownQuestionIds ? knownQuestionIds.size : 0) + (knownMessageIds ? knownMessageIds.size : 0) + ((typeof chatUnreadCount === 'number') ? chatUnreadCount : 0);
     document.title = total > 0 ? ('(' + total + ') ' + _baseTitle) : _baseTitle;
   }
   let pendingNewQuestions = 0;
@@ -11603,12 +11614,309 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   const style = document.createElement('style');
   style.textContent = '@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }';
   document.head.appendChild(style);
+  // ==================== CHAT INTERNO ====================
+  // Mensajería 1 a 1 entre usuarios + bandeja de avisos del SISTEMA. Al tocar una
+  // conversación se abre en una ventana de diálogo (modal). Contador de no leídos
+  // en el menú + banner arriba cuando llegan mensajes nuevos.
+  let _chatThreads = [], _chatAllThreads = [];
+  let _chatView = 'mias';            // 'mias' | 'todos' (supervisión, solo admin)
+  let _chatDialogId = null, _chatDialogData = null, _chatDialogAdmin = false, _chatPoll = null;
+  let _chatRenderedCount = -1, _chatFootClosed = null, _chatFootIClosed = null;
+  let chatUnreadCount = 0, _chatUnreadPrev = 0, chatBannerDismissed = false;
+  let _chatUsersCache = null;
+  let _chatRefs = {};   // key -> ref de venta (para "Enviar a chat")
+  function _chatTime(iso) {
+    try { const d = new Date(iso), now = new Date(); const same = d.toDateString() === now.toDateString();
+      return same ? d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+    catch (e) { return ''; }
+  }
+  async function loadChat() {
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando chat…</p></div>';
+    const myNav = navToken;
+    try {
+      const r = await fetch('/api/chat/threads', { credentials: 'same-origin' });
+      const d = await r.json();
+      if (navToken !== myNav) return;
+      _chatThreads = d.threads || [];
+      chatUnreadCount = d.unread || 0; _chatUnreadPrev = chatUnreadCount;
+      renderChatBadge(); renderChatBanner();
+      const isAdmin = currentUser && currentUser.role === 'admin';
+      if (!isAdmin) _chatView = 'mias';
+      content.innerHTML = chatListHtml(d);
+      if (_chatView === 'todos' && isAdmin) chatLoadAll('');
+      else chatRenderList('');
+    } catch (e) { if (navToken === myNav) content.innerHTML = '<div class="empty"><p>Error al cargar el chat</p></div>'; }
+  }
+  function chatListHtml(d) {
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const tabBtn = (v, label) => '<button onclick="chatSetView(\'' + v + '\')" id="chat-tab-' + v + '" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (_chatView === v ? '#3483fa' : '#e5e7eb') + ';background:' + (_chatView === v ? '#3483fa' : '#fff') + ';color:' + (_chatView === v ? '#fff' : '#374151') + ';font-weight:700;font-size:13px;cursor:pointer">' + label + '</button>';
+    const tabs = isAdmin ? ('<div style="display:flex;gap:8px;margin-bottom:12px">' + tabBtn('mias', '💬 Mis chats') + tabBtn('todos', '👁 Supervisión (todos)') + '</div>') : '';
+    const ph = (_chatView === 'todos' && isAdmin) ? '🔎 Buscar por N° de venta o usuario…' : '🔎 Buscar por N° de venta…';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px">' +
+      '<h2 style="margin:0;color:#2d3277">💬 Chat</h2>' +
+      '<button onclick="chatNuevo()" style="padding:9px 16px;background:#3483fa;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">✏️ Nuevo mensaje</button></div>' +
+      tabs +
+      '<input id="chat-search" oninput="chatRenderList(this.value)" placeholder="' + ph + '" style="width:100%;padding:10px 12px;border:1px solid #d7dee8;border-radius:10px;font-size:14px;margin-bottom:14px;outline:none;box-sizing:border-box">' +
+      '<div id="chat-list"></div>';
+  }
+  function chatSetView(v) {
+    _chatView = v;
+    const content = document.getElementById('content');
+    const d = { threads: _chatThreads, unread: chatUnreadCount };
+    content.innerHTML = chatListHtml(d);
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    if (v === 'todos' && isAdmin) chatLoadAll('');
+    else chatRenderList('');
+  }
+  async function chatLoadAll(filter) {
+    const host = document.getElementById('chat-list'); if (host) host.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    try { const r = await fetch('/api/chat/all', { credentials: 'same-origin' }); const d = await r.json(); _chatAllThreads = d.threads || []; }
+    catch (e) { _chatAllThreads = []; }
+    chatRenderList(filter || '');
+  }
+  function chatAdminRowHtml(t) {
+    const icon = t.kind === 'sistema' ? '🔔' : t.kind === 'venta' ? '📦' : '👤';
+    const closedChip = t.closed ? '<span style="background:#e5e7eb;color:#6b7280;border-radius:10px;font-size:10.5px;font-weight:700;padding:1px 8px;margin-left:6px">CERRADA</span>' : '';
+    const sub = (t.ref && t.ref.order_id) ? ('Venta #' + escapeHtml(String(t.ref.order_id)) + (t.ref.title ? (' · ' + escapeHtml(t.ref.title)) : '')) : (t.subject ? escapeHtml(t.subject) : '');
+    return '<div onclick="chatOpenDialog(' + t.id + ',true)" style="cursor:pointer;background:#fff;border:1px solid #eef0f3;border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 3px rgba(0,0,0,.05)">' +
+      '<span style="font-size:22px;flex-shrink:0">' + icon + '</span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;align-items:center;flex-wrap:wrap"><span style="font-weight:700;color:#1f2937;font-size:14px">' + escapeHtml(t.title || '') + '</span>' + closedChip + '</div>' +
+        (sub ? '<div style="font-size:12px;color:#6b7280;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + sub + '</div>' : '') +
+        '<div style="font-size:12.5px;color:#9ca3af;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (t.last_from ? ('<b>' + escapeHtml(t.last_from) + ':</b> ') : '') + escapeHtml(t.last_text || '') + '</div>' +
+      '</div>' +
+      '<div style="font-size:11px;color:#9ca3af;flex-shrink:0;align-self:flex-start">' + (t.msg_count || 0) + ' msj<br>' + _chatTime(t.last_ts) + '</div>' +
+    '</div>';
+  }
+  function chatThreadRowHtml(t) {
+    const icon = t.kind === 'sistema' ? '🔔' : t.kind === 'venta' ? '📦' : '👤';
+    const unreadDot = t.unread > 0 ? '<span style="background:#ef4444;color:#fff;border-radius:12px;font-size:11px;font-weight:700;padding:1px 8px;margin-left:6px">' + t.unread + '</span>' : '';
+    const closedChip = t.closed ? '<span style="background:#e5e7eb;color:#6b7280;border-radius:10px;font-size:10.5px;font-weight:700;padding:1px 8px;margin-left:6px">CERRADA</span>' : '';
+    const sub = (t.ref && t.ref.order_id) ? ('Venta #' + escapeHtml(String(t.ref.order_id)) + (t.ref.title ? (' · ' + escapeHtml(t.ref.title)) : '')) : (t.subject ? escapeHtml(t.subject) : '');
+    return '<div onclick="chatOpenDialog(' + t.id + ')" style="cursor:pointer;background:#fff;border:1px solid ' + (t.unread > 0 ? '#fecaca' : '#eef0f3') + ';border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 3px rgba(0,0,0,.05)">' +
+      '<span style="font-size:22px;flex-shrink:0">' + icon + '</span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;align-items:center;flex-wrap:wrap"><span style="font-weight:700;color:#1f2937;font-size:14px">' + escapeHtml(t.title || '') + '</span>' + unreadDot + closedChip + '</div>' +
+        (sub ? '<div style="font-size:12px;color:#6b7280;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + sub + '</div>' : '') +
+        '<div style="font-size:12.5px;color:' + (t.unread > 0 ? '#111827' : '#9ca3af') + ';margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (t.last_from ? ('<b>' + escapeHtml(t.last_from) + ':</b> ') : '') + escapeHtml(t.last_text || '') + '</div>' +
+      '</div>' +
+      '<div style="font-size:11px;color:#9ca3af;flex-shrink:0;align-self:flex-start">' + _chatTime(t.last_ts) + '</div>' +
+    '</div>';
+  }
+  function chatRenderList(filter) {
+    const host = document.getElementById('chat-list'); if (!host) return;
+    const f = (filter || '').trim().toLowerCase();
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const todos = _chatView === 'todos' && isAdmin;
+    let list = todos ? (_chatAllThreads || []) : (_chatThreads || []);
+    if (f) list = list.filter(t => {
+      const on = (t.ref && t.ref.order_id) ? String(t.ref.order_id).toLowerCase() : '';
+      return on.includes(f) || (t.title || '').toLowerCase().includes(f) || (t.subject || '').toLowerCase().includes(f) || (t.last_text || '').toLowerCase().includes(f);
+    });
+    if (!list.length) { host.innerHTML = '<div class="empty"><p>' + (f ? ('No hay conversaciones para «' + escapeHtml(filter) + '».') : (todos ? 'No hay conversaciones en el sistema.' : 'No tenés conversaciones todavía.<br>Tocá «Nuevo mensaje», o usá «📨 Enviar a chat» desde una venta.')) + '</p></div>'; return; }
+    const rowFn = todos ? chatAdminRowHtml : chatThreadRowHtml;
+    host.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' + list.map(rowFn).join('') + '</div>';
+  }
+  async function chatOpenDialog(id, admin) {
+    _chatDialogId = id; _chatDialogAdmin = !!admin; _chatDialogData = null; _chatRenderedCount = -1; _chatFootClosed = null; _chatFootIClosed = null;
+    let ov = document.getElementById('chat-dialog-ov'); if (ov) ov.remove();
+    ov = document.createElement('div'); ov.id = 'chat-dialog-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:2vh 1vw';
+    ov.addEventListener('click', e => { if (e.target === ov) chatCloseDialog(); });
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;width:min(680px,97vw);height:min(90vh,760px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35)">' +
+      '<div id="chat-dialog-head" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #eef2f7;flex-shrink:0;gap:10px"><strong style="color:#2d3277;font-size:15px">Cargando…</strong>' +
+      '<button onclick="chatCloseDialog()" style="border:none;background:#f1f5f9;border-radius:8px;width:34px;height:34px;font-size:16px;cursor:pointer">✕</button></div>' +
+      '<div id="chat-dialog-ref" style="flex-shrink:0"></div>' +
+      '<div id="chat-dialog-msgs" style="flex:1;overflow-y:auto;padding:14px;background:#f7f8fa;display:flex;flex-direction:column;gap:8px"><div class="loading"><div class="spinner"></div></div></div>' +
+      '<div id="chat-dialog-foot" style="flex-shrink:0;border-top:1px solid #eef2f7;padding:10px 12px"></div>' +
+    '</div>';
+    document.body.appendChild(ov);
+    document.addEventListener('keydown', _chatDialogEsc);
+    await chatRefreshDialog(true);
+    if (_chatPoll) clearInterval(_chatPoll);
+    _chatPoll = setInterval(() => { if (_chatDialogId) chatRefreshDialog(false); else { clearInterval(_chatPoll); _chatPoll = null; } }, 5000);
+  }
+  function _chatDialogEsc(e) { if (e.key === 'Escape') chatCloseDialog(); }
+  function chatCloseDialog() {
+    const ov = document.getElementById('chat-dialog-ov'); if (ov) ov.remove();
+    document.removeEventListener('keydown', _chatDialogEsc);
+    _chatDialogId = null; if (_chatPoll) { clearInterval(_chatPoll); _chatPoll = null; }
+    checkChatUnread(); if (currentSection === 'chat') loadChat();
+  }
+  async function chatRefreshDialog(scroll) {
+    if (!_chatDialogId) return;
+    try {
+      const ep = _chatDialogAdmin ? ('/api/chat/thread-admin?id=' + _chatDialogId) : ('/api/chat/thread?id=' + _chatDialogId);
+      const r = await fetch(ep, { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const d = await r.json(); _chatDialogData = d;
+      renderChatDialog(d, scroll);
+    } catch (e) {}
+  }
+  function chatRefHtml(d) {
+    if (!d.ref || !d.ref.order_id) return '';
+    const r = d.ref;
+    // Tocar la barra de la venta abre la venta en una PESTAÑA NUEVA (para emisor y receptor),
+    // sin cerrar el chat. (El clic no llega al fondo del modal, así que el diálogo queda abierto.)
+    const url = '/?section=sales&order_id=' + encodeURIComponent(r.order_id) + (r.account_id != null ? ('&account_id=' + encodeURIComponent(r.account_id)) : '');
+    return '<div onclick="window.open(\'' + url + '\',\'_blank\',\'noopener\')" title="Abrir la venta en una pestaña nueva" style="cursor:pointer;background:#fff7ed;border-bottom:1px solid #fed7aa;padding:9px 14px;font-size:12.5px;color:#7c2d12">' +
+      '📦 <b>Venta #' + escapeHtml(String(r.order_id)) + '</b>' + (r.account_name ? (' · ' + escapeHtml(r.account_name)) : '') + (r.buyer ? (' · ' + escapeHtml(r.buyer)) : '') +
+      (r.title ? ('<div style="color:#9a3412;margin-top:2px">' + escapeHtml(r.title) + '</div>') : '') +
+      (r.total != null ? ('<div style="font-weight:700;margin-top:2px">Total: $ ' + Number(r.total).toLocaleString('es-AR', { minimumFractionDigits: 2 }) + '</div>') : '') +
+      '<div style="color:#3483fa;font-weight:600;margin-top:3px">Ver venta en pestaña nueva →</div>' +
+    '</div>';
+  }
+  function chatMsgsHtml(d, admin) {
+    return (d.messages || []).map(m => {
+      if (m.from === 0) return '<div style="align-self:center;background:#eef2ff;color:#4338ca;font-size:11.5px;padding:4px 10px;border-radius:10px;max-width:88%;text-align:center;white-space:pre-wrap">' + escapeHtml(m.text) + '</div>';
+      const mine = admin ? false : m.mine;   // en supervisión no hay "mío": se muestran todos con nombre
+      return '<div style="align-self:' + (mine ? 'flex-end' : 'flex-start') + ';max-width:78%">' +
+        '<div style="background:' + (mine ? '#3483fa' : '#fff') + ';color:' + (mine ? '#fff' : '#1f2937') + ';border:1px solid ' + (mine ? '#3483fa' : '#e5e7eb') + ';border-radius:12px;padding:8px 11px;font-size:13.5px;white-space:pre-wrap;word-break:break-word">' + escapeHtml(m.text) + '</div>' +
+        '<div style="font-size:10.5px;color:#9ca3af;margin-top:2px;text-align:' + (mine ? 'right' : 'left') + '">' + (mine ? '' : (escapeHtml(m.fromName) + ' · ')) + _chatTime(m.ts) + '</div>' +
+      '</div>';
+    }).join('');
+  }
+  function chatFootHtml(d, admin) {
+    if (admin) return '<div style="font-size:12px;color:#6b7280;text-align:center;padding:6px"><b>👁 Vista de supervisión</b> — solo lectura. No participás de esta conversación.</div>';
+    if (d.kind === 'sistema') return '<div style="font-size:12px;color:#9ca3af;text-align:center;padding:4px">Bandeja de avisos automáticos. No se puede responder.</div>';
+    let status = '';
+    if (d.closed) status = '<div style="font-size:11.5px;color:#6b7280;margin-bottom:6px;text-align:center">Conversación CERRADA. Si escribís, se reabre.</div>';
+    else if (d.i_closed) status = '<div style="font-size:11.5px;color:#b45309;margin-bottom:6px;text-align:center">✓ Ya marcaste cerrar. Falta que el otro también cierre.</div>';
+    return status +
+      '<div style="display:flex;gap:8px;align-items:flex-end">' +
+        '<textarea id="chat-input" rows="1" placeholder="Escribí un mensaje…" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();chatSend();}" style="flex:1;resize:none;max-height:120px;min-height:40px;padding:9px 11px;border:1px solid #d7dee8;border-radius:10px;font-size:13.5px;font-family:inherit;outline:none;box-sizing:border-box"></textarea>' +
+        '<button onclick="chatSend()" style="padding:10px 16px;background:#3483fa;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:13.5px">Enviar</button>' +
+      '</div>' +
+      ((d.closed || d.i_closed) ? '' : '<div style="text-align:right;margin-top:6px"><button onclick="chatDoClose()" style="background:transparent;border:none;color:#ef4444;font-size:12px;cursor:pointer;font-weight:600">✓ Cerrar conversación</button></div>');
+  }
+  function renderChatDialog(d, scroll) {
+    const head = document.getElementById('chat-dialog-head'); if (!head) return;
+    const icon = d.kind === 'sistema' ? '🔔' : d.kind === 'venta' ? '📦' : '👤';
+    const strong = head.querySelector('strong'); if (strong) strong.textContent = icon + ' ' + (d.title || '');
+    const refEl = document.getElementById('chat-dialog-ref'); if (refEl) refEl.innerHTML = chatRefHtml(d);
+    const msgsEl = document.getElementById('chat-dialog-msgs');
+    if (msgsEl && d.messages.length !== _chatRenderedCount) { msgsEl.innerHTML = chatMsgsHtml(d, _chatDialogAdmin); _chatRenderedCount = d.messages.length; scroll = true; }
+    if (scroll && msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+    if (_chatFootClosed === null || _chatFootClosed !== d.closed || _chatFootIClosed !== d.i_closed) renderChatDialogFoot(d);
+  }
+  function renderChatDialogFoot(d) {
+    const foot = document.getElementById('chat-dialog-foot'); if (!foot) return;
+    foot.innerHTML = chatFootHtml(d, _chatDialogAdmin); _chatFootClosed = d.closed; _chatFootIClosed = d.i_closed;
+  }
+  async function chatSend() {
+    const ta = document.getElementById('chat-input'); if (!ta) return;
+    const text = ta.value.trim(); if (!text) return;
+    ta.disabled = true;
+    try {
+      const r = await fetch('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ thread_id: _chatDialogId, text: text }) });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); showToast(d.error || 'No se pudo enviar', 'error'); ta.disabled = false; return; }
+      ta.value = ''; ta.disabled = false; ta.focus();
+      await chatRefreshDialog(true);
+      if (_chatDialogData) renderChatDialogFoot(_chatDialogData);   // limpia estado "cerrada" si se reabrió
+    } catch (e) { showToast('Error de red', 'error'); ta.disabled = false; }
+  }
+  async function chatDoClose() {
+    if (!_chatDialogId) return;
+    try {
+      const r = await fetch('/api/chat/close', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ thread_id: _chatDialogId }) });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); showToast(d.error || 'No se pudo cerrar', 'error'); return; }
+      const d = await r.json();
+      showToast(d.closed ? 'Conversación cerrada' : 'Marcaste cerrar — falta que el otro cierre', 'success');
+      await chatRefreshDialog(true);
+      if (_chatDialogData) renderChatDialogFoot(_chatDialogData);
+    } catch (e) { showToast('Error de red', 'error'); }
+  }
+  async function _chatLoadUsers() {
+    if (_chatUsersCache) return _chatUsersCache;
+    try { const r = await fetch('/api/chat/users', { credentials: 'same-origin' }); _chatUsersCache = await r.json(); } catch (e) { _chatUsersCache = []; }
+    return _chatUsersCache;
+  }
+  function chatNuevo() { _chatCompose(null); }
+  function abrirEnviarChat(key) { _chatCompose(_chatRefs[key] || null); }
+  async function _chatCompose(ref) {
+    const users = await _chatLoadUsers();
+    let ov = document.getElementById('chat-compose-ov'); if (ov) ov.remove();
+    ov = document.createElement('div'); ov.id = 'chat-compose-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10002;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:3vh 4vw';
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    const opts = (users || []).map(u => '<option value="' + u.id + '">' + escapeHtml(u.username) + (u.role === 'admin' ? ' (admin)' : '') + '</option>').join('');
+    const refCard = (ref && ref.order_id) ? ('<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:9px 12px;font-size:12.5px;color:#7c2d12;margin-bottom:12px">📦 <b>Venta #' + escapeHtml(String(ref.order_id)) + '</b>' + (ref.account_name ? (' · ' + escapeHtml(ref.account_name)) : '') + (ref.buyer ? (' · ' + escapeHtml(ref.buyer)) : '') + (ref.title ? ('<div style="color:#9a3412;margin-top:2px">' + escapeHtml(ref.title) + '</div>') : '') + '</div>') : '';
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;width:min(460px,96vw);padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.35)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><strong style="color:#2d3277;font-size:16px">' + (ref ? '📨 Enviar venta a chat' : '✏️ Nuevo mensaje') + '</strong><button onclick="this.closest(\'#chat-compose-ov\').remove()" style="border:none;background:#f1f5f9;border-radius:8px;width:32px;height:32px;font-size:15px;cursor:pointer">✕</button></div>' +
+      refCard +
+      '<label style="font-size:12.5px;color:#6b7280;font-weight:600;display:block;margin-bottom:4px">Para:</label>' +
+      '<select id="chat-compose-to" style="width:100%;padding:9px 11px;border:1px solid #d7dee8;border-radius:10px;font-size:14px;margin-bottom:12px;outline:none;box-sizing:border-box">' + (opts || '<option value="">(no hay otros usuarios)</option>') + '</select>' +
+      '<label style="font-size:12.5px;color:#6b7280;font-weight:600;display:block;margin-bottom:4px">Mensaje:</label>' +
+      '<textarea id="chat-compose-text" rows="4" placeholder="Escribí el mensaje…" style="width:100%;padding:9px 11px;border:1px solid #d7dee8;border-radius:10px;font-size:13.5px;font-family:inherit;resize:vertical;outline:none;box-sizing:border-box"></textarea>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button onclick="this.closest(\'#chat-compose-ov\').remove()" style="padding:9px 16px;border:1px solid #d7dee8;background:#fff;border-radius:9px;cursor:pointer;font-size:13.5px">Cancelar</button>' +
+      '<button id="chat-compose-send" style="padding:9px 18px;background:#3483fa;color:#fff;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-size:13.5px">Enviar</button></div>' +
+    '</div>';
+    document.body.appendChild(ov);
+    const sendBtn = document.getElementById('chat-compose-send');
+    if (sendBtn) sendBtn.onclick = () => _chatComposeSend(ref || null);
+  }
+  async function _chatComposeSend(ref) {
+    const toEl = document.getElementById('chat-compose-to'); const txtEl = document.getElementById('chat-compose-text');
+    const to = parseInt(toEl && toEl.value); const text = ((txtEl && txtEl.value) || '').trim();
+    if (!to) { showToast('Elegí un destinatario', 'error'); return; }
+    if (!text) { showToast('Escribí un mensaje', 'error'); return; }
+    const btn = document.getElementById('chat-compose-send'); if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+    try {
+      const payload = { to: to, text: text }; if (ref && ref.order_id) payload.ref = ref;
+      const r = await fetch('/api/chat/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); showToast(d.error || 'No se pudo enviar', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Enviar'; } return; }
+      const d = await r.json();
+      const ov = document.getElementById('chat-compose-ov'); if (ov) ov.remove();
+      showToast('Mensaje enviado', 'success'); checkChatUnread();
+      if (currentSection === 'chat') await loadChat();
+      if (d.thread_id) chatOpenDialog(d.thread_id);
+    } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Enviar'; } }
+  }
+  function renderChatBadge() {
+    const b = document.getElementById('badge-chat');
+    if (b) { if (chatUnreadCount > 0) { b.textContent = chatUnreadCount; b.style.display = ''; } else b.style.display = 'none'; }
+    if (typeof updateTitleBadge === 'function') updateTitleBadge();
+  }
+  async function checkChatUnread() {
+    try {
+      const r = await fetch('/api/chat/unread', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const d = await r.json();
+      chatUnreadCount = Number(d.unread) || 0;
+      if (chatUnreadCount > _chatUnreadPrev) chatBannerDismissed = false;   // reactivar banner con nuevos
+      _chatUnreadPrev = chatUnreadCount;
+      renderChatBadge(); renderChatBanner();
+    } catch (e) {}
+  }
+  function renderChatBanner() {
+    let el = document.getElementById('chat-new-banner');
+    if (chatUnreadCount <= 0 || chatBannerDismissed || currentSection === 'chat') { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div'); el.id = 'chat-new-banner';
+      el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);z-index:9998;background:#eff6ff;border:1.5px solid #3483fa;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.14);padding:11px 14px;display:flex;align-items:center;gap:12px;max-width:92vw';
+      document.body.appendChild(el);
+    }
+    el.innerHTML = '<span style="font-size:20px">💬</span>' +
+      '<span style="font-size:13.5px;color:#1e3a8a"><b>' + chatUnreadCount + '</b> mensaje' + (chatUnreadCount !== 1 ? 's' : '') + ' nuevo' + (chatUnreadCount !== 1 ? 's' : '') + ' en el chat.</span>' +
+      '<button onclick="showSection(\'chat\')" style="padding:7px 12px;border:none;border-radius:8px;background:#3483fa;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer">VER: Chat</button>' +
+      '<button onclick="cerrarBannerChat()" title="Cerrar aviso" style="border:none;background:transparent;color:#1e40af;font-size:18px;cursor:pointer;line-height:1">✕</button>';
+    _chatBannerPos();
+  }
+  function cerrarBannerChat() { chatBannerDismissed = true; renderChatBanner(); }
+  // Si están los dos banners (Advertencia + Chat), uno arriba y otro abajo (no se pisan).
+  function _chatBannerPos() {
+    const chat = document.getElementById('chat-new-banner');
+    const advert = document.getElementById('prep-advert-banner');
+    if (chat) chat.style.top = (advert ? '74px' : '12px');
+  }
   // Chequeo de contadores (Preguntas + Mensajes sin leer) cada 8s. Son llamadas livianas
   // (1 por cuenta) y así el número de la izquierda se mantiene al día sin quedar "tildado".
   setInterval(() => {
     if (PREP_IS_EMBED) return; // en el diálogo embebido no corren refrescos de fondo
     checkNewQuestions();
     checkNewMessages();
+    checkChatUnread();
     if (!notificationsReady) notificationsReady = true;
   }, 8000);
   // Auto-refresh current view every 15 seconds ONLY if not typing
