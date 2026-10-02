@@ -3628,7 +3628,10 @@ route('GET', '/auth/mercadolibre', async (req, res) => {
   const url = new URL(req.url, `http://localhost`);
   const name = url.searchParams.get('name') || 'Cuenta ML';
   sess.pendingAccountName = name;
-  const authUrl = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${ML_CLIENT_ID}&redirect_uri=${encodeURIComponent(BASE_URL + '/callback')}`;
+  // Pedimos scopes completos (lectura + escritura + token de larga duración). La escritura es
+  // necesaria para subir la factura a ML (fiscal_documents). Los "permisos funcionales"
+  // (datos fiscales del comprador, carga de factura) se habilitan además en la app en DevCenter.
+  const authUrl = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${ML_CLIENT_ID}&redirect_uri=${encodeURIComponent(BASE_URL + '/callback')}&scope=${encodeURIComponent('offline_access read write')}`;
   res.writeHead(302, { Location: authUrl });
   res.end();
 });
@@ -8769,6 +8772,10 @@ route('GET', '/api/compras/plantilla', async (req, res) => {
   });
   res.end(buf);
 });
+// Helpers de LOCAL que necesita Contable (¿Cómo estoy? / Cash Flow). Se DEFINEN dentro del
+// módulo LOCAL (que vive en el IIFE de abajo, donde están LOCAL_SUCS y loadPbCasos) y se exponen
+// acá, a nivel módulo, para que contComputeResumenSnapshot() los pueda llamar.
+var localCajaSaldoTotal, parabrisasPorCobrarTotal;
 // ==================== MÓDULO ESTRATEGIA · MERCADO ADS (inline) ====================
 (function(){
 // ============================================================================
@@ -9140,11 +9147,20 @@ function _localCostFor(codRaw, wantProv) {
 // Recorta una orden para un usuario NO admin: nunca ve costos ni ganancia.
 function _stripLocalForRole(o, isAdm) {
   if (isAdm) return o;
+  // No-admin: ve el lado de la VENTA (precios, pagos, seña, parabrisas) pero NUNCA costos ni ganancia.
+  const pb = o.parabrisas ? {
+    patente: o.parabrisas.patente, tipo_cristal: o.parabrisas.tipo_cristal, posicion: o.parabrisas.posicion, lado: o.parabrisas.lado,
+    tipo_vehiculo: o.parabrisas.tipo_vehiculo, marca: o.parabrisas.marca, modelo: o.parabrisas.modelo, anio: o.parabrisas.anio, sistema: o.parabrisas.sistema,
+    precio_venta: o.parabrisas.precio_venta, fotos_links: o.parabrisas.fotos_links || [], orden_link: o.parabrisas.orden_link || ''
+  } : null;
   return {
-    n: o.n, tipo: o.tipo || 'venta', fecha: o.fecha, cliente: o.cliente, telefono: o.telefono, notas: o.notas, sucursal: o.sucursal,
+    n: o.n, tipo: o.tipo || 'venta', ramo: o.ramo, fecha: o.fecha, cliente: o.cliente, telefono: o.telefono, notas: o.notas, sucursal: o.sucursal,
     entrega: o.entrega, forma_pago: o.forma_pago, cheque: o.cheque, transfer_link: o.transfer_link,
+    concepto: o.concepto, estado: o.estado, venta_n: o.venta_n,   // señas
     created_at: o.created_at, created_by: o.created_by, total_venta: o.total_venta,
-    categoria: o.categoria, monto: o.monto,   // salidas (egresos)
+    categoria: o.categoria, monto: o.monto,   // salidas (egresos) y seña (monto)
+    pagos: (o.pagos || []).map(p => ({ medio: p.medio, monto: p.monto, cheque: p.cheque, transfer_link: p.transfer_link, sena_n: p.sena_n })),
+    parabrisas: pb,
     items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: it.precio_venta, subtotal_venta: it.subtotal_venta })),
   };
 }
@@ -9217,96 +9233,158 @@ route('GET', '/api/local/desc-cache-clear', async (req, res) => {
 // GUARDAR / EDITAR orden. El servidor recalcula costos/ganancia (nunca confía en el cliente) y asigna el N°.
 // Categorías válidas para una SALIDA de caja (egreso).
 const LOCAL_SALIDA_CATS = ['Servicio', 'Embalaje', 'Envío', 'Sueldo', 'Otro'];
+const LOCAL_SUCS = ['RUFINO', 'BUENOS AIRES'];
+const LOCAL_MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'TARJETA', 'CHEQUE'];
+function _localCheque(ch) { return (ch && typeof ch === 'object') ? { banco: String(ch.banco || '').slice(0, 80), numero: String(ch.numero || '').slice(0, 60), titular: String(ch.titular || '').slice(0, 120), cuit: String(ch.cuit || '').slice(0, 20), fecha_cobro: String(ch.fecha_cobro || '').slice(0, 20), importe: Number(ch.importe) || 0 } : null; }
 route('POST', '/api/local/save', async (req, res) => {
   const a = _localAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const b = await parseBody(req);
   const editN = (b.n != null && !isNaN(Number(b.n))) ? Number(b.n) : null;
   const tipo = ['venta', 'sena', 'salida'].includes(String(b.tipo || '')) ? String(b.tipo) : 'venta';
   const fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha || '')) ? String(b.fecha) : new Date().toISOString().slice(0, 10);
-  const FP2 = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
-  // ===== SALIDA (egreso de caja): categoría + monto + medio + sucursal + nota =====
+  const sucursal = LOCAL_SUCS.includes(String(b.sucursal || '').toUpperCase().trim()) ? String(b.sucursal).toUpperCase().trim() : null;
+  if (!sucursal) return sendJSON(res, 400, { error: 'Elegí la sucursal (RUFINO o BUENOS AIRES).' });
+  const db = loadDB();
+  db.local_sales = Array.isArray(db.local_sales) ? db.local_sales : [];
+
+  // ===== SALIDA (egreso de caja) → también va a Contable → Transacción para derivar =====
   if (tipo === 'salida') {
     const categoria = LOCAL_SALIDA_CATS.includes(String(b.categoria || '')) ? String(b.categoria) : 'Otro';
     const monto = Math.max(0, Number(b.monto) || 0);
     if (monto <= 0) return sendJSON(res, 400, { error: 'Cargá un importe mayor a 0' });
-    const medio = FP2.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
-    const sucursalS = String(b.sucursal || '').trim().slice(0, 60) || 'Rufino';
+    const medio = LOCAL_MEDIOS.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
     const notaS = String(b.notas || '').trim().slice(0, 1000);
-    const dbS = loadDB();
-    dbS.local_sales = Array.isArray(dbS.local_sales) ? dbS.local_sales : [];
     let ord;
     if (editN != null) {
       if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar' });
-      ord = dbS.local_sales.find(o => Number(o.n) === editN);
+      ord = db.local_sales.find(o => Number(o.n) === editN);
       if (!ord) return sendJSON(res, 404, { error: 'Salida no encontrada' });
-      Object.assign(ord, { tipo: 'salida', fecha, categoria, monto, forma_pago: medio, sucursal: sucursalS, notas: notaS, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+      Object.assign(ord, { tipo: 'salida', fecha, categoria, monto, forma_pago: medio, sucursal, notas: notaS, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
     } else {
-      dbS.local_seq = (Number(dbS.local_seq) || 0) + 1;
-      ord = { n: dbS.local_seq, tipo: 'salida', fecha, categoria, monto, forma_pago: medio, sucursal: sucursalS, notas: notaS, created_at: new Date().toISOString(), created_by: a.s.username || '' };
-      dbS.local_sales.push(ord);
+      db.local_seq = (Number(db.local_seq) || 0) + 1;
+      ord = { n: db.local_seq, tipo: 'salida', fecha, categoria, monto, forma_pago: medio, sucursal, notas: notaS, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+      db.local_sales.push(ord);
     }
-    saveDB(dbS);
+    // Reflejo en Contable → Transacción (pendiente de derivar). Idempotente por local_n.
+    try {
+      db.contable = db.contable || {}; if (typeof db.contable.seq !== 'number') db.contable.seq = 1;
+      db.contable.transacciones = Array.isArray(db.contable.transacciones) ? db.contable.transacciones : [];
+      const cur = contCurrentPeriod(db);
+      const detalle = 'Salida Local ' + sucursal + (categoria ? ' · ' + categoria : '') + (notaS ? ' · ' + notaS : '');
+      let tx = db.contable.transacciones.find(t => t.origen === 'local_salida' && Number(t.local_n) === Number(ord.n));
+      if (tx) { tx.fecha = fecha; tx.monto = monto; tx.detalle = detalle; tx.cuenta = sucursal; tx.forma_pago = medio.toLowerCase(); }
+      else db.contable.transacciones.push({ id: contId(db, 't'), period_id: cur ? cur.id : null, origen: 'local_salida', local_n: ord.n, fecha, operacion: '', cuenta: sucursal, detalle, monto, forma_pago: medio.toLowerCase(), cheque: null, tarjeta: null, derivado: null, rubro_id: null, subrubro_id: null, nota: notaS, estado: 'pendiente' });
+    } catch (e) {}
+    saveDB(db);
     return sendJSON(res, 200, { ok: true, n: ord.n, order: _stripLocalForRole(ord, a.isAdm) });
   }
-  // ===== VENTA / SEÑA (mismo formulario, distinto tipo) =====
+
   const cliente = String(b.cliente || '').trim().slice(0, 120);
   const telefono = String(b.telefono || '').trim().slice(0, 60);
   const notas = String(b.notas || '').trim().slice(0, 1000);
-  const sucursal = String(b.sucursal || '').trim().slice(0, 60) || 'Rufino';   // local donde se vendió
-  const entrega = (b.entrega === 'envio') ? 'envio' : 'retiro';
-  const FP = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
-  const forma_pago = FP.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
-  let cheque = null;
-  if (forma_pago === 'CHEQUE' && b.cheque && typeof b.cheque === 'object') {
-    cheque = {
-      banco: String(b.cheque.banco || '').slice(0, 80), numero: String(b.cheque.numero || '').slice(0, 60),
-      titular: String(b.cheque.titular || '').slice(0, 120), cuit: String(b.cheque.cuit || '').slice(0, 20),
-      fecha_cobro: String(b.cheque.fecha_cobro || '').slice(0, 20), importe: Number(b.cheque.importe) || 0,
-    };
-  }
-  const transfer_link = (forma_pago === 'TRANSFERENCIA') ? String(b.transfer_link || '').trim().slice(0, 500) : '';
-  const itemsIn = Array.isArray(b.items) ? b.items : [];
-  const items = []; let total_venta = 0, total_costo = 0;
-  for (const it of itemsIn) {
-    const cantidad = Math.max(0, Number(it && it.cantidad) || 0);
-    const codigo = _cotNormCod(it && it.codigo);
-    if (!codigo || cantidad <= 0) continue;
-    // El proveedor sale de la lista de costos por código. Si el cliente ya lo eligió, se respeta.
-    const provPedido = String((it && it.proveedor) || '').trim();
-    const cost = _localCostFor(codigo, provPedido);          // costo del código (matchea por nombre si puede)
-    // COSTO: por defecto el automático (lista de costos). El ADMIN puede pisarlo a mano por renglón
-    // mandando costo_unit_manual. Un usuario NO admin nunca puede fijar el costo (se ignora).
-    let costo_unit = cost.costo;
-    let costo_manual = false;
-    if (a.isAdm && it && it.costo_unit_manual != null && String(it.costo_unit_manual).trim() !== '' &&
-        !isNaN(Number(it.costo_unit_manual)) && Number(it.costo_unit_manual) >= 0) {
-      costo_unit = Number(it.costo_unit_manual); costo_manual = true;
+
+  // ===== SEÑA: recuadro libre (concepto) + monto. SIN costo/precio/ganancia. =====
+  if (tipo === 'sena') {
+    const concepto = String(b.concepto || b.notas || '').trim().slice(0, 500);
+    const monto = Math.max(0, Number(b.monto) || 0);
+    if (monto <= 0) return sendJSON(res, 400, { error: 'Cargá el monto de la seña.' });
+    const medio = LOCAL_MEDIOS.includes(String(b.forma_pago || '').toUpperCase()) ? String(b.forma_pago).toUpperCase() : 'EFECTIVO';
+    const cheque = (medio === 'CHEQUE') ? _localCheque(b.cheque) : null;
+    const transfer_link = (medio === 'TRANSFERENCIA') ? String(b.transfer_link || '').trim().slice(0, 500) : '';
+    let ord;
+    if (editN != null) {
+      if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar' });
+      ord = db.local_sales.find(o => Number(o.n) === editN);
+      if (!ord) return sendJSON(res, 404, { error: 'Seña no encontrada' });
+      if (ord.estado === 'tomada') return sendJSON(res, 400, { error: 'Esta seña ya fue tomada en una venta; no se puede editar.' });
+      Object.assign(ord, { tipo: 'sena', fecha, sucursal, cliente, telefono, concepto, monto, forma_pago: medio, cheque, transfer_link, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+    } else {
+      db.local_seq = (Number(db.local_seq) || 0) + 1;
+      ord = { n: db.local_seq, tipo: 'sena', fecha, sucursal, cliente, telefono, concepto, monto, forma_pago: medio, cheque, transfer_link, estado: 'vigente', venta_n: null, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+      db.local_sales.push(ord);
     }
-    const proveedor = provPedido || cost.prov || '';
-    const descripcion = String((it && it.descripcion) || '').trim();   // manual (no se autocompleta)
-    const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
-    const costo_total = costo_unit * cantidad;
-    const subtotal_venta = precio_venta * cantidad;
-    const ganancia = subtotal_venta - costo_total;
-    items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_manual, costo_total, precio_venta, subtotal_venta, ganancia });
-    total_venta += subtotal_venta; total_costo += costo_total;
+    saveDB(db);
+    return sendJSON(res, 200, { ok: true, n: ord.n, order: _stripLocalForRole(ord, a.isAdm) });
   }
-  if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código y cantidad' });
+
+  // ===== VENTA: ramo repuestos | parabrisas + pagos múltiples (efectivo/transfer/tarjeta/cheque/seña) =====
+  const ramo = ['repuestos', 'parabrisas'].includes(String(b.ramo || '')) ? String(b.ramo) : 'repuestos';
+  const entrega = (b.entrega === 'envio') ? 'envio' : 'retiro';
+  let items = [], total_venta = 0, total_costo = 0, parabrisas = null;
+  if (ramo === 'parabrisas') {
+    const pv = Math.max(0, Number(b.precio_venta) || 0);
+    const cpar = Math.max(0, Number(b.costo_parabrisas) || 0);
+    const ccol = Math.max(0, Number(b.costo_colocacion) || 0);
+    parabrisas = {
+      patente: String(b.patente || '').slice(0, 20), tipo_cristal: String(b.tipo_cristal || '').slice(0, 40), posicion: String(b.posicion || '').slice(0, 30), lado: String(b.lado || '').slice(0, 20),
+      tipo_vehiculo: String(b.tipo_vehiculo || '').slice(0, 40), marca: String(b.marca || '').slice(0, 40), modelo: String(b.modelo || '').slice(0, 40), anio: String(b.anio || '').slice(0, 10), sistema: String(b.sistema || '').slice(0, 40),
+      costo_parabrisas: cpar, costo_colocacion: ccol, precio_venta: pv,
+      fotos_links: Array.isArray(b.fotos_links) ? b.fotos_links.slice(0, 20).map(x => String(x || '').slice(0, 500)) : [], orden_link: String(b.orden_link || '').slice(0, 500)
+    };
+    total_venta = pv; total_costo = cpar + ccol;
+    items = [{ cantidad: 1, codigo: 'PARABRISAS', descripcion: ('Parabrisas ' + [parabrisas.marca, parabrisas.modelo, parabrisas.patente].filter(Boolean).join(' ')).trim().slice(0, 200), proveedor: '', costo_unit: total_costo, costo_manual: true, costo_total: total_costo, precio_venta: pv, subtotal_venta: pv, ganancia: pv - total_costo }];
+  } else {
+    const itemsIn = Array.isArray(b.items) ? b.items : [];
+    for (const it of itemsIn) {
+      const cantidad = Math.max(0, Number(it && it.cantidad) || 0);
+      const codigo = _cotNormCod(it && it.codigo);
+      if (!codigo || cantidad <= 0) continue;
+      const provPedido = String((it && it.proveedor) || '').trim();
+      const cost = _localCostFor(codigo, provPedido);
+      let costo_unit = cost.costo, costo_manual = false;
+      if (a.isAdm && it && it.costo_unit_manual != null && String(it.costo_unit_manual).trim() !== '' && !isNaN(Number(it.costo_unit_manual)) && Number(it.costo_unit_manual) >= 0) { costo_unit = Number(it.costo_unit_manual); costo_manual = true; }
+      const proveedor = provPedido || cost.prov || '';
+      const descripcion = String((it && it.descripcion) || '').trim();
+      const precio_venta = Math.max(0, Number(it && it.precio_venta) || 0);
+      const costo_total = costo_unit * cantidad, subtotal_venta = precio_venta * cantidad;
+      items.push({ cantidad, codigo, descripcion: descripcion.slice(0, 200), proveedor, costo_unit, costo_manual, costo_total, precio_venta, subtotal_venta, ganancia: subtotal_venta - costo_total });
+      total_venta += subtotal_venta; total_costo += costo_total;
+    }
+    if (!items.length) return sendJSON(res, 400, { error: 'Cargá al menos un renglón con código y cantidad' });
+  }
   const total_ganancia = total_venta - total_costo;
-  const db = loadDB();
-  db.local_sales = Array.isArray(db.local_sales) ? db.local_sales : [];
+
+  // PAGOS: [{medio, monto, cheque?, transfer_link?, sena_n?}]. Deben sumar el total.
+  const pagosIn = Array.isArray(b.pagos) ? b.pagos : [];
+  const pagos = []; let pagado = 0; const senasToTake = [];
+  for (const p of pagosIn) {
+    const medio = ['EFECTIVO', 'TRANSFERENCIA', 'TARJETA', 'CHEQUE', 'SENA'].includes(String((p && p.medio) || '').toUpperCase()) ? String(p.medio).toUpperCase() : null;
+    const monto = Math.max(0, Number(p && p.monto) || 0);
+    if (!medio || monto <= 0) continue;
+    const pago = { medio, monto };
+    if (medio === 'CHEQUE') pago.cheque = _localCheque(p.cheque);
+    if (medio === 'TRANSFERENCIA') pago.transfer_link = String((p && p.transfer_link) || '').trim().slice(0, 500);
+    if (medio === 'SENA') { const sn = Number(p.sena_n); if (!sn) continue; pago.sena_n = sn; senasToTake.push(sn); }
+    pagos.push(pago); pagado += monto;
+  }
+  if (!pagos.length && total_venta > 0) { pagos.push({ medio: 'EFECTIVO', monto: total_venta }); pagado = total_venta; }
+  if (Math.abs(pagado - total_venta) > 1) return sendJSON(res, 400, { error: 'Los pagos ($' + Math.round(pagado).toLocaleString('es-AR') + ') no coinciden con el total ($' + Math.round(total_venta).toLocaleString('es-AR') + ').' });
+  // Validar señas a tomar: deben existir, ser de esta sucursal y estar vigentes (o ya de esta venta).
+  for (const sn of senasToTake) {
+    const s = db.local_sales.find(o => Number(o.n) === sn && o.tipo === 'sena');
+    if (!s) return sendJSON(res, 400, { error: 'La seña #' + sn + ' no existe.' });
+    if (String(s.sucursal) !== sucursal) return sendJSON(res, 400, { error: 'La seña #' + sn + ' es de otra sucursal.' });
+    if (s.estado === 'tomada' && Number(s.venta_n) !== Number(editN)) return sendJSON(res, 400, { error: 'La seña #' + sn + ' ya fue tomada en otra venta.' });
+  }
+
   let order;
   if (editN != null) {
     if (!a.isAdm) return sendJSON(res, 403, { error: 'Solo el administrador puede editar una orden' });
     order = db.local_sales.find(o => Number(o.n) === editN);
     if (!order) return sendJSON(res, 404, { error: 'Orden no encontrada' });
-    Object.assign(order, { tipo, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
+    // Liberar señas que esta venta tenía tomadas (se re-aplican abajo las que correspondan).
+    (db.local_sales || []).forEach(s => { if (s.tipo === 'sena' && Number(s.venta_n) === Number(editN)) { s.estado = 'vigente'; s.venta_n = null; } });
+    Object.assign(order, { tipo: 'venta', ramo, fecha, cliente, telefono, notas, sucursal, entrega, items, parabrisas, pagos, total_venta, total_costo, total_ganancia, updated_at: new Date().toISOString(), updated_by: a.s.username || '' });
   } else {
     db.local_seq = (Number(db.local_seq) || 0) + 1;
-    order = { n: db.local_seq, tipo, fecha, cliente, telefono, notas, sucursal, entrega, forma_pago, cheque, transfer_link, items, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
+    order = { n: db.local_seq, tipo: 'venta', ramo, fecha, cliente, telefono, notas, sucursal, entrega, items, parabrisas, pagos, total_venta, total_costo, total_ganancia, created_at: new Date().toISOString(), created_by: a.s.username || '' };
     db.local_sales.push(order);
   }
-  // Auto-sumar proveedores nuevos a la lista maestra (así el desplegable se completa solo con el uso).
+  // Tomar señas: pasan de "vigente" a "tomada" y quedan vinculadas a esta venta (parte de la venta).
+  for (const sn of senasToTake) {
+    const s = db.local_sales.find(o => Number(o.n) === sn && o.tipo === 'sena');
+    if (s) { s.estado = 'tomada'; s.venta_n = order.n; }
+  }
   db.local_proveedores = Array.isArray(db.local_proveedores) ? db.local_proveedores : [];
   for (const it of items) { const p = String(it.proveedor || '').trim(); if (p && !db.local_proveedores.some(x => String(x).toUpperCase() === p.toUpperCase())) db.local_proveedores.push(p); }
   saveDB(db);
@@ -9333,28 +9411,71 @@ route('GET', '/api/local/data', async (req, res) => {
     if (a.isAdm) { resumen.total_costo += Number(o.total_costo) || 0; resumen.total_ganancia += Number(o.total_ganancia) || 0; }
   }
   resumen.margin = (a.isAdm && resumen.total_venta > 0) ? (resumen.total_ganancia / resumen.total_venta * 100) : null;
-  // CAJA por sucursal: ingresos (ventas), señas aparte, egresos (salidas) y saldo, con total + desglose por medio.
-  const MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
-  const blank = () => ({ total: 0, medios: { EFECTIVO: 0, TRANSFERENCIA: 0, CHEQUE: 0, TARJETA: 0 } });
+  // ===== CAJA por sucursal (nueva agrupación) =====
+  // Transferencias | Tarjeta | Efectivo y Cheque (entrada + seña) | Salidas | Saldo = Efectivo+Cheque − Salidas.
+  // Las señas se cuentan UNA sola vez por su medio. Cuando una seña se TOMA en una venta, el pago
+  // tipo "SEÑA" de esa venta NO se vuelve a contar (evita el doble conteo).
+  const MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'TARJETA', 'CHEQUE'];
+  const grp = () => ({ EFECTIVO: 0, TRANSFERENCIA: 0, TARJETA: 0, CHEQUE: 0 });
   const caja = {};
-  const ensureSuc = s => { if (!caja[s]) caja[s] = { ventas: blank(), senas: blank(), salidas: blank(), saldo: blank() }; return caja[s]; };
+  const ensureSuc = s => { if (!caja[s]) caja[s] = { ventas: grp(), senas: grp(), salidas: grp(), total_ventas: 0, total_senas: 0, total_salidas: 0 }; return caja[s]; };
+  LOCAL_SUCS.forEach(ensureSuc);
+  const normSuc = s => LOCAL_SUCS.includes(String(s || '').toUpperCase()) ? String(s).toUpperCase() : 'RUFINO';
   for (const o of orders) {
-    const suc = String(o.sucursal || 'Rufino');
-    const medio = MEDIOS.includes(String(o.forma_pago || '').toUpperCase()) ? String(o.forma_pago).toUpperCase() : 'EFECTIVO';
+    const c = ensureSuc(normSuc(o.sucursal));
     const t = o.tipo || 'venta';
-    const c = ensureSuc(suc);
-    if (t === 'salida') { const m = Number(o.monto) || 0; c.salidas.total += m; c.salidas.medios[medio] += m; }
-    else if (t === 'sena') { const m = Number(o.total_venta) || 0; c.senas.total += m; c.senas.medios[medio] += m; }
-    else { const m = Number(o.total_venta) || 0; c.ventas.total += m; c.ventas.medios[medio] += m; }
+    if (t === 'salida') { const med = MEDIOS.includes(String(o.forma_pago || '').toUpperCase()) ? String(o.forma_pago).toUpperCase() : 'EFECTIVO'; const m = Number(o.monto) || 0; c.salidas[med] += m; c.total_salidas += m; }
+    else if (t === 'sena') { const med = MEDIOS.includes(String(o.forma_pago || '').toUpperCase()) ? String(o.forma_pago).toUpperCase() : 'EFECTIVO'; const m = Number(o.monto) || 0; c.senas[med] += m; c.total_senas += m; }
+    else { for (const p of (o.pagos || [])) { const med = String((p && p.medio) || '').toUpperCase(); if (med === 'SENA' || !MEDIOS.includes(med)) continue; const m = Number(p.monto) || 0; c.ventas[med] += m; c.total_ventas += m; } }
   }
-  for (const s of Object.keys(caja)) {
-    const c = caja[s];
-    c.saldo.total = c.ventas.total - c.salidas.total;   // las señas NO entran al saldo (van aparte)
-    for (const m of MEDIOS) c.saldo.medios[m] = c.ventas.medios[m] - c.salidas.medios[m];
+  const cajaResumen = {};
+  for (const suc of Object.keys(caja)) {
+    const c = caja[suc];
+    const efectivo = c.ventas.EFECTIVO + c.senas.EFECTIVO;
+    const cheque = c.ventas.CHEQUE + c.senas.CHEQUE;
+    const transferencias = c.ventas.TRANSFERENCIA + c.senas.TRANSFERENCIA;
+    const tarjeta = c.ventas.TARJETA + c.senas.TARJETA;
+    const salidas = c.total_salidas;
+    const saldo = efectivo + cheque - salidas;   // efectivo (ventas+señas) + cheques − salidas
+    cajaResumen[suc] = { efectivo, cheque, efectivo_cheque: efectivo + cheque, transferencias, tarjeta, salidas, saldo, detalle: c };
   }
+  // Señas VIGENTES (todas, sin filtro de fecha) para poder tomarlas al cargar una venta.
+  const senas_vigentes = (db.local_sales || []).filter(o => o.tipo === 'sena' && o.estado !== 'tomada')
+    .map(o => ({ n: o.n, fecha: o.fecha, sucursal: normSuc(o.sucursal), cliente: o.cliente || '', concepto: o.concepto || '', monto: Number(o.monto) || 0, forma_pago: o.forma_pago || 'EFECTIVO' }))
+    .sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
   const proveedores = (Array.isArray(db.local_proveedores) ? db.local_proveedores : []).slice();
-  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, caja, medios: MEDIOS, proveedores, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, next_n: (Number(db.local_seq) || 0) + 1, resumen, caja, caja_resumen: cajaResumen, senas_vigentes, sucursales: LOCAL_SUCS, medios: MEDIOS, salida_cats: LOCAL_SALIDA_CATS, proveedores, orders: orders.map(o => _stripLocalForRole(o, a.isAdm)) });
 });
+// Suma de saldos de caja de las 2 sucursales (efectivo+cheque − salidas) — para Contable.
+// (Asignada a la var de nivel módulo para que Contable, que está fuera de este IIFE, la vea.)
+localCajaSaldoTotal = function () {
+  try {
+    const db = loadDB();
+    const orders = (db.local_sales || []);
+    const MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'TARJETA', 'CHEQUE'];
+    const bySuc = {};
+    const norm = s => LOCAL_SUCS.includes(String(s || '').toUpperCase()) ? String(s).toUpperCase() : 'RUFINO';
+    for (const o of orders) {
+      const suc = norm(o.sucursal); if (!bySuc[suc]) bySuc[suc] = { ef: 0, ch: 0, sal: 0 };
+      const t = o.tipo || 'venta';
+      if (t === 'salida') { bySuc[suc].sal += Number(o.monto) || 0; }
+      else if (t === 'sena') { const med = String(o.forma_pago || '').toUpperCase(); if (med === 'EFECTIVO') bySuc[suc].ef += Number(o.monto) || 0; else if (med === 'CHEQUE') bySuc[suc].ch += Number(o.monto) || 0; }
+      else { for (const p of (o.pagos || [])) { const med = String((p && p.medio) || '').toUpperCase(); if (med === 'EFECTIVO') bySuc[suc].ef += Number(p.monto) || 0; else if (med === 'CHEQUE') bySuc[suc].ch += Number(p.monto) || 0; } }
+    }
+    let total = 0; const porSuc = {};
+    for (const suc of Object.keys(bySuc)) { const x = bySuc[suc]; const saldo = x.ef + x.ch - x.sal; porSuc[suc] = saldo; total += saldo; }
+    return { total, porSuc };
+  } catch (e) { return { total: 0, porSuc: {} }; }
+};
+// "Me tienen que pagar" de Parabrisas (casos Seguro en Por Pagar, sin pagar) — para Contable.
+parabrisasPorCobrarTotal = function () {
+  try {
+    const store = loadPbCasos();
+    let tot = 0;
+    for (const c of ((store && store.casos) || [])) { if (c.estado === 'por_pagar' && !c.pagado) tot += Number(c.precio_venta) || 0; }
+    return tot;
+  } catch (e) { return 0; }
+};
 // GESTIONAR la lista maestra de proveedores del desplegable (solo admin).
 route('POST', '/api/local/proveedores', async (req, res) => {
   const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
@@ -9466,6 +9587,9 @@ function pbPosicionAuto(tc) { tc = String(tc || '').toUpperCase(); if (tc === 'A
 function pbLadoAuto(tc) { tc = String(tc || '').toUpperCase(); if (tc === 'LUNETA' || tc === 'PARABRISAS') return 'S/L'; return ''; }
 function pbAuth(req) { const s = requireAuth(req); if (!s) return { err: [401, 'No autenticado'] }; const db = loadDB(); const u = db.users.find(x => x.id === s.userId); const isAdm = s.role === 'admin'; if (!(isAdm || (u && u.can_parabrisas === true))) return { err: [403, 'Sin permiso para Parabrisas'] }; return { s, u, isAdm }; }
 function pbStripForUser(c) { return { n: c.n, estado: c.estado, fecha: c.fecha, sistema: c.sistema, compania: c.compania, siniestro: c.siniestro, patente: c.patente, tipo_cristal: c.tipo_cristal, posicion: c.posicion, lado: c.lado, tipo_vehiculo: c.tipo_vehiculo, marca: c.marca, modelo: c.modelo, anio: c.anio, orden_link: c.orden_link, fotos_links: c.fotos_links, notas: c.notas, created_at: c.created_at, created_by: c.created_by }; }
+// Igual que pbAuth pero ADEMÁS acepta a usuarios con can_local (necesitan leer la config de parabrisas
+// y subir fotos cuando cargan una venta de parabrisas desde el panel LOCAL). Solo para LECTURA/subida.
+function pbConfigOrLocalAuth(req) { const s = requireAuth(req); if (!s) return { err: [401, 'No autenticado'] }; const db = loadDB(); const u = db.users.find(x => x.id === s.userId); const isAdm = s.role === 'admin'; if (!(isAdm || (u && (u.can_parabrisas === true || u.can_local === true)))) return { err: [403, 'Sin permiso'] }; return { s, u, isAdm }; }
 function pbSanitizeBase(b, cfg) {
   const inSet = (v, arr) => (arr || []).map(x => String(x).toUpperCase()).includes(String(v || '').toUpperCase());
   const tc = inSet(b.tipo_cristal, cfg.tipos_cristal) ? String(b.tipo_cristal).toUpperCase() : '';
@@ -9518,7 +9642,7 @@ function pbGanancia(c) {
 }
 // CONFIG: leer (can_parabrisas) / editar (solo admin).
 route('GET', '/api/parabrisas/config', async (req, res) => {
-  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const a = pbConfigOrLocalAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const c = loadPbConfig();
   const marcas = Object.keys(c.vehiculos || {}).sort();
   sendJSON(res, 200, { ok: true, is_admin: a.isAdm, sistemas: c.sistemas || [], companias: c.companias || [], tipos_cristal: c.tipos_cristal || [], tipos_vehiculo: c.tipos_vehiculo || [], marcas, vehiculos: c.vehiculos || {} });
@@ -9770,7 +9894,7 @@ route('GET', '/api/envios/auto-stats', async (req, res) => {
 });
 // SUBIR ADJUNTO a Drive (orden o foto) vía el puente. Devuelve la URL. can_parabrisas.
 route('POST', '/api/parabrisas/upload', async (req, res) => {
-  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const a = pbConfigOrLocalAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const b = await parseBody(req);
   const nombre = String(b.nombre || 'archivo').slice(0, 150);
   const mime = String(b.mime || 'application/octet-stream').slice(0, 100);
@@ -9792,7 +9916,7 @@ route('POST', '/api/parabrisas/upload', async (req, res) => {
 });
 // BORRAR un adjunto de Drive (cuando pulsan "quitar"). Manda el archivo a la Papelera. can_parabrisas.
 route('POST', '/api/parabrisas/delete-file', async (req, res) => {
-  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const a = pbConfigOrLocalAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const b = await parseBody(req);
   const url = String(b.url || '').trim();
   if (!url) return sendJSON(res, 400, { error: 'Falta la URL del archivo' });
@@ -9848,6 +9972,18 @@ route('POST', '/api/transferencia/delete-file', async (req, res) => {
   } catch (e) { return sendJSON(res, 502, { error: 'No se pudo borrar de Drive: ' + String((e && e.message) || e) }); }
 });
 // LISTAR casos con filtros. No-admin: SOLO estado 'taller'.
+// INSTALACIÓN TALLER: cada parabrisas instalado = casos de SEGURO (facturados o no) + ventas de
+// PARABRISAS cargadas en LOCAL. Para la solapa "Instalación Taller" del panel Parabrisas.
+route('GET', '/api/parabrisas/instalaciones', async (req, res) => {
+  const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
+  const seguros = (loadPbCasos().casos || []).filter(c => String(c.modalidad || 'SEGURO').toUpperCase() !== 'PARTICULAR').slice()
+    .sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
+  const db = loadDB();
+  const locales = (db.local_sales || []).filter(o => (o.tipo || 'venta') === 'venta' && o.ramo === 'parabrisas')
+    .map(o => ({ n: o.n, fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || '', notas: o.notas || '', total_venta: Number(o.total_venta) || 0, created_by: o.created_by || '', parabrisas: o.parabrisas || {} }))
+    .sort((x, y) => (Number(y.n) || 0) - (Number(x.n) || 0));
+  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, seguros, locales });
+});
 route('GET', '/api/parabrisas/casos', async (req, res) => {
   const a = pbAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const url = new URL(req.url, 'http://x');
@@ -15050,7 +15186,12 @@ async function facBillingML(account, token, orderId) {
     if (/RESPONSABLE.?INSCRIP|"IVA_RESP|"RI"/.test(addl)) out.receptor_ri = true;
     out.nombre = ((b.first_name || '') + ' ' + (b.last_name || '')).trim() || b.name || b.doc_number || '';
     out.domicilio = [b.street_name, b.street_number, b.city, b.state].filter(Boolean).join(' ') || '';
-  } catch (e) { /* si falla, queda consumidor final → Factura B */ }
+  } catch (e) {
+    // Si falla (p. ej. ML bloquea los datos fiscales del comprador con 403 PolicyAgent),
+    // queda como Consumidor Final → Factura B. Registramos el motivo real para diagnóstico.
+    out.err = String((e && e.response && e.response.data && (e.response.data.message || JSON.stringify(e.response.data))) || (e && e.message) || e);
+    console.error('[FAC-BILLING]', orderId, 'no pude traer datos del comprador:', out.err);
+  }
   return out;
 }
 
@@ -15091,6 +15232,7 @@ route('POST', '/api/facturacion/emitir-venta', async (req, res) => {
         } catch (e) { r.ml_adjuntar_error = String(e.message || e); }
       }
     }
+    if (bill && bill.err) r.bill_error = bill.err;
     sendJSON(res, 200, r);
   } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
 });
@@ -15944,7 +16086,11 @@ async function contComputeResumenSnapshot() {
     Object.keys(by).forEach(k => { const b = by[k]; const bruto = b.fact - b.nc - b.pag; provFacturado += bruto; const f = (1 - b.d1 / 100) * (1 - b.d2 / 100); provReal += (bruto > 0 ? bruto * f : bruto); });
   } catch (e) { errs.push('No pude leer Deuda proveedores'); }
   const prov = provReal;                         // por defecto CON descuento
-  const saldo = mp - cheques - prestamosDeuda - prov;
+  // Caja de Local (suma de las 2 sucursales) y Parabrisas "me tienen que pagar": entran como
+  // activos en ¿Cómo estoy? (debajo de Saldos) y suman al Cash Flow (lado entradas).
+  const localCaja = (localCajaSaldoTotal() || {}).total || 0;
+  const parabrisasPorCobrar = parabrisasPorCobrarTotal() || 0;
+  const saldo = mp - cheques - prestamosDeuda - prov + localCaja + parabrisasPorCobrar;
 
   // ---------- SALIDA (Negocio) ----------
   const negRubros = (c.config.rubros || {}).negocio || [];
@@ -16010,7 +16156,7 @@ async function contComputeResumenSnapshot() {
 
   // Cash Flow = entradas netas − egresos operativos (buckets + cuota).
   const egresos = negocioBucket + casa + banco + construccion + cuotaPrestamos;
-  const cashFlow = entNeto - egresos;
+  const cashFlow = (entNeto + localCaja + parabrisasPorCobrar) - egresos;
 
   // ---------- Total del panel de Stock (valuación BsAs + Rufino) ----------
   // Se lee del mismo archivo que usa /api/stock/data (stock_last.json -> total.valor).
@@ -16024,7 +16170,7 @@ async function contComputeResumenSnapshot() {
     ts: Date.now(), fecha_ar: arNow().date,
     period: cur ? { id: cur.id, label: cur.label, start: sISO, end: eISO } : null,
     // ¿Cómo estoy?
-    mp, cheques, prestamos: prestamosDeuda, provFacturado, provReal, saldo,
+    mp, cheques, prestamos: prestamosDeuda, provFacturado, provReal, localCaja, parabrisasPorCobrar, saldo,
     // Período
     salida, salidaTotal,
     entrada: { cuentas, totStock, totDrop, entNeto, costoStock, dias: dias.length },
