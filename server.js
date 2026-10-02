@@ -9472,7 +9472,14 @@ parabrisasPorCobrarTotal = function () {
   try {
     const store = loadPbCasos();
     let tot = 0;
-    for (const c of ((store && store.casos) || [])) { if (c.estado === 'por_pagar' && !c.pagado) tot += Number(c.precio_venta) || 0; }
+    // Monto de venta: SEGURO usa "monto" (importe de factura), PARTICULAR usa "precio_venta".
+    // (Igual criterio que el resumen de /api/parabrisas/casos, para que ¿Cómo estoy? reconcilie.)
+    for (const c of ((store && store.casos) || [])) {
+      if (c.estado === 'por_pagar' && !c.pagado) {
+        const amount = (String(c.modalidad || 'SEGURO').toUpperCase() === 'PARTICULAR') ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0);
+        tot += amount;
+      }
+    }
     return tot;
   } catch (e) { return 0; }
 };
