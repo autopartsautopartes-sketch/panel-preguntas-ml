@@ -13808,7 +13808,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     try {
       var r2 = await fetch('/api/local/data', { credentials: 'same-origin' }); var j2 = await r2.json();
       var orders = (j2.orders || []).slice().sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)) || (Number(a.n) - Number(b.n)); });
-      var _hora = function (o) { try { if (o.created_at) return new Date(o.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }); } catch (e) {} return ''; };
+      var _hora = function (o) { try { if (o.created_at) return new Date(o.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch (e) {} return ''; };
       orders.forEach(function (o) {
         var tipo = o.tipo || 'venta';
         var hora = _hora(o);
@@ -13834,7 +13834,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       (j3.casos || []).forEach(function (c) {
         if (c.estado === 'por_pagar' && !c.pagado) {
           var amount = (String(c.modalidad || 'SEGURO').toUpperCase() === 'PARTICULAR') ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0);
-          out.parab.casos.push({ fecha: c.fecha, n: c.n, detalle: [c.marca, c.modelo, c.patente].filter(Boolean).join(' ') + (c.compania ? (' · ' + c.compania) : ''), delta: amount });
+          out.parab.casos.push({ fecha: c.fecha, created_at: c.created_at || '', n: c.n, detalle: [c.marca, c.modelo, c.patente].filter(Boolean).join(' ') + (c.compania ? (' · ' + c.compania) : ''), delta: amount });
         }
       });
       out.parab.casos.sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)) || (Number(a.n) - Number(b.n)); });
@@ -13879,92 +13879,115 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function _contMedioLbl(m) { m = String(m || '').toUpperCase(); var map = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transferencia', TARJETA: 'Tarjeta', CHEQUE: 'Cheque', SENA: 'Seña' }; return map[m] || (m.charAt(0) + m.slice(1).toLowerCase()); }
 
-  // Filtros del listado (resumen de cuenta): tipo, período y orden.
-  var _contMonF = { tipo: 'todas', periodo: 'todo', orden: 'desc' };
-  function contMonSetF(k, v) { _contMonF[k] = v; if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
-  // Construye la lista unificada de ENTRADAS (+) y SALIDAS (−) con fecha, hora y detalle.
+  // Estado del resumen de cuenta: fecha elegida (por defecto HOY) y filtro de tipo.
+  var _contMonF = { fecha: '', tipo: 'todas' };
+  function _contMonHoy() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function contMonSetFecha(v) { _contMonF.fecha = v || _contMonHoy(); if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
+  function contMonDiaShift(delta) {
+    var base = _contMonF.fecha || _contMonHoy();
+    var d = new Date(base + 'T12:00:00'); d.setDate(d.getDate() + delta);
+    _contMonF.fecha = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable();
+  }
+  function contMonSetTipo(v) { _contMonF.tipo = v; if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
+  function _contHoraISO(iso) { try { if (iso) return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch (e) {} return ''; }
+  function _contFechaISO(iso) { try { if (iso) { var d = new Date(iso); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); } } catch (e) {} return ''; }
+  function contMonFechaLarga(d) { try { var x = new Date(d + 'T12:00:00'); return x.toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }); } catch (e) { return d; } }
+
+  // Lista unificada de movimientos (todas las fechas), con hora y signo, y SALDO PARCIAL anclado al
+  // saldo ACTUAL (¿Cómo estoy?): el último movimiento queda exactamente en el saldo actual.
   function contMonEventos(m) {
     var ev = [];
-    // ENTRADAS: ventas y señas de Local (lo que entró a caja: efectivo/cheque)
+    // LOCAL: ventas/señas (+ efectivo/cheque) y salidas (−), con la HORA DE GRABACIÓN.
     (m.local.movs || []).forEach(function (x) {
-      if (x.clase === 'salida') return;            // las salidas de Local vienen por Transacciones (no duplicar)
-      if (!(x.delta > 0)) return;                  // transferencia/tarjeta no suman a caja
-      ev.push({ fecha: x.fecha, hora: x.hora || '', detalle: x.detalle, chip: (x.clase === 'sena') ? { t: '🔖 Seña', c: '#8a6d1a', b: '#fff8e6' } : { t: '🛒 Venta', c: '#1d4ed8', b: '#eff6ff' }, monto: x.delta });
+      if (x.clase === 'salida') {
+        ev.push({ fecha: x.fecha, hora: x.hora || '', detalle: x.detalle, chip: { t: '📤 Salida', c: '#b0562a', b: '#fdf0e8' }, monto: x.delta });
+      } else {
+        if (!(x.delta > 0)) return;   // transferencia/tarjeta no mueven la caja
+        ev.push({ fecha: x.fecha, hora: x.hora || '', detalle: x.detalle, chip: (x.clase === 'sena') ? { t: '🔖 Seña', c: '#8a6d1a', b: '#fff8e6' } : { t: '🛒 Venta', c: '#1d4ed8', b: '#eff6ff' }, monto: x.delta });
+      }
     });
-    // SALIDAS: transacciones (egresos de MP + salidas de Local) con su estado/destino
+    // TRANSACCIONES: egresos de MP (las salidas de Local ya van arriba), con la HORA DE MP.
     (m.tx.rows || []).forEach(function (t) {
+      if (t.origen === 'local_salida') return;   // no duplicar: ya está en Local
       var est = contMonTxEstado(t);
-      ev.push({ fecha: t.fecha, hora: t.hora || '', detalle: (t.detalle || 'Movimiento') + (t.cuenta ? (' · ' + t.cuenta) : (t.origen === 'local_salida' ? ' · Local' : '')), chip: { t: est.txt, c: est.color, b: est.bg }, monto: -(Number(t.monto) || 0) });
+      ev.push({ fecha: t.fecha, hora: t.hora || '', detalle: (t.detalle || 'Movimiento') + (t.cuenta ? (' · ' + t.cuenta) : ''), chip: { t: est.txt, c: est.color, b: est.bg }, monto: -(Number(t.monto) || 0) });
     });
-    // ADELANTOS: el retiro entra (+) y su costo sale (−)
+    // PARABRISAS: cada caso "me tienen que pagar" (+), con la HORA DE GRABACIÓN.
+    (m.parab.casos || []).forEach(function (c) {
+      ev.push({ fecha: _contFechaISO(c.created_at) || c.fecha, hora: _contHoraISO(c.created_at), detalle: 'Parabrisas · ' + c.detalle + ' (por cobrar)', chip: { t: '🪟 Parabrisas', c: '#3466c9', b: '#eef4ff' }, monto: Number(c.delta) || 0 });
+    });
+    // ADELANTOS: el retiro entra (+) y su costo sale (−).
     (contD().intereses_adelanto || []).forEach(function (a) {
       if (Number(a.adelanto) > 0) ev.push({ fecha: a.fecha, hora: '', detalle: 'Adelanto de dinero' + (a.cuenta ? (' · ' + a.cuenta) : ''), chip: { t: '⚡ Adelanto', c: '#047857', b: '#ecfdf5' }, monto: Number(a.adelanto) || 0 });
       if (Number(a.intereses) > 0) ev.push({ fecha: a.fecha, hora: '', detalle: 'Costo de adelanto' + (a.cuenta ? (' · ' + a.cuenta) : '') + (a.costo_pct ? (' (' + a.costo_pct + '%)') : ''), chip: { t: '⚡ Costo adelanto', c: '#b91c1c', b: '#fff1f2' }, monto: -(Number(a.intereses) || 0) });
     });
     ev.forEach(function (e) { e.ts = String(e.fecha || '') + 'T' + (e.hora || '00:00'); });
-    ev.sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });   // ascendente para el acumulado
-    var run = 0; ev.forEach(function (e) { run += e.monto; e.acum = run; });
-    return ev;
+    ev.sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });   // ascendente
+    var saldoActual = (m.mp.total || 0) - (m.cheques.total || 0) - (m.prestamos.total || 0) - (m.prov.total || 0) + (m.local.total || 0) + (m.parab.total || 0);
+    var total = ev.reduce(function (s, e) { return s + e.monto; }, 0);
+    var run = saldoActual - total;   // saldo "antes" del primer movimiento listado
+    ev.forEach(function (e) { run += e.monto; e.saldo = run; });   // saldo DESPUÉS de cada movimiento → el último = saldo actual
+    return { eventos: ev, saldoActual: saldoActual };
   }
+
   function contMonitorHtml() {
     var m = _contMon.data;
     if (!m || (!_contMon.loading && (Date.now() - _contMon.ts > 20000))) { if (!_contMon.loading) setTimeout(function () { contLoadMonitor(false); }, 10); }
     if (!m) return '<div class="loading"><div class="spinner"></div><p>Armando el resumen de cuenta…</p></div>';
+    if (!_contMonF.fecha) _contMonF.fecha = _contMonHoy();
+    var dia = _contMonF.fecha, hoy = _contMonHoy();
+    var res = contMonEventos(m);
+    var ev = res.eventos;
+    var todosDia = ev.filter(function (e) { return String(e.fecha) === dia; });
+    var delDia = todosDia.slice();
+    if (_contMonF.tipo === 'entradas') delDia = delDia.filter(function (e) { return e.monto > 0; });
+    else if (_contMonF.tipo === 'salidas') delDia = delDia.filter(function (e) { return e.monto < 0; });
+    var saldoCierre = todosDia.length ? todosDia[todosDia.length - 1].saldo : (function () { var prev = ev.filter(function (e) { return String(e.fecha) <= dia; }); return prev.length ? prev[prev.length - 1].saldo : res.saldoActual; })();
+    var saldoInicio = todosDia.length ? (todosDia[0].saldo - todosDia[0].monto) : saldoCierre;
+    var totIn = 0, totOut = 0; todosDia.forEach(function (e) { if (e.monto > 0) totIn += e.monto; else totOut += e.monto; });
+    var ordered = delDia.slice().reverse();   // más reciente primero
     var cuando = _contMon.ts ? new Date(_contMon.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-    // Rango por período
-    var today = new Date(); var ymd = function (d) { return d.toISOString().slice(0, 10); };
-    var from = '', to = '';
-    if (_contMonF.periodo === 'hoy') { from = ymd(today); to = ymd(today); }
-    else if (_contMonF.periodo === 'mes') { from = ymd(new Date(today.getFullYear(), today.getMonth(), 1)); to = ymd(today); }
-    var ev = contMonEventos(m);
-    var shown = ev.filter(function (e) {
-      if (_contMonF.tipo === 'entradas' && !(e.monto > 0)) return false;
-      if (_contMonF.tipo === 'salidas' && !(e.monto < 0)) return false;
-      if (from && String(e.fecha) < from) return false;
-      if (to && String(e.fecha) > to) return false;
-      return true;
-    });
-    var totIn = 0, totOut = 0; shown.forEach(function (e) { if (e.monto > 0) totIn += e.monto; else totOut += e.monto; });
-    var ordered = shown.slice(); if (_contMonF.orden === 'desc') ordered.reverse();
     var h = '';
     // Cabecera
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
     h += '<h3 style="margin:0;color:#2d3277;font-size:20px">🔎 Resumen de cuenta</h3>';
     h += '<button onclick="contLoadMonitor(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">' + (_contMon.loading ? '⏳' : '↻') + ' Actualizar</button>';
     if (cuando) h += '<span style="font-size:12px;color:#9ca3af">En vivo · ' + cuando + '</span>';
     h += '</div>';
-    h += '<div style="font-size:12.5px;color:#6b7280;margin-bottom:12px">Listado de <span style="color:#047857;font-weight:700">entradas (+)</span> y <span style="color:#b91c1c;font-weight:700">salidas (−)</span> con fecha, hora y detalle. El “Acumulado” es el neto de los movimientos listados.</div>';
-    // Totales
+    // Selector de día (calendario)
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
+    h += '<button onclick="contMonDiaShift(-1)" style="padding:7px 12px;border:1px solid #d7dee8;background:#fff;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">←</button>';
+    h += '<input type="date" value="' + escapeHtml(dia) + '" max="' + escapeHtml(hoy) + '" onchange="contMonSetFecha(this.value)" style="padding:7px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:14px">';
+    h += '<button onclick="contMonDiaShift(1)"' + (dia >= hoy ? ' disabled' : '') + ' style="padding:7px 12px;border:1px solid #d7dee8;background:' + (dia >= hoy ? '#f1f3f6' : '#fff') + ';border-radius:8px;font-size:14px;font-weight:700;cursor:' + (dia >= hoy ? 'default' : 'pointer') + '">→</button>';
+    h += '<button onclick="contMonSetFecha(\'' + hoy + '\')" style="padding:7px 12px;border:1px solid #7c3aed;background:' + (dia === hoy ? '#7c3aed' : '#fff') + ';color:' + (dia === hoy ? '#fff' : '#7c3aed') + ';border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">Hoy</button>';
+    h += '<span style="font-size:13px;color:#6b7280;margin-left:4px;text-transform:capitalize">' + contMonFechaLarga(dia) + '</span>';
+    h += '</div>';
+    // Saldos del día
     h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">';
-    var kpi = function (lbl, val, col) { return '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:10px 14px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase">' + lbl + '</div><div style="font-size:19px;font-weight:800;color:' + col + '">' + (val < 0 ? '− ' : (lbl === 'Neto' ? (val > 0 ? '+ ' : '') : '+ ')) + contMoney2(Math.abs(val)) + '</div></div>'; };
-    h += kpi('Entradas', totIn, '#047857') + kpi('Salidas', totOut, '#b91c1c') + kpi('Neto', totIn + totOut, (totIn + totOut) < 0 ? '#b91c1c' : '#047857');
+    var kpi = function (lbl, val, col, strong) { return '<div style="background:' + (strong ? '#2d3277' : '#fff') + ';border:1px solid #e6ebf5;border-radius:10px;padding:10px 14px;min-width:150px"><div style="font-size:11px;color:' + (strong ? '#c7d0f0' : '#888') + ';text-transform:uppercase">' + lbl + '</div><div style="font-size:19px;font-weight:800;color:' + (strong ? '#fff' : col) + '">' + (val < 0 ? '− ' : '') + contMoney2(Math.abs(val)) + '</div></div>'; };
+    h += kpi('Saldo inicio del día', saldoInicio, '#2d3277');
+    h += kpi('Entradas', totIn, '#047857') + kpi('Salidas', totOut, '#b91c1c');
+    h += kpi(dia === hoy ? 'Saldo actual' : 'Saldo al cierre', saldoCierre, '#fff', true);
     h += '</div>';
-    // Filtros
-    var pill = function (k, v, lbl) { var on = _contMonF[k] === v; return '<button onclick="contMonSetF(\'' + k + '\',\'' + v + '\')" style="padding:6px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">' + lbl + '</button>'; };
-    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-    h += pill('tipo', 'todas', 'Todas') + pill('tipo', 'entradas', 'Entradas') + pill('tipo', 'salidas', 'Salidas');
-    h += '<span style="width:10px"></span>' + pill('periodo', 'hoy', 'Hoy') + pill('periodo', 'mes', 'Este mes') + pill('periodo', 'todo', 'Todo');
-    h += '<span style="width:10px"></span>' + pill('orden', 'desc', 'Recientes primero') + pill('orden', 'asc', 'Antiguos primero');
-    h += '</div>';
-    // Listado
-    if (!ordered.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en este filtro.</div>';
+    // Filtros de tipo
+    var pill = function (v, lbl) { var on = _contMonF.tipo === v; return '<button onclick="contMonSetTipo(\'' + v + '\')" style="padding:6px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">' + lbl + '</button>'; };
+    h += '<div style="display:flex;gap:6px;margin-bottom:12px">' + pill('todas', 'Todas') + pill('entradas', 'Entradas') + pill('salidas', 'Salidas') + '</div>';
+    // Listado del día
+    if (!ordered.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos el ' + contMonFechaLarga(dia) + '.</div>';
     h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:620px">';
-    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;background:#f8fafc">';
-    h += '<th style="padding:8px 10px;white-space:nowrap">Fecha · Hora</th><th style="padding:8px 10px">Detalle</th><th style="padding:8px 10px;text-align:right">Monto</th><th style="padding:8px 10px;text-align:right">Acumulado</th></tr></thead><tbody>';
+    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;background:#f8fafc"><th style="padding:8px 10px;white-space:nowrap">Hora</th><th style="padding:8px 10px">Detalle</th><th style="padding:8px 10px;text-align:right">Movimiento</th><th style="padding:8px 10px;text-align:right">Saldo parcial</th></tr></thead><tbody>';
     ordered.forEach(function (e) {
       h += '<tr style="border-top:1px solid #f1f3f6">';
-      h += '<td style="padding:8px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(e.fecha || '') + (e.hora ? ('<span style="color:#9ca3af"> · ' + escapeHtml(e.hora) + '</span>') : '') + '</td>';
-      h += '<td style="padding:8px 10px;color:#374151">' + (e.chip ? (contMonChip(e.chip.t, e.chip.c, e.chip.b) + ' ') : '') + escapeHtml(e.detalle || '') + '</td>';
+      h += '<td style="padding:8px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(e.hora || '—') + '</td>';
+      h += '<td style="padding:8px 10px;color:#374151">' + contMonChip(e.chip.t, e.chip.c, e.chip.b) + ' ' + escapeHtml(e.detalle || '') + '</td>';
       h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSigned(e.monto) + '</td>';
-      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSaldoCol(e.acum) + '</td>';
+      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSaldoCol(e.saldo) + '</td>';
       h += '</tr>';
     });
-    h += '</tbody></table></div>';
-    h += '<div style="display:flex;justify-content:flex-end;gap:16px;padding:10px 14px;border-top:2px solid #eef2f7;font-size:13px;font-weight:800;flex-wrap:wrap">';
-    h += '<span style="color:#047857">Entradas: + ' + contMoney2(totIn) + '</span><span style="color:#b91c1c">Salidas: − ' + contMoney2(Math.abs(totOut)) + '</span><span style="color:#2d3277">Neto: ' + ((totIn + totOut) < 0 ? '− ' : '+ ') + contMoney2(Math.abs(totIn + totOut)) + '</span>';
-    h += '</div></div>';
-    h += '<div style="font-size:11.5px;color:#9ca3af;margin-top:8px">Incluye ventas y señas de Local (efectivo/cheque), egresos de MP y salidas de Local (con su estado), y adelantos. Los ingresos de ventas de ML no se listan individualmente acá.</div>';
+    h += '</tbody></table></div></div>';
+    h += '<div style="font-size:11.5px;color:#9ca3af;margin-top:8px">El <b>saldo parcial</b> arranca del <b>saldo actual</b> (¿Cómo estoy?) y se reconstruye con cada movimiento. Horas: MP con su hora; Local y Parabrisas con la hora de grabación. Los ingresos por ventas de ML no se listan uno por uno.</div>';
     return h;
   }
   // Adelantos de dinero: el retiro (entra a MP, +) y su costo/interés (−). INFORMATIVO: no afecta el
