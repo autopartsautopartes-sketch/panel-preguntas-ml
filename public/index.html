@@ -1640,7 +1640,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const content = document.getElementById('content'); if (!content) return;
     let h = '<h2 style="margin-bottom:14px;color:#2d3277">🪟 Parabrisas</h2>';
     if (_pb.isAdmin) {
-      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Por Pagar'], ['finalizado', 'Finalizada'], ['resumen', 'Resumen'], ['config', 'Configuración']];
+      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Por Pagar'], ['finalizado', 'Finalizada'], ['instalacion', '🔧 Instalación Taller'], ['resumen', 'Resumen'], ['config', 'Configuración']];
       h += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #eef1f6">';
       for (let i = 0; i < tabs.length; i++) { const k = tabs[i][0], lbl = tabs[i][1], on = _pb.tab === k; h += '<button onclick="pbSetTab(\'' + k + '\')" style="padding:9px 15px;border:none;background:none;font-size:13.5px;font-weight:' + (on ? '800' : '600') + ';color:' + (on ? '#3483fa' : '#8a94a6') + ';border-bottom:3px solid ' + (on ? '#3483fa' : 'transparent') + ';margin-bottom:-2px;cursor:pointer">' + lbl + '</button>'; }
       h += '</div>';
@@ -1658,11 +1658,78 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     else if (t === 'pago') body.innerHTML = pbListHTML('pago');
     else if (t === 'finalizado') body.innerHTML = pbListHTML('finalizado');
     else if (t === 'resumen') body.innerHTML = pbListHTML('resumen');
+    else if (t === 'instalacion') body.innerHTML = pbInstalacionHTML();
     else if (t === 'config') body.innerHTML = pbConfigHTML();
   }
   function pbTallerHTML() {
     let h = pbFormHTML();
-    h += '<div style="font-size:12.5px;color:#94a3b8;margin-top:6px">Al guardar, el caso pasa automáticamente a <b>Carga de Factura</b> (si es Seguro) o a <b>Por Pagar</b> (si es Particular).</div>';
+    h += '<div style="font-size:12.5px;color:#94a3b8;margin-top:6px">Al guardar, el caso pasa automáticamente a <b>Carga de Factura</b>.</div>';
+    return h;
+  }
+  // ===== INSTALACIÓN TALLER: cada instalación de parabrisas = casos de SEGURO + ventas de LOCAL (Parabrisas) =====
+  var _pbInstal = { loaded: false, loading: false, seguros: [], locales: [] };
+  async function pbLoadInstal() {
+    _pbInstal.loading = true;
+    try {
+      const r = await fetch('/api/parabrisas/instalaciones', { credentials: 'same-origin' });
+      if (r.ok) { const d = await r.json(); _pbInstal.seguros = d.seguros || []; _pbInstal.locales = d.locales || []; }
+    } catch (e) {}
+    _pbInstal.loading = false; _pbInstal.loaded = true;
+    if (_pb && _pb.tab === 'instalacion') pbRenderBody();
+  }
+  function pbInstalacionHTML() {
+    if (!_pbInstal.loaded && !_pbInstal.loading) { setTimeout(pbLoadInstal, 10); }
+    if (!_pbInstal.loaded) return '<div class="loading"><div class="spinner"></div><p>Cargando instalaciones…</p></div>';
+    const isAdm = !!_pb.isAdmin;
+    const money = (typeof _pbMoney === 'function') ? _pbMoney : (n => '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'));
+    // Unificar en una sola lista ordenada por fecha desc.
+    const rows = [];
+    for (const c of _pbInstal.seguros) rows.push({ origen: 'SEGURO', fecha: c.fecha || '', data: c });
+    for (const o of _pbInstal.locales) rows.push({ origen: 'LOCAL', fecha: o.fecha || '', data: o });
+    rows.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:14px 16px;margin-bottom:14px">';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:16px">🔧 Instalación Taller</div>';
+    h += '<div style="font-size:12.5px;color:#94a3b8;margin-top:4px">Detalle de cada parabrisas instalado: casos de <b>Seguro</b> (facturados o no) y ventas de <b>Parabrisas</b> cargadas en Local.</div>';
+    h += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">';
+    const card = (lbl, val, color) => '<div style="background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:10px 14px;min-width:120px"><div style="font-size:11px;color:#888;text-transform:uppercase">' + lbl + '</div><div style="font-size:20px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
+    h += card('Total instalaciones', String(rows.length));
+    h += card('Seguro', String(_pbInstal.seguros.length), '#3466c9');
+    h += card('Local', String(_pbInstal.locales.length), '#1a7d47');
+    h += '</div></div>';
+    if (!rows.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">Todavía no hay instalaciones cargadas.</div>';
+    const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
+    for (const row of rows) {
+      const d = row.data;
+      h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+      if (row.origen === 'SEGURO') {
+        const estado = (typeof _pbEstadoLabel === 'function') ? _pbEstadoLabel(d.estado) : (d.estado || '');
+        const esFact = (d.estado === 'por_pagar' || d.estado === 'finalizado' || (d.nro_factura && String(d.nro_factura).trim()));
+        const fact = esFact ? chip('✔ Facturado', '#eafaf1', '#1a7d47') : chip('Sin facturar', '#fdf0e8', '#b0562a');
+        h += '<div style="min-width:0"><div style="font-weight:800;color:#2d3277;font-size:15px">#' + d.n + ' · 🛡️ Seguro' + (d.compania ? (' · ' + escapeHtml(d.compania)) : '') + '</div>';
+        h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(d.fecha || '') + (d.siniestro ? (' · Siniestro ' + escapeHtml(d.siniestro)) : '') + '</div>';
+        h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🛡️ Seguro', '#eef4ff', '#3466c9') + chip(estado, '#f0f4f8', '#556') + fact + (d.tipo_cristal ? chip(escapeHtml(d.tipo_cristal), '#eef4ff', '#3466c9') : '') + '</div>';
+        h += '</div>';
+        h += '<div style="text-align:right">' + (isAdm ? ('<div style="font-size:11px;color:#888;text-transform:uppercase">Monto</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + money(d.monto || d.precio_venta || 0) + '</div>') : '') + '</div>';
+        h += '</div>';
+        h += '<div style="font-size:13px;color:#555;margin-top:8px">🚗 ' + escapeHtml([d.marca, d.modelo, d.anio].filter(Boolean).join(' ')) + (d.patente ? (' · ' + escapeHtml(d.patente)) : '') + (d.posicion ? (' · ' + escapeHtml(d.posicion)) : '') + (d.lado ? (' ' + escapeHtml(d.lado)) : '') + (d.tipo_vehiculo ? (' · ' + escapeHtml(d.tipo_vehiculo)) : '') + '</div>';
+        if (Array.isArray(d.fotos_links) && d.fotos_links.length) { h += '<div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">'; for (let i = 0; i < d.fotos_links.length; i++) h += '<a href="' + escapeHtml(d.fotos_links[i]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">🖼️ Foto ' + (i + 1) + '</a>'; h += '</div>'; }
+        if (d.orden_link) h += '<div style="margin-top:4px"><a href="' + escapeHtml(d.orden_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">📄 Orden</a></div>';
+        if (d.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(d.notas) + '</div>';
+      } else {
+        const pb = d.parabrisas || {};
+        h += '<div style="min-width:0"><div style="font-weight:800;color:#2d3277;font-size:15px">Local #' + d.n + ' · ' + escapeHtml(d.cliente || 'Sin nombre') + '</div>';
+        h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(d.fecha || '') + (d.telefono ? (' · 📞 ' + escapeHtml(d.telefono)) : '') + (d.created_by ? (' · por ' + escapeHtml(d.created_by)) : '') + '</div>';
+        h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🪟 Local · Parabrisas', '#eafaf1', '#1a7d47') + chip('🏪 ' + escapeHtml(d.sucursal || ''), '#eef4ff', '#3466c9') + (pb.tipo_cristal ? chip(escapeHtml(pb.tipo_cristal), '#eef4ff', '#3466c9') : '') + '</div>';
+        h += '</div>';
+        h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Total</div><div style="font-size:18px;font-weight:800;color:#2d3277">' + money(d.total_venta || pb.precio_venta || 0) + '</div></div>';
+        h += '</div>';
+        h += '<div style="font-size:13px;color:#555;margin-top:8px">🚗 ' + escapeHtml([pb.marca, pb.modelo, pb.anio].filter(Boolean).join(' ')) + (pb.patente ? (' · ' + escapeHtml(pb.patente)) : '') + (pb.posicion ? (' · ' + escapeHtml(pb.posicion)) : '') + (pb.lado ? (' ' + escapeHtml(pb.lado)) : '') + (pb.tipo_vehiculo ? (' · ' + escapeHtml(pb.tipo_vehiculo)) : '') + '</div>';
+        if (Array.isArray(pb.fotos_links) && pb.fotos_links.length) { h += '<div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">'; for (let i = 0; i < pb.fotos_links.length; i++) h += '<a href="' + escapeHtml(pb.fotos_links[i]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">🖼️ Foto ' + (i + 1) + '</a>'; h += '</div>'; }
+        if (d.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(d.notas) + '</div>';
+      }
+      h += '</div>';
+    }
     return h;
   }
   function pbFormHTML() {
@@ -1688,10 +1755,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const modelos = _pbSort((c.vehiculos && c.vehiculos[f.marca]) ? c.vehiculos[f.marca] : []);
     let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px 18px;margin-bottom:18px">';
     h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:12px">' + (f.editN != null ? ('Editar caso N° ' + f.editN) : 'Nuevo caso de taller') + '</div>';
-    // PREVIO: Seguro / Particular
-    const segBtn = (val, lblx) => { const on = f.modalidad === val; return '<button type="button" onclick="pbSetForm(\'modalidad\',\'' + val + '\')" style="padding:9px 22px;border:2px solid ' + (on ? '#3483fa' : '#d7dee8') + ';background:' + (on ? '#eef4ff' : '#fff') + ';color:' + (on ? '#2d3277' : '#8a94a6') + ';font-weight:800;font-size:14px;border-radius:9px;cursor:pointer">' + lblx + '</button>'; };
-    h += '<div style="display:flex;gap:10px;margin-bottom:16px">' + segBtn('SEGURO', '🛡️ Seguro') + segBtn('PARTICULAR', '👤 Particular') + '</div>';
-    const esPart = f.modalidad === 'PARTICULAR';
+    // Solo SEGURO. Las ventas Particulares ahora se cargan en LOCAL → Parabrisas.
+    f.modalidad = 'SEGURO';
+    h += '<div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap"><span style="padding:9px 22px;border:2px solid #3483fa;background:#eef4ff;color:#2d3277;font-weight:800;font-size:14px;border-radius:9px">🛡️ Seguro</span><span style="font-size:12px;color:#8a94a6">Las ventas <b>Particulares</b> ahora se cargan en <b>Local → Parabrisas</b>.</span></div>';
+    const esPart = false;
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">';
     h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" onchange="pbSetForm(\'fecha\',this.value)" style="' + inp + '"></div>';
     if (!esPart) {
@@ -2043,26 +2110,41 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   async function pbSaveConfigModelos() { const m = (document.getElementById('pbcfg_marca') || {}).value || ''; if (!m) { pbCfgMsg('Elegí una marca primero.', true); return; } const mods = pbLines('pbcfg_modelos'); const veh = Object.assign({}, _pb.cfg.vehiculos); veh[m] = mods; await pbPostConfig({ vehiculos: veh }, 'Modelos de ' + m + ' guardados ✔'); }
 
 
-  // ==================== LOCAL (ventas en el local / mostrador) ====================
-  // Carga de ventas locales. Costos/descripciones salen de la MISMA data diaria que Stock/Gestión.
-  // Admin ve costos/ganancia/total; usuario habilitado (can_local) carga y ve precio venta, código y
-  // cantidad, pero NO costos ni ganancia (el servidor los filtra; acá solo mostramos lo que llega).
-  var _localData = { is_admin: false, next_n: 1, orders: [], resumen: {} };
-  var _localForm = null;
+  // ==================== VENTAS LOCAL (rediseño por capas) ====================
+  // Flujo en capas, nada preseleccionado: 1) Sucursal  2) Tipo (Venta/Seña/Salida)
+  // 3) (venta o seña) Rubro (Repuestos/Parabrisas)  4) Formulario.
+  // Dos sucursales independientes: RUFINO / BUENOS AIRES. Caja por sucursal.
+  var _localData = { is_admin: false, next_n: 1, orders: [], resumen: {}, caja_resumen: {}, senas_vigentes: [], sucursales: ['RUFINO', 'BUENOS AIRES'], proveedores: [] };
+  var _localTab = 'nueva';            // nueva | mov
   var _localBusy = false;
-  var _localTab = 'ventas';            // ventas | senas | salida | resumen
-  var _localSalidaForm = null;
-  var _localCajaFrom = '', _localCajaTo = '';   // filtro de fechas del resumen/caja
+  var _localPbCfg = null;             // config de parabrisas (tipos de cristal, marcas, modelos…)
+  var _localCajaFrom = '', _localCajaTo = '';
+  const LOCAL_SUCS = ['RUFINO', 'BUENOS AIRES'];
+  const LOCAL_MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'TARJETA', 'CHEQUE'];
   const LOCAL_SALIDA_CATS = ['Servicio', 'Embalaje', 'Envío', 'Sueldo', 'Otro'];
-  const LOCAL_MEDIOS = ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'];
+  // Wizard: qué eligió el usuario. Vacío = hay que elegir.
+  var _localWiz = { sucursal: '', tipo: '', ramo: '' };
+  var _localVenta = null;             // formulario de venta (repuestos o parabrisas)
+  var _localSena = null;              // formulario de seña
+  var _localSalida = null;            // formulario de salida
+  function _localToday() { return new Date().toISOString().slice(0, 10); }
   function _localMedioLabel(m) { return String(m || '').charAt(0) + String(m || '').slice(1).toLowerCase(); }
-  function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, costo_manual: false, precio_venta: '', _looked: false, _notfound: false }; }
-  function _localNewForm() {
-    return { editN: null, tipo: (_localTab === 'senas' ? 'sena' : 'venta'), fecha: new Date().toISOString().slice(0, 10), cliente: '', telefono: '', sucursal: 'Rufino', entrega: 'retiro', forma_pago: 'EFECTIVO', notas: '', cheque: { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, transfer_link: '', _transferBusy: false, items: [_localNewItem()] };
-  }
-  function _localNewSalida() { return { editN: null, fecha: new Date().toISOString().slice(0, 10), categoria: 'Servicio', monto: '', forma_pago: 'EFECTIVO', sucursal: 'Rufino', notas: '' }; }
   function _localM(n) { return '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR'); }
   function _localIsAdm() { return !!(_localData.is_admin || (currentUser && currentUser.role === 'admin')); }
+  function _localNewCheque() { return { banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }; }
+  function _localNewItem() { return { cantidad: 1, codigo: '', descripcion: '', proveedor: '', costo_unit: 0, costo_manual: false, precio_venta: '', _looked: false, _notfound: false, _opciones: [], _lastCodLooked: null }; }
+  function _localNewVenta() {
+    return {
+      editN: null, ramo: 'repuestos', fecha: _localToday(), cliente: '', telefono: '', entrega: 'retiro', notas: '',
+      items: [_localNewItem()], pagos: [],
+      // campos parabrisas:
+      patente: '', tipo_cristal: '', posicion: '', lado: '', tipo_vehiculo: '', marca: '', modelo: '', anio: '',
+      costo_parabrisas: '', costo_colocacion: '', precio_venta: '', fotos_links: [], _fotosBusy: false,
+    };
+  }
+  function _localNewSena() { return { editN: null, fecha: _localToday(), cliente: '', telefono: '', concepto: '', monto: '', forma_pago: 'EFECTIVO', cheque: _localNewCheque(), transfer_link: '', _transferBusy: false }; }
+  function _localNewSalida() { return { editN: null, fecha: _localToday(), categoria: 'Servicio', monto: '', forma_pago: 'EFECTIVO', notas: '' }; }
+  function _localResetForms() { _localVenta = null; _localSena = null; _localSalida = null; }
 
   async function loadLocal() {
     const myNav = navToken;
@@ -2070,7 +2152,6 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       document.getElementById('content').innerHTML = '<div class="empty"><p>No tenés permiso para Ventas local.</p></div>';
       return;
     }
-    if (!_localForm) _localForm = _localNewForm();
     const content = document.getElementById('content');
     content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
     try {
@@ -2088,77 +2169,78 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
 
   function localTabsHTML() {
     const tab = (k, label) => '<button onclick="localSwitchTab(\'' + k + '\')" style="padding:9px 18px;border:none;border-bottom:3px solid ' + (_localTab === k ? '#3483fa' : 'transparent') + ';background:none;font-size:14px;font-weight:' + (_localTab === k ? '800' : '600') + ';color:' + (_localTab === k ? '#2d3277' : '#8a94a6') + ';cursor:pointer">' + label + '</button>';
-    return '<div style="display:flex;gap:2px;border-bottom:1px solid #e6ebf5;margin-bottom:18px;flex-wrap:wrap">' +
-      tab('ventas', '🏪 Ventas') + tab('senas', '🔖 Señas') + tab('salida', '📤 Salida') + tab('resumen', '📊 Resumen / Caja') + '</div>';
+    return '<div style="display:flex;gap:2px;border-bottom:1px solid #e6ebf5;margin-bottom:18px;flex-wrap:wrap">' + tab('nueva', '➕ Nueva operación') + tab('mov', '📊 Resumen de movimientos') + '</div>';
   }
-  function localSwitchTab(k) {
-    _localTab = k;
-    if ((k === 'ventas' || k === 'senas') && _localForm && _localForm.editN == null) _localForm.tipo = (k === 'senas' ? 'sena' : 'venta');
-    localRender();
-    window.scrollTo(0, 0);
-  }
+  function localSwitchTab(k) { _localTab = k; localRender(); window.scrollTo(0, 0); }
   function localRender() {
-    const content = document.getElementById('content');
-    if (!content) return;
-    let body = '';
-    if (_localTab === 'salida') body = localSalidaFormHTML() + '<div id="loc_msg"></div>' + localSalidasListHTML();
-    else if (_localTab === 'resumen') body = localCajaHTML();
-    else if (_localTab === 'senas') body = localFormHTML() + '<div id="loc_msg"></div>' + localSenasSummaryHTML() + localOrdersHTML('sena');
-    else body = localFormHTML() + '<div id="loc_msg"></div>' + localSummaryHTML() + localOrdersHTML('venta');
+    const content = document.getElementById('content'); if (!content) return;
+    const body = (_localTab === 'mov') ? localMovHTML() : (localWizardHTML() + '<div id="loc_msg"></div>');
     content.innerHTML = localTabsHTML() + body;
-    if (_localTab === 'ventas' || _localTab === 'senas') localRecalcTotals();
+    if (_localTab === 'nueva' && _localWiz.tipo === 'venta') localRecalcTotals();
   }
 
-  function localFormHTML() {
+  // ---------- WIZARD (capas) ----------
+  function localStepCard(num, title, current, options, cb, chosen) {
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:14px 18px;margin-bottom:14px">';
+    const curOpt = chosen ? (options.find(o => o.v === current) || {}) : {};
+    const curLabel = curOpt.label || current || '';
+    h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+    h += '<span style="width:26px;height:26px;border-radius:50%;background:' + (chosen ? '#1a9c53' : '#3483fa') + ';color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0">' + (chosen ? '✓' : num) + '</span>';
+    h += '<span style="font-weight:800;color:#2d3277;font-size:15px">' + title + '</span>';
+    if (chosen) h += '<span style="margin-left:auto;display:flex;align-items:center;gap:10px"><span style="font-weight:700;color:#1a7d47;font-size:14px">' + escapeHtml(curLabel) + '</span><button onclick="' + cb + '(\'\')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:4px 12px;font-size:12px;font-weight:700;cursor:pointer">Cambiar</button></span>';
+    h += '</div>';
+    if (!chosen) {
+      h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">';
+      for (const o of options) h += '<button onclick="' + cb + '(\'' + o.v + '\')" style="flex:1;min-width:150px;padding:16px 20px;border:2px solid #d7dee8;background:#fff;color:#2d3277;font-weight:800;font-size:15px;border-radius:10px;cursor:pointer" onmouseover="this.style.borderColor=\'#3483fa\';this.style.background=\'#eef4ff\'" onmouseout="this.style.borderColor=\'#d7dee8\';this.style.background=\'#fff\'">' + o.label + '</button>';
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+  function localWizardHTML() {
+    const w = _localWiz;
+    let h = '';
+    h += localStepCard(1, 'Sucursal', w.sucursal, LOCAL_SUCS.map(s => ({ v: s, label: '🏪 ' + s })), 'localPickSuc', !!w.sucursal);
+    if (!w.sucursal) return h;
+    h += localStepCard(2, 'Tipo de operación', w.tipo, [{ v: 'venta', label: '🛒 Venta' }, { v: 'sena', label: '🔖 Seña' }, { v: 'salida', label: '📤 Salida' }], 'localPickTipo', !!w.tipo);
+    if (!w.tipo) return h;
+    if (w.tipo === 'venta' || w.tipo === 'sena') {
+      h += localStepCard(3, 'Rubro', w.ramo, [{ v: 'repuestos', label: '🔧 Repuestos' }, { v: 'parabrisas', label: '🪟 Parabrisas' }], 'localPickRamo', !!w.ramo);
+      if (!w.ramo) return h;
+    }
+    if (w.tipo === 'salida') h += localSalidaFormHTML();
+    else if (w.tipo === 'sena') h += localSenaFormHTML();
+    else if (w.ramo === 'parabrisas') h += localVentaParabrisasHTML();
+    else h += localVentaRepuestosHTML();
+    return h;
+  }
+  function localPickSuc(v) { _localWiz.sucursal = v; if (!v) { _localWiz.tipo = ''; _localWiz.ramo = ''; } _localResetForms(); localRender(); window.scrollTo(0, 0); }
+  function localPickTipo(v) { _localWiz.tipo = v; if (!v || v === 'salida') _localWiz.ramo = ''; _localResetForms(); localRender(); window.scrollTo(0, 0); }
+  function localPickRamo(v) { _localWiz.ramo = v; _localResetForms(); if (v === 'parabrisas' && !_localPbCfg) localEnsurePbCfg(); localRender(); window.scrollTo(0, 0); }
+  async function localEnsurePbCfg() {
+    try { const r = await fetch('/api/parabrisas/config', { credentials: 'same-origin' }); if (r.ok) { _localPbCfg = await r.json(); if (_localTab === 'nueva' && _localWiz.ramo === 'parabrisas') localRender(); } } catch (e) {}
+  }
+
+  // ---------- VENTA · REPUESTOS ----------
+  function localVentaRepuestosHTML() {
+    if (!_localVenta) { _localVenta = _localNewVenta(); }
+    const f = _localVenta; f.ramo = 'repuestos';
     const isAdm = _localIsAdm();
-    const f = _localForm;
-    const esSena = (f.tipo === 'sena');
-    const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
     const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
     const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
-    let h = '';
-    h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
+    const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">';
-    h += '<div style="font-weight:800;color:#2d3277;font-size:18px">' + (esSena ? ('🔖 ' + (f.editN != null ? ('Editar seña N° ' + f.editN) : 'Nueva seña')) : ('🏪 ' + (f.editN != null ? ('Editar orden N° ' + f.editN) : 'Nueva venta local'))) + '</div>';
-    if (esSena) h += '<div style="width:100%;font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-bottom:8px">🔖 Las señas se registran aparte y <b>no suman a la caja de ventas</b>; se muestran como total de señas en el Resumen.</div>';
-    h += '<div style="font-size:13px;color:#3483fa;font-weight:700;background:#eef4ff;border-radius:20px;padding:5px 14px">N° de orden: ' + nOrden + '</div>';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:18px">🔧 ' + (f.editN != null ? ('Editar venta N° ' + f.editN) : 'Venta de repuestos') + '</div>';
+    h += '<div style="font-size:13px;color:#3483fa;font-weight:700;background:#eef4ff;border-radius:20px;padding:5px 14px">N° ' + nOrden + ' · 🏪 ' + escapeHtml(_localWiz.sucursal) + '</div>';
     h += '</div>';
     // Cabecera
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px">';
-    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localSetForm(\'fecha\',this.value)" style="' + inp + '"></div>';
-    h += '<div><label style="' + lbl + '">Nombre del cliente</label><input type="text" value="' + escapeHtml(f.cliente) + '" oninput="localSetForm(\'cliente\',this.value)" placeholder="Ej. Juan Pérez" style="' + inp + '"></div>';
-    h += '<div><label style="' + lbl + '">Teléfono</label><input type="text" value="' + escapeHtml(f.telefono) + '" oninput="localSetForm(\'telefono\',this.value)" placeholder="Ej. 3462-..." style="' + inp + '"></div>';
-    h += '<div><label style="' + lbl + '">Local (sucursal)</label><select oninput="localSetForm(\'sucursal\',this.value)" onchange="localSetForm(\'sucursal\',this.value)" style="' + inp + '">' +
-      ['Rufino', 'San Martin'].map(x => '<option value="' + x + '"' + (f.sucursal === x ? ' selected' : '') + '>' + x + '</option>').join('') + '</select></div>';
-    h += '<div><label style="' + lbl + '">Entrega</label><select onchange="localSetForm(\'entrega\',this.value)" style="' + inp + '">' +
-      '<option value="retiro"' + (f.entrega === 'retiro' ? ' selected' : '') + '>Retira en el local</option>' +
-      '<option value="envio"' + (f.entrega === 'envio' ? ' selected' : '') + '>Envío</option></select></div>';
-    h += '<div><label style="' + lbl + '">Forma de pago</label><select onchange="localFormaPago(this.value)" style="' + inp + '">' +
-      ['EFECTIVO', 'TRANSFERENCIA', 'CHEQUE', 'TARJETA'].map(x => '<option value="' + x + '"' + (f.forma_pago === x ? ' selected' : '') + '>' + x.charAt(0) + x.slice(1).toLowerCase() + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localVSet(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Nombre del cliente</label><input type="text" value="' + escapeHtml(f.cliente) + '" oninput="localVSet(\'cliente\',this.value)" placeholder="Ej. Juan Pérez" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Teléfono</label><input type="text" value="' + escapeHtml(f.telefono) + '" oninput="localVSet(\'telefono\',this.value)" placeholder="Ej. 3462-..." style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Entrega</label><select onchange="localVSet(\'entrega\',this.value)" style="' + inp + '"><option value="retiro"' + (f.entrega === 'retiro' ? ' selected' : '') + '>Retira en el local</option><option value="envio"' + (f.entrega === 'envio' ? ' selected' : '') + '>Envío</option></select></div>';
     h += '</div>';
-    // Panel de cheque
-    if (f.forma_pago === 'CHEQUE') {
-      const c = f.cheque || {};
-      h += '<div style="background:#fff8e6;border:1px solid #ffe08a;border-radius:10px;padding:12px 14px;margin-bottom:12px">';
-      h += '<div style="font-weight:700;color:#8a6d1a;font-size:13px;margin-bottom:10px">🧾 Datos del cheque</div>';
-      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">';
-      h += '<div><label style="' + lbl + '">Banco</label><input type="text" value="' + escapeHtml(c.banco || '') + '" oninput="localSetCheque(\'banco\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">N° de cheque</label><input type="text" value="' + escapeHtml(c.numero || '') + '" oninput="localSetCheque(\'numero\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">Titular</label><input type="text" value="' + escapeHtml(c.titular || '') + '" oninput="localSetCheque(\'titular\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">CUIT / DNI</label><input type="text" value="' + escapeHtml(c.cuit || '') + '" oninput="localSetCheque(\'cuit\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">Fecha de cobro</label><input type="date" value="' + escapeHtml(c.fecha_cobro || '') + '" oninput="localSetCheque(\'fecha_cobro\',this.value)" style="' + inp + '"></div>';
-      h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(c.importe || '')) + '" oninput="localSetCheque(\'importe\',this.value)" style="' + inp + '"></div>';
-      h += '</div></div>';
-    }
-    if (f.forma_pago === 'TRANSFERENCIA') {
-      h += '<div style="margin-bottom:12px;background:#eef6ff;border:1px solid #cfe0fb;border-radius:10px;padding:12px 14px">';
-      h += '<label style="' + lbl + '">Comprobante de transferencia</label>';
-      if (f._transferBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
-      else if (f.transfer_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📎 Ver comprobante</a><span onclick="localRemoveTransfer()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
-      else h += '<input type="file" accept="image/*,application/pdf" onchange="localUploadTransfer(this)" style="font-size:13px">';
-      h += '<div style="font-size:11px;color:#888;margin-top:6px">Se guarda en Drive: TRANSFERENCIAS AUTOCHAP / LOCAL / ' + escapeHtml(f.fecha || 'fecha') + '</div>';
-      h += '</div>';
-    }
     // Renglones
     h += '<div style="font-weight:700;color:#2d3277;font-size:14px;margin:8px 0 8px">Renglones</div>';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:' + (isAdm ? '860px' : '560px') + '">';
@@ -2172,7 +2254,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</tbody></table></div>';
     h += '<button onclick="localAddItem()" style="margin-top:8px;background:#eef2f7;color:#3483fa;border:1px dashed #9db8e8;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer">+ Agregar renglón</button>';
     // Notas
-    h += '<div style="margin-top:12px"><label style="' + lbl + '">Notas</label><textarea oninput="localSetForm(\'notas\',this.value)" rows="2" placeholder="Observaciones de la venta..." style="' + inp + ';resize:vertical">' + escapeHtml(f.notas || '') + '</textarea></div>';
+    h += '<div style="margin-top:12px"><label style="' + lbl + '">Notas</label><textarea oninput="localVSet(\'notas\',this.value)" rows="2" placeholder="Observaciones de la venta..." style="' + inp + ';resize:vertical">' + escapeHtml(f.notas || '') + '</textarea></div>';
     // Totales
     h += '<div style="display:flex;justify-content:flex-end;gap:22px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #eef1f6">';
     h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Total venta</div><div id="loc_tot_venta" style="font-size:22px;font-weight:800;color:#2d3277">$ 0</div></div>';
@@ -2181,27 +2263,21 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Ganancia</div><div id="loc_tot_gan" style="font-size:22px;font-weight:800;color:#1a9c53">$ 0</div></div>';
     }
     h += '</div>';
+    // PAGOS
+    h += localPagosHTML();
     // Acciones
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">';
-    h += '<button id="loc_save_btn" onclick="localSave()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : (esSena ? 'Guardar seña' : 'Guardar orden')) + '</button>';
-    if (f.editN != null) h += '<button onclick="localNewOrder()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">Cancelar edición</button>';
-    else h += '<button onclick="localNewOrder()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">🧹 Limpiar</button>';
-    h += '</div>';
+    h += localVentaActionsHTML(f);
     h += '</div>';
     return h;
   }
-
   function localItemRowHTML(i, isAdm) {
-    const it = _localForm.items[i];
+    const it = _localVenta.items[i];
     const cellInp = 'padding:7px 8px;border:1px solid #d7dee8;border-radius:7px;font-size:13px;outline:none;width:100%;box-sizing:border-box';
     const cant = (it.cantidad === '' || it.cantidad == null) ? '' : it.cantidad;
     const pv = (it.precio_venta === '' || it.precio_venta == null) ? '' : it.precio_venta;
     let h = '<tr style="border-top:1px solid #f0f2f6">';
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="1" value="' + escapeHtml(String(cant)) + '" oninput="localItemInput(' + i + ',\'cantidad\',this.value)" style="' + cellInp + '"></td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.codigo || '') + '" oninput="localItemInput(' + i + ',\'codigo\',this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();localLookup(' + i + ')}" onblur="localLookup(' + i + ')" placeholder="código" style="' + cellInp + '"></td>';
-    // Proveedor: si el código lo tienen VARIOS proveedores → desplegable para elegir cuál (con su costo).
-    // Si es UN solo proveedor → se identifica solo por el código y se muestra fijo (no editable).
-    const isAdmProv = _localIsAdm();
     const namedProv = (Array.isArray(it._opciones) ? it._opciones : []).filter(o => (o.proveedor || '').toString().trim());
     let provCell;
     if (namedProv.length >= 2) {
@@ -2211,73 +2287,56 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         namedProv.map(o => {
           const nm = o.proveedor || '';
           const sel = (String(it.proveedor || '').toUpperCase() === String(nm).toUpperCase()) ? ' selected' : '';
-          const cst = (isAdmProv && o.costo != null) ? (' ($ ' + Math.round(Number(o.costo) || 0).toLocaleString('es-AR') + ')') : '';
+          const cst = (isAdm && o.costo != null) ? (' ($ ' + Math.round(Number(o.costo) || 0).toLocaleString('es-AR') + ')') : '';
           return '<option value="' + escapeHtml(nm) + '"' + sel + '>' + escapeHtml(nm) + cst + '</option>';
         }).join('') + '</select>';
     } else {
-      provCell = it.proveedor
-        ? '<span style="font-weight:600;color:#2d3277">' + escapeHtml(it.proveedor) + '</span>'
-        : (it._looked ? '<span style="color:#e07b39;font-size:11px">no identificado</span>' : '<span style="color:#bbb">—</span>');
+      provCell = it.proveedor ? '<span style="font-weight:600;color:#2d3277">' + escapeHtml(it.proveedor) + '</span>' : (it._looked ? '<span style="color:#e07b39;font-size:11px">no identificado</span>' : '<span style="color:#bbb">—</span>');
     }
     h += '<td style="padding:5px 6px">' + provCell + '</td>';
     h += '<td style="padding:5px 6px"><input type="text" value="' + escapeHtml(it.descripcion || '') + '" oninput="localItemInput(' + i + ',\'descripcion\',this.value)" placeholder="' + (it._notfound ? 'sin datos — escribí a mano' : 'descripción') + '" style="' + cellInp + (it._notfound ? ';border-color:#f0b429' : '') + '"></td>';
     if (isAdm) {
-      // COSTO editable por admin. Vacío = usa el automático de la lista. Si lo escribe, pisa el costo (queda naranja).
-      const cuVal = (it.costo_manual && it.costo_unit != null && it.costo_unit !== '') ? String(it.costo_unit) : (it.costo_unit ? String(it.costo_unit) : '');
-      h += '<td style="padding:5px 6px"><input type="number" min="0" step="0.01" value="' + escapeHtml(cuVal) + '" oninput="localCostoInput(' + i + ',this.value)" id="li_cu_' + i + '" title="Costo unitario (editable). Dejalo vacío para el costo automático de la lista." style="' + cellInp + ';color:#b0562a' + (it.costo_manual ? ';border-color:#e07b39;background:#fff6ef' : '') + '"></td>';
+      const cuVal = (it.costo_unit ? String(it.costo_unit) : '');
+      h += '<td style="padding:5px 6px"><input type="number" min="0" step="0.01" value="' + escapeHtml(cuVal) + '" oninput="localCostoInput(' + i + ',this.value)" id="li_cu_' + i + '" title="Costo unitario (editable). Vacío = costo automático de la lista." style="' + cellInp + ';color:#b0562a' + (it.costo_manual ? ';border-color:#e07b39;background:#fff6ef' : '') + '"></td>';
       h += '<td style="padding:5px 6px;color:#b0562a;white-space:nowrap" id="li_ct_' + i + '">$ 0</td>';
     }
     h += '<td style="padding:5px 6px"><input type="number" min="0" step="0.01" value="' + escapeHtml(String(pv)) + '" oninput="localItemInput(' + i + ',\'precio_venta\',this.value)" id="li_pv_' + i + '" placeholder="0" style="' + cellInp + '"></td>';
     if (isAdm) h += '<td style="padding:5px 6px;font-weight:700;white-space:nowrap" id="li_gan_' + i + '">$ 0</td>';
-    h += '<td style="padding:5px 6px;text-align:center">' + (_localForm.items.length > 1 ? '<span onclick="localRemoveItem(' + i + ')" title="Quitar" style="cursor:pointer;color:#d43d3d;font-weight:800">✕</span>' : '') + '</td>';
+    h += '<td style="padding:5px 6px;text-align:center">' + (_localVenta.items.length > 1 ? '<span onclick="localRemoveItem(' + i + ')" title="Quitar" style="cursor:pointer;color:#d43d3d;font-weight:800">✕</span>' : '') + '</td>';
     h += '</tr>';
     return h;
   }
-
-  function localSetForm(field, val) { if (_localForm) _localForm[field] = val; }
-  function localSetCheque(field, val) { if (_localForm) { _localForm.cheque = _localForm.cheque || {}; _localForm.cheque[field] = val; } }
-  function localFormaPago(val) { _localForm.forma_pago = val; localRender(); }
-  function _localFileB64(file) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => { const s = String(r.result || ''); const i = s.indexOf(','); resolve(i >= 0 ? s.slice(i + 1) : s); }; r.onerror = reject; r.readAsDataURL(file); }); }
-  async function localUploadTransfer(input) {
-    if (!input.files || !input.files[0]) return;
-    const f = input.files[0];
-    _localForm._transferBusy = true; localRender();
-    try { const prep = await _autochapPrepFile(f); const d = await _autochapPostJSON('/api/transferencia/upload', { origen: 'LOCAL', fecha: _localForm.fecha || '', nombre: f.name, mime: prep.mime, datab64: prep.b64 }); _localForm.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
-    _localForm._transferBusy = false; localRender();
-  }
-  function localRemoveTransfer() { const url = _localForm.transfer_link; _localForm.transfer_link = ''; localRender(); if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} } }
+  function localVSet(field, val) { if (_localVenta) _localVenta[field] = val; }
   function localItemInput(i, field, val) {
-    const it = _localForm.items[i]; if (!it) return;
+    const it = _localVenta.items[i]; if (!it) return;
     if (field === 'cantidad' || field === 'precio_venta') it[field] = (val === '' ? '' : Number(val));
     else it[field] = val;
-    // Si cambian el código, se invalida el proveedor/costo hasta que se vuelva a buscar (en blur/Enter).
-    if (field === 'codigo') { it.proveedor = ''; it.costo_unit = 0; it.costo_manual = false; it._opciones = []; it._provOk = null; it._looked = false; it._lastCodLooked = null; }
+    if (field === 'codigo') { it.proveedor = ''; it.costo_unit = 0; it.costo_manual = false; it._opciones = []; it._looked = false; it._lastCodLooked = null; }
     if (field === 'cantidad' || field === 'precio_venta') { localRecalcRow(i); localRecalcTotals(); }
   }
-  // COSTO manual (solo admin): el admin pisa el costo del renglón. Vacío = vuelve al automático de la lista.
   function localCostoInput(i, val) {
-    const it = _localForm.items[i]; if (!it) return;
+    const it = _localVenta.items[i]; if (!it) return;
     const t = String(val == null ? '' : val).trim();
     it.costo_manual = (t !== '');
     it.costo_unit = (t === '' ? 0 : (Number(val) || 0));
-    localRecalcTotals();   // recalcula costo total, ganancia y totales SIN re-render (no pierde el foco)
+    localRecalcTotals();
   }
-  function localAddItem() { _localForm.items.push(_localNewItem()); localRender(); }
-  function localRemoveItem(i) { _localForm.items.splice(i, 1); if (!_localForm.items.length) _localForm.items.push(_localNewItem()); localRender(); }
+  function localAddItem() { _localVenta.items.push(_localNewItem()); localRender(); }
+  function localRemoveItem(i) { _localVenta.items.splice(i, 1); if (!_localVenta.items.length) _localVenta.items.push(_localNewItem()); localRender(); }
   function localRecalcRow(i) {
     if (!_localIsAdm()) return;
-    const it = _localForm.items[i]; if (!it) return;
+    const it = _localVenta.items[i]; if (!it) return;
     const cant = Number(it.cantidad) || 0, cu = Number(it.costo_unit) || 0, pv = Number(it.precio_venta) || 0;
     const ct = cu * cant, gan = pv * cant - ct;
     const ctEl = document.getElementById('li_ct_' + i); if (ctEl) ctEl.textContent = _localM(ct);
     const gEl = document.getElementById('li_gan_' + i); if (gEl) { gEl.textContent = _localM(gan); gEl.style.color = gan < 0 ? '#d43d3d' : '#1a9c53'; }
-    const cuEl = document.getElementById('li_cu_' + i); if (cuEl && cuEl.tagName !== 'INPUT') cuEl.textContent = _localM(cu);
   }
   function localRecalcTotals() {
+    if (!_localVenta || !Array.isArray(_localVenta.items)) return;
     const isAdm = _localIsAdm();
     let tv = 0, tc = 0;
-    for (let i = 0; i < _localForm.items.length; i++) {
-      const it = _localForm.items[i];
+    for (let i = 0; i < _localVenta.items.length; i++) {
+      const it = _localVenta.items[i];
       const cant = Number(it.cantidad) || 0, pv = Number(it.precio_venta) || 0, cu = Number(it.costo_unit) || 0;
       tv += pv * cant; tc += cu * cant;
       if (isAdm) localRecalcRow(i);
@@ -2287,31 +2346,28 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const tcEl = document.getElementById('loc_tot_costo'); if (tcEl) tcEl.textContent = _localM(tc);
       const tgEl = document.getElementById('loc_tot_gan'); if (tgEl) { const g = tv - tc; tgEl.textContent = _localM(g); tgEl.style.color = g < 0 ? '#d43d3d' : '#1a9c53'; }
     }
+    localPagosRefresh();
   }
-  // Al cargar el código: trae descripción + la LISTA de proveedores de ese código (con costo para admin).
   async function localLookup(i) {
-    const it = _localForm.items[i]; if (!it) return;
+    const it = _localVenta.items[i]; if (!it) return;
     const cod = (it.codigo || '').toString().trim();
     if (!cod) return;
-    if (it._lastCodLooked === cod) return;   // evita re-consultar el mismo código (blur + enter)
+    if (it._lastCodLooked === cod) return;
     it._lastCodLooked = cod;
-    it.costo_manual = false;   // un lookup nuevo trae el costo automático → deja de ser manual
+    it.costo_manual = false;
     try {
       const r = await fetch('/api/local/lookup?codigo=' + encodeURIComponent(cod), { credentials: 'same-origin' });
       const d = await r.json();
       if (!r.ok) return;
-      // La descripción se carga a MANO (no se autocompleta). No tocamos it.descripcion.
       it._opciones = Array.isArray(d.opciones) ? d.opciones : [];
       it._looked = true; it._notfound = !d.encontrado;
       const named = it._opciones.filter(o => (o.proveedor || '').toString().trim());
       if (named.length >= 2) {
-        // El código lo tienen varios proveedores → elegir cuál (preselecciona el del listado si coincide).
         const cur = (d.proveedor || it.proveedor || '').toString().trim();
         const opt = named.find(o => String(o.proveedor).toUpperCase() === cur.toUpperCase());
         if (opt) { it.proveedor = opt.proveedor; it.costo_unit = (opt.costo != null) ? (Number(opt.costo) || 0) : 0; }
         else { it.proveedor = ''; it.costo_unit = 0; }
       } else {
-        // Único (o ninguno con nombre) → identificado por el código.
         it.proveedor = d.proveedor || (named[0] && named[0].proveedor) || '';
         it.costo_unit = (d.costo_unit != null) ? (Number(d.costo_unit) || 0) : 0;
       }
@@ -2320,32 +2376,457 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       const el = document.getElementById(faltaElegir ? ('li_prov_' + i) : ('li_pv_' + i)); if (el) el.focus();
     } catch (e) {}
   }
-  // Elegir proveedor cuando el código lo tienen varios → toma el costo de ESE proveedor.
   function localProvPick(i, val) {
-    const it = _localForm.items[i]; if (!it) return;
+    const it = _localVenta.items[i]; if (!it) return;
     it.proveedor = val;
     const opt = (it._opciones || []).find(o => String(o.proveedor).toUpperCase() === String(val || '').toUpperCase());
     if (opt && opt.costo != null) { it.costo_unit = Number(opt.costo) || 0; it.costo_manual = false; }
     localRender();
     const el = document.getElementById('li_pv_' + i); if (el && val) el.focus();
   }
-  function localNewOrder() { _localForm = _localNewForm(); localRender(); window.scrollTo(0, 0); }
+
+  // ---------- VENTA · PARABRISAS (igual que Parabrisas → Carga Taller → Particular) ----------
+  function localVentaParabrisasHTML() {
+    if (!_localVenta) { _localVenta = _localNewVenta(); }
+    const f = _localVenta; f.ramo = 'parabrisas';
+    const isAdm = _localIsAdm();
+    const c = _localPbCfg || {};
+    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
+    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
+    const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
+    const sel = (field, options, ph) => {
+      let o = '<option value="">' + (ph || 'Elegí…') + '</option>';
+      const opts = (typeof _pbSort === 'function') ? _pbSort(options || []) : (options || []);
+      for (let i = 0; i < opts.length; i++) { const v = opts[i]; o += '<option value="' + escapeHtml(v) + '"' + (String(f[field]) === String(v) ? ' selected' : '') + '>' + escapeHtml(v) + '</option>'; }
+      return '<select onchange="localVpSet(\'' + field + '\',this.value)" style="' + inp + '">' + o + '</select>';
+    };
+    const tc = f.tipo_cristal;
+    const posAuto = (typeof _pbAutoPos === 'function') ? _pbAutoPos(tc) : '';
+    const ladoAuto = (typeof _pbAutoLado === 'function') ? _pbAutoLado(tc) : '';
+    let posCell;
+    if (posAuto) posCell = '<div style="' + inp + ';background:#f3f6fb;color:#2d3277;font-weight:600">' + posAuto + '</div>';
+    else if (tc === 'PUERTA') posCell = '<select onchange="localVpSet(\'posicion\',this.value)" style="' + inp + '"><option value="">Elegí…</option><option value="DELANTERO"' + (f.posicion === 'DELANTERO' ? ' selected' : '') + '>DELANTERO</option><option value="TRASERO"' + (f.posicion === 'TRASERO' ? ' selected' : '') + '>TRASERO</option></select>';
+    else posCell = '<div style="' + inp + ';color:#bbb">Elegí el cristal</div>';
+    let ladoCell;
+    if (ladoAuto) ladoCell = '<div style="' + inp + ';background:#f3f6fb;color:#2d3277;font-weight:600">S/L</div>';
+    else if (tc) ladoCell = '<select onchange="localVpSet(\'lado\',this.value)" style="' + inp + '"><option value="">Elegí…</option><option value="IZQUIERDO"' + (f.lado === 'IZQUIERDO' ? ' selected' : '') + '>IZQUIERDO</option><option value="DERECHO"' + (f.lado === 'DERECHO' ? ' selected' : '') + '>DERECHO</option></select>';
+    else ladoCell = '<div style="' + inp + ';color:#bbb">Elegí el cristal</div>';
+    const marcas = (typeof _pbSort === 'function') ? _pbSort(c.marcas || []) : (c.marcas || []);
+    const modelos = (typeof _pbSort === 'function') ? _pbSort((c.vehiculos && c.vehiculos[f.marca]) ? c.vehiculos[f.marca] : []) : ((c.vehiculos && c.vehiculos[f.marca]) || []);
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px 18px;margin-bottom:18px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:18px">🪟 ' + (f.editN != null ? ('Editar parabrisas N° ' + f.editN) : 'Venta de parabrisas') + '</div>';
+    h += '<div style="font-size:13px;color:#3483fa;font-weight:700;background:#eef4ff;border-radius:20px;padding:5px 14px">N° ' + nOrden + ' · 🏪 ' + escapeHtml(_localWiz.sucursal) + '</div>';
+    h += '</div>';
+    if (!_localPbCfg) h += '<div style="font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-bottom:10px">⏳ Cargando listas de parabrisas…</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localVSet(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Nombre del cliente</label><input type="text" value="' + escapeHtml(f.cliente) + '" oninput="localVSet(\'cliente\',this.value)" placeholder="Ej. Juan Pérez" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Teléfono</label><input type="text" value="' + escapeHtml(f.telefono) + '" oninput="localVSet(\'telefono\',this.value)" placeholder="Ej. 3462-..." style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Patente</label><input type="text" value="' + escapeHtml(f.patente) + '" oninput="localVSet(\'patente\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Tipo de cristal</label>' + sel('tipo_cristal', c.tipos_cristal || []) + '</div>';
+    h += '<div><label style="' + lbl + '">Posición</label>' + posCell + '</div>';
+    h += '<div><label style="' + lbl + '">Lado</label>' + ladoCell + '</div>';
+    h += '<div><label style="' + lbl + '">Tipo de vehículo</label>' + sel('tipo_vehiculo', c.tipos_vehiculo || []) + '</div>';
+    h += '<div><label style="' + lbl + '">Marca</label>' + sel('marca', marcas) + '</div>';
+    h += '<div><label style="' + lbl + '">Modelo</label><select onchange="localVpSet(\'modelo\',this.value)" style="' + inp + '" ' + (f.marca ? '' : 'disabled') + '><option value="">' + (f.marca ? 'Elegí…' : 'Elegí la marca') + '</option>' + modelos.map(m => '<option value="' + escapeHtml(m) + '"' + (f.modelo === m ? ' selected' : '') + '>' + escapeHtml(m) + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Año</label><input type="text" value="' + escapeHtml(f.anio) + '" oninput="localVSet(\'anio\',this.value)" style="' + inp + '"></div>';
+    h += '</div>';
+    // Precio + costos (costos solo admin)
+    h += '<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;background:#f8fbff;border:1px solid #dce9fb;border-radius:10px;padding:12px 14px">';
+    h += '<div><label style="' + lbl + '">Precio de venta</label><input type="number" step="0.01" value="' + escapeHtml(String(f.precio_venta)) + '" oninput="localVpPrecio(this.value)" style="' + inp + '"></div>';
+    if (isAdm) {
+      h += '<div><label style="' + lbl + '">Costo parabrisas</label><input type="number" step="0.01" value="' + escapeHtml(String(f.costo_parabrisas)) + '" oninput="localVpMonto(\'costo_parabrisas\',this.value)" style="' + inp + ';color:#b0562a"></div>';
+      h += '<div><label style="' + lbl + '">Costo colocación</label><input type="number" step="0.01" value="' + escapeHtml(String(f.costo_colocacion)) + '" oninput="localVpMonto(\'costo_colocacion\',this.value)" style="' + inp + ';color:#b0562a"></div>';
+      h += '<div><label style="' + lbl + '">Ganancia</label><div id="locvp_gan" style="' + inp + ';background:#f0fbf4;color:#1a7d47;font-weight:800">$ 0</div></div>';
+    }
+    h += '</div>';
+    // Fotos
+    h += '<div style="margin-top:14px;background:#f8f9fc;border:1px solid #eef1f6;border-radius:10px;padding:12px 14px">';
+    h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Las fotos se suben a tu Google Drive automáticamente (carpeta "Parabrisas Adjuntos").</div>';
+    h += '<div><label style="' + lbl + '">Adjuntar FOTOS (podés subir varias)</label>';
+    if (Array.isArray(f.fotos_links) && f.fotos_links.length) { for (let i = 0; i < f.fotos_links.length; i++) h += '<div style="display:flex;gap:10px;align-items:center;margin-bottom:5px"><a href="' + escapeHtml(f.fotos_links[i]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:13px">🖼️ Foto ' + (i + 1) + '</a><span onclick="localVpRemoveFoto(' + i + ')" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:12px">✕ quitar</span></div>'; }
+    if (f._fotosBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+    h += '<input type="file" accept="image/*" multiple onchange="localVpUploadFotos(this)" style="font-size:13px;margin-top:4px">';
+    h += '</div></div>';
+    // Notas
+    h += '<div style="margin-top:12px"><label style="' + lbl + '">Notas</label><textarea oninput="localVSet(\'notas\',this.value)" rows="2" placeholder="Observaciones..." style="' + inp + ';resize:vertical">' + escapeHtml(f.notas || '') + '</textarea></div>';
+    // Total
+    h += '<div style="display:flex;justify-content:flex-end;gap:22px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #eef1f6">';
+    h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Total venta</div><div id="loc_tot_venta" style="font-size:22px;font-weight:800;color:#2d3277">' + _localM(Number(f.precio_venta) || 0) + '</div></div>';
+    h += '</div>';
+    // PAGOS
+    h += localPagosHTML();
+    // Acciones
+    h += localVentaActionsHTML(f);
+    h += '</div>';
+    return h;
+  }
+  function localVpSet(field, val) {
+    const f = _localVenta; if (!f) return;
+    f[field] = val;
+    if (field === 'tipo_cristal') { const a = (typeof _pbAutoPos === 'function') ? _pbAutoPos(val) : ''; const l = (typeof _pbAutoLado === 'function') ? _pbAutoLado(val) : ''; f.posicion = a || ''; f.lado = l || ''; }
+    if (field === 'marca') f.modelo = '';
+    localRender();
+  }
+  function localVpMonto(field, val) { if (_localVenta) { _localVenta[field] = val; localVpRefreshGan(); } }
+  function localVpPrecio(val) {
+    if (!_localVenta) return;
+    _localVenta.precio_venta = val;
+    const tvEl = document.getElementById('loc_tot_venta'); if (tvEl) tvEl.textContent = _localM(Number(val) || 0);
+    localVpRefreshGan();
+    localPagosRefresh();
+  }
+  function localVpRefreshGan() {
+    if (!_localIsAdm() || !_localVenta) return;
+    const gan = (Number(_localVenta.precio_venta) || 0) - (Number(_localVenta.costo_parabrisas) || 0) - (Number(_localVenta.costo_colocacion) || 0);
+    const el = document.getElementById('locvp_gan'); if (el) { el.textContent = _localM(gan); el.style.color = gan < 0 ? '#c0392b' : '#1a7d47'; }
+  }
+  function localVpRemoveFoto(i) {
+    const url = _localVenta.fotos_links[i];
+    _localVenta.fotos_links.splice(i, 1); localRender();
+    if (url) { try { fetch('/api/parabrisas/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} }
+  }
+  async function localVpUploadFotos(input) {
+    if (!input.files || !input.files.length) return;
+    const files = Array.from(input.files);
+    _localVenta._fotosBusy = true; localRender();
+    for (const file of files) {
+      try { const prep = await _autochapPrepFile(file); const d = await _autochapPostJSON('/api/parabrisas/upload', { nombre: file.name, mime: prep.mime, datab64: prep.b64, patente: _localVenta.patente || '', fecha: _localVenta.fecha || '' }); if (d && d.url) _localVenta.fotos_links.push(d.url); } catch (e) { alert('No se pudo subir una foto: ' + e.message); }
+    }
+    _localVenta._fotosBusy = false; localRender();
+  }
+
+  // ---------- PAGOS (múltiples medios por venta) ----------
+  function localVentaTotal() {
+    const f = _localVenta; if (!f) return 0;
+    if (_localWiz.ramo === 'parabrisas') return Number(f.precio_venta) || 0;
+    let t = 0; for (const it of f.items) t += (Number(it.precio_venta) || 0) * (Number(it.cantidad) || 0);
+    return t;
+  }
+  function localPagado() { let p = 0; for (const x of (_localVenta.pagos || [])) p += Number(x.monto) || 0; return p; }
+  function localPagosHTML() {
+    const f = _localVenta;
+    const tot = localVentaTotal(), pagado = localPagado(), rest = Math.round((tot - pagado) * 100) / 100;
+    let h = '<div style="margin-top:16px;border-top:1px solid #eef1f6;padding-top:14px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">';
+    h += '<div style="font-weight:800;color:#2d3277;font-size:15px">💳 Cómo te pagaron</div>';
+    h += '<div id="loc_pagos_estado" style="font-size:13px;font-weight:700">' + localPagosEstadoHTML(tot, pagado, rest) + '</div>';
+    h += '</div>';
+    if (!f.pagos || !f.pagos.length) h += '<div style="font-size:13px;color:#94a3b8;margin-bottom:8px">Agregá al menos un medio de pago.</div>';
+    for (let i = 0; i < (f.pagos || []).length; i++) h += localPagoRowHTML(i);
+    h += '<button onclick="localAddPago()" style="margin-top:4px;background:#eef2f7;color:#3483fa;border:1px dashed #9db8e8;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer">+ Agregar medio de pago</button>';
+    h += '</div>';
+    return h;
+  }
+  function localPagosEstadoHTML(tot, pagado, rest) {
+    if (Math.abs(rest) <= 1) return '<span style="color:#1a7d47">✔ Cubierto · ' + _localM(pagado) + ' / ' + _localM(tot) + '</span>';
+    if (rest > 1) return '<span style="color:#b0562a">Falta ' + _localM(rest) + ' · ' + _localM(pagado) + ' / ' + _localM(tot) + '</span>';
+    return '<span style="color:#c0392b">Te pasaste ' + _localM(-rest) + ' · ' + _localM(pagado) + ' / ' + _localM(tot) + '</span>';
+  }
+  function localPagosRefresh() {
+    const el = document.getElementById('loc_pagos_estado'); if (!el) return;
+    const tot = localVentaTotal(), pagado = localPagado(), rest = Math.round((tot - pagado) * 100) / 100;
+    el.innerHTML = localPagosEstadoHTML(tot, pagado, rest);
+  }
+  function localAddPago() {
+    const rest = Math.round((localVentaTotal() - localPagado()) * 100) / 100;
+    _localVenta.pagos.push({ medio: 'EFECTIVO', monto: (rest > 0 ? rest : ''), cheque: _localNewCheque(), transfer_link: '', sena_n: null, _transferBusy: false });
+    localRender();
+  }
+  function localRemovePago(i) { _localVenta.pagos.splice(i, 1); localRender(); }
+  function localPagoSet(i, field, val) {
+    const p = _localVenta.pagos[i]; if (!p) return;
+    if (field === 'medio') {
+      p.medio = val; p.sena_n = null;
+      if (val === 'SENA') p.monto = '';
+      if (val !== 'CHEQUE') p.cheque = _localNewCheque();
+      if (val !== 'TRANSFERENCIA') p.transfer_link = '';
+      localRender();
+    }
+  }
+  function localPagoMonto(i, val) { const p = _localVenta.pagos[i]; if (!p) return; p.monto = (val === '' ? '' : Number(val)); localPagosRefresh(); }
+  function localPagoResto(i) {
+    const p = _localVenta.pagos[i]; if (!p) return;
+    let other = 0; for (let k = 0; k < _localVenta.pagos.length; k++) if (k !== i) other += Number(_localVenta.pagos[k].monto) || 0;
+    const rest = Math.round((localVentaTotal() - other) * 100) / 100;
+    p.monto = rest > 0 ? rest : 0; localRender();
+  }
+  function localPagoSetCheque(i, field, val) { const p = _localVenta.pagos[i]; if (!p) return; p.cheque = p.cheque || _localNewCheque(); p.cheque[field] = val; }
+  function localPagoPickSena(i, n) {
+    const p = _localVenta.pagos[i]; if (!p) return;
+    const sn = Number(n);
+    const s = (_localData.senas_vigentes || []).find(x => Number(x.n) === sn);
+    if (!s) { p.sena_n = null; p.monto = ''; localRender(); return; }
+    p.sena_n = sn; p.monto = Number(s.monto) || 0; localRender();
+  }
+  async function localPagoUploadTransfer(i, input) {
+    if (!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    const p = _localVenta.pagos[i]; if (!p) return;
+    p._transferBusy = true; localRender();
+    try { const prep = await _autochapPrepFile(file); const d = await _autochapPostJSON('/api/transferencia/upload', { origen: 'LOCAL', fecha: _localVenta.fecha || '', nombre: file.name, mime: prep.mime, datab64: prep.b64 }); p.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
+    p._transferBusy = false; localRender();
+  }
+  function localPagoRowHTML(i) {
+    const p = _localVenta.pagos[i];
+    const inp = 'padding:8px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:13px;outline:none;box-sizing:border-box';
+    const medios = LOCAL_MEDIOS.concat(['SENA']);
+    let h = '<div style="border:1px solid #eef1f6;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fcfdff">';
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
+    h += '<select onchange="localPagoSet(' + i + ',\'medio\',this.value)" style="' + inp + ';min-width:140px">' + medios.map(m => '<option value="' + m + '"' + (p.medio === m ? ' selected' : '') + '>' + (m === 'SENA' ? '🔖 Tomar seña' : _localMedioLabel(m)) + '</option>').join('') + '</select>';
+    if (p.medio === 'SENA') {
+      const sv = (_localData.senas_vigentes || []).filter(s => String(s.sucursal) === String(_localWiz.sucursal));
+      if (!sv.length) h += '<span style="font-size:12.5px;color:#b0562a;font-weight:600">No hay señas vigentes en ' + escapeHtml(_localWiz.sucursal) + '</span>';
+      else {
+        h += '<select onchange="localPagoPickSena(' + i + ',this.value)" style="' + inp + ';flex:1;min-width:220px"><option value="">Elegí la seña…</option>' + sv.map(s => '<option value="' + s.n + '"' + (Number(p.sena_n) === Number(s.n) ? ' selected' : '') + '>#' + s.n + ' · ' + escapeHtml((s.concepto || s.cliente || 'seña').slice(0, 40)) + ' · ' + _localM(s.monto) + '</option>').join('') + '</select>';
+        h += '<span style="font-weight:800;color:#8a6d1a;font-size:14px">' + _localM(p.monto) + '</span>';
+      }
+    } else {
+      h += '<input type="number" min="0" step="0.01" value="' + escapeHtml(String(p.monto === '' || p.monto == null ? '' : p.monto)) + '" oninput="localPagoMonto(' + i + ',this.value)" placeholder="monto" style="' + inp + ';width:130px">';
+      h += '<button onclick="localPagoResto(' + i + ')" title="Poner el resto" style="background:#eef4ff;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer">Resto</button>';
+    }
+    h += '<span onclick="localRemovePago(' + i + ')" title="Quitar" style="cursor:pointer;color:#d43d3d;font-weight:800;margin-left:auto;font-size:15px">✕</span>';
+    h += '</div>';
+    if (p.medio === 'CHEQUE') {
+      const c = p.cheque || {};
+      h += '<div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">';
+      h += '<input type="text" value="' + escapeHtml(c.banco || '') + '" oninput="localPagoSetCheque(' + i + ',\'banco\',this.value)" placeholder="Banco" style="' + inp + '">';
+      h += '<input type="text" value="' + escapeHtml(c.numero || '') + '" oninput="localPagoSetCheque(' + i + ',\'numero\',this.value)" placeholder="N° cheque" style="' + inp + '">';
+      h += '<input type="text" value="' + escapeHtml(c.titular || '') + '" oninput="localPagoSetCheque(' + i + ',\'titular\',this.value)" placeholder="Titular" style="' + inp + '">';
+      h += '<input type="text" value="' + escapeHtml(c.cuit || '') + '" oninput="localPagoSetCheque(' + i + ',\'cuit\',this.value)" placeholder="CUIT/DNI" style="' + inp + '">';
+      h += '<input type="date" value="' + escapeHtml(c.fecha_cobro || '') + '" oninput="localPagoSetCheque(' + i + ',\'fecha_cobro\',this.value)" title="Fecha de cobro" style="' + inp + '">';
+      h += '</div>';
+    }
+    if (p.medio === 'TRANSFERENCIA') {
+      h += '<div style="margin-top:8px">';
+      if (p._transferBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+      else if (p.transfer_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(p.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:13px">📎 Ver comprobante</a><span onclick="localPagoRemoveTransfer(' + i + ')" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:12px">✕ quitar</span></div>';
+      else h += '<input type="file" accept="image/*,application/pdf" onchange="localPagoUploadTransfer(' + i + ',this)" style="font-size:13px">';
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+  function localPagoRemoveTransfer(i) {
+    const p = _localVenta.pagos[i]; if (!p) return;
+    const url = p.transfer_link; p.transfer_link = ''; localRender();
+    if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} }
+  }
+  function localVentaActionsHTML(f) {
+    let h = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">';
+    h += '<button id="loc_save_btn" onclick="localSaveVenta()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar venta') + '</button>';
+    h += '<button onclick="localCancelar()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">' + (f.editN != null ? 'Cancelar edición' : '🧹 Limpiar') + '</button>';
+    h += '</div>';
+    return h;
+  }
+  async function localSaveVenta() {
+    if (_localBusy) return;
+    const f = _localVenta;
+    const esParab = (_localWiz.ramo === 'parabrisas');
+    let payload = { n: f.editN, tipo: 'venta', ramo: (esParab ? 'parabrisas' : 'repuestos'), sucursal: _localWiz.sucursal, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, entrega: f.entrega, notas: f.notas };
+    const tot = localVentaTotal();
+    if (esParab) {
+      if (!f.tipo_cristal) { localMsg('Elegí el tipo de cristal.', true); return; }
+      if (!(Number(f.precio_venta) > 0)) { localMsg('Cargá el precio de venta del parabrisas.', true); return; }
+      Object.assign(payload, {
+        patente: f.patente, tipo_cristal: f.tipo_cristal, posicion: f.posicion, lado: f.lado, tipo_vehiculo: f.tipo_vehiculo,
+        marca: f.marca, modelo: f.modelo, anio: f.anio, precio_venta: Number(f.precio_venta) || 0,
+        costo_parabrisas: Number(f.costo_parabrisas) || 0, costo_colocacion: Number(f.costo_colocacion) || 0,
+        fotos_links: (f.fotos_links || []).filter(x => x && x.trim()),
+      });
+    } else {
+      const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
+        .map(it => { const o = { cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }; if (it.costo_manual) o.costo_unit_manual = Number(it.costo_unit) || 0; return o; });
+      if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
+      payload.items = items;
+    }
+    // Pagos
+    const pagos = [];
+    for (const p of (f.pagos || [])) {
+      const medio = p.medio;
+      if (medio === 'SENA') { if (!p.sena_n) { localMsg('Elegí la seña a tomar o quitá ese pago.', true); return; } pagos.push({ medio: 'SENA', monto: Number(p.monto) || 0, sena_n: Number(p.sena_n) }); }
+      else { const monto = Number(p.monto) || 0; if (monto <= 0) continue; const pg = { medio, monto }; if (medio === 'CHEQUE') pg.cheque = p.cheque; if (medio === 'TRANSFERENCIA') pg.transfer_link = p.transfer_link || ''; pagos.push(pg); }
+    }
+    let pagado = 0; for (const p of pagos) pagado += Number(p.monto) || 0;
+    if (pagos.length && Math.abs(pagado - tot) > 1) { localMsg('Los pagos (' + _localM(pagado) + ') no coinciden con el total (' + _localM(tot) + ').', true); return; }
+    payload.pagos = pagos;
+    _localBusy = true;
+    const btn = document.getElementById('loc_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+    try {
+      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const d = await r.json(); _localBusy = false;
+      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar venta'; } localMsg(d.error || 'Error al guardar', true); return; }
+      const savedN = d.n;
+      _localWiz.tipo = ''; _localWiz.ramo = ''; _localResetForms();
+      await loadLocal();
+      localMsg('✔ Venta N° ' + savedN + ' guardada en ' + payload.sucursal + '.', false);
+    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar venta'; } localMsg('Error de red al guardar.', true); }
+  }
+
+  // ---------- SEÑA (recuadro libre + monto) ----------
+  function localSenaFormHTML() {
+    if (!_localSena) _localSena = _localNewSena();
+    const f = _localSena;
+    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
+    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
+    const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">';
+    h += '<div style="font-weight:800;color:#8a6d1a;font-size:18px">🔖 ' + (f.editN != null ? ('Editar seña N° ' + f.editN) : 'Nueva seña') + '</div>';
+    h += '<div style="font-size:13px;color:#8a6d1a;font-weight:700;background:#fff8e6;border-radius:20px;padding:5px 14px">N° ' + nOrden + ' · 🏪 ' + escapeHtml(_localWiz.sucursal) + ' · ' + escapeHtml(_localWiz.ramo === 'parabrisas' ? 'Parabrisas' : 'Repuestos') + '</div>';
+    h += '</div>';
+    h += '<div style="font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-bottom:12px">La seña queda <b>vigente</b> hasta que se tome en una venta. No tiene costo ni ganancia; solo el monto recibido.</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px">';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localSenaSet(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Nombre del cliente (opcional)</label><input type="text" value="' + escapeHtml(f.cliente) + '" oninput="localSenaSet(\'cliente\',this.value)" placeholder="Ej. Juan Pérez" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Teléfono (opcional)</label><input type="text" value="' + escapeHtml(f.telefono) + '" oninput="localSenaSet(\'telefono\',this.value)" placeholder="Ej. 3462-..." style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Monto de la seña</label><input type="number" step="0.01" value="' + escapeHtml(String(f.monto)) + '" oninput="localSenaSet(\'monto\',this.value)" placeholder="0.00" style="' + inp + ';font-weight:700">' + '</div>';
+    h += '<div><label style="' + lbl + '">Medio de pago</label><select onchange="localSenaMedio(this.value)" style="' + inp + '">' + LOCAL_MEDIOS.map(m => '<option value="' + m + '"' + (f.forma_pago === m ? ' selected' : '') + '>' + _localMedioLabel(m) + '</option>').join('') + '</select></div>';
+    h += '</div>';
+    h += '<div style="margin-bottom:12px"><label style="' + lbl + '">¿Qué están señando? (texto libre)</label><textarea oninput="localSenaSet(\'concepto\',this.value)" rows="2" placeholder="Ej. Seña por paragolpes trasero Hilux / parabrisas Gol Trend…" style="' + inp + ';resize:vertical">' + escapeHtml(f.concepto || '') + '</textarea></div>';
+    if (f.forma_pago === 'CHEQUE') {
+      const c = f.cheque || {};
+      h += '<div style="background:#fff8e6;border:1px solid #ffe08a;border-radius:10px;padding:12px 14px;margin-bottom:12px">';
+      h += '<div style="font-weight:700;color:#8a6d1a;font-size:13px;margin-bottom:10px">🧾 Datos del cheque</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">';
+      h += '<div><label style="' + lbl + '">Banco</label><input type="text" value="' + escapeHtml(c.banco || '') + '" oninput="localSenaCheque(\'banco\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">N° de cheque</label><input type="text" value="' + escapeHtml(c.numero || '') + '" oninput="localSenaCheque(\'numero\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Titular</label><input type="text" value="' + escapeHtml(c.titular || '') + '" oninput="localSenaCheque(\'titular\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">CUIT / DNI</label><input type="text" value="' + escapeHtml(c.cuit || '') + '" oninput="localSenaCheque(\'cuit\',this.value)" style="' + inp + '"></div>';
+      h += '<div><label style="' + lbl + '">Fecha de cobro</label><input type="date" value="' + escapeHtml(c.fecha_cobro || '') + '" oninput="localSenaCheque(\'fecha_cobro\',this.value)" style="' + inp + '"></div>';
+      h += '</div></div>';
+    }
+    if (f.forma_pago === 'TRANSFERENCIA') {
+      h += '<div style="margin-bottom:12px;background:#eef6ff;border:1px solid #cfe0fb;border-radius:10px;padding:12px 14px">';
+      h += '<label style="' + lbl + '">Comprobante de transferencia</label>';
+      if (f._transferBusy) h += '<div style="color:#3483fa;font-size:13px;font-weight:600">⏳ Subiendo a Drive…</div>';
+      else if (f.transfer_link) h += '<div style="display:flex;gap:12px;align-items:center"><a href="' + escapeHtml(f.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:14px">📎 Ver comprobante</a><span onclick="localSenaRemoveTransfer()" style="cursor:pointer;color:#d43d3d;font-weight:700;font-size:13px">✕ quitar</span></div>';
+      else h += '<input type="file" accept="image/*,application/pdf" onchange="localSenaUploadTransfer(this)" style="font-size:13px">';
+      h += '</div>';
+    }
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">';
+    h += '<button id="loc_save_btn" onclick="localSaveSena()" style="background:#b8860b;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar seña') + '</button>';
+    h += '<button onclick="localCancelar()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">' + (f.editN != null ? 'Cancelar edición' : '🧹 Limpiar') + '</button>';
+    h += '</div></div>';
+    return h;
+  }
+  function localSenaSet(field, val) { if (_localSena) _localSena[field] = val; }
+  function localSenaMedio(val) { if (_localSena) { _localSena.forma_pago = val; localRender(); } }
+  function localSenaCheque(field, val) { if (_localSena) { _localSena.cheque = _localSena.cheque || _localNewCheque(); _localSena.cheque[field] = val; } }
+  function localSenaRemoveTransfer() { const url = _localSena.transfer_link; _localSena.transfer_link = ''; localRender(); if (url) { try { fetch('/api/transferencia/delete-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ url }) }).catch(() => {}); } catch (e) {} } }
+  async function localSenaUploadTransfer(input) {
+    if (!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    _localSena._transferBusy = true; localRender();
+    try { const prep = await _autochapPrepFile(file); const d = await _autochapPostJSON('/api/transferencia/upload', { origen: 'LOCAL', fecha: _localSena.fecha || '', nombre: file.name, mime: prep.mime, datab64: prep.b64 }); _localSena.transfer_link = d.url; } catch (e) { alert('No se pudo subir el comprobante: ' + e.message); }
+    _localSena._transferBusy = false; localRender();
+  }
+  async function localSaveSena() {
+    if (_localBusy) return;
+    const f = _localSena;
+    const monto = Number(f.monto) || 0;
+    if (monto <= 0) { localMsg('Cargá el monto de la seña.', true); return; }
+    const payload = { n: f.editN, tipo: 'sena', sucursal: _localWiz.sucursal, fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, concepto: f.concepto, monto: monto, forma_pago: f.forma_pago, cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, transfer_link: (f.forma_pago === 'TRANSFERENCIA') ? f.transfer_link : '' };
+    _localBusy = true;
+    const btn = document.getElementById('loc_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+    try {
+      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const d = await r.json(); _localBusy = false;
+      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar seña'; } localMsg(d.error || 'Error al guardar', true); return; }
+      const savedN = d.n;
+      _localWiz.tipo = ''; _localWiz.ramo = ''; _localResetForms();
+      await loadLocal();
+      localMsg('✔ Seña N° ' + savedN + ' guardada (vigente) en ' + payload.sucursal + '.', false);
+    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar seña'; } localMsg('Error de red al guardar.', true); }
+  }
+
+  // ---------- SALIDA (egreso de caja → Contable) ----------
+  function localSalidaFormHTML() {
+    if (!_localSalida) _localSalida = _localNewSalida();
+    const f = _localSalida;
+    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
+    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
+    const nOrden = (f.editN != null) ? f.editN : (_localData.next_n || 1);
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">';
+    h += '<div style="font-weight:800;color:#b0562a;font-size:18px">📤 ' + (f.editN != null ? ('Editar salida N° ' + f.editN) : 'Nueva salida de caja') + '</div>';
+    h += '<div style="font-size:13px;color:#b0562a;font-weight:700;background:#fdf0e8;border-radius:20px;padding:5px 14px">N° ' + nOrden + ' · 🏪 ' + escapeHtml(_localWiz.sucursal) + '</div>';
+    h += '</div>';
+    h += '<div style="font-size:12px;color:#777;margin-bottom:12px">Egreso de caja (servicio, embalaje, envío, sueldo…). Resta de la caja de la sucursal y va a <b>Contable → Transacción</b> para derivar.</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px">';
+    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localSalidaSet(\'fecha\',this.value)" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Categoría</label><select onchange="localSalidaSet(\'categoria\',this.value)" style="' + inp + '">' + LOCAL_SALIDA_CATS.map(c => '<option value="' + c + '"' + (f.categoria === c ? ' selected' : '') + '>' + c + '</option>').join('') + '</select></div>';
+    h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(f.monto)) + '" oninput="localSalidaSet(\'monto\',this.value)" placeholder="0.00" style="' + inp + '"></div>';
+    h += '<div><label style="' + lbl + '">Medio de pago</label><select onchange="localSalidaSet(\'forma_pago\',this.value)" style="' + inp + '">' + LOCAL_MEDIOS.map(m => '<option value="' + m + '"' + (f.forma_pago === m ? ' selected' : '') + '>' + _localMedioLabel(m) + '</option>').join('') + '</select></div>';
+    h += '</div>';
+    h += '<div style="margin-bottom:12px"><label style="' + lbl + '">Nota (opcional)</label><input type="text" value="' + escapeHtml(f.notas || '') + '" oninput="localSalidaSet(\'notas\',this.value)" placeholder="Detalle del egreso..." style="' + inp + '"></div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
+    h += '<button id="loc_save_btn" onclick="localSaveSalida()" style="background:#b0562a;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar salida') + '</button>';
+    h += '<button onclick="localCancelar()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">' + (f.editN != null ? 'Cancelar edición' : '🧹 Limpiar') + '</button>';
+    h += '</div></div>';
+    return h;
+  }
+  function localSalidaSet(field, val) { if (_localSalida) _localSalida[field] = val; }
+  async function localSaveSalida() {
+    if (_localBusy) return;
+    const f = _localSalida;
+    const monto = Number(f.monto) || 0;
+    if (monto <= 0) { localMsg('Cargá un importe mayor a 0.', true); return; }
+    const payload = { n: f.editN, tipo: 'salida', sucursal: _localWiz.sucursal, fecha: f.fecha, categoria: f.categoria, monto: monto, forma_pago: f.forma_pago, notas: f.notas };
+    _localBusy = true;
+    const btn = document.getElementById('loc_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+    try {
+      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const d = await r.json(); _localBusy = false;
+      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar salida'; } localMsg(d.error || 'Error al guardar', true); return; }
+      const savedN = d.n;
+      _localWiz.tipo = ''; _localResetForms();
+      await loadLocal();
+      localMsg('✔ Salida N° ' + savedN + ' guardada. Restó de la caja de ' + payload.sucursal + ' y fue a Contable.', false);
+    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar salida'; } localMsg('Error de red al guardar.', true); }
+  }
+
+  function localCancelar() { _localWiz.tipo = ''; _localWiz.ramo = ''; _localResetForms(); localRender(); window.scrollTo(0, 0); }
+  function localMsg(text, isErr) {
+    const el = document.getElementById('loc_msg'); if (!el) return;
+    el.innerHTML = '<div style="margin:0 0 16px;padding:10px 14px;border-radius:8px;font-size:14px;font-weight:600;' + (isErr ? 'background:#fdecec;color:#c0392b;border:1px solid #f5c6c6' : 'background:#eafaf1;color:#1a7d47;border:1px solid #b6e6ca') + '">' + escapeHtml(text) + '</div>';
+    if (!isErr) setTimeout(() => { const e2 = document.getElementById('loc_msg'); if (e2) e2.innerHTML = ''; }, 6000);
+  }
+
+  // ---------- EDITAR / BORRAR ----------
   function localEditOrder(n) {
     const o = (_localData.orders || []).find(x => Number(x.n) === Number(n));
     if (!o) return;
-    _localTab = (o.tipo === 'sena') ? 'senas' : 'ventas';
-    _localForm = {
-      editN: o.n, tipo: (o.tipo === 'sena' ? 'sena' : 'venta'), fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', sucursal: o.sucursal || 'Rufino',
-      entrega: o.entrega || 'retiro', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '',
-      cheque: Object.assign({ banco: '', numero: '', titular: '', cuit: '', fecha_cobro: '', importe: '' }, o.cheque || {}),
-      transfer_link: o.transfer_link || '', _transferBusy: false,
-      items: (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, costo_manual: !!it.costo_manual, precio_venta: it.precio_venta, _looked: true, _lastCodLooked: it.codigo, _provOk: true, _opciones: [{ proveedor: it.proveedor, costo: (it.costo_unit != null ? it.costo_unit : null) }] })),
-    };
-    if (!_localForm.items.length) _localForm.items = [_localNewItem()];
+    const suc = LOCAL_SUCS.includes(String(o.sucursal || '').toUpperCase()) ? String(o.sucursal).toUpperCase() : 'RUFINO';
+    const tipo = o.tipo || 'venta';
+    _localTab = 'nueva';
+    _localResetForms();
+    if (tipo === 'salida') {
+      _localWiz = { sucursal: suc, tipo: 'salida', ramo: '' };
+      _localSalida = { editN: o.n, fecha: o.fecha, categoria: o.categoria || 'Servicio', monto: o.monto || '', forma_pago: o.forma_pago || 'EFECTIVO', notas: o.notas || '' };
+    } else if (tipo === 'sena') {
+      _localWiz = { sucursal: suc, tipo: 'sena', ramo: (o.ramo === 'parabrisas' ? 'parabrisas' : 'repuestos') };
+      _localSena = { editN: o.n, fecha: o.fecha, cliente: o.cliente || '', telefono: o.telefono || '', concepto: o.concepto || '', monto: o.monto || '', forma_pago: o.forma_pago || 'EFECTIVO', cheque: Object.assign(_localNewCheque(), o.cheque || {}), transfer_link: o.transfer_link || '', _transferBusy: false };
+    } else {
+      const ramo = (o.ramo === 'parabrisas') ? 'parabrisas' : 'repuestos';
+      _localWiz = { sucursal: suc, tipo: 'venta', ramo };
+      const pagos = (o.pagos || []).map(p => ({ medio: p.medio || 'EFECTIVO', monto: (p.monto != null ? p.monto : ''), cheque: Object.assign(_localNewCheque(), p.cheque || {}), transfer_link: p.transfer_link || '', sena_n: p.sena_n || null, _transferBusy: false }));
+      const f = _localNewVenta(); f.editN = o.n; f.ramo = ramo; f.fecha = o.fecha; f.cliente = o.cliente || ''; f.telefono = o.telefono || ''; f.entrega = o.entrega || 'retiro'; f.notas = o.notas || ''; f.pagos = pagos;
+      if (ramo === 'parabrisas') {
+        const pb = o.parabrisas || {};
+        f.patente = pb.patente || ''; f.tipo_cristal = pb.tipo_cristal || ''; f.posicion = pb.posicion || ''; f.lado = pb.lado || ''; f.tipo_vehiculo = pb.tipo_vehiculo || ''; f.marca = pb.marca || ''; f.modelo = pb.modelo || ''; f.anio = pb.anio || ''; f.precio_venta = (pb.precio_venta != null ? pb.precio_venta : ''); f.costo_parabrisas = (pb.costo_parabrisas != null ? pb.costo_parabrisas : ''); f.costo_colocacion = (pb.costo_colocacion != null ? pb.costo_colocacion : ''); f.fotos_links = (pb.fotos_links && pb.fotos_links.length ? pb.fotos_links.slice() : []);
+        if (!_localPbCfg) localEnsurePbCfg();
+      } else {
+        f.items = (o.items || []).map(it => ({ cantidad: it.cantidad, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, costo_unit: it.costo_unit || 0, costo_manual: !!it.costo_manual, precio_venta: it.precio_venta, _looked: true, _lastCodLooked: it.codigo, _opciones: [{ proveedor: it.proveedor, costo: (it.costo_unit != null ? it.costo_unit : null) }] }));
+        if (!f.items.length) f.items = [_localNewItem()];
+      }
+      _localVenta = f;
+    }
     localRender(); window.scrollTo(0, 0);
   }
   async function localDeleteOrder(n) {
-    if (!confirm('¿Borrar la orden N° ' + n + '? No se puede deshacer.')) return;
+    if (!confirm('¿Borrar el movimiento N° ' + n + '? No se puede deshacer.')) return;
     try {
       const r = await fetch('/api/local/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n }) });
       const d = await r.json();
@@ -2353,174 +2834,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       await loadLocal();
     } catch (e) { alert('Error de red'); }
   }
-  async function localSave() {
-    if (_localBusy) return;
-    const f = _localForm;
-    const items = f.items.filter(it => (it.codigo || '').toString().trim() && (Number(it.cantidad) || 0) > 0)
-      .map(it => { const o = { cantidad: Number(it.cantidad) || 0, codigo: it.codigo, descripcion: it.descripcion, proveedor: it.proveedor, precio_venta: Number(it.precio_venta) || 0 }; if (it.costo_manual) o.costo_unit_manual = Number(it.costo_unit) || 0; return o; });
-    if (!items.length) { localMsg('Cargá al menos un renglón con código y cantidad.', true); return; }
-    const esSena = (f.tipo === 'sena');
-    const payload = {
-      n: f.editN, tipo: (esSena ? 'sena' : 'venta'), fecha: f.fecha, cliente: f.cliente, telefono: f.telefono, sucursal: f.sucursal,
-      entrega: f.entrega, forma_pago: f.forma_pago, notas: f.notas,
-      cheque: (f.forma_pago === 'CHEQUE') ? f.cheque : null, transfer_link: (f.forma_pago === 'TRANSFERENCIA') ? f.transfer_link : '', items,
-    };
-    _localBusy = true;
-    const btn = document.getElementById('loc_save_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
-    try {
-      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
-      const d = await r.json();
-      _localBusy = false;
-      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; } localMsg(d.error || 'Error al guardar', true); return; }
-      const savedN = d.n;
-      _localForm = _localNewForm();
-      await loadLocal();
-      localMsg(esSena ? ('✔ Seña N° ' + savedN + ' guardada (no suma a la caja de ventas).') : ('✔ Orden N° ' + savedN + ' guardada. Ya impacta en Gestión, Histórico y Dashboard.'), false);
-    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar'; } localMsg('Error de red al guardar.', true); }
-  }
-  function localMsg(text, isErr) {
-    const el = document.getElementById('loc_msg'); if (!el) return;
-    el.innerHTML = '<div style="margin:0 0 16px;padding:10px 14px;border-radius:8px;font-size:14px;font-weight:600;' + (isErr ? 'background:#fdecec;color:#c0392b;border:1px solid #f5c6c6' : 'background:#eafaf1;color:#1a7d47;border:1px solid #b6e6ca') + '">' + escapeHtml(text) + '</div>';
-    if (!isErr) setTimeout(() => { const e2 = document.getElementById('loc_msg'); if (e2) e2.innerHTML = ''; }, 6000);
-  }
 
-  function localSummaryHTML() {
-    const isAdm = _localIsAdm();
-    const s = _localData.resumen || {};
-    const card = (label, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:12px 16px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + label + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
-    let h = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">';
-    h += card('Ventas', Number(s.count || 0).toLocaleString('es-AR'));
-    h += card('Unidades', Number(s.unidades || 0).toLocaleString('es-AR'));
-    h += card('Total vendido', _localM(s.total_venta), '#2d3277');
-    if (isAdm) {
-      h += card('Costo total', _localM(s.total_costo), '#b0562a');
-      h += card('Ganancia', _localM(s.total_ganancia), '#1a9c53');
-      h += card('Margen', (s.margin != null ? (Math.round(s.margin * 10) / 10) + '%' : '—'), '#1a9c53');
-    }
-    h += '</div>';
-    return h;
-  }
-
-  function localOrdersHTML(tipoFilter) {
-    const isAdm = _localIsAdm();
-    const tf = tipoFilter || 'venta';
-    const orders = (_localData.orders || []).filter(o => (o.tipo || 'venta') === tf);
-    let h = '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">' + (tf === 'sena' ? 'Señas cargadas' : 'Órdenes cargadas') + '</div>';
-    if (!orders.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">' + (tf === 'sena' ? 'Todavía no cargaste señas.' : 'Todavía no cargaste ventas locales.') + '</div>';
-    for (const o of orders) {
-      const entrega = (o.entrega === 'envio') ? 'Envío' : 'Retira en local';
-      const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
-      h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
-      h += '<div><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + o.n + ' · ' + escapeHtml(o.cliente || 'Sin nombre') + '</div>';
-      h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(o.fecha || '') + (o.telefono ? (' · 📞 ' + escapeHtml(o.telefono)) : '') + (o.created_by ? (' · por ' + escapeHtml(o.created_by)) : '') + '</div>';
-      h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🏪 ' + escapeHtml(o.sucursal || 'Rufino'), '#eef4ff', '#3466c9') + chip(entrega, '#f0f4f8', '#556') + chip('💳 ' + escapeHtml((o.forma_pago || '').charAt(0) + (o.forma_pago || '').slice(1).toLowerCase()), '#f6f0ff', '#7a4fc9') + '</div>';
-      h += '</div>';
-      h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Total</div><div style="font-size:20px;font-weight:800;color:#2d3277">' + _localM(o.total_venta) + '</div>';
-      if (isAdm) h += '<div style="font-size:12px;color:#1a9c53;font-weight:700">Ganancia ' + _localM(o.total_ganancia) + '</div><div style="font-size:11px;color:#b0562a">Costo ' + _localM(o.total_costo) + '</div>';
-      h += '</div></div>';
-      // Cheque
-      if (o.forma_pago === 'CHEQUE' && o.cheque) {
-        const c = o.cheque;
-        h += '<div style="font-size:12px;color:#8a6d1a;background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:6px 10px;margin-top:8px">🧾 Cheque: ' + escapeHtml(c.banco || '') + (c.numero ? (' N° ' + escapeHtml(c.numero)) : '') + (c.titular ? (' · ' + escapeHtml(c.titular)) : '') + (c.cuit ? (' · ' + escapeHtml(c.cuit)) : '') + (c.fecha_cobro ? (' · cobro ' + escapeHtml(c.fecha_cobro)) : '') + (c.importe ? (' · ' + _localM(c.importe)) : '') + '</div>';
-      }
-      if (o.forma_pago === 'TRANSFERENCIA' && o.transfer_link) h += '<div style="margin-top:8px"><a href="' + escapeHtml(o.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">📎 Comprobante de transferencia</a></div>';
-      // Renglones
-      h += '<div style="margin-top:9px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">';
-      h += '<thead><tr style="text-align:left;color:#aaa;font-size:10.5px;text-transform:uppercase"><th style="padding:3px 6px">Cant.</th><th style="padding:3px 6px">Código</th><th style="padding:3px 6px">Descripción</th><th style="padding:3px 6px">Precio</th>' + (isAdm ? '<th style="padding:3px 6px">Costo</th><th style="padding:3px 6px">Ganancia</th>' : '') + '</tr></thead><tbody>';
-      for (const it of (o.items || [])) {
-        h += '<tr style="border-top:1px solid #f2f4f7"><td style="padding:3px 6px">' + (Number(it.cantidad) || 0) + '</td><td style="padding:3px 6px;font-family:monospace">' + escapeHtml(it.codigo || '') + '</td><td style="padding:3px 6px">' + escapeHtml(it.descripcion || '') + (it.proveedor ? (' <span style="color:#aaa">· ' + escapeHtml(it.proveedor) + '</span>') : '') + '</td><td style="padding:3px 6px">' + _localM(it.precio_venta) + '</td>';
-        if (isAdm) h += '<td style="padding:3px 6px;color:#b0562a">' + _localM(it.costo_total) + '</td><td style="padding:3px 6px;color:#1a9c53;font-weight:600">' + _localM(it.ganancia) + '</td>';
-        h += '</tr>';
-      }
-      h += '</tbody></table></div>';
-      if (o.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(o.notas) + '</div>';
-      if (isAdm) h += '<div style="margin-top:9px;display:flex;gap:8px"><button onclick="localEditOrder(' + o.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button><button onclick="localDeleteOrder(' + o.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button></div>';
-      h += '</div>';
-    }
-    return h;
-  }
-
-  function localSenasSummaryHTML() {
-    const senas = (_localData.orders || []).filter(o => (o.tipo || 'venta') === 'sena');
-    let total = 0; for (const o of senas) total += Number(o.total_venta) || 0;
-    const card = (label, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:12px 16px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + label + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
-    return '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">' + card('Señas', Number(senas.length).toLocaleString('es-AR')) + card('Total en señas', _localM(total), '#8a6d1a') + '</div>';
-  }
-  // ===== SALIDA (egreso de caja) =====
-  function localSalidaFormHTML() {
-    if (!_localSalidaForm) _localSalidaForm = _localNewSalida();
-    const f = _localSalidaForm;
-    const inp = 'padding:9px 11px;border:1px solid #d7dee8;border-radius:8px;font-size:14px;outline:none;width:100%;box-sizing:border-box';
-    const lbl = 'display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px';
-    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,0.06);padding:16px 18px 18px;margin-bottom:18px">';
-    h += '<div style="font-weight:800;color:#b0562a;font-size:18px;margin-bottom:6px">📤 ' + (f.editN != null ? ('Editar salida N° ' + f.editN) : 'Nueva salida de caja') + '</div>';
-    h += '<div style="font-size:12px;color:#777;margin-bottom:12px">Egresos: pago de servicio, embalaje, envío, sueldo, etc. Resta de la caja de la sucursal.</div>';
-    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:12px">';
-    h += '<div><label style="' + lbl + '">Fecha</label><input type="date" value="' + escapeHtml(f.fecha) + '" oninput="localSalidaSet(\'fecha\',this.value)" style="' + inp + '"></div>';
-    h += '<div><label style="' + lbl + '">Categoría</label><select onchange="localSalidaSet(\'categoria\',this.value)" style="' + inp + '">' + LOCAL_SALIDA_CATS.map(c => '<option value="' + c + '"' + (f.categoria === c ? ' selected' : '') + '>' + c + '</option>').join('') + '</select></div>';
-    h += '<div><label style="' + lbl + '">Importe</label><input type="number" step="0.01" value="' + escapeHtml(String(f.monto)) + '" oninput="localSalidaSet(\'monto\',this.value)" placeholder="0.00" style="' + inp + '"></div>';
-    h += '<div><label style="' + lbl + '">Medio de pago</label><select onchange="localSalidaSet(\'forma_pago\',this.value)" style="' + inp + '">' + LOCAL_MEDIOS.map(m => '<option value="' + m + '"' + (f.forma_pago === m ? ' selected' : '') + '>' + _localMedioLabel(m) + '</option>').join('') + '</select></div>';
-    h += '<div><label style="' + lbl + '">Sucursal</label><select onchange="localSalidaSet(\'sucursal\',this.value)" style="' + inp + '">' + ['Rufino', 'San Martin'].map(x => '<option value="' + x + '"' + (f.sucursal === x ? ' selected' : '') + '>' + x + '</option>').join('') + '</select></div>';
-    h += '</div>';
-    h += '<div style="margin-bottom:12px"><label style="' + lbl + '">Nota (opcional)</label><input type="text" value="' + escapeHtml(f.notas || '') + '" oninput="localSalidaSet(\'notas\',this.value)" placeholder="Detalle del egreso..." style="' + inp + '"></div>';
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
-    h += '<button id="loc_sal_btn" onclick="localSalidaSave()" style="background:#b0562a;color:#fff;border:none;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:700;cursor:pointer">' + (f.editN != null ? 'Guardar cambios' : 'Guardar salida') + '</button>';
-    if (f.editN != null) h += '<button onclick="localSalidaNew()" style="background:#eef2f7;color:#475569;border:1px solid #d7dee8;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer">Cancelar edición</button>';
-    h += '</div></div>';
-    return h;
-  }
-  function localSalidaSet(field, val) { if (_localSalidaForm) _localSalidaForm[field] = val; }
-  function localSalidaNew() { _localSalidaForm = _localNewSalida(); localRender(); window.scrollTo(0, 0); }
-  async function localSalidaSave() {
-    if (_localBusy) return;
-    const f = _localSalidaForm;
-    const monto = Number(f.monto) || 0;
-    if (monto <= 0) { localMsg('Cargá un importe mayor a 0.', true); return; }
-    const payload = { n: f.editN, tipo: 'salida', fecha: f.fecha, categoria: f.categoria, monto: monto, forma_pago: f.forma_pago, sucursal: f.sucursal, notas: f.notas };
-    _localBusy = true;
-    const btn = document.getElementById('loc_sal_btn'); if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
-    try {
-      const r = await fetch('/api/local/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
-      const d = await r.json(); _localBusy = false;
-      if (!r.ok) { if (btn) { btn.disabled = false; btn.textContent = 'Guardar salida'; } localMsg(d.error || 'Error al guardar', true); return; }
-      const savedN = d.n; _localSalidaForm = _localNewSalida();
-      await loadLocal();
-      localMsg('✔ Salida N° ' + savedN + ' guardada. Restó de la caja de ' + payload.sucursal + '.', false);
-    } catch (e) { _localBusy = false; if (btn) { btn.disabled = false; btn.textContent = 'Guardar salida'; } localMsg('Error de red al guardar.', true); }
-  }
-  function localSalidaEdit(n) {
-    const o = (_localData.orders || []).find(x => Number(x.n) === Number(n) && (x.tipo || '') === 'salida');
-    if (!o) return;
-    _localTab = 'salida';
-    _localSalidaForm = { editN: o.n, fecha: o.fecha, categoria: o.categoria || 'Otro', monto: o.monto || '', forma_pago: o.forma_pago || 'EFECTIVO', sucursal: o.sucursal || 'Rufino', notas: o.notas || '' };
-    localRender(); window.scrollTo(0, 0);
-  }
-  function localSalidasListHTML() {
-    const isAdm = _localIsAdm();
-    const sal = (_localData.orders || []).filter(o => (o.tipo || '') === 'salida');
-    let totalSal = 0; for (const o of sal) totalSal += Number(o.monto) || 0;
-    const card = (label, val, color) => '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:12px 16px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">' + label + '</div><div style="font-size:22px;font-weight:800;color:' + (color || '#2d3277') + '">' + val + '</div></div>';
-    let h = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">' + card('Salidas', Number(sal.length).toLocaleString('es-AR')) + card('Total egresos', _localM(totalSal), '#b0562a') + '</div>';
-    h += '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">Salidas cargadas</div>';
-    if (!sal.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">Todavía no cargaste salidas de caja.</div>';
-    const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
-    for (const o of sal) {
-      h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
-      h += '<div><div style="font-weight:800;color:#b0562a;font-size:15px">N° ' + o.n + ' · ' + escapeHtml(o.categoria || 'Otro') + '</div>';
-      h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(o.fecha || '') + (o.created_by ? (' · por ' + escapeHtml(o.created_by)) : '') + '</div>';
-      h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🏪 ' + escapeHtml(o.sucursal || 'Rufino'), '#eef4ff', '#3466c9') + chip('💳 ' + _localMedioLabel(o.forma_pago), '#f6f0ff', '#7a4fc9') + '</div>';
-      if (o.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(o.notas) + '</div>';
-      h += '</div>';
-      h += '<div style="text-align:right"><div style="font-size:11px;color:#888;text-transform:uppercase">Egreso</div><div style="font-size:20px;font-weight:800;color:#b0562a">− ' + _localM(o.monto) + '</div></div>';
-      h += '</div>';
-      if (isAdm) h += '<div style="margin-top:9px;display:flex;gap:8px"><button onclick="localSalidaEdit(' + o.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button><button onclick="localDeleteOrder(' + o.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button></div>';
-      h += '</div>';
-    }
-    return h;
-  }
-  // ===== RESUMEN / CAJA =====
+  // ---------- RESUMEN DE MOVIMIENTOS (caja por sucursal + lista unificada) ----------
   function localCajaSetPeriod(p) {
     const today = new Date(); const ymd = d => d.toISOString().slice(0, 10);
     if (p === 'hoy') { _localCajaFrom = ymd(today); _localCajaTo = ymd(today); }
@@ -2530,10 +2845,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function localCajaSetFrom(v) { _localCajaFrom = v; }
   function localCajaSetTo(v) { _localCajaTo = v; }
-  function localCajaHTML() {
-    const caja = _localData.caja || {};
-    const medios = _localData.medios || LOCAL_MEDIOS;
-    const sucs = Object.keys(caja).sort();
+  function localMovHTML() {
+    const isAdm = _localIsAdm();
+    const cr = _localData.caja_resumen || {};
     const isTodo = !_localCajaFrom && !_localCajaTo;
     const isHoy = _localCajaFrom && _localCajaFrom === _localCajaTo && _localCajaFrom === new Date().toISOString().slice(0, 10);
     const perBtn = (k, label, active) => '<button onclick="localCajaSetPeriod(\'' + k + '\')" style="padding:6px 14px;border:1px solid ' + (active ? '#3483fa' : '#d7dee8') + ';background:' + (active ? '#eef4ff' : '#fff') + ';color:' + (active ? '#2d3277' : '#556') + ';border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">' + label + '</button>';
@@ -2544,27 +2858,109 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<input type="date" value="' + escapeHtml(_localCajaTo) + '" onchange="localCajaSetTo(this.value)" style="padding:6px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:13px">';
     h += '<button onclick="loadLocal()" style="padding:6px 14px;border:none;background:#3483fa;color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">Aplicar</button>';
     h += '</div>';
-    if (!sucs.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en el período elegido.</div>';
-    const mediosRow = (obj, color) => {
-      const parts = medios.map(m => { const v = Number(obj.medios && obj.medios[m]) || 0; return v ? ('<span style="font-size:12px;color:#666">' + _localMedioLabel(m) + ': <b style="color:' + (color || '#333') + '">' + _localM(v) + '</b></span>') : ''; }).filter(Boolean);
-      return '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px">' + (parts.length ? parts.join('') : '<span style="font-size:12px;color:#bbb">—</span>') + '</div>';
-    };
-    for (const s of sucs) {
-      const c = caja[s];
+    // Caja por sucursal
+    let saldoTotal = 0;
+    for (const suc of LOCAL_SUCS) {
+      const c = cr[suc] || { efectivo: 0, cheque: 0, efectivo_cheque: 0, transferencias: 0, tarjeta: 0, salidas: 0, saldo: 0 };
+      saldoTotal += Number(c.saldo) || 0;
       h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:14px;padding:16px 18px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05)">';
-      h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:12px">🏪 ' + escapeHtml(s) + '</div>';
-      h += '<div style="background:' + (c.saldo.total >= 0 ? '#eafaf1' : '#fdecec') + ';border:1px solid ' + (c.saldo.total >= 0 ? '#b6e6ca' : '#f5c6c6') + ';border-radius:11px;padding:12px 16px;margin-bottom:12px">';
-      h += '<div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.4px;font-weight:600">Saldo en caja (ventas − salidas)</div>';
-      h += '<div style="font-size:28px;font-weight:800;color:' + (c.saldo.total >= 0 ? '#1a7d47' : '#c0392b') + '">' + _localM(c.saldo.total) + '</div>';
-      h += mediosRow(c.saldo, c.saldo.total >= 0 ? '#1a7d47' : '#c0392b');
+      h += '<div style="font-weight:800;color:#2d3277;font-size:17px;margin-bottom:12px">🏪 ' + escapeHtml(suc) + '</div>';
+      h += '<div style="background:' + (c.saldo >= 0 ? '#eafaf1' : '#fdecec') + ';border:1px solid ' + (c.saldo >= 0 ? '#b6e6ca' : '#f5c6c6') + ';border-radius:11px;padding:12px 16px;margin-bottom:12px">';
+      h += '<div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.4px;font-weight:600">Saldo en caja — efectivo (ventas+señas) + cheques − salidas</div>';
+      h += '<div style="font-size:28px;font-weight:800;color:' + (c.saldo >= 0 ? '#1a7d47' : '#c0392b') + '">' + _localM(c.saldo) + '</div>';
       h += '</div>';
-      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">';
-      const block = (title, obj, color) => '<div style="border:1px solid #eef1f6;border-radius:10px;padding:10px 12px"><div style="font-size:12px;color:#888;text-transform:uppercase;font-weight:600">' + title + '</div><div style="font-size:20px;font-weight:800;color:' + color + '">' + _localM(obj.total) + '</div>' + mediosRow(obj, color) + '</div>';
-      h += block('Ingresos (ventas)', c.ventas, '#2d3277');
-      h += block('Señas recibidas (aparte)', c.senas, '#8a6d1a');
-      h += block('Egresos (salidas)', c.salidas, '#b0562a');
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">';
+      const block = (title, val, color) => '<div style="border:1px solid #eef1f6;border-radius:10px;padding:10px 12px"><div style="font-size:12px;color:#888;text-transform:uppercase;font-weight:600">' + title + '</div><div style="font-size:20px;font-weight:800;color:' + color + '">' + _localM(val) + '</div></div>';
+      h += block('Transferencias', c.transferencias, '#2d3277');
+      h += block('Tarjeta', c.tarjeta, '#7a4fc9');
+      h += block('Efectivo + Cheque', c.efectivo_cheque, '#1a7d47');
+      h += block('Salidas', c.salidas, '#b0562a');
       h += '</div></div>';
     }
+    // Saldo combinado
+    h += '<div style="background:linear-gradient(135deg,#2d3277,#3483fa);color:#fff;border-radius:14px;padding:16px 20px;margin-bottom:20px;box-shadow:0 4px 16px rgba(45,50,119,.2)">';
+    h += '<div style="font-size:12px;opacity:.85;text-transform:uppercase;letter-spacing:.4px;font-weight:600">Saldo combinado (ambas sucursales) — suma en Contable ¿Cómo estoy? y Cash Flow</div>';
+    h += '<div style="font-size:30px;font-weight:800;margin-top:4px">' + _localM(saldoTotal) + '</div>';
+    h += '</div>';
+    // Señas vigentes
+    const sv = _localData.senas_vigentes || [];
+    if (sv.length) {
+      let totSv = 0; for (const s of sv) totSv += Number(s.monto) || 0;
+      h += '<div style="background:#fffdf5;border:1px solid #ffe08a;border-radius:12px;padding:14px 16px;margin-bottom:18px">';
+      h += '<div style="font-weight:800;color:#8a6d1a;font-size:15px;margin-bottom:8px">🔖 Señas vigentes (' + sv.length + ') · ' + _localM(totSv) + '</div>';
+      for (const s of sv) h += '<div style="font-size:13px;color:#7a5f10;padding:4px 0;border-top:1px solid #f3e6bd">#' + s.n + ' · 🏪 ' + escapeHtml(s.sucursal) + ' · ' + escapeHtml((s.concepto || s.cliente || 'Seña').slice(0, 60)) + ' — <b>' + _localM(s.monto) + '</b> (' + _localMedioLabel(s.forma_pago) + ')</div>';
+      h += '</div>';
+    }
+    // Lista unificada de movimientos
+    h += '<div style="font-weight:800;color:#2d3277;font-size:16px;margin:6px 0 10px">Movimientos</div>';
+    const orders = _localData.orders || [];
+    if (!orders.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en el período elegido.</div>';
+    for (const o of orders) h += localMovCardHTML(o, isAdm);
+    return h;
+  }
+  function localMovCardHTML(o, isAdm) {
+    const tipo = o.tipo || 'venta';
+    const chip = (t, bg, cl) => '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + cl + ';border-radius:20px;padding:3px 10px">' + t + '</span>';
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:11px;padding:13px 15px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">';
+    h += '<div style="min-width:0"><div style="font-weight:800;color:#2d3277;font-size:15px">N° ' + o.n + ' · ' + escapeHtml(o.cliente || (tipo === 'salida' ? (o.categoria || 'Salida') : 'Sin nombre')) + '</div>';
+    h += '<div style="font-size:12px;color:#888;margin-top:3px">' + escapeHtml(o.fecha || '') + (o.telefono ? (' · 📞 ' + escapeHtml(o.telefono)) : '') + (o.created_by ? (' · por ' + escapeHtml(o.created_by)) : '') + '</div>';
+    // chips de tipo
+    let tipoChip = '';
+    if (tipo === 'venta') tipoChip = chip('🛒 Venta', '#eafaf1', '#1a7d47') + (o.ramo === 'parabrisas' ? chip('🪟 Parabrisas', '#eef4ff', '#3466c9') : chip('🔧 Repuestos', '#f0f4f8', '#556'));
+    else if (tipo === 'sena') tipoChip = chip('🔖 Seña ' + (o.estado === 'tomada' ? ('→ venta #' + (o.venta_n || '')) : 'vigente'), '#fff8e6', '#8a6d1a');
+    else if (tipo === 'salida') tipoChip = chip('📤 Salida', '#fdf0e8', '#b0562a');
+    h += '<div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">' + chip('🏪 ' + escapeHtml(o.sucursal || ''), '#eef4ff', '#3466c9') + tipoChip + '</div>';
+    h += '</div>';
+    // monto a la derecha
+    h += '<div style="text-align:right">';
+    if (tipo === 'salida') { h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Egreso</div><div style="font-size:20px;font-weight:800;color:#b0562a">− ' + _localM(o.monto) + '</div>'; }
+    else if (tipo === 'sena') { h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Seña</div><div style="font-size:20px;font-weight:800;color:#8a6d1a">' + _localM(o.monto) + '</div>'; }
+    else { h += '<div style="font-size:11px;color:#888;text-transform:uppercase">Total</div><div style="font-size:20px;font-weight:800;color:#2d3277">' + _localM(o.total_venta) + '</div>'; if (isAdm) h += '<div style="font-size:12px;color:#1a9c53;font-weight:700">Ganancia ' + _localM(o.total_ganancia) + '</div>'; }
+    h += '</div></div>';
+    // detalle según tipo
+    if (tipo === 'sena') {
+      if (o.concepto) h += '<div style="font-size:13px;color:#555;margin-top:8px">📝 ' + escapeHtml(o.concepto) + '</div>';
+      if (o.forma_pago) h += '<div style="margin-top:6px">' + chip('💳 ' + _localMedioLabel(o.forma_pago), '#f6f0ff', '#7a4fc9') + '</div>';
+      if (o.forma_pago === 'TRANSFERENCIA' && o.transfer_link) h += '<div style="margin-top:6px"><a href="' + escapeHtml(o.transfer_link) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">📎 Comprobante</a></div>';
+    } else if (tipo === 'salida') {
+      if (o.notas) h += '<div style="font-size:13px;color:#555;margin-top:8px">📝 ' + escapeHtml(o.notas) + '</div>';
+      if (o.forma_pago) h += '<div style="margin-top:6px">' + chip('💳 ' + _localMedioLabel(o.forma_pago), '#f6f0ff', '#7a4fc9') + '</div>';
+    } else {
+      // VENTA: pagos + items/parabrisas
+      if (Array.isArray(o.pagos) && o.pagos.length) {
+        const parts = o.pagos.map(p => {
+          if (p.medio === 'SENA') return '🔖 Seña #' + (p.sena_n || '') + ' ' + _localM(p.monto);
+          return _localMedioLabel(p.medio) + ' ' + _localM(p.monto);
+        });
+        h += '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">' + parts.map(x => chip(x, '#f0f4f8', '#556')).join('') + '</div>';
+      }
+      if (o.ramo === 'parabrisas' && o.parabrisas) {
+        const pb = o.parabrisas;
+        h += '<div style="font-size:13px;color:#555;margin-top:8px">🪟 ' + escapeHtml([pb.marca, pb.modelo, pb.anio].filter(Boolean).join(' ')) + (pb.patente ? (' · ' + escapeHtml(pb.patente)) : '') + (pb.tipo_cristal ? (' · ' + escapeHtml(pb.tipo_cristal)) : '') + (pb.posicion ? (' ' + escapeHtml(pb.posicion)) : '') + (pb.lado ? (' ' + escapeHtml(pb.lado)) : '') + '</div>';
+        if (Array.isArray(pb.fotos_links) && pb.fotos_links.length) { h += '<div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">'; for (let i = 0; i < pb.fotos_links.length; i++) h += '<a href="' + escapeHtml(pb.fotos_links[i]) + '" target="_blank" style="color:#3483fa;font-weight:700;font-size:12px">🖼️ Foto ' + (i + 1) + '</a>'; h += '</div>'; }
+      } else if (Array.isArray(o.items) && o.items.length) {
+        h += '<div style="margin-top:9px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">';
+        h += '<thead><tr style="text-align:left;color:#aaa;font-size:10.5px;text-transform:uppercase"><th style="padding:3px 6px">Cant.</th><th style="padding:3px 6px">Código</th><th style="padding:3px 6px">Descripción</th><th style="padding:3px 6px">Precio</th>' + (isAdm ? '<th style="padding:3px 6px">Costo</th><th style="padding:3px 6px">Ganancia</th>' : '') + '</tr></thead><tbody>';
+        for (const it of o.items) {
+          h += '<tr style="border-top:1px solid #f2f4f7"><td style="padding:3px 6px">' + (Number(it.cantidad) || 0) + '</td><td style="padding:3px 6px;font-family:monospace">' + escapeHtml(it.codigo || '') + '</td><td style="padding:3px 6px">' + escapeHtml(it.descripcion || '') + (it.proveedor ? (' <span style="color:#aaa">· ' + escapeHtml(it.proveedor) + '</span>') : '') + '</td><td style="padding:3px 6px">' + _localM(it.precio_venta) + '</td>';
+          if (isAdm) h += '<td style="padding:3px 6px;color:#b0562a">' + _localM(it.costo_total) + '</td><td style="padding:3px 6px;color:#1a9c53;font-weight:600">' + _localM(it.ganancia) + '</td>';
+          h += '</tr>';
+        }
+        h += '</tbody></table></div>';
+      }
+      if (o.notas) h += '<div style="font-size:12px;color:#777;margin-top:7px;font-style:italic">📝 ' + escapeHtml(o.notas) + '</div>';
+    }
+    // acciones admin
+    if (isAdm) {
+      const canEditSena = !(tipo === 'sena' && o.estado === 'tomada');
+      h += '<div style="margin-top:9px;display:flex;gap:8px">';
+      if (canEditSena) h += '<button onclick="localEditOrder(' + o.n + ')" style="background:#eef2f7;color:#3483fa;border:1px solid #cfe0fb;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Editar</button>';
+      else h += '<span style="font-size:12px;color:#b0562a;align-self:center">Seña tomada (no editable)</span>';
+      h += '<button onclick="localDeleteOrder(' + o.n + ')" style="background:#fdf0f0;color:#d43d3d;border:1px solid #f3caca;border-radius:7px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer">Borrar</button>';
+      h += '</div>';
+    }
+    h += '</div>';
     return h;
   }
   // ==================== COTIZADOR ====================
@@ -12698,7 +13094,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   /* ==================== COMPROBANTES (buscar + descargar) ==================== */
   function facComprobantesHtml() {
     var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:14px';
-    var h = '<div style="max-width:1100px">';
+    var h = '<div>';
     h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;gap:12px;align-items:end;flex-wrap:wrap">';
     h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Cuenta</label><select id="facc-cuenta" style="' + css + '"><option value="">Todas</option>';
     ((_fac.data || {}).orden || []).forEach(function (c) { h += '<option value="' + c + '"' + (_fac.compCuenta === c ? ' selected' : '') + '>' + c + '</option>'; });
@@ -12747,8 +13143,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<td style="padding:8px 10px;font-weight:700">' + facMoney(f.importe_total) + '</td>';
       h += '<td style="padding:8px 10px;font-size:12px;color:#6b7280">' + escapeHtml(f.cae || '') + '<br><span style="font-size:11px">vto ' + facFchLindo(f.cae_vto) + '</span></td>';
       var mlBtn = '';
-      if (f.origen === 'ml') { mlBtn = f.ml_adjuntada ? '<div style="font-size:11px;color:#065f46;margin-top:4px">✓ En ML</div>' : '<button onclick="facAdjuntarMLBtn(\'' + f.id + '\',this)" style="margin-top:4px;padding:5px 10px;border:1px solid #3483fa;border-radius:7px;background:#fff;color:#3483fa;font-weight:700;font-size:11px;cursor:pointer">📎 Adjuntar a ML</button>'; }
-      h += '<td style="padding:8px 10px"><button onclick="facImprimirComprobante(\'' + f.id + '\')" style="padding:6px 12px;border:1px solid #16a34a;border-radius:7px;background:#fff;color:#16a34a;font-weight:700;font-size:12px;cursor:pointer">📄 Ver / Descargar</button>' + mlBtn + '</td>';
+      if (f.origen === 'ml') { mlBtn = f.ml_adjuntada ? '<div style="font-size:11px;color:#065f46;margin-top:4px;white-space:nowrap">✓ En ML</div>' : '<button onclick="facAdjuntarMLBtn(\'' + f.id + '\',this)" style="margin-top:4px;padding:5px 10px;border:1px solid #3483fa;border-radius:7px;background:#fff;color:#3483fa;font-weight:700;font-size:11px;cursor:pointer;white-space:nowrap">📎 Adjuntar a ML</button>'; }
+      h += '<td style="padding:8px 10px;white-space:nowrap"><button onclick="facImprimirComprobante(\'' + f.id + '\')" style="padding:6px 12px;border:1px solid #16a34a;border-radius:7px;background:#fff;color:#16a34a;font-weight:700;font-size:12px;cursor:pointer;white-space:nowrap">📄 Ver / Descargar</button>' + mlBtn + '</td>';
       h += '</tr>';
     });
     h += '</tbody></table></div>';
@@ -12902,7 +13298,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var cheques = Number(c.cheques) || 0;
     var prestamos = Number(c.prestamos) || 0;
     var prov = (modo === 'real') ? (Number(c.provReal) || 0) : (Number(c.provFacturado) || 0);
-    var saldo = mp - cheques - prestamos - prov;
+    var localCaja = Number(c.localCaja) || 0;
+    var parabrisasPorCobrar = Number(c.parabrisasPorCobrar) || 0;
+    var saldo = mp - cheques - prestamos - prov + localCaja + parabrisasPorCobrar;
 
     var row = function (label, val, signo, color) {
       return '<div style="display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid #eef2f7">' +
@@ -12936,6 +13334,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '<label style="cursor:pointer"><input type="radio" name="cmodo" ' + (modo === 'facturado' ? 'checked' : '') + ' onchange="contComoSetModo(\'facturado\')"> Facturado</label> &nbsp; ' +
       '<label style="cursor:pointer"><input type="radio" name="cmodo" ' + (modo === 'real' ? 'checked' : '') + ' onchange="contComoSetModo(\'real\')"> Con descuento</label></span></span>' +
       '<span style="font-weight:700;font-size:15px;color:#b91c1c">− ' + contMoney2(Math.abs(prov)) + '</span></div>';
+    card += row('CAJA LOCAL (Rufino + Bs As)', localCaja, '+ ', '#047857');
+    card += row('PARABRISAS (me tienen que pagar)', parabrisasPorCobrar, '+ ', '#047857');
     var sColor = saldo >= 0 ? '#065f46' : '#b91c1c';
     var sBg = saldo >= 0 ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fef2f2,#fee2e2)';
     card += '<div style="background:' + sBg + ';padding:18px 16px;text-align:center">' +
@@ -12982,7 +13382,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       gan = entNeto - salidaTotal - costoStock;                 // ENTRADA NETO TOTAL − SALIDA − COSTO TOTAL DE STOCK
       var neg = Number(r.negocioBucket) || 0, casa = Number(r.casa) || 0, banco = Number(r.banco) || 0, cons = Number(r.construccion) || 0, cuota = Number(r.cuotaPrestamos) || 0;
       var egresos = neg + casa + banco + cons + cuota;
-      cash = entNeto - egresos;
+      var como = _cont.como || {};
+      var localCaja = Number(como.localCaja) || 0, parabrisasPC = Number(como.parabrisasPorCobrar) || 0;
+      cash = (entNeto + localCaja + parabrisasPC) - egresos;   // Local + Parabrisas suman a las entradas
     }
     var h = '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px">';
     h += contKpiCard('Ganancia del negocio', gan, loaded ? 'Entrada neto − Salida − Costo stock' : 'Calculando…', !loaded);
@@ -13342,7 +13744,15 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     // 4) Proveedores (cuenta corriente Compras, en vivo)
     try { var r4 = await fetch('/api/compras/state', { credentials: 'same-origin' }); if (r4.ok) { var j4 = await r4.json(); var dd = contComprasDeuda(j4); provFacturado = dd.facturado; provReal = dd.real; } else { errs.push('No pude leer Deuda proveedores'); } }
     catch (e) { errs.push('No pude leer Deuda proveedores'); }
-    _cont.como = { loading: false, ts: Date.now(), mp: mp, cheques: cheques, prestamos: prestamos, provFacturado: provFacturado, provReal: provReal, provModo: prevModo, errs: errs };
+    // 5) Caja de Local (suma de las 2 sucursales) — en vivo
+    var localCaja = 0;
+    try { var r5 = await fetch('/api/local/data', { credentials: 'same-origin' }); if (r5.ok) { var j5 = await r5.json(); var cr = j5.caja_resumen || {}; Object.keys(cr).forEach(function (k) { localCaja += Number(cr[k].saldo) || 0; }); } }
+    catch (e) { errs.push('No pude leer Caja de Local'); }
+    // 6) Parabrisas "me tienen que pagar" — en vivo
+    var parabrisasPorCobrar = 0;
+    try { var r6 = await fetch('/api/parabrisas/casos', { credentials: 'same-origin' }); if (r6.ok) { var j6 = await r6.json(); parabrisasPorCobrar = (j6.resumen && Number(j6.resumen.por_cobrar)) || 0; } }
+    catch (e) { errs.push('No pude leer Parabrisas por cobrar'); }
+    _cont.como = { loading: false, ts: Date.now(), mp: mp, cheques: cheques, prestamos: prestamos, provFacturado: provFacturado, provReal: provReal, localCaja: localCaja, parabrisasPorCobrar: parabrisasPorCobrar, provModo: prevModo, errs: errs };
     if (currentSection === 'contable' && _cont.tab === 'resumen') renderContable();
   }
 
