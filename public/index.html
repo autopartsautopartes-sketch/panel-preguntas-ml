@@ -13808,20 +13808,22 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     try {
       var r2 = await fetch('/api/local/data', { credentials: 'same-origin' }); var j2 = await r2.json();
       var orders = (j2.orders || []).slice().sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)) || (Number(a.n) - Number(b.n)); });
+      var _hora = function (o) { try { if (o.created_at) return new Date(o.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }); } catch (e) {} return ''; };
       orders.forEach(function (o) {
         var tipo = o.tipo || 'venta';
+        var hora = _hora(o);
         if (tipo === 'salida') {
-          out.local.movs.push({ fecha: o.fecha, n: o.n, clase: 'salida', sucursal: o.sucursal || '', detalle: 'Salida · ' + (o.categoria || '') + (o.notas ? (' · ' + o.notas) : ''), medios: _contMedioLbl(o.forma_pago), delta: -(Number(o.monto) || 0) });
+          out.local.movs.push({ fecha: o.fecha, hora: hora, n: o.n, clase: 'salida', sucursal: o.sucursal || '', detalle: 'Salida · ' + (o.categoria || '') + (o.notas ? (' · ' + o.notas) : ''), medios: _contMedioLbl(o.forma_pago), delta: -(Number(o.monto) || 0) });
         } else if (tipo === 'sena') {
           var med = String(o.forma_pago || '').toUpperCase();
           var d = (med === 'EFECTIVO' || med === 'CHEQUE') ? (Number(o.monto) || 0) : 0;
-          out.local.movs.push({ fecha: o.fecha, n: o.n, clase: 'sena', sucursal: o.sucursal || '', detalle: 'Seña · ' + (o.concepto || o.cliente || '') + (o.estado === 'tomada' ? (' (tomada en venta #' + (o.venta_n || '') + ')') : ' (vigente)'), medios: _contMedioLbl(o.forma_pago) + (d === 0 ? ' (no suma a caja)' : ''), delta: d });
+          out.local.movs.push({ fecha: o.fecha, hora: hora, n: o.n, clase: 'sena', sucursal: o.sucursal || '', detalle: 'Seña · ' + (o.concepto || o.cliente || '') + (o.estado === 'tomada' ? (' (tomada en venta #' + (o.venta_n || '') + ')') : ' (vigente)'), medios: _contMedioLbl(o.forma_pago) + (d === 0 ? ' (no suma a caja)' : ''), delta: d });
         } else {
           var ef = 0, otros = [];
           (o.pagos || []).forEach(function (p) { var m = String(p.medio || '').toUpperCase(); if (m === 'EFECTIVO' || m === 'CHEQUE') ef += Number(p.monto) || 0; else if (m !== 'SENA') otros.push(_contMedioLbl(m) + ' ' + contMoney2(Number(p.monto) || 0)); else otros.push('Seña #' + (p.sena_n || '') + ' ' + contMoney2(Number(p.monto) || 0)); });
-          var det = (o.ramo === 'parabrisas' ? 'Venta parabrisas' : 'Venta') + ' · ' + (o.cliente || 's/nombre');
+          var det = (o.ramo === 'parabrisas' ? 'Venta parabrisas' : 'Venta') + ' · ' + (o.cliente || 's/nombre') + ' · 🏪 ' + (o.sucursal || '');
           if (otros.length) det += ' · [' + otros.join(' · ') + ' no suman a caja]';
-          out.local.movs.push({ fecha: o.fecha, n: o.n, clase: 'venta', sucursal: o.sucursal || '', detalle: det, medios: 'Efectivo/Cheque', delta: ef });
+          out.local.movs.push({ fecha: o.fecha, hora: hora, n: o.n, clase: 'venta', sucursal: o.sucursal || '', detalle: det, medios: 'Efectivo/Cheque', delta: ef });
         }
       });
       var cr = j2.caja_resumen || {}; out.local.total = Object.keys(cr).reduce(function (s, k) { return s + (Number(cr[k].saldo) || 0); }, 0);
@@ -13877,81 +13879,92 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function _contMedioLbl(m) { m = String(m || '').toUpperCase(); var map = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transferencia', TARJETA: 'Tarjeta', CHEQUE: 'Cheque', SENA: 'Seña' }; return map[m] || (m.charAt(0) + m.slice(1).toLowerCase()); }
 
+  // Filtros del listado (resumen de cuenta): tipo, período y orden.
+  var _contMonF = { tipo: 'todas', periodo: 'todo', orden: 'desc' };
+  function contMonSetF(k, v) { _contMonF[k] = v; if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
+  // Construye la lista unificada de ENTRADAS (+) y SALIDAS (−) con fecha, hora y detalle.
+  function contMonEventos(m) {
+    var ev = [];
+    // ENTRADAS: ventas y señas de Local (lo que entró a caja: efectivo/cheque)
+    (m.local.movs || []).forEach(function (x) {
+      if (x.clase === 'salida') return;            // las salidas de Local vienen por Transacciones (no duplicar)
+      if (!(x.delta > 0)) return;                  // transferencia/tarjeta no suman a caja
+      ev.push({ fecha: x.fecha, hora: x.hora || '', detalle: x.detalle, chip: (x.clase === 'sena') ? { t: '🔖 Seña', c: '#8a6d1a', b: '#fff8e6' } : { t: '🛒 Venta', c: '#1d4ed8', b: '#eff6ff' }, monto: x.delta });
+    });
+    // SALIDAS: transacciones (egresos de MP + salidas de Local) con su estado/destino
+    (m.tx.rows || []).forEach(function (t) {
+      var est = contMonTxEstado(t);
+      ev.push({ fecha: t.fecha, hora: t.hora || '', detalle: (t.detalle || 'Movimiento') + (t.cuenta ? (' · ' + t.cuenta) : (t.origen === 'local_salida' ? ' · Local' : '')), chip: { t: est.txt, c: est.color, b: est.bg }, monto: -(Number(t.monto) || 0) });
+    });
+    // ADELANTOS: el retiro entra (+) y su costo sale (−)
+    (contD().intereses_adelanto || []).forEach(function (a) {
+      if (Number(a.adelanto) > 0) ev.push({ fecha: a.fecha, hora: '', detalle: 'Adelanto de dinero' + (a.cuenta ? (' · ' + a.cuenta) : ''), chip: { t: '⚡ Adelanto', c: '#047857', b: '#ecfdf5' }, monto: Number(a.adelanto) || 0 });
+      if (Number(a.intereses) > 0) ev.push({ fecha: a.fecha, hora: '', detalle: 'Costo de adelanto' + (a.cuenta ? (' · ' + a.cuenta) : '') + (a.costo_pct ? (' (' + a.costo_pct + '%)') : ''), chip: { t: '⚡ Costo adelanto', c: '#b91c1c', b: '#fff1f2' }, monto: -(Number(a.intereses) || 0) });
+    });
+    ev.forEach(function (e) { e.ts = String(e.fecha || '') + 'T' + (e.hora || '00:00'); });
+    ev.sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });   // ascendente para el acumulado
+    var run = 0; ev.forEach(function (e) { run += e.monto; e.acum = run; });
+    return ev;
+  }
   function contMonitorHtml() {
     var m = _contMon.data;
     if (!m || (!_contMon.loading && (Date.now() - _contMon.ts > 20000))) { if (!_contMon.loading) setTimeout(function () { contLoadMonitor(false); }, 10); }
-    if (!m) return '<div class="loading"><div class="spinner"></div><p>Armando el monitor de movimientos…</p></div>';
-    var saldo = (m.mp.total || 0) - (m.cheques.total || 0) - (m.prestamos.total || 0) - (m.prov.total || 0) + (m.local.total || 0) + (m.parab.total || 0);
+    if (!m) return '<div class="loading"><div class="spinner"></div><p>Armando el resumen de cuenta…</p></div>';
     var cuando = _contMon.ts ? new Date(_contMon.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    // Rango por período
+    var today = new Date(); var ymd = function (d) { return d.toISOString().slice(0, 10); };
+    var from = '', to = '';
+    if (_contMonF.periodo === 'hoy') { from = ymd(today); to = ymd(today); }
+    else if (_contMonF.periodo === 'mes') { from = ymd(new Date(today.getFullYear(), today.getMonth(), 1)); to = ymd(today); }
+    var ev = contMonEventos(m);
+    var shown = ev.filter(function (e) {
+      if (_contMonF.tipo === 'entradas' && !(e.monto > 0)) return false;
+      if (_contMonF.tipo === 'salidas' && !(e.monto < 0)) return false;
+      if (from && String(e.fecha) < from) return false;
+      if (to && String(e.fecha) > to) return false;
+      return true;
+    });
+    var totIn = 0, totOut = 0; shown.forEach(function (e) { if (e.monto > 0) totIn += e.monto; else totOut += e.monto; });
+    var ordered = shown.slice(); if (_contMonF.orden === 'desc') ordered.reverse();
     var h = '';
     // Cabecera
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
-    h += '<h3 style="margin:0;color:#2d3277;font-size:20px">🔎 Monitor</h3>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
+    h += '<h3 style="margin:0;color:#2d3277;font-size:20px">🔎 Resumen de cuenta</h3>';
     h += '<button onclick="contLoadMonitor(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">' + (_contMon.loading ? '⏳' : '↻') + ' Actualizar</button>';
     if (cuando) h += '<span style="font-size:12px;color:#9ca3af">En vivo · ' + cuando + '</span>';
     h += '</div>';
-    h += '<div style="font-size:13px;color:#6b7280;margin-bottom:14px">Cada movimiento que compone tu <b>¿Cómo estoy?</b>, con su signo y el <b>saldo parcial</b> al lado. Los <span style="color:#047857;font-weight:700">+</span> suben el saldo (entra plata o te deben), los <span style="color:#b91c1c;font-weight:700">−</span> lo bajan (sale plata o debés).</div>';
-    // Composición del saldo
-    h += '<div style="background:#2d3277;color:#fff;border-radius:14px;padding:16px 18px;margin-bottom:18px">';
-    h += '<div style="font-size:12px;opacity:.85;text-transform:uppercase;letter-spacing:.4px;font-weight:600">Saldo ¿Cómo estoy?</div>';
-    h += '<div style="font-size:30px;font-weight:800;margin:2px 0 10px">' + (saldo < 0 ? '−' : '') + contMoney2(Math.abs(saldo)) + '</div>';
-    var comp = function (lbl, val, anchor) { var pos = (lbl === 'Saldos MP' || lbl === 'Caja Local' || lbl === 'Parabrisas'); return '<a href="#" onclick="contMonScroll(\'' + anchor + '\');return false" style="text-decoration:none;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);border-radius:9px;padding:7px 11px;display:inline-flex;flex-direction:column;min-width:120px"><span style="font-size:11px;opacity:.85">' + lbl + '</span><span style="font-size:15px;font-weight:800">' + (pos ? '+ ' : '− ') + contMoney2(Math.abs(val)) + '</span></a>'; };
-    h += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-    h += comp('Saldos MP', m.mp.total, 'mon_mp') + comp('Caja Local', m.local.total, 'mon_local') + comp('Parabrisas', m.parab.total, 'mon_parab');
-    h += comp('Cheques', m.cheques.total, 'mon_cheques') + comp('Préstamos', m.prestamos.total, 'mon_prestamos') + comp('Proveedores', m.prov.total, 'mon_prov');
+    h += '<div style="font-size:12.5px;color:#6b7280;margin-bottom:12px">Listado de <span style="color:#047857;font-weight:700">entradas (+)</span> y <span style="color:#b91c1c;font-weight:700">salidas (−)</span> con fecha, hora y detalle. El “Acumulado” es el neto de los movimientos listados.</div>';
+    // Totales
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">';
+    var kpi = function (lbl, val, col) { return '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:10px;padding:10px 14px;min-width:130px"><div style="font-size:11px;color:#888;text-transform:uppercase">' + lbl + '</div><div style="font-size:19px;font-weight:800;color:' + col + '">' + (val < 0 ? '− ' : (lbl === 'Neto' ? (val > 0 ? '+ ' : '') : '+ ')) + contMoney2(Math.abs(val)) + '</div></div>'; };
+    h += kpi('Entradas', totIn, '#047857') + kpi('Salidas', totOut, '#b91c1c') + kpi('Neto', totIn + totOut, (totIn + totOut) < 0 ? '#b91c1c' : '#047857');
+    h += '</div>';
+    // Filtros
+    var pill = function (k, v, lbl) { var on = _contMonF[k] === v; return '<button onclick="contMonSetF(\'' + k + '\',\'' + v + '\')" style="padding:6px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">' + lbl + '</button>'; };
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px">';
+    h += pill('tipo', 'todas', 'Todas') + pill('tipo', 'entradas', 'Entradas') + pill('tipo', 'salidas', 'Salidas');
+    h += '<span style="width:10px"></span>' + pill('periodo', 'hoy', 'Hoy') + pill('periodo', 'mes', 'Este mes') + pill('periodo', 'todo', 'Todo');
+    h += '<span style="width:10px"></span>' + pill('orden', 'desc', 'Recientes primero') + pill('orden', 'asc', 'Antiguos primero');
+    h += '</div>';
+    // Listado
+    if (!ordered.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en este filtro.</div>';
+    h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:620px">';
+    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;background:#f8fafc">';
+    h += '<th style="padding:8px 10px;white-space:nowrap">Fecha · Hora</th><th style="padding:8px 10px">Detalle</th><th style="padding:8px 10px;text-align:right">Monto</th><th style="padding:8px 10px;text-align:right">Acumulado</th></tr></thead><tbody>';
+    ordered.forEach(function (e) {
+      h += '<tr style="border-top:1px solid #f1f3f6">';
+      h += '<td style="padding:8px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(e.fecha || '') + (e.hora ? ('<span style="color:#9ca3af"> · ' + escapeHtml(e.hora) + '</span>') : '') + '</td>';
+      h += '<td style="padding:8px 10px;color:#374151">' + (e.chip ? (contMonChip(e.chip.t, e.chip.c, e.chip.b) + ' ') : '') + escapeHtml(e.detalle || '') + '</td>';
+      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSigned(e.monto) + '</td>';
+      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSaldoCol(e.acum) + '</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    h += '<div style="display:flex;justify-content:flex-end;gap:16px;padding:10px 14px;border-top:2px solid #eef2f7;font-size:13px;font-weight:800;flex-wrap:wrap">';
+    h += '<span style="color:#047857">Entradas: + ' + contMoney2(totIn) + '</span><span style="color:#b91c1c">Salidas: − ' + contMoney2(Math.abs(totOut)) + '</span><span style="color:#2d3277">Neto: ' + ((totIn + totOut) < 0 ? '− ' : '+ ') + contMoney2(Math.abs(totIn + totOut)) + '</span>';
     h += '</div></div>';
-    if (m.errs && m.errs.length) h += '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:8px 12px;margin-bottom:14px;font-size:12.5px;color:#9a3412">⚠️ ' + m.errs.map(escapeHtml).join(' · ') + '</div>';
-
-    // ---- SALDOS MP ----
-    h += contMonCardOpen('mon_mp', '💳 Saldos MP', '+', m.mp.total, '#047857', m.mp.ts ? ('última lectura ' + new Date(m.mp.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })) : '');
-    if (!m.mp.cuentas.length) h += contMonEmpty('Sin datos de MP (las cuentas no pushearon todavía).');
-    else {
-      var rows = []; m.mp.cuentas.forEach(function (c) {
-        rows.push({ c1: c.cuenta, c2: 'Disponible', estado: null, delta: c.disponible });
-        if (c.a_liberar) rows.push({ c1: c.cuenta, c2: 'A liberar', estado: null, delta: c.a_liberar });
-      });
-      h += contMonTable(rows, 'Cuenta', 'Concepto');
-      h += '<div style="font-size:11.5px;color:#9ca3af;padding:6px 2px">MP es el saldo actual por cuenta (no un flujo). Lo que <b>salió</b> de MP está detallado abajo en “Movimientos (Transacciones)”.</div>';
-    }
-    h += contMonCardClose();
-
-    // ---- CAJA LOCAL ----
-    h += contMonCardOpen('mon_local', '🏪 Caja Local', '+', m.local.total, '#047857', 'efectivo (ventas+señas) + cheques − salidas, las dos sucursales');
-    if (!m.local.movs.length) h += contMonEmpty('Todavía no hay movimientos de Local.');
-    else { var rl = m.local.movs.map(function (x) { return { c1: x.fecha, c2: '#' + x.n + ' · 🏪 ' + x.sucursal + ' · ' + x.detalle, estado: contMonClaseChip(x.clase), delta: x.delta }; }); h += contMonTable(rl, 'Fecha', 'Detalle'); }
-    h += contMonCardClose();
-
-    // ---- PARABRISAS ----
-    h += contMonCardOpen('mon_parab', '🪟 Parabrisas (me tienen que pagar)', '+', m.parab.total, '#047857', 'casos de Seguro en “Por Pagar”, sin cobrar');
-    if (!m.parab.casos.length) h += contMonEmpty('No hay casos pendientes de cobro.');
-    else { var rp = m.parab.casos.map(function (x) { return { c1: x.fecha, c2: 'Caso #' + x.n + ' · ' + x.detalle, estado: contMonChip('Por cobrar', '#b45309', '#fff7ed'), delta: x.delta }; }); h += contMonTable(rp, 'Fecha', 'Detalle'); }
-    h += contMonCardClose();
-
-    // ---- CHEQUES ----
-    h += contMonCardOpen('mon_cheques', '🧾 Cheques a pagar', '−', m.cheques.total, '#b91c1c', 'total sin relleno de la planilla');
-    h += '<div style="padding:10px 12px;font-size:13px;color:#374151">Deuda por cheques a pagar: <b style="color:#b91c1c">− ' + contMoney2(Math.abs(m.cheques.total)) + '</b>. Cada cheque que se <b>paga</b> baja esta deuda (y baja MP). El detalle por cheque se administra en la planilla / solapa <b>Cheques</b>.</div>';
-    h += contMonCardClose();
-
-    // ---- PRÉSTAMOS ----
-    h += contMonCardOpen('mon_prestamos', '💸 Préstamos (deuda)', '−', m.prestamos.total, '#b91c1c', 'total − pagado, por préstamo');
-    if (!m.prestamos.items.length) h += contMonEmpty('No hay préstamos cargados.');
-    else {
-      var rpr = []; var run = 0;
-      m.prestamos.items.forEach(function (p) { rpr.push({ c1: p.fecha || '', c2: p.nombre + ' · total ' + contMoney2(p.total) + ' − pagado ' + contMoney2(p.pagado), estado: (p.deuda > 0 ? contMonChip('Debés', '#b91c1c', '#fff1f2') : contMonChip('Saldado', '#047857', '#ecfdf5')), delta: -(p.deuda) }); });
-      h += contMonTable(rpr, 'Fecha', 'Préstamo');
-    }
-    h += contMonCardClose();
-
-    // ---- PROVEEDORES ----
-    h += contMonCardOpen('mon_prov', '📦 Deuda proveedores', '−', m.prov.total, '#b91c1c', 'cuenta corriente de Compras, con descuento');
-    if (!m.prov.items.length) h += contMonEmpty('Sin deuda con proveedores.');
-    else { var rpv = m.prov.items.map(function (x) { return { c1: '', c2: x.nombre, estado: null, delta: -(x.deuda) }; }); h += contMonTable(rpv, '', 'Proveedor'); }
-    h += contMonCardClose();
-
-    // ---- MOVIMIENTOS (TRANSACCIONES) ----
-    h += contMonTxSection(m.tx.rows);
-    // ---- ADELANTOS DE DINERO (informativo) ----
-    h += contMonAdelantosSection();
+    h += '<div style="font-size:11.5px;color:#9ca3af;margin-top:8px">Incluye ventas y señas de Local (efectivo/cheque), egresos de MP y salidas de Local (con su estado), y adelantos. Los ingresos de ventas de ML no se listan individualmente acá.</div>';
     return h;
   }
   // Adelantos de dinero: el retiro (entra a MP, +) y su costo/interés (−). INFORMATIVO: no afecta el
