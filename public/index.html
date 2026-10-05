@@ -13560,7 +13560,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   /* ---------- HISTÓRICO (planilla resumen, snapshots diarios) ---------- */
   // Métricas del Histórico (una sola serie por gráfico): [clave, etiqueta, getter(row), esConSigno]
   var CONT_HIST_METRICS = [
-    ['ganancia', 'Ganancia negocio', function (r) { return Number(r.ganancia) || 0; }, true],
+    ['ganancia', 'Ganancia negocio', function (r) { return contHistGanancia(r); }, true],
     ['saldo', 'Estado (saldo)', function (r) { return Number(r.saldo) || 0; }, true],
     ['cashFlow', 'Cash Flow', function (r) { return Number(r.cashFlow) || 0; }, true],
     ['entNeto', 'Entrada neto', function (r) { return Number(r.entrada && r.entrada.entNeto) || 0; }, false],
@@ -13647,7 +13647,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<h3 style="margin:0;color:#2d3277;font-size:18px">Histórico</h3>';
     h += '<button onclick="contLoadHist(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">↻ Actualizar</button>';
     h += '<button onclick="contHistGrabar()" style="padding:7px 13px;border:none;border-radius:8px;background:#0f766e;color:#fff;font-weight:600;cursor:pointer;font-size:13px">💾 Grabar ahora</button>';
-    h += '<span style="font-size:12px;color:#9ca3af">Se graba solo todos los días 14:30 (hora Argentina)</span>';
+    h += '<span style="font-size:12px;color:#9ca3af">Se graba solo a las 14:30 (hora Argentina), de lunes a viernes — no sábados, domingos ni feriados nacionales. Podés borrar un día con 🗑.</span>';
     h += '</div>';
     if (!_cont.histData) {
       if (!_cont.histLoading) { _cont.histLoading = true; setTimeout(function () { contLoadHist(); }, 10); }
@@ -13666,6 +13666,16 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     _cont.histLoading = false;
     if (currentSection === 'contable' && _cont.tab === 'historico') renderContable();
   }
+  async function contHistBorrar(fecha) {
+    if (!fecha) return;
+    if (!confirm('¿Borrar la foto del día ' + contFechaDisp(fecha) + '? No se puede deshacer.')) return;
+    try {
+      var r = await fetch('/api/contable/resumen-historico/borrar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ fecha: fecha }) });
+      var j = await r.json();
+      if (j && j.ok) { showToast('Día borrado (' + (j.removed || 0) + ')', 'success'); _cont.histData = null; renderContable(); }
+      else showToast((j && j.error) || 'No se pudo borrar', 'error');
+    } catch (e) { showToast('Error de conexión', 'error'); }
+  }
   async function contHistGrabar() {
     showToast('Grabando la foto del resumen…', 'info');
     try {
@@ -13675,13 +13685,24 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       else showToast((j && j.error) || 'No se pudo grabar', 'error');
     } catch (e) { showToast('Error de conexión', 'error'); }
   }
+  // Ganancia del negocio de una foto del histórico, recalculada con la MISMA fórmula del card del
+  // Resumen (Entrada neto − Salida total − Costo stock) sobre los datos guardados ese día. Así el
+  // histórico muestra siempre el mismo criterio que "GANANCIA DEL NEGOCIO", sin depender de un valor
+  // viejo que pudiera haberse guardado con otra fórmula.
+  function contHistGanancia(r) {
+    var e = (r && r.entrada) || {};
+    if (e.entNeto != null || r.salidaTotal != null || e.costoStock != null) {
+      return (Number(e.entNeto) || 0) - (Number(r.salidaTotal) || 0) - (Number(e.costoStock) || 0);
+    }
+    return Number(r && r.ganancia) || 0;
+  }
   function contHistTable() {
     var rows = _cont.histData || [];
     if (!rows.length) return '<div style="color:#9ca3af;font-size:13px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px">Todavía no hay fotos guardadas. Se graban solas a las 14:30 (hora Argentina), o podés usar “Grabar ahora”.</div>';
     var mny = function (v, neg) { var n = Number(v) || 0; var col = (neg && n < 0) ? '#b91c1c' : (neg && n > 0 ? '#065f46' : '#111'); return '<td style="padding:8px 12px;text-align:right;white-space:nowrap;color:' + col + ';font-weight:' + (neg ? '700' : '600') + '">' + contMoney(n) + '</td>'; };
     var cols = [
       ['Fecha', function (r) { return '<td style="padding:8px 12px;font-weight:700;white-space:nowrap">' + contFechaDisp(r.fecha_ar) + '</td>'; }],
-      ['Ganancia negocio', function (r) { return mny(r.ganancia, true); }],
+      ['Ganancia negocio', function (r) { return mny(contHistGanancia(r), true); }],
       ['Estado (saldo)', function (r) { return mny(r.saldo, true); }],
       ['Cash Flow', function (r) { return mny(r.cashFlow, true); }],
       ['Entrada neto', function (r) { return mny(r.entrada && r.entrada.entNeto); }],
@@ -13694,7 +13715,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       ['Préstamos', function (r) { return mny(r.prestamos); }],
       ['Casa', function (r) { return mny(r.casa); }],
       ['Construcción', function (r) { return mny(r.construccion); }],
-      ['Período', function (r) { return '<td style="padding:8px 12px;color:#6b7280;white-space:nowrap;font-size:12px">' + escapeHtml((r.period && r.period.label) || '') + '</td>'; }]
+      ['Período', function (r) { return '<td style="padding:8px 12px;color:#6b7280;white-space:nowrap;font-size:12px">' + escapeHtml((r.period && r.period.label) || '') + '</td>'; }],
+      ['', function (r) { return '<td style="padding:8px 12px;text-align:center;white-space:nowrap"><button onclick="contHistBorrar(\'' + r.fecha_ar + '\')" title="Borrar este día" style="background:#fee2e2;color:#b91c1c;border:none;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:12px;font-weight:700">🗑</button></td>'; }]
     ];
     var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
@@ -13757,339 +13779,113 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     if (currentSection === 'contable' && _cont.tab === 'resumen') renderContable();
   }
 
-  /* ==================== MONITOR (libro de movimientos del ¿Cómo estoy?) ==================== */
-  // Muestra, por componente del saldo, cada movimiento con su signo (+/−) y el SALDO PARCIAL al lado,
-  // para ver exactamente por qué subió o bajó el estado. Usa las MISMAS fuentes que ¿Cómo estoy?,
-  // así los números reconcilian. Todo en vivo; no toca el servidor.
-  var _contMon = { loading: false, ts: 0, data: null };
-  function contMonFmt(n) { return contMoney2(Math.abs(Number(n) || 0)); }
-  function contMonSigned(n) {
-    var v = Number(n) || 0; var s = v < 0 ? '−' : '+';
-    var col = v < 0 ? '#b91c1c' : '#047857';
-    return '<span style="font-weight:800;color:' + col + '">' + s + ' ' + contMoney2(Math.abs(v)) + '</span>';
+  /* ==================== MONITOR · Resumen de cuenta (continuo, con descarga) ==================== */
+  // Lee el libro de movimientos del servidor (/api/contable/monitor). El saldo parcial es continuo y
+  // SIEMPRE cierra en el ¿Cómo estoy?. Por defecto muestra HOY; se puede elegir rango y descargar.
+  var _contMon = { loading: false, ts: 0, data: null, from: '', to: '', preset: 'hoy' };
+  function _contMonHoy() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function _contMonMesIni() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; }
+  function contMonChipInfo(k) {
+    var map = {
+      mp_venta: ['🛒 Venta MP', '#1d4ed8', '#eff6ff'], mp_devol: ['↩️ Devolución MP', '#b91c1c', '#fff1f2'], mp_egreso: ['💸 Egreso MP', '#b45309', '#fff7ed'],
+      adelanto: ['⚡ Adelanto', '#047857', '#ecfdf5'], adelanto_int: ['⚡ Costo adelanto', '#b91c1c', '#fff1f2'],
+      prov_fac: ['📦 Factura prov.', '#b91c1c', '#fff1f2'], prov_nc: ['📦 NC prov.', '#047857', '#ecfdf5'], prov_pago: ['📦 Pago prov.', '#047857', '#ecfdf5'],
+      prestamo_alta: ['💸 Préstamo', '#b91c1c', '#fff1f2'], prestamo_cuota: ['💸 Cuota préstamo', '#047857', '#ecfdf5'],
+      local_venta: ['🏪 Venta local', '#1d4ed8', '#eff6ff'], local_sena: ['🔖 Seña local', '#8a6d1a', '#fff8e6'], local_salida: ['📤 Salida local', '#b0562a', '#fdf0e8'],
+      parab_mas: ['🪟 Parabrisas', '#3466c9', '#eef4ff'], parab_menos: ['🪟 Parab. cobrado', '#b91c1c', '#fff1f2'],
+      cheque_alta: ['🧾 Cheque registrado', '#b91c1c', '#fff1f2'], cheque_pago: ['🧾 Cheque pagado', '#047857', '#ecfdf5']
+    };
+    return map[k] || ['Movimiento', '#374151', '#f3f4f6'];
   }
-  function contMonSaldoCol(run) {
-    var v = Number(run) || 0; var col = v < 0 ? '#b91c1c' : (v > 0 ? '#1f2937' : '#9ca3af');
-    return '<span style="font-weight:700;color:' + col + '">' + (v < 0 ? '−' : '') + contMoney2(Math.abs(v)) + '</span>';
+  function contMonChipHtml(k) { var c = contMonChipInfo(k); return '<span style="font-size:11px;font-weight:700;background:' + c[2] + ';color:' + c[1] + ';border-radius:20px;padding:2px 9px;white-space:nowrap">' + c[0] + '</span>'; }
+  function contMonSignedHtml(v) { v = Number(v) || 0; var s = v < 0 ? '−' : '+'; var col = v < 0 ? '#b91c1c' : '#047857'; return '<span style="font-weight:800;color:' + col + '">' + s + ' ' + contMoney2(Math.abs(v)) + '</span>'; }
+  function contMonSaldoHtml(v) { v = Number(v) || 0; var col = v < 0 ? '#b91c1c' : '#111'; return '<span style="font-weight:700;color:' + col + '">' + (v < 0 ? '−' : '') + contMoney2(Math.abs(v)) + '</span>'; }
+  function contMonSetPreset(p) {
+    _contMon.preset = p;
+    if (p === 'hoy') { _contMon.from = _contMonHoy(); _contMon.to = _contMonHoy(); }
+    else if (p === 'ayer') { var d = new Date(); d.setDate(d.getDate() - 1); var s = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); _contMon.from = s; _contMon.to = s; }
+    else if (p === 'mes') { _contMon.from = _contMonMesIni(); _contMon.to = _contMonHoy(); }
+    else if (p === 'todo') { _contMon.from = ''; _contMon.to = ''; }
+    contLoadMonitor(true);
   }
-  function contMonChip(txt, color, bg) { return '<span style="font-size:11px;font-weight:700;background:' + bg + ';color:' + color + ';border-radius:20px;padding:2px 9px;white-space:nowrap">' + txt + '</span>'; }
-  // Etiqueta de estado/destino de una transacción (En transacción / Negocio · rubro / Casa / etc.).
-  function contMonTxEstado(t) {
-    if (!t.derivado || t.estado === 'pendiente') return { txt: '🕒 En transacción', color: '#b45309', bg: '#fff7ed' };
-    var dest = t.derivado;
-    var names = { negocio: 'Negocio', casa: 'Casa', banco: 'Banco', construccion: 'Construcción', nocontable: 'No contable', prestamos: 'Préstamos', transaccion: 'Transacción' };
-    var colors = { negocio: ['#1d4ed8', '#eff6ff'], casa: ['#7c3aed', '#f5f3ff'], banco: ['#0369a1', '#eff6ff'], construccion: ['#b45309', '#fff7ed'], nocontable: ['#6b7280', '#f3f4f6'], prestamos: ['#be123c', '#fff1f2'], transaccion: ['#b45309', '#fff7ed'] };
-    var label = names[dest] || dest;
-    var rubros = (contD().config && contD().config.rubros) ? contD().config.rubros : {};
-    var rub = ((rubros[dest] || []).filter(function (r) { return r.id === t.rubro_id; }))[0];
-    if (rub) {
-      label += ' · ' + rub.nombre;
-      var sub = ((rub.subrubros || []).filter(function (s) { return s.id === t.subrubro_id; }))[0];
-      if (sub) label += ' / ' + sub.nombre;
-    }
-    var cp = colors[dest] || ['#374151', '#f3f4f6'];
-    return { txt: label, color: cp[0], bg: cp[1] };
-  }
+  function contMonSetFrom(v) { _contMon.from = v; _contMon.preset = 'custom'; }
+  function contMonSetTo(v) { _contMon.to = v; _contMon.preset = 'custom'; }
   async function contLoadMonitor(force) {
     if (_contMon.loading) return;
-    if (!force && _contMon.data && (Date.now() - _contMon.ts < 20000)) return;
+    if (!_contMon.from && !_contMon.to && _contMon.preset === 'hoy') { _contMon.from = _contMonHoy(); _contMon.to = _contMonHoy(); }
     _contMon.loading = true;
-    if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable();
-    var errs = [];
-    var out = { mp: { cuentas: [], total: 0, ts: null }, local: { movs: [], total: 0 }, parab: { casos: [], total: 0 }, cheques: { total: 0, rows: [] }, prestamos: { items: [], total: 0 }, prov: { items: [], total: 0 }, tx: { rows: [] } };
-    // 1) MP (composición por cuenta: disponible + a liberar)
+    if (force && currentSection === 'contable' && _cont.tab === 'monitor') renderContable();
     try {
-      var r1 = await fetch('/api/mp/saldos-resumen', { credentials: 'same-origin' }); var j1 = await r1.json();
-      (j1.cuentas || []).forEach(function (c) { if (c && c.tiene_datos) { out.mp.cuentas.push({ cuenta: c.cuenta, disponible: Number(c.disponible) || 0, a_liberar: Number(c.a_liberar) || 0, total: Number(c.total) || 0, ts: c.ts || null }); } });
-      out.mp.total = (j1.totales && Number(j1.totales.total)) || out.mp.cuentas.reduce(function (s, c) { return s + c.total; }, 0);
-      out.mp.ts = j1.ultima_lectura || null;
-    } catch (e) { errs.push('No pude leer Saldos MP'); }
-    // 2) CAJA LOCAL (cada movimiento: venta/seña suman efectivo+cheque; salida resta)
-    try {
-      var r2 = await fetch('/api/local/data', { credentials: 'same-origin' }); var j2 = await r2.json();
-      var orders = (j2.orders || []).slice().sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)) || (Number(a.n) - Number(b.n)); });
-      var _hora = function (o) { try { if (o.created_at) return new Date(o.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch (e) {} return ''; };
-      orders.forEach(function (o) {
-        var tipo = o.tipo || 'venta';
-        var hora = _hora(o);
-        if (tipo === 'salida') {
-          out.local.movs.push({ fecha: o.fecha, hora: hora, n: o.n, clase: 'salida', sucursal: o.sucursal || '', detalle: 'Salida · ' + (o.categoria || '') + (o.notas ? (' · ' + o.notas) : ''), medios: _contMedioLbl(o.forma_pago), delta: -(Number(o.monto) || 0) });
-        } else if (tipo === 'sena') {
-          var med = String(o.forma_pago || '').toUpperCase();
-          var d = (med === 'EFECTIVO' || med === 'CHEQUE') ? (Number(o.monto) || 0) : 0;
-          out.local.movs.push({ fecha: o.fecha, hora: hora, n: o.n, clase: 'sena', sucursal: o.sucursal || '', detalle: 'Seña · ' + (o.concepto || o.cliente || '') + (o.estado === 'tomada' ? (' (tomada en venta #' + (o.venta_n || '') + ')') : ' (vigente)'), medios: _contMedioLbl(o.forma_pago) + (d === 0 ? ' (no suma a caja)' : ''), delta: d });
-        } else {
-          var ef = 0, otros = [];
-          (o.pagos || []).forEach(function (p) { var m = String(p.medio || '').toUpperCase(); if (m === 'EFECTIVO' || m === 'CHEQUE') ef += Number(p.monto) || 0; else if (m !== 'SENA') otros.push(_contMedioLbl(m) + ' ' + contMoney2(Number(p.monto) || 0)); else otros.push('Seña #' + (p.sena_n || '') + ' ' + contMoney2(Number(p.monto) || 0)); });
-          var det = (o.ramo === 'parabrisas' ? 'Venta parabrisas' : 'Venta') + ' · ' + (o.cliente || 's/nombre') + ' · 🏪 ' + (o.sucursal || '');
-          if (otros.length) det += ' · [' + otros.join(' · ') + ' no suman a caja]';
-          out.local.movs.push({ fecha: o.fecha, hora: hora, n: o.n, clase: 'venta', sucursal: o.sucursal || '', detalle: det, medios: 'Efectivo/Cheque', delta: ef });
-        }
-      });
-      var cr = j2.caja_resumen || {}; out.local.total = Object.keys(cr).reduce(function (s, k) { return s + (Number(cr[k].saldo) || 0); }, 0);
-    } catch (e) { errs.push('No pude leer Caja Local'); }
-    // 3) PARABRISAS (casos "me tienen que pagar": por_pagar y sin pagar)
-    try {
-      var r3 = await fetch('/api/parabrisas/casos', { credentials: 'same-origin' }); var j3 = await r3.json();
-      (j3.casos || []).forEach(function (c) {
-        if (c.estado === 'por_pagar' && !c.pagado) {
-          var amount = (String(c.modalidad || 'SEGURO').toUpperCase() === 'PARTICULAR') ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0);
-          out.parab.casos.push({ fecha: c.fecha, created_at: c.created_at || '', n: c.n, detalle: [c.marca, c.modelo, c.patente].filter(Boolean).join(' ') + (c.compania ? (' · ' + c.compania) : ''), delta: amount });
-        }
-      });
-      out.parab.casos.sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)) || (Number(a.n) - Number(b.n)); });
-      out.parab.total = (j3.resumen && Number(j3.resumen.por_cobrar)) || out.parab.casos.reduce(function (s, c) { return s + c.delta; }, 0);
-    } catch (e) { errs.push('No pude leer Parabrisas'); }
-    // 4) CHEQUES (total autoritativo de la planilla; detalle informativo si viene)
-    try {
-      var r4 = await fetch('/api/contable/cheques', { credentials: 'same-origin' }); var j4 = await r4.json();
-      out.cheques.total = (j4 && j4.total_sin_relleno != null) ? Number(j4.total_sin_relleno) : 0;
-      out.cheques.rows = Array.isArray(j4.rows) ? j4.rows : [];
-    } catch (e) { errs.push('No pude leer Cheques'); }
-    // 5) PRÉSTAMOS (deuda = total − pagos). Eventos: alta (−total) y cada pago (+)
-    try {
-      (contD().prestamos || []).forEach(function (p) {
-        var pagado = (p.pagos || []).reduce(function (s, x) { return s + (Number(x.monto) || 0); }, 0);
-        var deuda = (Number(p.total) || 0) - pagado;
-        out.prestamos.items.push({ nombre: p.nombre || p.detalle || ('Préstamo ' + (p.id || '')), fecha: p.fecha || '', total: Number(p.total) || 0, pagado: pagado, deuda: deuda, pagos: (p.pagos || []).slice() });
-        out.prestamos.total += deuda;
-      });
-    } catch (e) { errs.push('No pude leer Préstamos'); }
-    // 6) PROVEEDORES (deuda real con descuento, por proveedor)
-    try {
-      var r6 = await fetch('/api/compras/state', { credentials: 'same-origin' });
-      if (r6.ok) {
-        var st = await r6.json();
-        var provs = (st && st.proveedores) || [], comps = (st && st.comprobantes) || [], pagos = (st && st.pagos) || [];
-        var by = {};
-        provs.forEach(function (p) { by[p.id] = { nombre: p.nombre || p.razon_social || ('Prov ' + p.id), d1: Number(p.descuento_pct) || 0, d2: Number(p.descuento_pct2) || 0, fact: 0, nc: 0, pag: 0 }; });
-        comps.forEach(function (c) { var b = by[c.proveedor_id]; if (!b) return; if (c.tipo === 'factura') b.fact += Number(c.importe) || 0; else if (c.tipo === 'nc') b.nc += Number(c.importe) || 0; });
-        pagos.forEach(function (pg) { var b = by[pg.proveedor_id]; if (!b) return; b.pag += Number(pg.importe) || 0; });
-        Object.keys(by).forEach(function (k) { var b = by[k]; var bruto = b.fact - b.nc - b.pag; var factor = (1 - b.d1 / 100) * (1 - b.d2 / 100); var real = (bruto > 0 ? bruto * factor : bruto); if (Math.abs(real) >= 1) { out.prov.items.push({ nombre: b.nombre, deuda: real }); out.prov.total += real; } });
-        out.prov.items.sort(function (a, b) { return b.deuda - a.deuda; });
-      }
-    } catch (e) { errs.push('No pude leer Deuda proveedores'); }
-    // 7) TRANSACCIONES (a dónde fue la plata que salió de MP / salidas de Local)
-    try {
-      out.tx.rows = (contD().transacciones || []).slice().sort(function (a, b) { return (String(b.fecha) + (b.hora || '')).localeCompare(String(a.fecha) + (a.hora || '')) || (Number(b.id && String(b.id).replace(/\D/g, '')) - Number(a.id && String(a.id).replace(/\D/g, ''))); });
-    } catch (e) {}
-    out.errs = errs;
-    _contMon = { loading: false, ts: Date.now(), data: out };
+      var qs = []; if (_contMon.from) qs.push('from=' + encodeURIComponent(_contMon.from)); if (_contMon.to) qs.push('to=' + encodeURIComponent(_contMon.to));
+      var r = await fetch('/api/contable/monitor' + (qs.length ? ('?' + qs.join('&')) : ''), { credentials: 'same-origin' });
+      var j = await r.json();
+      _contMon.data = (j && j.ok) ? j : { error: (j && j.error) || 'Error' };
+    } catch (e) { _contMon.data = { error: 'Error de red' }; }
+    _contMon.loading = false; _contMon.ts = Date.now();
     if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable();
   }
-  function _contMedioLbl(m) { m = String(m || '').toUpperCase(); var map = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transferencia', TARJETA: 'Tarjeta', CHEQUE: 'Cheque', SENA: 'Seña' }; return map[m] || (m.charAt(0) + m.slice(1).toLowerCase()); }
-
-  // Estado del resumen de cuenta: fecha elegida (por defecto HOY) y filtro de tipo.
-  var _contMonF = { fecha: '', tipo: 'todas' };
-  function _contMonHoy() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-  function contMonSetFecha(v) { _contMonF.fecha = v || _contMonHoy(); if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
-  function contMonDiaShift(delta) {
-    var base = _contMonF.fecha || _contMonHoy();
-    var d = new Date(base + 'T12:00:00'); d.setDate(d.getDate() + delta);
-    _contMonF.fecha = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable();
+  function contMonDetalleHtml(r) {
+    var det = escapeHtml(r.detalle || '');
+    if (r.order_id) det += ' <a onclick="verVentaPrep(\'' + escapeHtml(String(r.order_id)) + '\',\'\')" title="Abrir la venta en Ventas" style="color:#3483fa;cursor:pointer;text-decoration:underline;font-weight:700">#' + escapeHtml(String(r.order_id)) + '</a>';
+    return det;
   }
-  function contMonSetTipo(v) { _contMonF.tipo = v; if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
-  function _contHoraISO(iso) { try { if (iso) return new Date(iso).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false }); } catch (e) {} return ''; }
-  function _contFechaISO(iso) { try { if (iso) { var d = new Date(iso); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); } } catch (e) {} return ''; }
-  function contMonFechaLarga(d) { try { var x = new Date(d + 'T12:00:00'); return x.toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' }); } catch (e) { return d; } }
-
-  // Lista unificada de movimientos (todas las fechas), con hora y signo, y SALDO PARCIAL anclado al
-  // saldo ACTUAL (¿Cómo estoy?): el último movimiento queda exactamente en el saldo actual.
-  function contMonEventos(m) {
-    var ev = [];
-    // LOCAL: ventas/señas (+ efectivo/cheque) y salidas (−), con la HORA DE GRABACIÓN.
-    (m.local.movs || []).forEach(function (x) {
-      if (x.clase === 'salida') {
-        ev.push({ fecha: x.fecha, hora: x.hora || '', detalle: x.detalle, chip: { t: '📤 Salida', c: '#b0562a', b: '#fdf0e8' }, monto: x.delta });
-      } else {
-        if (!(x.delta > 0)) return;   // transferencia/tarjeta no mueven la caja
-        ev.push({ fecha: x.fecha, hora: x.hora || '', detalle: x.detalle, chip: (x.clase === 'sena') ? { t: '🔖 Seña', c: '#8a6d1a', b: '#fff8e6' } : { t: '🛒 Venta', c: '#1d4ed8', b: '#eff6ff' }, monto: x.delta });
-      }
-    });
-    // TRANSACCIONES: egresos de MP (las salidas de Local ya van arriba), con la HORA DE MP.
-    (m.tx.rows || []).forEach(function (t) {
-      if (t.origen === 'local_salida') return;   // no duplicar: ya está en Local
-      var est = contMonTxEstado(t);
-      ev.push({ fecha: t.fecha, hora: t.hora || '', detalle: (t.detalle || 'Movimiento') + (t.cuenta ? (' · ' + t.cuenta) : ''), chip: { t: est.txt, c: est.color, b: est.bg }, monto: -(Number(t.monto) || 0) });
-    });
-    // PARABRISAS: cada caso "me tienen que pagar" (+), con la HORA DE GRABACIÓN.
-    (m.parab.casos || []).forEach(function (c) {
-      ev.push({ fecha: _contFechaISO(c.created_at) || c.fecha, hora: _contHoraISO(c.created_at), detalle: 'Parabrisas · ' + c.detalle + ' (por cobrar)', chip: { t: '🪟 Parabrisas', c: '#3466c9', b: '#eef4ff' }, monto: Number(c.delta) || 0 });
-    });
-    // ADELANTOS: el retiro entra (+) y su costo sale (−).
-    (contD().intereses_adelanto || []).forEach(function (a) {
-      if (Number(a.adelanto) > 0) ev.push({ fecha: a.fecha, hora: '', detalle: 'Adelanto de dinero' + (a.cuenta ? (' · ' + a.cuenta) : ''), chip: { t: '⚡ Adelanto', c: '#047857', b: '#ecfdf5' }, monto: Number(a.adelanto) || 0 });
-      if (Number(a.intereses) > 0) ev.push({ fecha: a.fecha, hora: '', detalle: 'Costo de adelanto' + (a.cuenta ? (' · ' + a.cuenta) : '') + (a.costo_pct ? (' (' + a.costo_pct + '%)') : ''), chip: { t: '⚡ Costo adelanto', c: '#b91c1c', b: '#fff1f2' }, monto: -(Number(a.intereses) || 0) });
-    });
-    ev.forEach(function (e) { e.ts = String(e.fecha || '') + 'T' + (e.hora || '00:00'); });
-    ev.sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });   // ascendente
-    var saldoActual = (m.mp.total || 0) - (m.cheques.total || 0) - (m.prestamos.total || 0) - (m.prov.total || 0) + (m.local.total || 0) + (m.parab.total || 0);
-    var total = ev.reduce(function (s, e) { return s + e.monto; }, 0);
-    var run = saldoActual - total;   // saldo "antes" del primer movimiento listado
-    ev.forEach(function (e) { run += e.monto; e.saldo = run; });   // saldo DESPUÉS de cada movimiento → el último = saldo actual
-    return { eventos: ev, saldoActual: saldoActual };
-  }
-
   function contMonitorHtml() {
-    var m = _contMon.data;
-    if (!m || (!_contMon.loading && (Date.now() - _contMon.ts > 20000))) { if (!_contMon.loading) setTimeout(function () { contLoadMonitor(false); }, 10); }
-    if (!m) return '<div class="loading"><div class="spinner"></div><p>Armando el resumen de cuenta…</p></div>';
-    if (!_contMonF.fecha) _contMonF.fecha = _contMonHoy();
-    var dia = _contMonF.fecha, hoy = _contMonHoy();
-    var res = contMonEventos(m);
-    var ev = res.eventos;
-    var todosDia = ev.filter(function (e) { return String(e.fecha) === dia; });
-    var delDia = todosDia.slice();
-    if (_contMonF.tipo === 'entradas') delDia = delDia.filter(function (e) { return e.monto > 0; });
-    else if (_contMonF.tipo === 'salidas') delDia = delDia.filter(function (e) { return e.monto < 0; });
-    var saldoCierre = todosDia.length ? todosDia[todosDia.length - 1].saldo : (function () { var prev = ev.filter(function (e) { return String(e.fecha) <= dia; }); return prev.length ? prev[prev.length - 1].saldo : res.saldoActual; })();
-    var saldoInicio = todosDia.length ? (todosDia[0].saldo - todosDia[0].monto) : saldoCierre;
-    var totIn = 0, totOut = 0; todosDia.forEach(function (e) { if (e.monto > 0) totIn += e.monto; else totOut += e.monto; });
-    var ordered = delDia.slice().reverse();   // más reciente primero
+    if (!_contMon.from && !_contMon.to && (_contMon.preset === 'hoy' || !_contMon.preset)) { _contMon.from = _contMonHoy(); _contMon.to = _contMonHoy(); _contMon.preset = 'hoy'; }
+    var d = _contMon.data;
+    if (!d && !_contMon.loading) { setTimeout(function () { contLoadMonitor(false); }, 10); }
+    if (!d) return '<div class="loading"><div class="spinner"></div><p>Armando el resumen de cuenta…</p></div>';
+    if (d.error) return '<div class="empty" style="padding:24px;color:#b91c1c">' + escapeHtml(d.error) + '</div>';
+    var rows = d.rows || [];
     var cuando = _contMon.ts ? new Date(_contMon.ts).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    var hoy = _contMonHoy();
     var h = '';
-    // Cabecera
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
     h += '<h3 style="margin:0;color:#2d3277;font-size:20px">🔎 Resumen de cuenta</h3>';
     h += '<button onclick="contLoadMonitor(true)" style="padding:7px 13px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer;font-size:13px">' + (_contMon.loading ? '⏳' : '↻') + ' Actualizar</button>';
+    h += '<button onclick="contMonDescargar()" style="padding:7px 13px;border:none;border-radius:8px;background:#0f766e;color:#fff;font-weight:600;cursor:pointer;font-size:13px">📥 Descargar</button>';
     if (cuando) h += '<span style="font-size:12px;color:#9ca3af">En vivo · ' + cuando + '</span>';
     h += '</div>';
-    // Selector de día (calendario)
-    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
-    h += '<button onclick="contMonDiaShift(-1)" style="padding:7px 12px;border:1px solid #d7dee8;background:#fff;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">←</button>';
-    h += '<input type="date" value="' + escapeHtml(dia) + '" max="' + escapeHtml(hoy) + '" onchange="contMonSetFecha(this.value)" style="padding:7px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:14px">';
-    h += '<button onclick="contMonDiaShift(1)"' + (dia >= hoy ? ' disabled' : '') + ' style="padding:7px 12px;border:1px solid #d7dee8;background:' + (dia >= hoy ? '#f1f3f6' : '#fff') + ';border-radius:8px;font-size:14px;font-weight:700;cursor:' + (dia >= hoy ? 'default' : 'pointer') + '">→</button>';
-    h += '<button onclick="contMonSetFecha(\'' + hoy + '\')" style="padding:7px 12px;border:1px solid #7c3aed;background:' + (dia === hoy ? '#7c3aed' : '#fff') + ';color:' + (dia === hoy ? '#fff' : '#7c3aed') + ';border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">Hoy</button>';
-    h += '<span style="font-size:13px;color:#6b7280;margin-left:4px;text-transform:capitalize">' + contMonFechaLarga(dia) + '</span>';
+    h += '<div style="font-size:12.5px;color:#6b7280;margin-bottom:12px">Libro de movimientos continuo, con el <b>saldo parcial</b> al lado. Cierra siempre en el ¿Cómo estoy?. <span style="color:#047857;font-weight:700">+</span> entra · <span style="color:#b91c1c;font-weight:700">−</span> sale.</div>';
+    var preset = function (k, lbl) { var on = _contMon.preset === k; return '<button onclick="contMonSetPreset(\'' + k + '\')" style="padding:6px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">' + lbl + '</button>'; };
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px">';
+    h += preset('hoy', 'Hoy') + preset('ayer', 'Ayer') + preset('mes', 'Este mes') + preset('todo', 'Todo');
+    h += '<span style="margin-left:8px;font-size:13px;color:#888">Desde</span>';
+    h += '<input type="date" value="' + escapeHtml(_contMon.from || '') + '" max="' + hoy + '" onchange="contMonSetFrom(this.value)" style="padding:6px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:13px">';
+    h += '<span style="font-size:13px;color:#888">Hasta</span>';
+    h += '<input type="date" value="' + escapeHtml(_contMon.to || '') + '" max="' + hoy + '" onchange="contMonSetTo(this.value)" style="padding:6px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:13px">';
+    h += '<button onclick="contLoadMonitor(true)" style="padding:6px 14px;border:none;background:#3483fa;color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">Aplicar</button>';
     h += '</div>';
-    // Saldos del día
     h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">';
-    var kpi = function (lbl, val, col, strong) { return '<div style="background:' + (strong ? '#2d3277' : '#fff') + ';border:1px solid #e6ebf5;border-radius:10px;padding:10px 14px;min-width:150px"><div style="font-size:11px;color:' + (strong ? '#c7d0f0' : '#888') + ';text-transform:uppercase">' + lbl + '</div><div style="font-size:19px;font-weight:800;color:' + (strong ? '#fff' : col) + '">' + (val < 0 ? '− ' : '') + contMoney2(Math.abs(val)) + '</div></div>'; };
-    h += kpi('Saldo inicio del día', saldoInicio, '#2d3277');
-    h += kpi('Entradas', totIn, '#047857') + kpi('Salidas', totOut, '#b91c1c');
-    h += kpi(dia === hoy ? 'Saldo actual' : 'Saldo al cierre', saldoCierre, '#fff', true);
+    var kpi = function (lbl, val, col, strong) { return '<div style="background:' + (strong ? '#2d3277' : '#fff') + ';border:1px solid #e6ebf5;border-radius:10px;padding:10px 14px;min-width:150px"><div style="font-size:11px;color:' + (strong ? '#c7d0f0' : '#888') + ';text-transform:uppercase">' + lbl + '</div><div style="font-size:18px;font-weight:800;color:' + (strong ? '#fff' : col) + '">' + (val < 0 ? '− ' : '') + contMoney2(Math.abs(val)) + '</div></div>'; };
+    h += kpi('Saldo anterior', d.apertura, '#2d3277');
+    h += kpi('Entradas', d.totalEntradas, '#047857') + kpi('Salidas', d.totalSalidas, '#b91c1c');
+    h += kpi('Saldo actual', d.saldoActual, '#fff', true);
     h += '</div>';
-    // Filtros de tipo
-    var pill = function (v, lbl) { var on = _contMonF.tipo === v; return '<button onclick="contMonSetTipo(\'' + v + '\')" style="padding:6px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">' + lbl + '</button>'; };
-    h += '<div style="display:flex;gap:6px;margin-bottom:12px">' + pill('todas', 'Todas') + pill('entradas', 'Entradas') + pill('salidas', 'Salidas') + '</div>';
-    // Listado del día
-    if (!ordered.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos el ' + contMonFechaLarga(dia) + '.</div>';
+    if (!rows.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en el rango elegido.</div>';
     h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
-    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:620px">';
-    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;background:#f8fafc"><th style="padding:8px 10px;white-space:nowrap">Hora</th><th style="padding:8px 10px">Detalle</th><th style="padding:8px 10px;text-align:right">Movimiento</th><th style="padding:8px 10px;text-align:right">Saldo parcial</th></tr></thead><tbody>';
-    ordered.forEach(function (e) {
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:680px">';
+    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;background:#f8fafc"><th style="padding:8px 10px;white-space:nowrap">Fecha</th><th style="padding:8px 10px;white-space:nowrap">Hora</th><th style="padding:8px 10px">Detalle</th><th style="padding:8px 10px;text-align:right">Movimiento</th><th style="padding:8px 10px;text-align:right">Saldo parcial</th></tr></thead><tbody>';
+    h += '<tr style="border-top:1px solid #f1f3f6;background:#fbfbfe"><td style="padding:7px 10px;color:#9ca3af" colspan="4"><i>Saldo anterior (arrastre)</i></td><td style="padding:7px 10px;text-align:right">' + contMonSaldoHtml(d.apertura) + '</td></tr>';
+    var ordered = rows.slice().reverse();
+    ordered.forEach(function (r) {
       h += '<tr style="border-top:1px solid #f1f3f6">';
-      h += '<td style="padding:8px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(e.hora || '—') + '</td>';
-      h += '<td style="padding:8px 10px;color:#374151">' + contMonChip(e.chip.t, e.chip.c, e.chip.b) + ' ' + escapeHtml(e.detalle || '') + '</td>';
-      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSigned(e.monto) + '</td>';
-      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSaldoCol(e.saldo) + '</td>';
+      h += '<td style="padding:8px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(r.fecha || '') + '</td>';
+      h += '<td style="padding:8px 10px;white-space:nowrap;color:#9ca3af">' + escapeHtml(r.hora || '—') + '</td>';
+      h += '<td style="padding:8px 10px;color:#374151">' + contMonChipHtml(r.chip) + ' ' + contMonDetalleHtml(r) + '</td>';
+      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSignedHtml(r.monto) + '</td>';
+      h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSaldoHtml(r.saldo) + '</td>';
       h += '</tr>';
     });
     h += '</tbody></table></div></div>';
-    h += '<div style="font-size:11.5px;color:#9ca3af;margin-top:8px">El <b>saldo parcial</b> arranca del <b>saldo actual</b> (¿Cómo estoy?) y se reconstruye con cada movimiento. Horas: MP con su hora; Local y Parabrisas con la hora de grabación. Los ingresos por ventas de ML no se listan uno por uno.</div>';
+    h += '<div style="font-size:11.5px;color:#9ca3af;margin-top:8px">El saldo cierra en el ¿Cómo estoy?. Horas: MP con su hora; Local/Parabrisas/Proveedores con la hora de carga; Cheques con la fecha de registro/pago. Las ventas de ML aparecen a medida que MP las informa.</div>';
     return h;
   }
-  // Adelantos de dinero: el retiro (entra a MP, +) y su costo/interés (−). INFORMATIVO: no afecta el
-  // saldo ¿Cómo estoy? (el costo ya lo descuenta MP solo, y vive en Negocio → Adelantos).
-  function contMonAdelantosSection() {
-    var rows = (contD().intereses_adelanto || []).slice().sort(function (a, b) { return String(b.fecha || '').localeCompare(String(a.fecha || '')); });
-    var totAdel = rows.reduce(function (s, t) { return s + (Number(t.adelanto) || 0); }, 0);
-    var totInt = rows.reduce(function (s, t) { return s + (Number(t.intereses) || 0); }, 0);
-    var h = '<div id="mon_adel" style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04);margin-bottom:16px">';
-    h += '<div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #eef2f7">';
-    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">';
-    h += '<div><span style="font-weight:800;color:#2d3277;font-size:15px">⚡ Adelantos de dinero</span><span style="display:block;font-size:11.5px;color:#9ca3af;margin-top:2px">Informativo: el retiro entra a MP (+) y el costo/interés (−) ya lo descuenta MP solo. No afecta este saldo; se administra en Negocio → Adelantos.</span></div>';
-    h += '<span style="font-weight:800;font-size:13.5px;color:#b91c1c">Interés total: − ' + contMoney2(Math.abs(totInt)) + '</span>';
-    h += '</div></div>';
-    if (!rows.length) { h += contMonEmpty('No hay adelantos cargados.'); return h + '</div>'; }
-    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
-    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase"><th style="padding:7px 10px">Fecha</th><th style="padding:7px 10px">Cuenta</th><th style="padding:7px 10px;text-align:right">Adelanto (entra)</th><th style="padding:7px 10px;text-align:right">Costo %</th><th style="padding:7px 10px;text-align:right">Interés (costo)</th></tr></thead><tbody>';
-    rows.slice(0, 300).forEach(function (t) {
-      h += '<tr style="border-top:1px solid #f1f3f6">';
-      h += '<td style="padding:7px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(t.fecha || '') + '</td>';
-      h += '<td style="padding:7px 10px;color:#6b7280;white-space:nowrap">' + escapeHtml(t.cuenta || '—') + '</td>';
-      h += '<td style="padding:7px 10px;text-align:right;white-space:nowrap;font-weight:700;color:#047857">+ ' + contMoney2(Number(t.adelanto) || 0) + '</td>';
-      h += '<td style="padding:7px 10px;text-align:right;color:#6b7280">' + (t.costo_pct ? (String(t.costo_pct) + '%') : '') + '</td>';
-      h += '<td style="padding:7px 10px;text-align:right;white-space:nowrap;font-weight:700;color:#b91c1c">− ' + contMoney2(Number(t.intereses) || 0) + '</td>';
-      h += '</tr>';
-    });
-    h += '</tbody></table>';
-    h += '<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 12px;border-top:2px solid #eef2f7;font-size:13px;font-weight:800">';
-    h += '<span style="color:#2d3277">Totales</span><span><span style="color:#047857">+ ' + contMoney2(totAdel) + '</span> &nbsp;·&nbsp; <span style="color:#b91c1c">− ' + contMoney2(totInt) + '</span></span>';
-    h += '</div></div>';
-    return h;
-  }
-  function contMonScroll(id) { var el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
-  function contMonClaseChip(clase) {
-    if (clase === 'venta') return contMonChip('🛒 Venta', '#1d4ed8', '#eff6ff');
-    if (clase === 'sena') return contMonChip('🔖 Seña', '#8a6d1a', '#fff8e6');
-    if (clase === 'salida') return contMonChip('📤 Salida', '#b0562a', '#fdf0e8');
-    return '';
-  }
-  function contMonCardOpen(id, title, sign, total, color, sub) {
-    var h = '<div id="' + id + '" style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04);margin-bottom:16px">';
-    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:#f8fafc;border-bottom:1px solid #eef2f7">';
-    h += '<div><span style="font-weight:800;color:#2d3277;font-size:15px">' + title + '</span>' + (sub ? ('<span style="display:block;font-size:11.5px;color:#9ca3af;margin-top:2px">' + sub + '</span>') : '') + '</div>';
-    h += '<span style="font-weight:800;font-size:17px;color:' + color + '">' + sign + ' ' + contMoney2(Math.abs(total)) + '</span>';
-    h += '</div>';
-    return h;
-  }
-  function contMonCardClose() { return '</div>'; }
-  function contMonEmpty(txt) { return '<div style="padding:16px;color:#94a3b8;font-size:13px">' + escapeHtml(txt) + '</div>'; }
-  // Tabla de libro: col1, col2(detalle), estado(chip|null), movimiento(+/−) y saldo parcial acumulado.
-  function contMonTable(rows, h1, h2) {
-    var h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
-    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase">';
-    h += '<th style="padding:7px 10px">' + escapeHtml(h1 || '') + '</th><th style="padding:7px 10px">' + escapeHtml(h2 || '') + '</th><th style="padding:7px 10px">Estado</th><th style="padding:7px 10px;text-align:right">Movimiento</th><th style="padding:7px 10px;text-align:right">Saldo parcial</th></tr></thead><tbody>';
-    var run = 0;
-    rows.forEach(function (r) {
-      run += (Number(r.delta) || 0);
-      h += '<tr style="border-top:1px solid #f1f3f6">';
-      h += '<td style="padding:7px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(r.c1 || '') + '</td>';
-      h += '<td style="padding:7px 10px;color:#374151">' + escapeHtml(r.c2 || '') + '</td>';
-      h += '<td style="padding:7px 10px">' + (r.estado || '') + '</td>';
-      h += '<td style="padding:7px 10px;text-align:right;white-space:nowrap">' + contMonSigned(r.delta) + '</td>';
-      h += '<td style="padding:7px 10px;text-align:right;white-space:nowrap">' + contMonSaldoCol(run) + '</td>';
-      h += '</tr>';
-    });
-    h += '</tbody></table></div>';
-    return h;
-  }
-  // Transacciones: a dónde fue la plata que salió de MP / salidas de Local, con su estado.
-  var _contMonTxFilter = 'pendiente';   // pendiente | todas
-  function contMonTxSetFilter(v) { _contMonTxFilter = v; if (currentSection === 'contable' && _cont.tab === 'monitor') renderContable(); }
-  function contMonTxSection(allRows) {
-    var rows = allRows || [];
-    var pend = rows.filter(function (t) { return !t.derivado || t.estado === 'pendiente'; });
-    var totPend = pend.reduce(function (s, t) { return s + (Number(t.monto) || 0); }, 0);
-    var shown = (_contMonTxFilter === 'pendiente') ? pend : rows;
-    var h = '<div id="mon_tx" style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04);margin-bottom:16px">';
-    h += '<div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #eef2f7">';
-    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">';
-    h += '<div><span style="font-weight:800;color:#2d3277;font-size:15px">📒 Movimientos (Transacciones)</span><span style="display:block;font-size:11.5px;color:#9ca3af;margin-top:2px">Egresos que salieron de MP / salidas de Local y a dónde se imputaron. Ya están reflejados en el saldo MP.</span></div>';
-    h += '<span style="font-weight:800;font-size:14px;color:#b45309">🕒 En transacción: ' + contMoney2(totPend) + '</span>';
-    h += '</div>';
-    h += '<div style="display:flex;gap:6px;margin-top:10px">';
-    var fb = function (k, lbl) { var on = _contMonTxFilter === k; return '<button onclick="contMonTxSetFilter(\'' + k + '\')" style="padding:5px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">' + lbl + '</button>'; };
-    h += fb('pendiente', 'En transacción (' + pend.length + ')') + fb('todas', 'Todas (' + rows.length + ')');
-    h += '</div></div>';
-    if (!shown.length) { h += contMonEmpty('No hay movimientos ' + (_contMonTxFilter === 'pendiente' ? 'pendientes de clasificar.' : 'cargados.')); return h + '</div>'; }
-    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
-    h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase"><th style="padding:7px 10px">Fecha</th><th style="padding:7px 10px">Cuenta</th><th style="padding:7px 10px">Detalle</th><th style="padding:7px 10px">Estado / Destino</th><th style="padding:7px 10px;text-align:right">Salió</th></tr></thead><tbody>';
-    shown.slice(0, 400).forEach(function (t) {
-      var est = contMonTxEstado(t);
-      h += '<tr style="border-top:1px solid #f1f3f6">';
-      h += '<td style="padding:7px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(t.fecha || '') + (t.hora ? (' ' + escapeHtml(t.hora)) : '') + '</td>';
-      h += '<td style="padding:7px 10px;color:#6b7280;white-space:nowrap">' + escapeHtml(t.cuenta || (t.origen === 'local_salida' ? 'Local' : '—')) + '</td>';
-      h += '<td style="padding:7px 10px;color:#374151">' + escapeHtml(t.detalle || '') + '</td>';
-      h += '<td style="padding:7px 10px">' + contMonChip(est.txt, est.color, est.bg) + '</td>';
-      h += '<td style="padding:7px 10px;text-align:right;white-space:nowrap;font-weight:700;color:#b91c1c">− ' + contMoney2(Number(t.monto) || 0) + '</td>';
-      h += '</tr>';
-    });
-    h += '</tbody></table></div>';
-    if (shown.length > 400) h += '<div style="padding:8px 12px;font-size:12px;color:#9ca3af">Mostrando los primeros 400 movimientos.</div>';
-    return h + '</div>';
+  function contMonDescargar() {
+    var d = _contMon.data; if (!d || !d.rows || !d.rows.length) { showToast('No hay movimientos para descargar', 'info'); return; }
+    var headers = ['Fecha', 'Hora', 'Detalle', 'N° venta', 'Movimiento', 'Saldo parcial'];
+    var out = [['', '', 'Saldo anterior (arrastre)', '', '', d.apertura]];
+    d.rows.forEach(function (r) { out.push([r.fecha || '', r.hora || '', r.detalle || '', r.order_id || '', r.monto, r.saldo]); });
+    contExportXLSX('resumen_cuenta_' + (d.from || 'inicio') + '_a_' + (d.to || 'hoy'), headers, out);
   }
   /* ---------- Opciones de selects ---------- */
   function contCuentaOptions(sel) {
