@@ -15419,6 +15419,7 @@ route('GET', '/api/contable/data', async (req, res) => {
     mp_ingresos: db.contable.mp_ingresos || [],
     prestamos: db.contable.prestamos,
     mp_last_push: db.contable.mp_last_push || {},
+    auto_reglas: db.contable.auto_reglas || [],
     cuentas: ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL']
   });
 });
@@ -15652,6 +15653,44 @@ _montoEl=document.getElementById('monto');montoBind(_montoEl);
 (async function(){try{var r=await fetch('/api/me',{credentials:'same-origin'});if(r.status===401||r.status===403){location.href='/?next='+encodeURIComponent('/rapido');}}catch(e){}})();
 </script></body></html>`;
 route('GET', '/rapido', async (req, res) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(RAPIDO_HTML); });
+// ===== TRANSACCIONES AUTOMÁTICAS: reglas que derivan solas ciertos egresos recurrentes.
+// Una regla: { id, cuentas:['*']|['MARA',...], detalle:'Ausol', match:'exacto'|'contiene',
+//              derivado:'negocio', rubro_id, subrubro_id, nota, activa:true }
+// Coincide si: la cuenta de la transacción está en cuentas (o '*'), y el detalle coincide
+// (exacto = igual sin distinguir mayúsculas; contiene = incluye el texto).
+function _contReglaMatch(r, t) {
+  if (!r || r.activa === false) return false;
+  const cuentas = Array.isArray(r.cuentas) && r.cuentas.length ? r.cuentas : ['*'];
+  const tc = String(t.cuenta || '');
+  if (cuentas.indexOf('*') < 0 && cuentas.indexOf(tc) < 0) return false;
+  const pat = String(r.detalle || '').trim().toLowerCase();
+  if (!pat) return false;
+  const det = String(t.detalle || '').trim().toLowerCase();
+  return (r.match === 'contiene') ? (det.indexOf(pat) >= 0) : (det === pat);
+}
+// Aplica TODAS las reglas activas a las transacciones PENDIENTES (sin derivar). Devuelve cuántas derivó.
+function contAplicarReglas(db) {
+  const c = db.contable;
+  const reglas = (c.auto_reglas || []).filter(r => r && r.activa !== false);
+  if (!reglas.length) return 0;
+  let n = 0;
+  (c.transacciones || []).forEach(t => {
+    if (t.derivado) return;                 // ya clasificada: no se toca
+    for (const r of reglas) {
+      if (_contReglaMatch(r, t)) {
+        t.derivado = r.derivado || null;
+        t.rubro_id = r.rubro_id || null;
+        t.subrubro_id = r.subrubro_id || null;
+        if (r.nota) t.nota = r.nota;
+        t.estado = t.derivado ? 'derivado' : 'pendiente';
+        t.auto_regla_id = r.id;
+        if (t.derivado) n++;
+        break;
+      }
+    }
+  });
+  return n;
+}
 // POST mutaciones por acción (una sola ruta para no multiplicar endpoints).
 route('POST', '/api/contable/mutate', async (req, res) => {
   if (!contRequireAdmin(req, res)) return;
@@ -15661,6 +15700,7 @@ route('POST', '/api/contable/mutate', async (req, res) => {
   const db = contLoad();
   const c = db.contable;
   const nowISO = () => new Date().toISOString();
+  let extraResp = null;
   try {
     switch (action) {
       case 'config.update': {
@@ -15735,6 +15775,44 @@ route('POST', '/api/contable/mutate', async (req, res) => {
         break;
       }
       case 'tx.delete': { c.transacciones = c.transacciones.filter(x => x.id !== p.id); break; }
+      case 'regla.save': {
+        if (!Array.isArray(c.auto_reglas)) c.auto_reglas = [];
+        const data = {
+          cuentas: (Array.isArray(p.cuentas) && p.cuentas.length) ? p.cuentas : ['*'],
+          detalle: String(p.detalle || '').trim(),
+          match: (p.match === 'contiene') ? 'contiene' : 'exacto',
+          derivado: p.derivado || null,
+          rubro_id: p.rubro_id || null,
+          subrubro_id: p.subrubro_id || null,
+          nota: p.nota || '',
+          activa: (p.activa === false) ? false : true
+        };
+        if (!data.detalle) throw new Error('Falta el detalle a buscar');
+        if (!data.derivado) throw new Error('Elegí a dónde derivar');
+        if (p.id) {
+          const r = c.auto_reglas.find(x => x.id === p.id); if (!r) throw new Error('no existe la regla');
+          Object.assign(r, data, { id: r.id });
+        } else {
+          c.auto_reglas.push(Object.assign({ id: contId(db, 'ar'), created_at: nowISO() }, data));
+        }
+        // Al guardar, aplicamos a los pendientes que ya coincidan (nuevos + pendientes).
+        const aplicadas = contAplicarReglas(db);
+        extraResp = { aplicadas };
+        break;
+      }
+      case 'regla.delete': { c.auto_reglas = (c.auto_reglas || []).filter(x => x.id !== p.id); break; }
+      case 'regla.toggle': {
+        const r = (c.auto_reglas || []).find(x => x.id === p.id); if (!r) throw new Error('no existe la regla');
+        r.activa = (r.activa === false);   // alterna
+        const aplicadas = r.activa ? contAplicarReglas(db) : 0;
+        extraResp = { activa: r.activa, aplicadas };
+        break;
+      }
+      case 'reglas.aplicar': {
+        const aplicadas = contAplicarReglas(db);
+        extraResp = { aplicadas };
+        break;
+      }
       case 'interes.save': {
         const cur = contCurrentPeriod(db);
         if (p.id) { const t = c.intereses_adelanto.find(x => x.id === p.id); if (t) Object.assign(t, p, { id: t.id }); }
@@ -15767,7 +15845,7 @@ route('POST', '/api/contable/mutate', async (req, res) => {
     return sendJSON(res, 400, { error: String(e.message || e) });
   }
   saveDB(db);
-  sendJSON(res, 200, { ok: true });
+  sendJSON(res, 200, Object.assign({ ok: true }, extraResp || {}));
 });
 // POST import de movimientos de Mercado Pago (las 6 cuentas). Trae operaciones y las agrega como
 // transacciones "pendientes" para derivar. Dedupe por (cuenta + nº operación).
@@ -15852,6 +15930,34 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   }
   const movs = Array.isArray(body.movimientos) ? body.movimientos : [];
   const cur = contCurrentPeriod(db);
+  // ===== Corrección de FECHA/HORA en registros ya guardados.
+  // Versiones viejas del userscript guardaban la fecha en UTC y la hora en horario local, por lo que un
+  // movimiento de (p.ej.) las 23:31 del 04/10 ARG quedaba como "05/10 23:31" (un día adelantado) y no
+  // aparecía en el Monitor del día correcto. Ahora el userscript manda SIEMPRE fecha+hora de Argentina;
+  // aprovechamos la resincronización para corregir in-situ los registros que ya existían con fecha mala.
+  let corrected = 0;
+  const _fix = (obj, m, conHora) => {
+    let ch = false;
+    const nf = String(m.fecha || '').slice(0, 10);
+    if (nf && obj.fecha !== nf) { obj.fecha = nf; ch = true; }
+    if (conHora) { const nh = String(m.hora || '').slice(0, 5); if (nh && obj.hora !== nh) { obj.hora = nh; ch = true; } }
+    if (ch) corrected++;
+    return ch;
+  };
+  for (const m of movs) {
+    const mpId = String(m.mp_id || m.operacion || '').trim();
+    if (!mpId) continue;
+    const op = String(m.operacion || '').trim();
+    if (m.kind === 'adelanto') {
+      const r = db.contable.intereses_adelanto.find(x => x.origen === 'mp' && x.cuenta === cuenta && (String(x.mp_id) === mpId || (op && String(x.operacion) === op)));
+      if (r) _fix(r, m, false);
+      continue;
+    }
+    const rt = db.contable.transacciones.find(t => t.origen === 'mp' && t.cuenta === cuenta && (String(t.mp_id || t.operacion) === mpId || (op && String(t.operacion) === op)));
+    if (rt) { _fix(rt, m, true); continue; }
+    const ri = (db.contable.mp_ingresos || []).find(x => x.cuenta === cuenta && (String(x.mp_id) === mpId || (op && String(x.operacion) === op)));
+    if (ri) { _fix(ri, m, true); }
+  }
   const excl = (tipo, desc) => (tipo === 'sales' || tipo === 'in_money' || tipo === 'transfers_received' || tipo === 'pix_received' || /venta en mercado libre|devoluci[oó]n de dinero/.test(desc));
   // Rubro de Negocio para auto-derivar "Pago de factura" → Facturas ML.
   const rubroFacturas = (db.contable.config.rubros.negocio || []).find(r => /factura/i.test(String(r.nombre || '')));
@@ -15915,11 +16021,14 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
     });
     added++;
   }
+  // Reglas automáticas: derivar solos los egresos recurrentes que coincidan (Ausol → Telepase, etc.).
+  let autoDerivadas = 0;
+  try { autoDerivadas = contAplicarReglas(db); } catch (e) {}
   // Registrar última sincronización de esta cuenta (para mostrar en el panel).
   if (!db.contable.mp_last_push) db.contable.mp_last_push = {};
   db.contable.mp_last_push[cuenta] = { ts: new Date().toISOString(), added: added };
   saveDB(db);
-  return sendJSON(res, 200, { ok: true, cuenta, added, skipped });
+  return sendJSON(res, 200, { ok: true, cuenta, added, skipped, corrected, autoDerivadas });
 });
 // ===== CHEQUES: lee en vivo la planilla de Google Sheets (compartida como "cualquiera con el enlace: lector").
 let _chequesCache = { ts: 0, rows: null, hoja: '', error: null };
