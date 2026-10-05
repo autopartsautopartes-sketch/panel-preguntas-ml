@@ -15416,6 +15416,7 @@ route('GET', '/api/contable/data', async (req, res) => {
     current_period_id: db.contable.config.current_period_id,
     transacciones: db.contable.transacciones,
     intereses_adelanto: db.contable.intereses_adelanto,
+    mp_ingresos: db.contable.mp_ingresos || [],
     prestamos: db.contable.prestamos,
     mp_last_push: db.contable.mp_last_push || {},
     cuentas: ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL']
@@ -15807,6 +15808,15 @@ route('POST', '/api/contable/import-mp', async (req, res) => {
   saveDB(db);
   sendJSON(res, 200, { ok: true, imported, detalle, nota: 'Se traen operaciones de MP (payments). Vamos a afinar qué tipos de movimiento incluir (transferencias / compras / préstamos) en el próximo paso.' });
 });
+// Extrae el número de venta/orden de un movimiento de MP (para poder abrir la venta desde el Monitor).
+function _mpExtractOrder(m, desc) {
+  if (m && m.order_id) return String(m.order_id);
+  if (m && m.order) return String(m.order);
+  if (m && m.venta) return String(m.venta);
+  const s = String((m && (m.titulo || m.descripcion)) || desc || '');
+  const mm = s.match(/\b(\d{10,16})\b/);
+  return mm ? mm[1] : '';
+}
 // POST receptor de MOVIMIENTOS de MP empujados por el userscript (misma idea que /api/mp/saldo-push).
 // Los movimientos negativos (egresos) de la "Actividad" de MP son de sesión (no accesibles con el token
 // de la app), así que un userscript los lee y los manda acá. Guardamos solo egresos, excluyendo ventas
@@ -15822,7 +15832,8 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   // Dedupe: un mp_id ya existe si está en transacciones O en intereses_adelanto (así un adelanto ya
   // importado tampoco se vuelve a pedir/insertar).
   const has = (mpid) => db.contable.transacciones.some(t => t.origen === 'mp' && t.cuenta === cuenta && String(t.mp_id || t.operacion) === String(mpid))
-    || db.contable.intereses_adelanto.some(x => x.origen === 'mp' && x.cuenta === cuenta && String(x.mp_id) === String(mpid));
+    || db.contable.intereses_adelanto.some(x => x.origen === 'mp' && x.cuenta === cuenta && String(x.mp_id) === String(mpid))
+    || (db.contable.mp_ingresos || []).some(x => x.cuenta === cuenta && String(x.mp_id) === String(mpid));
   // Dedupe por Nº de operación: MP a veces lista el mismo movimiento como 2 entradas internas
   // distintas (mismo nº de operación). Si ya existe ese nº para la cuenta, no lo repetimos.
   const hasOp = (op) => op && db.contable.transacciones.some(t => t.origen === 'mp' && t.cuenta === cuenta && String(t.operacion) === String(op));
@@ -15866,11 +15877,28 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
     if (isNaN(monto)) { skipped++; continue; }
     const tipo = String(m.tipo || m.categoria || '').toLowerCase();
     const desc = (String(m.descripcion || '') + ' ' + String(m.titulo || '')).toLowerCase();
-    // Solo egresos. Excluir ventas y devoluciones de venta.
-    if (monto > 0) { skipped++; continue; }
-    if (excl(tipo, desc)) { skipped++; continue; }
-    if (has(mpId)) { skipped++; continue; }
     const opFinal = String(m.operacion || '').trim();
+    // ===== INGRESOS / DEVOLUCIONES de MP → db.contable.mp_ingresos (para el Monitor "resumen de cuenta").
+    // No van a Transacción (no son egresos a clasificar). Ventas/ingresos en +, devoluciones en −.
+    const esDevol = /devoluci[oó]n de dinero/.test(desc);
+    const esIngreso = (monto > 0) || esDevol || (tipo === 'sales' || tipo === 'in_money' || tipo === 'transfers_received' || tipo === 'pix_received' || /venta en mercado libre/.test(desc));
+    if (esIngreso) {
+      if (!Array.isArray(db.contable.mp_ingresos)) db.contable.mp_ingresos = [];
+      const dupI = db.contable.mp_ingresos.some(x => x.cuenta === cuenta && (String(x.mp_id) === String(mpId) || (opFinal && String(x.operacion) === opFinal)));
+      if (dupI || has(mpId)) { skipped++; continue; }
+      let montoFirmado = Math.round(Number(monto) * 100) / 100;   // + ventas/ingresos, − devoluciones
+      if (esDevol && montoFirmado > 0) montoFirmado = -montoFirmado;   // una devolución SIEMPRE resta
+      db.contable.mp_ingresos.push({
+        id: contId(db, 'mi'), cuenta, mp_id: mpId, operacion: opFinal || mpId,
+        fecha: String(m.fecha || '').slice(0, 10), hora: String(m.hora || '').slice(0, 5),
+        detalle: m.titulo || m.descripcion || (esDevol ? 'Devolución de dinero' : 'Venta en Mercado Libre'),
+        monto: montoFirmado,
+        tipo_mp: tipo, order_id: _mpExtractOrder(m, desc), kind: esDevol ? 'devolucion' : 'ingreso'
+      });
+      added++; continue;
+    }
+    // ===== EGRESOS (resto): van a Transacción como hasta ahora.
+    if (has(mpId)) { skipped++; continue; }
     if (opFinal && hasOp(opFinal)) { skipped++; continue; }
     // Auto-derivar "Pago de factura" → Negocio / Facturas ML (no queda pendiente en Transacción).
     const esFactura = /pago de factura/.test(desc);
@@ -16038,6 +16066,40 @@ function arNow() {
     const d = new Date(Date.now() - 3 * 3600 * 1000);
     return { date: d.toISOString().slice(0, 10), hour: d.getUTCHours(), minute: d.getUTCMinutes() };
   }
+}
+// Feriados nacionales de Argentina (y días no laborables/puentes) — para NO grabar el histórico esos días.
+// Lista por año en 'YYYY-MM-DD'. ACTUALIZAR cada año (los trasladables y puentes cambian).
+const FERIADOS_AR = new Set([
+  // ---- 2026 ----
+  '2026-01-01', // Año Nuevo
+  '2026-02-16', '2026-02-17', // Carnaval
+  '2026-03-23', // Puente turístico
+  '2026-03-24', // Memoria
+  '2026-04-02', // Malvinas / Jueves Santo
+  '2026-04-03', // Viernes Santo
+  '2026-05-01', // Día del Trabajo
+  '2026-05-25', // Revolución de Mayo
+  '2026-06-17', // Güemes
+  '2026-06-20', // Belgrano
+  '2026-07-09', // Independencia
+  '2026-07-10', // Puente turístico
+  '2026-08-17', // San Martín
+  '2026-10-12', // Diversidad Cultural
+  '2026-11-20', // Soberanía Nacional
+  '2026-12-07', // Puente turístico
+  '2026-12-08', // Inmaculada Concepción
+  '2026-12-25', // Navidad
+  // ---- 2027 (inamovibles + Carnaval + Viernes Santo; revisar trasladables/puentes cuando se publiquen) ----
+  '2027-01-01', '2027-02-08', '2027-02-09', '2027-03-24', '2027-03-26', '2027-04-02',
+  '2027-05-01', '2027-05-25', '2027-06-20', '2027-07-09', '2027-12-08', '2027-12-25',
+]);
+// true si la fecha ARG (YYYY-MM-DD) es sábado, domingo o feriado nacional.
+function _esFinDeSemanaOFeriado(dateStr) {
+  try {
+    if (FERIADOS_AR.has(String(dateStr))) return true;
+    const dow = new Date(String(dateStr) + 'T12:00:00Z').getUTCDay();   // 0=domingo, 6=sábado
+    return dow === 0 || dow === 6;
+  } catch (e) { return false; }
 }
 // "dd/mm/aaaa" | "aaaa-mm-dd" | "dd/mm" -> entero AAAAMMDD (igual que el cliente).
 function _contFechaOrd(s) {
@@ -16253,6 +16315,173 @@ route('POST', '/api/contable/resumen-historico/borrar', async (req, res) => {
   sendJSON(res, 200, { ok: true, removed: before - db.contable.resumen_historico.length });
 });
 
+// ==================== MONITOR (resumen de cuenta — libro de movimientos) ====================
+// Arma un LIBRO de movimientos (entradas/salidas) de TODO lo que compone el ¿Cómo estoy?, con el
+// signo correcto por cada tipo, su fecha/hora y el saldo parcial. El saldo SIEMPRE cierra en el
+// ¿Cómo estoy? (se ancla al saldo actual). Lee de datos YA persistidos (no vuelve a MP en vivo).
+// Fecha/hora ARG desde un ISO (created_at, etc.).
+function _argDT(iso) {
+  if (!iso) return null;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+    const p = {}; for (const x of fmt.formatToParts(new Date(iso))) p[x.type] = x.value;
+    if (!p.year) return null;
+    return { fecha: `${p.year}-${p.month}-${p.day}`, hora: `${p.hour}:${p.minute}` };
+  } catch (e) { return null; }
+}
+// Normaliza una fecha de la planilla de cheques (dd/mm/aaaa | aaaa-mm-dd | dd/mm) a YYYY-MM-DD.
+function _chqFecha(s) {
+  s = String(s || '').trim(); if (!s) return '';
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/); if (m) { let y = m[3]; if (y.length === 2) y = '20' + y; return y + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0'); }
+  return '';
+}
+// Lector top-level de casos de parabrisas (loadPbCasos vive dentro del IIFE de Ads).
+function _loadPbCasosTop() {
+  try { const d = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'parabrisas_casos.json'), 'utf8')); return (d && Array.isArray(d.casos)) ? d.casos : []; } catch (e) { return []; }
+}
+// Saldo ACTUAL del ¿Cómo estoy? (MISMA fórmula que el snapshot) — ancla del Monitor.
+function contSaldoActual() {
+  const num = v => Number(v) || 0;
+  const db = contLoad(); const c = db.contable;
+  const pushMap = db.saldos_push || {};
+  let mp = 0; ['MARA', 'EXPRESS', 'MARCOS', 'ANTO', 'DARIO', 'JORGE', 'DANIEL'].forEach(n => { const p = pushMap[n]; if (p) mp += num(p.disponible) + num(p.a_liberar); });
+  const cheques = (_chequesCache && _chequesCache.total_sin_relleno != null) ? num(_chequesCache.total_sin_relleno) : 0;
+  let prest = 0; (c.prestamos || []).forEach(p => { const pg = (p.pagos || []).reduce((s, x) => s + num(x.monto), 0); prest += num(p.total) - pg; });
+  let provReal = 0;
+  try {
+    const cs = loadCompras(); const by = {};
+    (cs.proveedores || []).forEach(p => by[p.id] = { d1: num(p.descuento_pct), d2: num(p.descuento_pct2), fact: 0, nc: 0, pag: 0 });
+    (cs.comprobantes || []).forEach(x => { const b = by[x.proveedor_id]; if (!b) return; if (x.tipo === 'factura') b.fact += num(x.importe); else if (x.tipo === 'nc') b.nc += num(x.importe); });
+    (cs.pagos || []).forEach(pg => { const b = by[pg.proveedor_id]; if (b) b.pag += num(pg.importe); });
+    Object.keys(by).forEach(k => { const b = by[k]; const bruto = b.fact - b.nc - b.pag; const f = (1 - b.d1 / 100) * (1 - b.d2 / 100); provReal += (bruto > 0 ? bruto * f : bruto); });
+  } catch (e) {}
+  const localCaja = (localCajaSaldoTotal() || {}).total || 0;
+  const parab = parabrisasPorCobrarTotal() || 0;
+  return Math.round((mp - cheques - prest - provReal + localCaja + parab) * 100) / 100;
+}
+// Construye TODAS las filas del libro (ascendente, con saldo parcial anclado al saldo actual).
+function contBuildMonitorRows() {
+  const num = v => Number(v) || 0;
+  const db = contLoad(); const c = db.contable;
+  const rows = [];
+  const push = (fecha, hora, detalle, monto, chip, extra) => {
+    const f = String(fecha || '').slice(0, 10); if (!f) return;
+    rows.push(Object.assign({ fecha: f, hora: hora || '', detalle: String(detalle || ''), monto: Math.round(num(monto) * 100) / 100, chip: chip || '' }, extra || {}));
+  };
+  // MP: INGRESOS / DEVOLUCIONES (con signo). order_id → clickeable en el front.
+  (c.mp_ingresos || []).forEach(t => {
+    const esDev = t.kind === 'devolucion' || num(t.monto) < 0;
+    push(t.fecha, t.hora, (t.detalle || (esDev ? 'Devolución' : 'Venta')), num(t.monto), esDev ? 'mp_devol' : 'mp_venta', { cuenta: t.cuenta || '', order_id: t.order_id || '' });
+  });
+  // MP: EGRESOS (transacciones origen mp / manual). Las salidas de Local van por Local (no duplicar).
+  (c.transacciones || []).forEach(t => {
+    if (t.origen === 'local_salida') return;
+    push(t.fecha, t.hora, (t.detalle || 'Egreso MP') + (t.cuenta ? (' · ' + t.cuenta) : ''), -Math.abs(num(t.monto)), 'mp_egreso', { cuenta: t.cuenta || '', estado: t.estado || '', derivado: t.derivado || null });
+  });
+  // MP: ADELANTOS → SOLO resta el INTERÉS. El adelanto en sí NO cambia el saldo (te entra la plata
+  // pero la debés, se compensa). El interés es el mismo valor que va a Contable → Negocio → Adelantos.
+  (c.intereses_adelanto || []).forEach(a => {
+    if (num(a.intereses) > 0) push(a.fecha, '', 'Interés de adelanto' + (a.cuenta ? (' · ' + a.cuenta) : '') + (a.costo_pct ? (' (' + a.costo_pct + '%)') : ''), -num(a.intereses), 'adelanto_int');
+  });
+  // PROVEEDORES (compras): factura (−), NC (+), pago (+). Hora = cuando se registró (created_at).
+  try {
+    const cs = loadCompras(); const provName = {};
+    (cs.proveedores || []).forEach(p => provName[p.id] = p.nombre || p.razon_social || ('Prov ' + p.id));
+    (cs.comprobantes || []).forEach(x => {
+      const dt = _argDT(x.created_at); const f = (dt && dt.fecha) || x.fecha; const h = (dt && dt.hora) || '';
+      const nm = provName[x.proveedor_id] || 'Proveedor';
+      if (x.tipo === 'factura') push(f, h, 'Factura proveedor · ' + nm + (x.numero ? (' #' + x.numero) : ''), -num(x.importe), 'prov_fac');
+      else if (x.tipo === 'nc') push(f, h, 'Nota de crédito · ' + nm + (x.numero ? (' #' + x.numero) : ''), num(x.importe), 'prov_nc');
+    });
+    (cs.pagos || []).forEach(pg => {
+      const dt = _argDT(pg.created_at); const f = (dt && dt.fecha) || pg.fecha; const h = (dt && dt.hora) || '';
+      push(f, h, 'Pago a proveedor · ' + (provName[pg.proveedor_id] || '') + (pg.medio ? (' (' + pg.medio + ')') : ''), num(pg.importe), 'prov_pago');
+    });
+  } catch (e) {}
+  // PRÉSTAMOS: alta (−total) y cada cuota pagada (+).
+  (c.prestamos || []).forEach(pr => {
+    const dtA = _argDT(pr.creado);
+    if (num(pr.total) > 0) push((dtA && dtA.fecha) || String(pr.fecha_cierre || '').slice(0, 10), (dtA && dtA.hora) || '', 'Préstamo tomado' + (pr.cuenta ? (' · ' + pr.cuenta) : '') + (pr.nota ? (' · ' + pr.nota) : ''), -num(pr.total), 'prestamo_alta');
+    (pr.pagos || []).forEach(pg => push(pg.fecha, '', 'Pago de cuota préstamo' + (pr.cuenta ? (' · ' + pr.cuenta) : ''), num(pg.monto), 'prestamo_cuota'));
+  });
+  // LOCAL: ventas/señas (+ efectivo/cheque), salidas (−). Hora = grabación (created_at).
+  (db.local_sales || []).forEach(o => {
+    const dt = _argDT(o.created_at); const f = (dt && dt.fecha) || o.fecha; const h = (dt && dt.hora) || '';
+    const suc = o.sucursal || ''; const t = o.tipo || 'venta';
+    if (t === 'salida') push(f, h, 'Salida Local · ' + suc + (o.categoria ? (' · ' + o.categoria) : ''), -num(o.monto), 'local_salida');
+    else if (t === 'sena') { const med = String(o.forma_pago || '').toUpperCase(); const d = (med === 'EFECTIVO' || med === 'CHEQUE') ? num(o.monto) : 0; if (d > 0) push(f, h, 'Seña Local · ' + suc + (o.concepto ? (' · ' + o.concepto) : ''), d, 'local_sena'); }
+    else { let ef = 0; (o.pagos || []).forEach(p => { const m = String(p.medio || '').toUpperCase(); if (m === 'EFECTIVO' || m === 'CHEQUE') ef += num(p.monto); }); if (ef > 0) push(f, h, (o.ramo === 'parabrisas' ? 'Venta Local parabrisas · ' : 'Venta Local · ') + suc + (o.cliente ? (' · ' + o.cliente) : ''), ef, 'local_venta'); }
+  });
+  // PARABRISAS: por cobrar (+) al cargar; cobrado (−) al marcarse pagado. Hora = grabación.
+  try {
+    _loadPbCasosTop().forEach(cc => {
+      const esPart = String(cc.modalidad || 'SEGURO').toUpperCase() === 'PARTICULAR';
+      const amount = esPart ? num(cc.precio_venta) : num(cc.monto);
+      if (amount <= 0) return;
+      const dtC = _argDT(cc.created_at); const fC = (dtC && dtC.fecha) || cc.fecha; const hC = (dtC && dtC.hora) || '';
+      push(fC, hC, 'Parabrisas por cobrar #' + cc.n + (cc.compania ? (' · ' + cc.compania) : ''), amount, 'parab_mas');
+      if (cc.pagado) { const dtP = _argDT(cc.updated_at); const fP = (dtP && dtP.fecha) || fC; const hP = (dtP && dtP.hora) || ''; push(fP, hP, 'Parabrisas cobrado #' + cc.n, -amount, 'parab_menos'); }
+    });
+  } catch (e) {}
+  // CHEQUES: registrado (−) y pagado (+), de la planilla (solo fechas, sin hora).
+  try {
+    ((_chequesCache && _chequesCache.rows) || []).forEach(r => {
+      const monto = _contMontoNum(r.monto_e != null && r.monto_e !== '' ? r.monto_e : r.monto);
+      if (!(monto > 0)) return;
+      const fAlta = _chqFecha(r.fecha); if (fAlta) push(fAlta, '', 'Cheque registrado' + (r.numero ? (' #' + r.numero) : '') + (r.chequera ? (' · ' + r.chequera) : ''), -monto, 'cheque_alta');
+      const fPago = _chqFecha(r.fecha_pago || r.fecha_h); if (fPago) push(fPago, '', 'Cheque pagado' + (r.numero ? (' #' + r.numero) : ''), monto, 'cheque_pago');
+    });
+  } catch (e) {}
+
+  rows.forEach(r => r._ts = String(r.fecha) + 'T' + (r.hora || '00:00'));
+  rows.sort((a, b) => String(a._ts).localeCompare(String(b._ts)));
+  const saldoActual = contSaldoActual();
+  const total = rows.reduce((s, r) => s + num(r.monto), 0);
+  const opening = Math.round((saldoActual - total) * 100) / 100;
+  let run = opening;
+  rows.forEach(r => { run += num(r.monto); r.saldo = Math.round(run * 100) / 100; delete r._ts; });
+  return { saldoActual, opening, rows };
+}
+// Backup diario persistente del Monitor (archivo aparte, retención ~3 meses).
+function monitorBackupPath() { return path.join(DATA_DIR, 'monitor_backup.json'); }
+function loadMonitorBackup() { try { return JSON.parse(fs.readFileSync(monitorBackupPath(), 'utf8')) || {}; } catch (e) { return {}; } }
+function saveMonitorBackup(o) { try { fs.writeFileSync(monitorBackupPath(), JSON.stringify(o)); } catch (e) {} }
+function contBackupMonitorDiario() {
+  try {
+    const built = contBuildMonitorRows();
+    const byDate = {};
+    built.rows.forEach(r => { (byDate[r.fecha] = byDate[r.fecha] || []).push(r); });
+    const bk = loadMonitorBackup();
+    Object.keys(byDate).forEach(f => { const dr = byDate[f]; bk[f] = { saldo_cierre: dr[dr.length - 1].saldo, count: dr.length, movimientos: dr, ts: Date.now() }; });
+    const cutoff = new Date(Date.now() - 93 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    Object.keys(bk).forEach(k => { if (k < cutoff) delete bk[k]; });
+    saveMonitorBackup(bk);
+    return Object.keys(bk).length;
+  } catch (e) { console.error('[MONITOR] backup error', (e && e.message) || e); return 0; }
+}
+// GET libro del Monitor. ?from=&to= (YYYY-MM-DD). Sin rango → todo. Siempre ancla al saldo actual.
+route('GET', '/api/contable/monitor', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const from = (q.get('from') || '').slice(0, 10), to = (q.get('to') || '').slice(0, 10);
+  if (!(_chequesCache && _chequesCache.rows)) { try { await contFetchCheques('CHEQUES'); } catch (e) {} }
+  const built = contBuildMonitorRows();
+  const rows = built.rows;
+  let apertura = built.opening;
+  if (from) { const before = rows.filter(r => String(r.fecha) < from); apertura = before.length ? before[before.length - 1].saldo : built.opening; }
+  const shown = rows.filter(r => (!from || String(r.fecha) >= from) && (!to || String(r.fecha) <= to));
+  let totIn = 0, totOut = 0; shown.forEach(r => { if (r.monto > 0) totIn += r.monto; else totOut += r.monto; });
+  sendJSON(res, 200, { ok: true, saldoActual: built.saldoActual, apertura: Math.round(apertura * 100) / 100, from, to, totalEntradas: Math.round(totIn * 100) / 100, totalSalidas: Math.round(totOut * 100) / 100, count: shown.length, rows: shown });
+});
+// POST backup manual del Monitor (además del automático diario).
+route('POST', '/api/contable/monitor/backup', async (req, res) => {
+  if (!contRequireAdmin(req, res)) return;
+  if (!(_chequesCache && _chequesCache.rows)) { try { await contFetchCheques('CHEQUES'); } catch (e) {} }
+  const dias = contBackupMonitorDiario();
+  sendJSON(res, 200, { ok: true, dias });
+});
+
 // ===== Schedulers de segundo plano (hora Argentina) =====
 (function startContableSchedulers() {
   // 1) Cheques: mantener el cache tibio (para que el Resumen muestre cheques sin abrir la pestaña).
@@ -16276,10 +16505,19 @@ route('POST', '/api/contable/resumen-historico/borrar', async (req, res) => {
         console.log('[RESUMEN] refresco previo a grabar (14:28 ARG):', t.date);
       }
       // 14:30 → grabar la foto del día al histórico (una vez por día).
+      // NO se graba automáticamente los sábados, domingos ni feriados nacionales de Argentina.
+      // (El botón "Grabar ahora" sigue funcionando siempre, sin importar el día.)
       if (t.hour === 14 && t.minute >= 30 && t.minute < 33 && lastSaveDate !== t.date) {
         lastSaveDate = t.date;
-        const snap = await contRefreshResumenLive();
-        if (snap) { contSaveResumenHistorico(snap); console.log('[RESUMEN] histórico grabado (14:30 ARG):', t.date); }
+        if (_esFinDeSemanaOFeriado(t.date)) {
+          console.log('[RESUMEN] 14:30 ARG — ' + t.date + ' es finde/feriado: NO se graba el histórico.');
+        } else {
+          const snap = await contRefreshResumenLive();
+          if (snap) { contSaveResumenHistorico(snap); console.log('[RESUMEN] histórico grabado (14:30 ARG):', t.date); }
+        }
+        // Backup diario del Monitor (resumen de cuenta), retención ~3 meses. Corre todos los días
+        // (incluso finde/feriado) para no perder el arrastre de movimientos.
+        try { if (!(_chequesCache && _chequesCache.rows)) { await contFetchCheques('CHEQUES').catch(() => {}); } const d = contBackupMonitorDiario(); console.log('[MONITOR] backup diario:', d, 'día(s) guardados'); } catch (e) {}
       }
     } catch (e) { console.error('[RESUMEN] scheduler error:', (e && e.message) || e); }
   }
