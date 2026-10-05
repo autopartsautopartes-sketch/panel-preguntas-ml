@@ -12413,7 +12413,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   setInterval(async () => {
     if (currentSection !== 'contable') return;
     if (_cont.tab !== 'transaccion') return;
-    if (_cont.showManual || _cont.derivarId || _syncing) return;
+    if (_cont.showManual || _cont.derivarId || _cont.reglaForm || _syncing) return;
     if (typeof isUserTyping === 'function' && isUserTyping()) return;
     var ae = document.activeElement;
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) return;
@@ -12443,7 +12443,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     });
   }
   /* ==================== CONTABLE (solo admin) ==================== */
-  var _cont = { data: null, tab: 'resumen', negSub: 'gastos', casaSub: 'gastos', consSub: 'gastos', bancoSub: 'gastos', derivarId: null, editId: null, showManual: false, filtros: { tx: { estado: 'pendiente' } } };
+  var _cont = { data: null, tab: 'resumen', negSub: 'gastos', casaSub: 'gastos', consSub: 'gastos', bancoSub: 'gastos', derivarId: null, editId: null, showManual: false, txSub: 'movs', reglaEdit: null, filtros: { tx: { estado: 'pendiente' } } };
   var CONT_TABS = [
     ['resumen', 'Resumen'], ['monitor', '🔎 Monitor'], ['transaccion', 'Transacción'], ['negocio', 'Negocio'],
     ['casa', 'Casa'], ['banco', 'Banco'], ['nocontable', 'No contable'], ['construccion', 'Construcción'], ['cheques', 'Cheques'],
@@ -13782,7 +13782,41 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   /* ==================== MONITOR · Resumen de cuenta (continuo, con descarga) ==================== */
   // Lee el libro de movimientos del servidor (/api/contable/monitor). El saldo parcial es continuo y
   // SIEMPRE cierra en el ¿Cómo estoy?. Por defecto muestra HOY; se puede elegir rango y descargar.
-  var _contMon = { loading: false, ts: 0, data: null, from: '', to: '', preset: 'hoy' };
+  var _contMon = { loading: false, ts: 0, data: null, from: '', to: '', preset: 'hoy', filtroTipos: [], filtroCuenta: '' };
+  var MON_GRUPOS = [
+    ['mp_venta', '🛒 Ventas MP'], ['mp_devol', '↩️ Devol. MP'], ['mp_egreso', '💸 Egresos MP'],
+    ['adelanto', '⚡ Adelantos'], ['prov', '📦 Proveedores'], ['prestamo', '🏦 Préstamos'],
+    ['local', '🏪 Local'], ['parab', '🪟 Parabrisas'], ['cheque', '🧾 Cheques']
+  ];
+  function _contMonGrupo(chip) {
+    chip = String(chip || '');
+    if (chip === 'mp_venta') return 'mp_venta';
+    if (chip === 'mp_devol') return 'mp_devol';
+    if (chip === 'mp_egreso') return 'mp_egreso';
+    if (chip === 'adelanto' || chip === 'adelanto_int') return 'adelanto';
+    if (chip.indexOf('prov_') === 0) return 'prov';
+    if (chip.indexOf('prestamo_') === 0) return 'prestamo';
+    if (chip.indexOf('local_') === 0) return 'local';
+    if (chip.indexOf('parab') === 0) return 'parab';
+    if (chip.indexOf('cheque_') === 0) return 'cheque';
+    return 'otro';
+  }
+  function _contMonFiltrar(rows) {
+    var tipos = _contMon.filtroTipos || [], cta = _contMon.filtroCuenta || '';
+    if (!tipos.length && !cta) return rows;
+    return rows.filter(function (r) {
+      if (tipos.length && tipos.indexOf(_contMonGrupo(r.chip)) < 0) return false;
+      if (cta && String(r.cuenta || '') !== cta) return false;
+      return true;
+    });
+  }
+  function contMonToggleTipo(k) {
+    var a = _contMon.filtroTipos || []; var i = a.indexOf(k);
+    if (i >= 0) a.splice(i, 1); else a.push(k);
+    _contMon.filtroTipos = a; renderContable();
+  }
+  function contMonSetCuenta(v) { _contMon.filtroCuenta = v || ''; renderContable(); }
+  function contMonClearFiltro() { _contMon.filtroTipos = []; _contMon.filtroCuenta = ''; renderContable(); }
   function _contMonHoy() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
   function _contMonMesIni() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; }
   function contMonChipInfo(k) {
@@ -13855,18 +13889,38 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<input type="date" value="' + escapeHtml(_contMon.to || '') + '" max="' + hoy + '" onchange="contMonSetTo(this.value)" style="padding:6px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:13px">';
     h += '<button onclick="contLoadMonitor(true)" style="padding:6px 14px;border:none;background:#3483fa;color:#fff;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">Aplicar</button>';
     h += '</div>';
+    // ---- Filtro por tipo de movimiento + cuenta (no recarga del server, filtra lo que ya se trajo) ----
+    var ft = _contMon.filtroTipos || [], fc = _contMon.filtroCuenta || '';
+    var hayFiltro = (ft.length > 0 || !!fc);
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px;background:#f8fafc;border:1px solid #eef2f7;border-radius:10px;padding:9px 10px">';
+    h += '<span style="font-size:12px;color:#6b7280;font-weight:700;margin-right:2px">Filtrar:</span>';
+    MON_GRUPOS.forEach(function (g) {
+      var on = ft.indexOf(g[0]) >= 0;
+      h += '<button onclick="contMonToggleTipo(\'' + g[0] + '\')" style="padding:4px 10px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:20px;font-size:11.5px;font-weight:700;cursor:pointer">' + g[1] + '</button>';
+    });
+    h += '<span style="width:1px;height:20px;background:#e5e7eb;margin:0 4px"></span>';
+    var ctaOpts = '<option value="">Todas las cuentas</option>';
+    contCuentas().forEach(function (cc) { ctaOpts += '<option value="' + escapeHtml(cc) + '"' + (fc === cc ? ' selected' : '') + '>' + escapeHtml(cc) + '</option>'; });
+    h += '<select onchange="contMonSetCuenta(this.value)" style="padding:5px 8px;border:1px solid #d7dee8;border-radius:8px;font-size:12px">' + ctaOpts + '</select>';
+    if (hayFiltro) h += '<button onclick="contMonClearFiltro()" style="padding:4px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-size:11.5px">✕ Limpiar filtro</button>';
+    h += '</div>';
+    // Aplicar el filtro. El saldo parcial de cada fila SIGUE siendo el real (acumulado de TODOS los
+    // movimientos); el filtro solo esconde filas. Las KPIs de Entradas/Salidas se recalculan sobre lo visible.
+    var shown = _contMonFiltrar(rows);
+    var vEnt = d.totalEntradas, vSal = d.totalSalidas;
+    if (hayFiltro) { vEnt = 0; vSal = 0; shown.forEach(function (r) { if (r.monto > 0) vEnt += r.monto; else vSal += r.monto; }); }
     h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">';
     var kpi = function (lbl, val, col, strong) { return '<div style="background:' + (strong ? '#2d3277' : '#fff') + ';border:1px solid #e6ebf5;border-radius:10px;padding:10px 14px;min-width:150px"><div style="font-size:11px;color:' + (strong ? '#c7d0f0' : '#888') + ';text-transform:uppercase">' + lbl + '</div><div style="font-size:18px;font-weight:800;color:' + (strong ? '#fff' : col) + '">' + (val < 0 ? '− ' : '') + contMoney2(Math.abs(val)) + '</div></div>'; };
     h += kpi('Saldo anterior', d.apertura, '#2d3277');
-    h += kpi('Entradas', d.totalEntradas, '#047857') + kpi('Salidas', d.totalSalidas, '#b91c1c');
+    h += kpi(hayFiltro ? 'Entradas (filtrado)' : 'Entradas', vEnt, '#047857') + kpi(hayFiltro ? 'Salidas (filtrado)' : 'Salidas', vSal, '#b91c1c');
     h += kpi('Saldo actual', d.saldoActual, '#fff', true);
     h += '</div>';
     if (!rows.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos en el rango elegido.</div>';
+    if (hayFiltro && !shown.length) return h + '<div class="empty" style="padding:24px;color:#94a3b8">No hay movimientos con ese filtro. <a onclick="contMonClearFiltro()" style="color:#7c3aed;cursor:pointer;font-weight:700">Limpiar filtro</a></div>';
     h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)">';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:680px">';
     h += '<thead><tr style="text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase;background:#f8fafc"><th style="padding:8px 10px;white-space:nowrap">Fecha</th><th style="padding:8px 10px;white-space:nowrap">Hora</th><th style="padding:8px 10px">Detalle</th><th style="padding:8px 10px;text-align:right">Movimiento</th><th style="padding:8px 10px;text-align:right">Saldo parcial</th></tr></thead><tbody>';
-    h += '<tr style="border-top:1px solid #f1f3f6;background:#fbfbfe"><td style="padding:7px 10px;color:#9ca3af" colspan="4"><i>Saldo anterior (arrastre)</i></td><td style="padding:7px 10px;text-align:right">' + contMonSaldoHtml(d.apertura) + '</td></tr>';
-    var ordered = rows.slice().reverse();
+    var ordered = shown.slice().reverse();   // más nuevo arriba, más viejo abajo
     ordered.forEach(function (r) {
       h += '<tr style="border-top:1px solid #f1f3f6">';
       h += '<td style="padding:8px 10px;white-space:nowrap;color:#6b7280">' + escapeHtml(r.fecha || '') + '</td>';
@@ -13876,6 +13930,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<td style="padding:8px 10px;text-align:right;white-space:nowrap">' + contMonSaldoHtml(r.saldo) + '</td>';
       h += '</tr>';
     });
+    // El "Saldo anterior (arrastre)" va ABAJO del todo, porque lo más viejo queda al final de la lista.
+    h += '<tr style="border-top:2px solid #e9edf5;background:#fbfbfe"><td style="padding:7px 10px;color:#9ca3af" colspan="4"><i>Saldo anterior (arrastre)</i></td><td style="padding:7px 10px;text-align:right">' + contMonSaldoHtml(d.apertura) + '</td></tr>';
     h += '</tbody></table></div></div>';
     h += '<div style="font-size:11.5px;color:#9ca3af;margin-top:8px">El saldo cierra en el ¿Cómo estoy?. Horas: MP con su hora; Local/Parabrisas/Proveedores con la hora de carga; Cheques con la fecha de registro/pago. Las ventas de ML aparecen a medida que MP las informa.</div>';
     return h;
@@ -13912,6 +13968,20 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
 
   /* ---------- TRANSACCIÓN ---------- */
   function contTransaccionHtml() {
+    // Sub-solapas: Movimientos (lo de siempre) y Transacciones automáticas (reglas).
+    var sub = _cont.txSub || 'movs';
+    var h = '';
+    h += '<div style="display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid #eef2f7;padding-bottom:10px">';
+    [['movs', 'Movimientos'], ['reglas', '⚙️ Transacciones automáticas']].forEach(function (s) {
+      var on = sub === s[0];
+      h += '<button onclick="contTxSub(\'' + s[0] + '\')" style="padding:7px 14px;border-radius:9px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';font-weight:700;font-size:13px;cursor:pointer">' + s[1] + '</button>';
+    });
+    h += '</div>';
+    if (sub === 'reglas') return h + contReglasHtml();
+    return h + contTxMovsHtml();
+  }
+  function contTxSub(s) { _cont.txSub = s; _cont.reglaEdit = null; renderContable(); }
+  function contTxMovsHtml() {
     var cur = contCurPeriod();
     var h = '';
     // Barra superior
@@ -13955,6 +14025,138 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         '<td style="padding:8px;white-space:nowrap">' +
         '<button onclick="contDerivarOpen(\'' + t.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#7c3aed;color:#fff;cursor:pointer;font-size:12px">Derivar</button> ' +
         '<button onclick="contTxDelete(\'' + t.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button>' +
+        '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+    return h;
+  }
+  /* ---------- TRANSACCIONES AUTOMÁTICAS (reglas) ---------- */
+  var REGLA_DESTINOS = [['negocio', 'Negocio'], ['casa', 'Casa'], ['construccion', 'Construcción'], ['banco', 'Banco'], ['nocontable', 'No contable']];
+  function contReglas() { return (contD().auto_reglas) || []; }
+  function contReglaNueva() { _cont.reglaForm = { id: null, cuentas: [], detalle: '', match: 'exacto', derivado: '', rubro_id: '', subrubro_id: '', nota: '' }; renderContable(); }
+  function contReglaEditar(id) {
+    var r = contReglas().find(function (x) { return x.id === id; }); if (!r) return;
+    _cont.reglaForm = {
+      id: r.id, cuentas: (r.cuentas && r.cuentas.indexOf('*') < 0) ? r.cuentas.slice() : [],
+      detalle: r.detalle || '', match: r.match || 'exacto', derivado: r.derivado || '',
+      rubro_id: r.rubro_id || '', subrubro_id: r.subrubro_id || '', nota: r.nota || ''
+    };
+    renderContable();
+  }
+  function contReglaCancelar() { _cont.reglaForm = null; renderContable(); }
+  function _syncReglaForm() {
+    var f = _cont.reglaForm; if (!f) return;
+    var g = function (id) { var e = document.getElementById(id); return e ? e.value : undefined; };
+    var v;
+    if ((v = g('reg-detalle')) !== undefined) f.detalle = v;
+    if ((v = g('reg-match')) !== undefined) f.match = v;
+    if ((v = g('reg-dest')) !== undefined) f.derivado = v;
+    if ((v = g('reg-rubro')) !== undefined) f.rubro_id = v;
+    if ((v = g('reg-sub')) !== undefined) f.subrubro_id = v;
+    if ((v = g('reg-nota')) !== undefined) f.nota = v;
+  }
+  function contReglaToggleCuenta(cc) {
+    _syncReglaForm(); var f = _cont.reglaForm; if (!f) return;
+    var i = f.cuentas.indexOf(cc); if (i >= 0) f.cuentas.splice(i, 1); else f.cuentas.push(cc);
+    renderContable();
+  }
+  function contReglaDestChange() { _syncReglaForm(); var f = _cont.reglaForm; f.rubro_id = ''; f.subrubro_id = ''; renderContable(); }
+  function contReglaRubroChange() { _syncReglaForm(); var f = _cont.reglaForm; f.subrubro_id = ''; renderContable(); }
+  async function contReglaGuardar() {
+    _syncReglaForm(); var f = _cont.reglaForm; if (!f) return;
+    if (!String(f.detalle || '').trim()) { showToast('Escribí el detalle a buscar', 'error'); return; }
+    if (!f.derivado) { showToast('Elegí a dónde derivar', 'error'); return; }
+    var payload = {
+      id: f.id || undefined, cuentas: (f.cuentas && f.cuentas.length) ? f.cuentas : ['*'],
+      detalle: String(f.detalle).trim(), match: f.match || 'exacto', derivado: f.derivado,
+      rubro_id: f.rubro_id || null, subrubro_id: f.subrubro_id || null, nota: f.nota || ''
+    };
+    try {
+      var r = await fetch('/api/contable/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'regla.save', payload: payload }) });
+      var j = await r.json();
+      if (!r.ok || !j.ok) { showToast(j.error || 'Error', 'error'); return; }
+      _cont.reglaForm = null;
+      showToast('Regla guardada' + (j.aplicadas ? ' · derivó ' + j.aplicadas + ' pendiente(s)' : ''), 'success');
+      await contReload();
+    } catch (e) { showToast('Error de red', 'error'); }
+  }
+  async function contReglaBorrar(id) {
+    if (!confirm('¿Borrar esta regla? Las transacciones que ya derivó quedan como están.')) return;
+    var ok = await contMutate('regla.delete', { id: id });
+    if (ok) { showToast('Regla borrada', 'success'); await contReload(); }
+  }
+  async function contReglaAlternar(id) {
+    try {
+      var r = await fetch('/api/contable/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'regla.toggle', payload: { id: id } }) });
+      var j = await r.json();
+      if (!r.ok || !j.ok) { showToast(j.error || 'Error', 'error'); return; }
+      showToast(j.activa ? ('Activada' + (j.aplicadas ? ' · derivó ' + j.aplicadas : '')) : 'Pausada', 'success');
+      await contReload();
+    } catch (e) { showToast('Error de red', 'error'); }
+  }
+  async function contReglasAplicar() {
+    try {
+      var r = await fetch('/api/contable/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reglas.aplicar', payload: {} }) });
+      var j = await r.json();
+      if (!r.ok || !j.ok) { showToast(j.error || 'Error', 'error'); return; }
+      showToast(j.aplicadas ? ('Derivó ' + j.aplicadas + ' pendiente(s)') : 'No había pendientes que coincidan', j.aplicadas ? 'success' : 'info');
+      await contReload();
+    } catch (e) { showToast('Error de red', 'error'); }
+  }
+  function contReglaDestLabel(d) { for (var i = 0; i < REGLA_DESTINOS.length; i++) if (REGLA_DESTINOS[i][0] === d) return REGLA_DESTINOS[i][1]; return (CONT_DEST_LABEL[d] || d); }
+  function contReglasHtml() {
+    var h = '';
+    h += '<div style="font-size:12.5px;color:#6b7280;margin-bottom:12px">Reglas para derivar <b>solas</b> las transacciones de MP que hacés siempre (ej: un pago cuyo detalle es <i>Ausol</i> → <b>Negocio · Telepase</b>). Cuando entra un movimiento que coincide, se clasifica solo y no queda pendiente.</div>';
+    // Formulario (alta/edición)
+    if (_cont.reglaForm) {
+      var f = _cont.reglaForm;
+      h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:16px">';
+      h += '<h3 style="margin:0 0 12px;color:#2d3277;font-size:15px">' + (f.id ? 'Editar regla' : 'Nueva regla automática') + '</h3>';
+      // Cuentas origen (chips; ninguna = todas)
+      h += '<div style="margin-bottom:12px"><div style="font-size:12px;color:#6b7280;font-weight:600;margin-bottom:6px">Cuenta origen <span style="color:#9ca3af;font-weight:400">(ninguna marcada = todas las cuentas)</span></div><div style="display:flex;gap:6px;flex-wrap:wrap">';
+      contCuentas().forEach(function (cc) {
+        var on = f.cuentas.indexOf(cc) >= 0;
+        h += '<button onclick="contReglaToggleCuenta(\'' + escapeHtml(cc) + '\')" style="padding:5px 12px;border:1px solid ' + (on ? '#7c3aed' : '#e5e7eb') + ';background:' + (on ? '#7c3aed' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border-radius:20px;font-size:12px;font-weight:700;cursor:pointer">' + escapeHtml(cc) + '</button>';
+      });
+      h += '</div></div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">';
+      h += contField('Detalle a buscar *', '<input type="text" id="reg-detalle" value="' + escapeHtml(f.detalle || '') + '" placeholder="Ej: Ausol" style="' + contInputCss() + '">');
+      h += contField('Coincidencia', '<select id="reg-match" style="' + contInputCss() + '"><option value="exacto"' + (f.match !== 'contiene' ? ' selected' : '') + '>Es exactamente igual</option><option value="contiene"' + (f.match === 'contiene' ? ' selected' : '') + '>Contiene el texto</option></select>');
+      h += contField('Derivar a *', '<select id="reg-dest" onchange="contReglaDestChange()" style="' + contInputCss() + '"><option value="">(elegí)</option>' + REGLA_DESTINOS.map(function (d) { return '<option value="' + d[0] + '"' + (f.derivado === d[0] ? ' selected' : '') + '>' + d[1] + '</option>'; }).join('') + '</select>');
+      // Rubro + subrubro (si el destino usa rubros)
+      if (f.derivado && f.derivado !== 'nocontable') {
+        h += contField('Rubro', '<select id="reg-rubro" onchange="contReglaRubroChange()" style="' + contInputCss() + '">' + contRubroOptions(f.derivado, f.rubro_id) + '</select>');
+        h += contField('Subrubro', '<select id="reg-sub" style="' + contInputCss() + '">' + contSubOptions(f.derivado, f.rubro_id, f.subrubro_id) + '</select>');
+      }
+      h += contField('Nota (opcional)', '<input type="text" id="reg-nota" value="' + escapeHtml(f.nota || '') + '" placeholder="Nota que se guarda en la transacción" style="' + contInputCss() + '">');
+      h += '</div>';
+      h += '<div style="margin-top:14px;display:flex;gap:8px"><button onclick="contReglaGuardar()" style="padding:9px 18px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-weight:600;cursor:pointer">Guardar regla</button><button onclick="contReglaCancelar()" style="padding:9px 18px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer">Cancelar</button></div>';
+      h += '</div>';
+    } else {
+      h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">';
+      h += '<button onclick="contReglaNueva()" style="padding:8px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:600;cursor:pointer">+ Nueva regla</button>';
+      h += '<button onclick="contReglasAplicar()" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#374151;font-weight:600;cursor:pointer">▶️ Aplicar reglas ahora</button>';
+      h += '</div>';
+    }
+    // Lista de reglas
+    var reglas = contReglas();
+    h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px">';
+    h += '<thead><tr style="background:#f1f5f9;text-align:left"><th style="padding:8px">Cuenta</th><th style="padding:8px">Si el detalle…</th><th style="padding:8px">Deriva a</th><th style="padding:8px">Estado</th><th style="padding:8px">Acciones</th></tr></thead><tbody>';
+    if (!reglas.length) h += '<tr><td colspan="5" style="padding:18px;text-align:center;color:#9ca3af">Todavía no hay reglas. Creá una con “+ Nueva regla”.</td></tr>';
+    reglas.forEach(function (r) {
+      var ctas = (r.cuentas && r.cuentas.indexOf('*') < 0 && r.cuentas.length) ? r.cuentas.join(', ') : 'Todas';
+      var cond = (r.match === 'contiene' ? 'contiene ' : 'es igual a ') + '“' + escapeHtml(r.detalle || '') + '”';
+      var dest = contReglaDestLabel(r.derivado) + (r.rubro_id ? ' · ' + escapeHtml(contRubroNombre(r.derivado, r.rubro_id)) : '') + (r.subrubro_id ? ' · ' + escapeHtml(contSubNombre(r.derivado, r.rubro_id, r.subrubro_id)) : '');
+      var activa = r.activa !== false;
+      h += '<tr style="border-bottom:1px solid #eef2f7">';
+      h += '<td style="padding:8px">' + escapeHtml(ctas) + '</td>';
+      h += '<td style="padding:8px">' + cond + '</td>';
+      h += '<td style="padding:8px"><span style="background:#ede9fe;color:#6b21a8;padding:2px 8px;border-radius:10px;font-size:12px">' + dest + '</span>' + (r.nota ? '<div style="font-size:11px;color:#9ca3af">📝 ' + escapeHtml(r.nota) + '</div>' : '') + '</td>';
+      h += '<td style="padding:8px">' + (activa ? '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:11px">Activa</span>' : '<span style="background:#f3f4f6;color:#6b7280;padding:2px 8px;border-radius:10px;font-size:11px">Pausada</span>') + '</td>';
+      h += '<td style="padding:8px;white-space:nowrap">' +
+        '<button onclick="contReglaAlternar(\'' + r.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#eef2ff;color:#3730a3;cursor:pointer;font-size:12px">' + (activa ? '⏸ Pausar' : '▶️ Activar') + '</button> ' +
+        '<button onclick="contReglaEditar(\'' + r.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#7c3aed;color:#fff;cursor:pointer;font-size:12px">Editar</button> ' +
+        '<button onclick="contReglaBorrar(\'' + r.id + '\')" style="padding:4px 8px;border:none;border-radius:6px;background:#fee2e2;color:#b91c1c;cursor:pointer;font-size:12px">🗑</button>' +
         '</td></tr>';
     });
     h += '</tbody></table></div>';
