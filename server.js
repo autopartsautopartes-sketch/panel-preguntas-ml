@@ -15895,6 +15895,38 @@ function _mpExtractOrder(m, desc) {
   const mm = s.match(/\b(\d{10,16})\b/);
   return mm ? mm[1] : '';
 }
+// Corrige la FECHA/HORA de registros de MP ya guardados cuando el userscript las reenvía.
+// Motivo: versiones viejas guardaban la fecha en UTC y la hora en horario local, así que un
+// movimiento de las 23:31 del 04/10 ARG (UTC 05/10 02:31) quedaba como "05/10 23:31" (un día
+// adelantado) y no aparecía en el Monitor del día correcto. Ahora el userscript manda, en cada
+// sincronización, una lista liviana {mp_id, fecha, hora} de TODOS los movimientos del período con
+// la fecha+hora ya en hora de Argentina; acá reparamos los que estén distintos. Es idempotente:
+// una vez corregidos, los valores coinciden y no se toca nada.
+function _contCorregirFechas(db, cuenta, lista) {
+  if (!Array.isArray(lista) || !lista.length) return 0;
+  const c = db.contable;
+  let n = 0;
+  const fix = (obj, fecha, hora, conHora) => {
+    let ch = false;
+    const nf = String(fecha || '').slice(0, 10);
+    if (nf && obj.fecha !== nf) { obj.fecha = nf; ch = true; }
+    if (conHora && 'hora' in obj) { const nh = String(hora || '').slice(0, 5); if (nh && obj.hora !== nh) { obj.hora = nh; ch = true; } }
+    if (ch) n++;
+    return ch;
+  };
+  for (const m of lista) {
+    const mpId = String(m.mp_id || m.operacion || '').trim();
+    if (!mpId) continue;
+    const op = String(m.operacion || '').trim();
+    const rt = (c.transacciones || []).find(t => t.origen === 'mp' && t.cuenta === cuenta && (String(t.mp_id || t.operacion) === mpId || (op && String(t.operacion) === op)));
+    if (rt) { fix(rt, m.fecha, m.hora, true); continue; }
+    const ri = (c.mp_ingresos || []).find(x => x.cuenta === cuenta && (String(x.mp_id) === mpId || (op && String(x.operacion) === op)));
+    if (ri) { fix(ri, m.fecha, m.hora, true); continue; }
+    const ra = (c.intereses_adelanto || []).find(x => x.origen === 'mp' && x.cuenta === cuenta && (String(x.mp_id) === mpId || (op && String(x.operacion) === op)));
+    if (ra) { fix(ra, m.fecha, m.hora, false); continue; }
+  }
+  return n;
+}
 // POST receptor de MOVIMIENTOS de MP empujados por el userscript (misma idea que /api/mp/saldo-push).
 // Los movimientos negativos (egresos) de la "Actividad" de MP son de sesión (no accesibles con el token
 // de la app), así que un userscript los lee y los manda acá. Guardamos solo egresos, excluyendo ventas
@@ -15920,44 +15952,23 @@ route('POST', '/api/contable/mp-push', async (req, res) => {
   if (body.mode === 'probe') {
     const ids = Array.isArray(body.ids) ? body.ids : [];
     const nuevos = ids.filter(id => id && !has(id));
+    // Corregir fecha/hora de los que YA están guardados (el probe corre en CADA sincronización,
+    // así que acá se reparan incluso cuando no hay nada nuevo que insertar).
+    const corregidos = _contCorregirFechas(db, cuenta, body.correcciones || []);
     // Registramos la última vez que la cuenta CHEQUEÓ (aunque no tenga nada nuevo), así la leyenda
     // "Última sync" muestra que está al día y no parece dormida cuando simplemente no hay novedades.
     if (!db.contable.mp_last_push) db.contable.mp_last_push = {};
     const prev = db.contable.mp_last_push[cuenta] || {};
     db.contable.mp_last_push[cuenta] = { ts: new Date().toISOString(), added: prev.added || 0 };
     saveDB(db);
-    return sendJSON(res, 200, { ok: true, cuenta, nuevos });
+    return sendJSON(res, 200, { ok: true, cuenta, nuevos, corregidos });
   }
   const movs = Array.isArray(body.movimientos) ? body.movimientos : [];
   const cur = contCurrentPeriod(db);
-  // ===== Corrección de FECHA/HORA en registros ya guardados.
-  // Versiones viejas del userscript guardaban la fecha en UTC y la hora en horario local, por lo que un
-  // movimiento de (p.ej.) las 23:31 del 04/10 ARG quedaba como "05/10 23:31" (un día adelantado) y no
-  // aparecía en el Monitor del día correcto. Ahora el userscript manda SIEMPRE fecha+hora de Argentina;
-  // aprovechamos la resincronización para corregir in-situ los registros que ya existían con fecha mala.
-  let corrected = 0;
-  const _fix = (obj, m, conHora) => {
-    let ch = false;
-    const nf = String(m.fecha || '').slice(0, 10);
-    if (nf && obj.fecha !== nf) { obj.fecha = nf; ch = true; }
-    if (conHora) { const nh = String(m.hora || '').slice(0, 5); if (nh && obj.hora !== nh) { obj.hora = nh; ch = true; } }
-    if (ch) corrected++;
-    return ch;
-  };
-  for (const m of movs) {
-    const mpId = String(m.mp_id || m.operacion || '').trim();
-    if (!mpId) continue;
-    const op = String(m.operacion || '').trim();
-    if (m.kind === 'adelanto') {
-      const r = db.contable.intereses_adelanto.find(x => x.origen === 'mp' && x.cuenta === cuenta && (String(x.mp_id) === mpId || (op && String(x.operacion) === op)));
-      if (r) _fix(r, m, false);
-      continue;
-    }
-    const rt = db.contable.transacciones.find(t => t.origen === 'mp' && t.cuenta === cuenta && (String(t.mp_id || t.operacion) === mpId || (op && String(t.operacion) === op)));
-    if (rt) { _fix(rt, m, true); continue; }
-    const ri = (db.contable.mp_ingresos || []).find(x => x.cuenta === cuenta && (String(x.mp_id) === mpId || (op && String(x.operacion) === op)));
-    if (ri) { _fix(ri, m, true); }
-  }
+  // Corrección de fecha/hora de registros YA guardados (ver _contCorregirFechas). Las correcciones
+  // llegan para TODOS los movimientos del período (livianas: solo mp_id+fecha+hora), aunque también
+  // se aplican en el probe. Así se reparan los que quedaron con fecha adelantada por el bug viejo.
+  let corrected = _contCorregirFechas(db, cuenta, body.correcciones || movs);
   const excl = (tipo, desc) => (tipo === 'sales' || tipo === 'in_money' || tipo === 'transfers_received' || tipo === 'pix_received' || /venta en mercado libre|devoluci[oó]n de dinero/.test(desc));
   // Rubro de Negocio para auto-derivar "Pago de factura" → Facturas ML.
   const rubroFacturas = (db.contable.config.rubros.negocio || []).find(r => /factura/i.test(String(r.nombre || '')));
