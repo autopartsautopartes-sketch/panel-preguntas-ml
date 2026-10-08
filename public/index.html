@@ -13035,16 +13035,35 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function facManualCancelar() { _fac.manItems = []; _fac.manClienteId = null; renderFacturacion(); }
   /* ==================== FACTURACIÓN AUTOMÁTICA (con tope) ==================== */
   function facAutoHtml() {
+    var d = _fac.data || {};
+    if (!_fac.autoSector) _fac.autoSector = 's1';
+    var h = '<div style="max-width:980px">';
+    h += facAmbBanner(d.ambiente || 'homologacion');
+    // Sub-toggle Sector 1 / Sector 2
+    var secBtn = function (id, lbl, sub) {
+      var on = _fac.autoSector === id;
+      return '<button onclick="facSetSector(\'' + id + '\')" style="flex:1;min-width:230px;text-align:left;padding:11px 14px;border-radius:10px;border:2px solid ' + (on ? '#16a34a' : '#e5e7eb') + ';background:' + (on ? '#f0fdf4' : '#fff') + ';cursor:pointer">' +
+        '<div style="font-weight:700;color:' + (on ? '#15803d' : '#374151') + ';font-size:14px">' + lbl + '</div>' +
+        '<div style="font-size:11.5px;color:#6b7280;margin-top:2px">' + sub + '</div></button>';
+    };
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">';
+    h += secBtn('s1', '① Por cuenta → ML', 'Factura a cada comprador con sus datos reales y adjunta el PDF en Mercado Libre. Tope de ticket individual.');
+    h += secBtn('s2', '② Reglas agrupadas → CUIT fijo', 'Junta varias ventas de una cuenta y las factura a un CUIT fijo. NO se adjunta en ML.');
+    h += '</div>';
+    h += (_fac.autoSector === 's2') ? facAutoS2Html() : facAutoS1Html();
+    h += '</div>';
+    return h;
+  }
+  function facSetSector(s) { _fac.autoSector = s; renderFacturacion(); }
+  function facAutoS1Html() {
     var d = _fac.data || {}; var cts = d.cuentas || {}; var ac = d.acumulado || {}; var orden = d.orden || [];
     var css = 'padding:6px 8px;border:1px solid #d1d5db;border-radius:7px;font-size:13px';
-    var h = '<div style="max-width:900px">';
-    h += facAmbBanner(d.ambiente || 'homologacion');
-    h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px">';
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px">';
     h += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">';
-    h += '<div style="font-weight:700;color:#16a34a;font-size:15px">🤖 Facturación automática</div>';
+    h += '<div style="font-weight:700;color:#16a34a;font-size:15px">① Facturación automática por cuenta (se adjunta en ML)</div>';
     h += '<button onclick="facAutoRunAhora(this)" style="margin-left:auto;padding:8px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:700;font-size:13px;cursor:pointer">⚡ Correr ahora</button>';
     h += '</div>';
-    h += '<p style="font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:6px">El motor revisa las ventas cada ~15 min. Por cada cuenta en <b>Automático</b>: factura según el momento elegido (al pagar o al estar en camino), respetando el tope, y si una venta ya facturada se cancela o se devuelve, emite la <b>Nota de Crédito</b> automáticamente.</p>';
+    h += '<p style="font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:6px">El motor revisa las ventas cada ~15 min. Por cada cuenta en <b>Automático</b>: factura con los datos reales del comprador, según el momento elegido, respetando el tope, adjunta el PDF en ML, y si una venta ya facturada se cancela o se devuelve emite la <b>Nota de Crédito</b>. Las ventas que caen dentro de una regla del Sector ② se dejan para ese sector y no se facturan acá.</p>';
     if (d.auto_last) h += '<p style="font-size:12px;color:#9ca3af;margin-bottom:12px">Última corrida: ' + new Date(d.auto_last).toLocaleString('es-AR') + '</p>';
     orden.forEach(function (c) {
       var x = cts[c] || {}; var a = ac[c] || { mes: 0, anio: 0 };
@@ -13052,6 +13071,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       var auto = x.modo === 'auto';
       var topeM = Number(x.tope_mensual) || 0;
       var pmes = topeM > 0 ? Math.min(100, Math.round(a.mes / topeM * 100)) : 0;
+      var tope_ticket = Number(x.tope_ticket) || 0;
+      var concepto = parseInt(x.concepto, 10) || 1;
+      var dias_atras = Math.max(0, Math.min(10, parseInt(x.dias_atras, 10) || 0));
       h += '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px 14px;margin-bottom:10px">';
       h += '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">';
       h += '<strong style="color:#2d3277;min-width:70px">' + c + '</strong>';
@@ -13059,13 +13081,27 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       h += '<span style="font-size:13px;color:#374151">Momento: <select id="faca-mom-' + c + '" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + '"><option value="compra"' + (x.auto_momento === 'compra' ? ' selected' : '') + '>Al pagar (compra)</option><option value="camino"' + (x.auto_momento !== 'compra' ? ' selected' : '') + '>Cuando está en camino</option></select></span>';
       h += '<label style="font-size:13px;cursor:pointer"><input type="checkbox" id="faca-nc-' + c + '" ' + (x.auto_nota_credito !== false ? 'checked' : '') + ' onchange="facAutoGuardar(\'' + c + '\')"> Nota de crédito automática</label>';
       h += '</div>';
+      // Fila 2: tope de ticket, concepto, días hacia atrás
+      h += '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-top:10px">';
+      h += '<span style="font-size:13px;color:#374151">Tope de ticket: <input type="number" id="faca-tket-' + c + '" value="' + tope_ticket + '" step="1000" min="0" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + ';width:120px" placeholder="0 = sin tope"> <span style="font-size:11px;color:#9ca3af">solo ventas por debajo de este monto</span></span>';
+      h += '<span style="font-size:13px;color:#374151">Concepto: <select id="faca-conc-' + c + '" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + '"><option value="1"' + (concepto === 1 ? ' selected' : '') + '>Productos</option><option value="3"' + (concepto === 3 ? ' selected' : '') + '>Productos y Servicios</option><option value="2"' + (concepto === 2 ? ' selected' : '') + '>Servicios</option></select></span>';
+      h += '<span style="font-size:13px;color:#374151">Días hacia atrás: <input type="number" id="faca-dias-' + c + '" value="' + dias_atras + '" min="0" max="10" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + ';width:70px"> <span style="font-size:11px;color:#9ca3af">' + (dias_atras > 0 ? 'facturará con fecha ' + facFechaAtrasLindo(dias_atras) : 'fecha de hoy') + '</span></span>';
+      h += '</div>';
       h += '<div style="font-size:13px;color:#374151;margin-top:8px">Facturar ventas <b>desde</b>: <input type="date" id="faca-desde-' + c + '" value="' + escapeHtml(x.auto_desde || '') + '" onchange="facAutoGuardar(\'' + c + '\')" style="' + css + '"> <span style="font-size:11px;color:#9ca3af">(el automático ignora ventas anteriores a esta fecha)</span></div>';
       h += '<div style="font-size:12px;color:#6b7280;margin-top:8px">Facturado mes: <b>' + facMoney(a.mes) + '</b>' + (topeM > 0 ? ' / ' + facMoney(topeM) + facBar(pmes) : ' · sin tope') + '</div>';
       h += '</div>';
     });
     if (!facCuentasActivas().length) h += '<p style="color:#b45309">No hay cuentas activas. Activá alguna en Configuración.</p>';
-    h += '</div></div>';
+    h += '</div>';
     return h;
+  }
+  // Fecha YYYY-MM-DD de hoy−n en horario ARG, en formato lindo dd/mm/aaaa (para el cartelito).
+  function facFechaAtrasLindo(n) {
+    try {
+      var hoyArg = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+      hoyArg.setDate(hoyArg.getDate() - (Number(n) || 0));
+      return hoyArg.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    } catch (e) { return ''; }
   }
   async function facAutoGuardar(cuenta) {
     var cts = ((_fac.data || {}).cuentas) || {}; var x = cts[cuenta] || {};
@@ -13073,10 +13109,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var mom = (document.getElementById('faca-mom-' + cuenta) || {}).value || 'camino';
     var nc = !!(document.getElementById('faca-nc-' + cuenta) && document.getElementById('faca-nc-' + cuenta).checked);
     var desde = (document.getElementById('faca-desde-' + cuenta) || {}).value || '';
+    var tope_ticket = Math.max(0, parseFloat((document.getElementById('faca-tket-' + cuenta) || {}).value) || 0);
+    var concepto = parseInt((document.getElementById('faca-conc-' + cuenta) || {}).value, 10) || 1;
+    var dias_atras = Math.max(0, Math.min(10, parseInt((document.getElementById('faca-dias-' + cuenta) || {}).value, 10) || 0));
     // Si activás el automático y no hay fecha desde, la ponemos en HOY (para no facturar el backlog viejo).
     if (auto && !desde) { desde = new Date().toISOString().slice(0, 10); var dEl = document.getElementById('faca-desde-' + cuenta); if (dEl) dEl.value = desde; showToast('Facturará desde hoy (' + desde + '). Podés cambiar la fecha.', 'info'); }
-    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, activa: x.activa, adjuntar_ml: x.adjuntar_ml, auto_momento: mom, auto_nota_credito: nc, auto_desde: desde, razon_social: x.razon_social, nombre_fantasia: x.nombre_fantasia, domicilio: x.domicilio, ing_brutos: x.ing_brutos, inicio_actividad: x.inicio_actividad };
-    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; x.auto_momento = mom; x.auto_nota_credito = nc; x.auto_desde = desde; showToast(cuenta + ': guardado', 'success'); }
+    var payload = {}; payload[cuenta] = { cuit: x.cuit, condicion: x.condicion, punto_venta: x.punto_venta, cbte_default: x.cbte_default, iva_pct: x.iva_pct, modo: auto ? 'auto' : 'manual', tope_mensual: x.tope_mensual, tope_anual: x.tope_anual, tope_ticket: tope_ticket, concepto: concepto, dias_atras: dias_atras, activa: x.activa, adjuntar_ml: x.adjuntar_ml, auto_momento: mom, auto_nota_credito: nc, auto_desde: desde, razon_social: x.razon_social, nombre_fantasia: x.nombre_fantasia, domicilio: x.domicilio, ing_brutos: x.ing_brutos, inicio_actividad: x.inicio_actividad };
+    try { await fetch('/api/facturacion/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuentas: payload }) }); x.modo = auto ? 'auto' : 'manual'; x.auto_momento = mom; x.auto_nota_credito = nc; x.auto_desde = desde; x.tope_ticket = tope_ticket; x.concepto = concepto; x.dias_atras = dias_atras; showToast(cuenta + ': guardado', 'success'); renderFacturacion(); }
     catch (e) { showToast('Error al guardar', 'error'); }
   }
   async function facAutoRunAhora(btn) {
@@ -13089,6 +13128,225 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       showToast('Listo: ' + (rs.facturadas || 0) + ' facturadas, ' + (rs.notas || 0) + ' notas de crédito', 'success');
       loadFacturacion();
     } catch (e) { showToast('Error', 'error'); if (btn) { btn.disabled = false; btn.textContent = '⚡ Correr ahora'; } }
+  }
+
+  /* ==================== SECTOR 2: reglas de facturación agrupada → CUIT fijo ==================== */
+  function facS2CuentaOptions(sel) {
+    var orden = (_fac.data || {}).orden || [];
+    var h = '';
+    orden.forEach(function (c) { h += '<option value="' + c + '"' + (String(sel || '').toUpperCase() === c ? ' selected' : '') + '>' + c + '</option>'; });
+    return h;
+  }
+  function facAutoS2Html() {
+    var d = _fac.data || {};
+    var reglas = d.sector2_reglas || [];
+    var h = '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px">';
+    h += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">';
+    h += '<div style="font-weight:700;color:#7c3aed;font-size:15px">② Reglas de facturación agrupada (CUIT fijo · no se adjunta en ML)</div>';
+    if (!_fac.s2edit) h += '<button onclick="facS2Nueva()" style="margin-left:auto;padding:8px 14px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:700;font-size:13px;cursor:pointer">+ Nueva regla</button>';
+    h += '</div>';
+    h += '<p style="font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:14px">Cada regla junta las ventas <b>pagas y no facturadas</b> de una cuenta (dentro del rango de monto y desde la fecha indicada) y, cuando lo acumulado supera el <b>umbral</b>, emite <b>una sola factura</b> al CUIT de destino desde la cuenta emisora — una línea por venta. Respeta el <b>límite diario</b> por regla y nunca toma ventas ya facturadas. Estas facturas <b>no se adjuntan en Mercado Libre</b>. Podés tener tantas reglas como quieras y agregar cuentas o CUITs nuevos cuando haga falta.</p>';
+    if (_fac.s2edit) { h += facS2FormHtml(_fac.s2edit); return h + '</div>'; }
+    if (!reglas.length) {
+      h += '<div style="padding:22px;text-align:center;color:#9ca3af;border:1px dashed #e5e7eb;border-radius:10px">Todavía no hay reglas. Creá la primera con “+ Nueva regla”.</div>';
+    } else {
+      reglas.forEach(function (r) { h += facS2CardHtml(r); });
+    }
+    h += '</div>';
+    return h;
+  }
+  function facS2CardHtml(r) {
+    var dst = r.destino || {};
+    var activa = r.activa !== false;
+    var rango = (Number(r.monto_desde) || 0) > 0 || (Number(r.monto_hasta) || 0) > 0
+      ? (facMoney(r.monto_desde || 0) + ' a ' + ((Number(r.monto_hasta) || 0) > 0 ? facMoney(r.monto_hasta) : 'sin límite'))
+      : 'cualquier monto';
+    var h = '<div style="border:1px solid #e5e7eb;border-left:4px solid ' + (activa ? '#7c3aed' : '#d1d5db') + ';border-radius:10px;padding:13px 15px;margin-bottom:12px">';
+    h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">';
+    h += '<strong style="color:#2d3277;font-size:15px">' + escapeHtml(r.nombre || '(sin nombre)') + '</strong>';
+    h += '<span style="padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700;background:' + (activa ? '#f5f3ff;color:#6d28d9' : '#f3f4f6;color:#6b7280') + '">' + (activa ? 'Activa' : 'Pausada') + '</span>';
+    h += '<div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">';
+    h += '<button onclick="facS2VerPendientes(\'' + r.id + '\',this)" style="padding:5px 10px;border:1px solid #7c3aed;border-radius:7px;background:#fff;color:#7c3aed;font-weight:600;font-size:12px;cursor:pointer">👁 Ver pendientes</button>';
+    h += '<button onclick="facS2FacturarAhora(\'' + r.id + '\',this)" style="padding:5px 10px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-weight:700;font-size:12px;cursor:pointer">⚡ Facturar ahora</button>';
+    h += '<button onclick="facS2Editar(\'' + r.id + '\')" style="padding:5px 10px;border:1px solid #d1d5db;border-radius:7px;background:#fff;color:#374151;font-weight:600;font-size:12px;cursor:pointer">✎ Editar</button>';
+    h += '<button onclick="facS2Borrar(\'' + r.id + '\')" style="padding:5px 10px;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#b91c1c;font-weight:600;font-size:12px;cursor:pointer">🗑</button>';
+    h += '</div></div>';
+    h += '<div style="font-size:13px;color:#374151;line-height:1.7">';
+    h += '<b>Origen venta:</b> ' + escapeHtml(r.origen_venta || '—') + ' &nbsp;·&nbsp; <b>Emisor:</b> ' + escapeHtml(r.emisor || r.origen_venta || '—') + ' &nbsp;·&nbsp; <b>Destino:</b> ' + escapeHtml(dst.razon_social || '') + ' (' + facDocTipoLbl(dst.doc_tipo) + ' ' + escapeHtml(dst.cuit || dst.doc_nro || '—') + ')<br>';
+    h += '<b>Rango:</b> ' + rango + ' &nbsp;·&nbsp; <b>Umbral:</b> ' + ((Number(r.umbral) || 0) > 0 ? facMoney(r.umbral) : 'sin umbral (sólo manual)') + ' &nbsp;·&nbsp; <b>Límite diario:</b> ' + ((Number(r.limite_diario) || 0) > 0 ? facMoney(r.limite_diario) : 'sin límite');
+    h += ' &nbsp;·&nbsp; <b>Concepto:</b> ' + facConceptoLbl(r.concepto) + ' &nbsp;·&nbsp; <b>Fecha:</b> ' + ((Number(r.dias_atras) || 0) > 0 ? ('hoy − ' + r.dias_atras + ' días') : 'hoy') + (r.auto_desde ? ' &nbsp;·&nbsp; <b>Trae desde:</b> ' + escapeHtml(r.auto_desde) : '');
+    h += '</div>';
+    h += '<div id="facs2-prev-' + r.id + '" style="display:none;margin-top:10px"></div>';
+    h += '</div>';
+    return h;
+  }
+  function facDocTipoLbl(t) { t = parseInt(t, 10); return t === 80 ? 'CUIT' : (t === 96 ? 'DNI' : (t === 99 ? 'Cons. Final' : 'Doc')); }
+  function facConceptoLbl(c) { c = parseInt(c, 10) || 1; return c === 2 ? 'Servicios' : (c === 3 ? 'Productos y Servicios' : 'Productos'); }
+  function facS2Nueva() {
+    _fac.s2edit = { id: '', nombre: '', origen_venta: '', emisor: '', destino: { doc_tipo: 80, cuit: '', doc_nro: '', razon_social: '', condicion: 'RI', domicilio: '', email: '' }, monto_desde: 0, monto_hasta: 0, umbral: 0, limite_diario: 0, concepto: 1, dias_atras: 0, auto_desde: '', activa: true, _nueva: true };
+    renderFacturacion();
+  }
+  function facS2Editar(id) {
+    var reglas = ((_fac.data || {}).sector2_reglas) || [];
+    var r = reglas.filter(function (x) { return x.id === id; })[0];
+    if (!r) { showToast('No encontré la regla', 'error'); return; }
+    _fac.s2edit = JSON.parse(JSON.stringify(r));
+    if (!_fac.s2edit.destino) _fac.s2edit.destino = { doc_tipo: 80, cuit: '', doc_nro: '', razon_social: '', condicion: 'RI', domicilio: '', email: '' };
+    renderFacturacion();
+  }
+  function facS2Cancelar() { _fac.s2edit = null; renderFacturacion(); }
+  // Autocompleta los datos del destino desde un cliente guardado en la libreta.
+  function facS2PickCliente() {
+    var sel = document.getElementById('s2-cli-pick'); if (!sel || !sel.value) return;
+    var c = (_fac.clientes || []).filter(function (x) { return x.id === sel.value; })[0]; if (!c) return;
+    var set = function (id, v) { var el = document.getElementById(id); if (el) el.value = v; };
+    var dt = parseInt(c.doc_tipo, 10) || 80;
+    set('s2-dtipo', (dt === 96 || dt === 99) ? String(dt) : '80');
+    set('s2-cuit', c.doc_nro || '');
+    set('s2-razon', c.razon_social || '');
+    set('s2-cond', ['RI', 'MONO', 'EX', 'CF'].indexOf(c.cond_iva) >= 0 ? c.cond_iva : 'RI');
+    set('s2-dom', c.domicilio || '');
+    set('s2-email', c.email || '');
+  }
+  function facS2FormHtml(r) {
+    var dst = r.destino || {};
+    var css = 'padding:8px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;width:100%;box-sizing:border-box';
+    var h = '<div style="border:1px solid #ddd6fe;background:#faf5ff;border-radius:12px;padding:16px">';
+    h += '<div style="font-weight:700;color:#6d28d9;margin-bottom:12px">' + (r._nueva ? 'Nueva regla' : 'Editar regla') + '</div>';
+    // Identificación + origen/emisor
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:12px">';
+    h += facField('Nombre de la regla', '<input id="s2-nombre" value="' + escapeHtml(r.nombre || '') + '" placeholder="ej: Ventas mayoristas a ACME" style="' + css + '">');
+    h += facField('Origen de la venta (cuenta ML)', '<select id="s2-origen" style="' + css + '"><option value="">— elegir —</option>' + facS2CuentaOptions(r.origen_venta) + '</select>');
+    h += facField('Emisor de la factura (cuenta / CUIT)', '<select id="s2-emisor" style="' + css + '"><option value="">— igual al origen —</option>' + facS2CuentaOptions(r.emisor) + '</select>');
+    h += '</div>';
+    // Destino
+    h += '<div style="font-size:12px;color:#6d28d9;font-weight:700;margin:4px 0 6px">Destino de la factura (a quién se le factura)</div>';
+    var clientes = (_fac.clientes || []);
+    if (clientes.length) {
+      h += '<div style="margin-bottom:10px"><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Elegir de la libreta de clientes</label>';
+      h += '<select id="s2-cli-pick" onchange="facS2PickCliente()" style="' + css + ';max-width:360px"><option value="">— cargar datos de un cliente guardado —</option>';
+      clientes.forEach(function (c) { h += '<option value="' + c.id + '">' + escapeHtml((c.razon_social || '') + ' · ' + facDocTipoLbl(c.doc_tipo) + ' ' + (c.doc_nro || '')) + '</option>'; });
+      h += '</select> <span style="font-size:11px;color:#9ca3af">cada CUIT que guardás acá queda en esta lista para reusarlo</span></div>';
+    }
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:12px">';
+    h += facField('Tipo de documento', '<select id="s2-dtipo" style="' + css + '"><option value="80"' + (parseInt(dst.doc_tipo, 10) !== 96 && parseInt(dst.doc_tipo, 10) !== 99 ? ' selected' : '') + '>CUIT</option><option value="96"' + (parseInt(dst.doc_tipo, 10) === 96 ? ' selected' : '') + '>DNI</option><option value="99"' + (parseInt(dst.doc_tipo, 10) === 99 ? ' selected' : '') + '>Consumidor Final</option></select>');
+    h += facField('CUIT / Documento', '<input id="s2-cuit" value="' + escapeHtml(dst.cuit || dst.doc_nro || '') + '" maxlength="11" placeholder="sin guiones" style="' + css + '">');
+    h += facField('Razón social / Nombre', '<input id="s2-razon" value="' + escapeHtml(dst.razon_social || '') + '" style="' + css + '">');
+    h += facField('Condición frente al IVA', '<select id="s2-cond" style="' + css + '"><option value="RI"' + (dst.condicion === 'RI' || !dst.condicion ? ' selected' : '') + '>Responsable Inscripto</option><option value="MONO"' + (dst.condicion === 'MONO' ? ' selected' : '') + '>Monotributo</option><option value="EX"' + (dst.condicion === 'EX' ? ' selected' : '') + '>Exento</option><option value="CF"' + (dst.condicion === 'CF' ? ' selected' : '') + '>Consumidor Final</option></select>');
+    h += facField('Domicilio', '<input id="s2-dom" value="' + escapeHtml(dst.domicilio || '') + '" style="' + css + '">');
+    h += facField('Email (opcional)', '<input id="s2-email" value="' + escapeHtml(dst.email || '') + '" style="' + css + '">');
+    h += '</div>';
+    // Parámetros de agrupación
+    h += '<div style="font-size:12px;color:#6d28d9;font-weight:700;margin:4px 0 6px">Cuándo y cuánto facturar</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:6px">';
+    h += facField('Monto desde ($)', '<input id="s2-mdesde" type="number" value="' + (Number(r.monto_desde) || 0) + '" step="100" min="0" style="' + css + '">');
+    h += facField('Monto hasta ($, 0 = sin tope)', '<input id="s2-mhasta" type="number" value="' + (Number(r.monto_hasta) || 0) + '" step="100" min="0" style="' + css + '">');
+    h += facField('Umbral: facturar cuando supera ($)', '<input id="s2-umbral" type="number" value="' + (Number(r.umbral) || 0) + '" step="1000" min="0" style="' + css + '">');
+    h += facField('Límite diario ($, 0 = sin límite)', '<input id="s2-limdia" type="number" value="' + (Number(r.limite_diario) || 0) + '" step="1000" min="0" style="' + css + '">');
+    h += facField('Concepto', '<select id="s2-conc" style="' + css + '"><option value="1"' + (parseInt(r.concepto, 10) !== 2 && parseInt(r.concepto, 10) !== 3 ? ' selected' : '') + '>Productos</option><option value="3"' + (parseInt(r.concepto, 10) === 3 ? ' selected' : '') + '>Productos y Servicios</option><option value="2"' + (parseInt(r.concepto, 10) === 2 ? ' selected' : '') + '>Servicios</option></select>');
+    h += facField('Días hacia atrás (0 a 10)', '<input id="s2-dias" type="number" value="' + Math.max(0, Math.min(10, parseInt(r.dias_atras, 10) || 0)) + '" min="0" max="10" style="' + css + '">');
+    h += facField('Traer ventas desde', '<input id="s2-desde" type="date" value="' + escapeHtml(r.auto_desde || '') + '" style="' + css + '">');
+    h += '</div>';
+    h += '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin:8px 0 14px"><input type="checkbox" id="s2-activa"' + (r.activa !== false ? ' checked' : '') + '> Regla activa (el motor la corre automáticamente)</label>';
+    h += '<div style="display:flex;gap:10px">';
+    h += '<button onclick="facS2Guardar(this)" style="padding:10px 20px;border:none;border-radius:9px;background:#7c3aed;color:#fff;font-weight:700;cursor:pointer">💾 Guardar regla</button>';
+    h += '<button onclick="facS2Cancelar()" style="padding:10px 20px;border:1px solid #d1d5db;border-radius:9px;background:#fff;color:#374151;font-weight:600;cursor:pointer">Cancelar</button>';
+    h += '</div>';
+    h += '</div>';
+    return h;
+  }
+  async function facS2Guardar(btn) {
+    var g = function (id) { var el = document.getElementById(id); return el ? el.value : ''; };
+    var dtipo = parseInt(g('s2-dtipo'), 10) || 80;
+    var cuit = g('s2-cuit').replace(/\D/g, '');
+    var payload = {
+      id: (_fac.s2edit && _fac.s2edit.id) || '',
+      nombre: g('s2-nombre'),
+      origen_venta: g('s2-origen'),
+      emisor: g('s2-emisor') || g('s2-origen'),
+      destino: { doc_tipo: dtipo, cuit: dtipo === 80 ? cuit : '', doc_nro: cuit, razon_social: g('s2-razon'), condicion: g('s2-cond') || 'RI', domicilio: g('s2-dom'), email: g('s2-email') },
+      monto_desde: parseFloat(g('s2-mdesde')) || 0,
+      monto_hasta: parseFloat(g('s2-mhasta')) || 0,
+      umbral: parseFloat(g('s2-umbral')) || 0,
+      limite_diario: parseFloat(g('s2-limdia')) || 0,
+      concepto: parseInt(g('s2-conc'), 10) || 1,
+      dias_atras: Math.max(0, Math.min(10, parseInt(g('s2-dias'), 10) || 0)),
+      auto_desde: g('s2-desde'),
+      activa: !!(document.getElementById('s2-activa') && document.getElementById('s2-activa').checked)
+    };
+    if (!payload.origen_venta) { showToast('Elegí el origen de la venta', 'error'); return; }
+    if (!cuit) { showToast('Cargá el CUIT / documento del destino', 'error'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+    try {
+      var r = await fetch('/api/facturacion/sector2/regla', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      var d = await r.json();
+      if (!d.ok) { showToast(d.error || 'No se pudo guardar', 'error'); if (btn) { btn.disabled = false; btn.textContent = '💾 Guardar regla'; } return; }
+      if (_fac.data) _fac.data.sector2_reglas = d.sector2_reglas || [];
+      if (d.clientes) _fac.clientes = d.clientes;
+      _fac.s2edit = null;
+      showToast('Regla guardada · el CUIT quedó en la libreta de clientes', 'success');
+      renderFacturacion();
+    } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '💾 Guardar regla'; } }
+  }
+  async function facS2Borrar(id) {
+    if (!confirm('¿Borrar esta regla? No afecta las facturas ya emitidas.')) return;
+    try {
+      var r = await fetch('/api/facturacion/sector2/regla', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ delete: true, id: id }) });
+      var d = await r.json();
+      if (!d.ok) { showToast('No se pudo borrar', 'error'); return; }
+      if (_fac.data) _fac.data.sector2_reglas = d.sector2_reglas || [];
+      showToast('Regla borrada', 'success');
+      renderFacturacion();
+    } catch (e) { showToast('Error de red', 'error'); }
+  }
+  async function facS2VerPendientes(id, btn) {
+    var box = document.getElementById('facs2-prev-' + id); if (!box) return;
+    if (box.style.display !== 'none' && box.getAttribute('data-loaded') === '1') { box.style.display = 'none'; box.setAttribute('data-loaded', '0'); return; }
+    box.style.display = ''; box.innerHTML = '<div style="padding:10px;color:#6b7280;font-size:13px">Calculando pendientes…</div>';
+    if (btn) btn.disabled = true;
+    try {
+      var r = await fetch('/api/facturacion/sector2/pendientes?regla=' + encodeURIComponent(id));
+      var d = await r.json();
+      var reg = (d.reglas || []).filter(function (x) { return String(x.id) === String(id); })[0] || (d.reglas || [])[0];
+      box.innerHTML = facS2PrevHtml(reg);
+      box.setAttribute('data-loaded', '1');
+    } catch (e) { box.innerHTML = '<div style="padding:10px;color:#b91c1c;font-size:13px">Error al traer pendientes</div>'; }
+    if (btn) btn.disabled = false;
+  }
+  function facS2PrevHtml(reg) {
+    if (!reg) return '<div style="padding:10px;color:#b91c1c;font-size:13px">Sin datos</div>';
+    if (reg.error) return '<div style="padding:10px;background:#fef2f2;color:#7f1d1d;border-radius:8px;font-size:13px">' + escapeHtml(reg.error) + '</div>';
+    var ventas = reg.ventas || [];
+    var alcanza = reg.alcanza_umbral;
+    var h = '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;background:#fafafa">';
+    h += '<div style="font-size:12.5px;color:#374151;margin-bottom:8px;line-height:1.7">';
+    h += '<b>' + ventas.length + '</b> venta(s) lista(s) para facturar · Acumulado: <b>' + facMoney(reg.acumulado) + '</b>';
+    if ((Number(reg.umbral) || 0) > 0) h += ' · Umbral: ' + facMoney(reg.umbral) + ' ' + (alcanza ? '<span style="color:#15803d;font-weight:700">✓ alcanzado</span>' : '<span style="color:#b45309">aún no alcanzado</span>');
+    if ((Number(reg.limite_diario) || 0) > 0) h += '<br>Límite diario: ' + facMoney(reg.limite_diario) + ' · Facturado hoy: ' + facMoney(reg.facturado_hoy) + (reg.disponible_hoy != null ? ' · Disponible hoy: <b>' + facMoney(reg.disponible_hoy) + '</b>' : '');
+    if ((Number(reg.pendientes_total) || 0) > (Number(reg.acumulado) || 0)) h += '<br><span style="color:#6b7280">Total pendiente en rango (sin cap diario): ' + facMoney(reg.pendientes_total) + '</span>';
+    h += '</div>';
+    if (!ventas.length) { h += '<div style="color:#9ca3af;font-size:13px">No hay ventas pendientes en este momento.</div>'; }
+    else {
+      h += '<table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr style="text-align:left;color:#6b7280;border-bottom:1px solid #e5e7eb"><th style="padding:4px 6px">Venta</th><th style="padding:4px 6px">Fecha</th><th style="padding:4px 6px">Detalle</th><th style="padding:4px 6px;text-align:right">Monto</th></tr></thead><tbody>';
+      ventas.forEach(function (v) {
+        h += '<tr style="border-bottom:1px solid #f1f1f1"><td style="padding:4px 6px">' + escapeHtml(String(v.order_id || '')) + '</td><td style="padding:4px 6px">' + escapeHtml(String(v.fecha || '').slice(0, 10)) + '</td><td style="padding:4px 6px">' + escapeHtml(String(v.titulo || '').slice(0, 50)) + '</td><td style="padding:4px 6px;text-align:right">' + facMoney(v.total) + '</td></tr>';
+      });
+      h += '</tbody></table>';
+    }
+    h += '</div>';
+    return h;
+  }
+  async function facS2FacturarAhora(id, btn) {
+    if (!confirm('¿Facturar ahora lo acumulado de esta regla? Ignora el umbral pero respeta el límite diario. Las facturas no se adjuntan en ML.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Facturando…'; }
+    try {
+      var r = await fetch('/api/facturacion/sector2/facturar-ahora', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+      var d = await r.json();
+      if (!d.ok) { showToast(d.error || 'No se pudo facturar', 'error'); if (btn) { btn.disabled = false; btn.textContent = '⚡ Facturar ahora'; } return; }
+      var rs = d.resumen || {};
+      showToast('Listo: ' + (rs.facturadas || 0) + ' factura(s) emitida(s)' + (rs.error ? ' · ' + rs.error : ''), (rs.facturadas ? 'success' : 'info'));
+      loadFacturacion();
+    } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '⚡ Facturar ahora'; } }
   }
 
   /* ==================== COMPROBANTES (buscar + descargar) ==================== */
