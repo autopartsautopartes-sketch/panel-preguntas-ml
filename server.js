@@ -15262,6 +15262,16 @@ async function facAdjuntarML(account, token, orderId, factura, cfg) {
 }
 
 // Lista de ventas de ML candidatas a facturar (por cuenta), con flag de ya facturado.
+// Traduce el estado/substatus de envío de ML a una categoría simple para filtrar.
+function facEstadoEnvio(status, substatus) {
+  const st = String(status || '').toLowerCase(), sub = String(substatus || '').toLowerCase();
+  if (st === 'delivered') return { key: 'entregado', label: 'Entregado' };
+  if (st === 'shipped') return { key: 'en_camino', label: 'En camino' };
+  if (st === 'ready_to_ship' || st === 'handling' || st === 'pending') return { key: 'por_enviar', label: 'Por enviar' };
+  if (st === 'not_delivered' || st === 'cancelled' || st === 'returned' || /return|claim|reclamo/.test(sub)) return { key: 'problema', label: 'Con problema' };
+  if (!st) return { key: 'sin_envio', label: 'Sin envío' };
+  return { key: 'otro', label: status };
+}
 route('GET', '/api/facturacion/ventas', async (req, res) => {
   if (!facRequireAdmin(req, res)) return;
   let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
@@ -15277,10 +15287,24 @@ route('GET', '/api/facturacion/ventas', async (req, res) => {
   const desdeQ = dISO(q.get('desde'), false), hastaQ = dISO(q.get('hasta'), true);
   try {
     const token = await getValidToken(account);
-    const params = { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 50 };
-    if (desdeQ) params['order.date_created.from'] = desdeQ;
-    if (hastaQ) params['order.date_created.to'] = hastaQ;
-    const data = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+    // Paginación completa: ML devuelve máx. 50 por página. Recorremos con offset hasta
+    // traer todas (tope de seguridad de 1000 órdenes para no colgar el request).
+    const MAX_ORDENES = 1000;
+    let resultados = [];
+    let totalML = null;
+    for (let offset = 0; offset < MAX_ORDENES; offset += 50) {
+      const params = { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 50, offset: offset };
+      if (desdeQ) params['order.date_created.from'] = desdeQ;
+      if (hastaQ) params['order.date_created.to'] = hastaQ;
+      const page = await mlGet('https://api.mercadolibre.com/orders/search', token, params);
+      const rs = page.results || [];
+      resultados = resultados.concat(rs);
+      totalML = (page.paging && page.paging.total != null) ? page.paging.total : totalML;
+      if (rs.length < 50) break;                       // última página
+      if (totalML != null && resultados.length >= totalML) break;
+    }
+    const truncado = (totalML != null && totalML > resultados.length);
+    const data = { results: resultados };
     const ventas = (data.results || []).map(o => {
       const it = (o.order_items && o.order_items[0]) || {};
       const oid = String(o.id);
@@ -15289,10 +15313,31 @@ route('GET', '/api/facturacion/ventas', async (req, res) => {
         order_id: oid, fecha: o.date_created, total: Number(o.total_amount) || 0,
         titulo: (it.item && it.item.title) || '', cantidad: it.quantity || 1,
         comprador: (o.buyer && (o.buyer.nickname || ((o.buyer.first_name || '') + ' ' + (o.buyer.last_name || '')).trim())) || '',
-        facturado: !!fx, factura: fx ? { cbte: fx.cbte_letra, nro: fx.nro, cae: fx.cae, total: fx.importe_total } : null
+        facturado: !!fx, factura: fx ? { cbte: fx.cbte_letra, nro: fx.nro, cae: fx.cae, total: fx.importe_total } : null,
+        _shipId: (o.shipping && o.shipping.id) || null,
+        estado: 'sin_envio', estado_label: 'Sin envío'
       };
     });
-    sendJSON(res, 200, { ok: true, ventas });
+    // Estado de envío (best-effort, en paralelo con límite para no demorar demasiado).
+    // Las que tienen envío pero no alcanzamos a consultar quedan como 'desconocido'.
+    const MAX_SHIP = 400, CONC = 8;
+    const conEnvio = ventas.filter(v => v._shipId);
+    conEnvio.forEach((v, idx) => { if (idx >= MAX_SHIP) { v.estado = 'desconocido'; v.estado_label = 'Sin dato'; } });
+    const aConsultar = conEnvio.slice(0, MAX_SHIP);
+    for (let i = 0; i < aConsultar.length; i += CONC) {
+      const chunk = aConsultar.slice(i, i + CONC);
+      await Promise.all(chunk.map(async v => {
+        try {
+          const sh = await mlGet('https://api.mercadolibre.com/shipments/' + v._shipId, token, {}, { 'x-format-new': 'true' });
+          const st = String(sh.status || '').toLowerCase();
+          const sub = String(sh.substatus || '').toLowerCase();
+          const m = facEstadoEnvio(st, sub);
+          v.estado = m.key; v.estado_label = m.label;
+        } catch (e) { v.estado = 'desconocido'; v.estado_label = 'Sin dato'; }
+      }));
+    }
+    ventas.forEach(v => { delete v._shipId; });
+    sendJSON(res, 200, { ok: true, ventas, total: (totalML != null ? totalML : ventas.length), truncado: !!truncado, estado_parcial: conEnvio.length > MAX_SHIP });
   } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
 });
 
