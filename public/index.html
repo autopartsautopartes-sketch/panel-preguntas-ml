@@ -12723,7 +12723,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       var d = await r.json();
       if (!d.ok) { cont.innerHTML = '<p style="color:#b91c1c">' + escapeHtml(d.error || 'Error') + '</p>'; return; }
       _fac.manualOps = d.ventas || []; _fac.manualSel = {};
-      _fac.manualTotal = d.total; _fac.manualTrunc = !!d.truncado; _fac.manualEstadoParcial = !!d.estado_parcial;
+      _fac.manualTotal = d.total; _fac.manualTrunc = !!d.truncado; _fac.manualEstadoParcial = !!d.estado_parcial; _fac.manualOcultas = d.facturadas_ocultas || 0;
       facRenderOps();
     } catch (e) { cont.innerHTML = '<p style="color:#b91c1c">Error de red al importar</p>'; }
   }
@@ -12735,6 +12735,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var ops = (_fac.manualOps || []).slice();
     var est = _fac.manEstado || '';
     if (est) ops = ops.filter(function (o) { return (o.estado || 'sin_envio') === est; });
+    var pmin = Number(_fac.manPrecioMin) || 0, pmax = Number(_fac.manPrecioMax) || 0;
+    if (pmin > 0) ops = ops.filter(function (o) { return (Number(o.total) || 0) >= pmin; });
+    if (pmax > 0) ops = ops.filter(function (o) { return (Number(o.total) || 0) <= pmax; });
     var s = _fac.manSort || 'fecha_desc';
     ops.sort(function (a, b) {
       if (s === 'monto_desc') return (Number(b.total) || 0) - (Number(a.total) || 0);
@@ -12746,6 +12749,12 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   }
   function facSetSort(v) { _fac.manSort = v; facRenderOps(); }
   function facSetEstado(v) { _fac.manEstado = v; facRenderOps(); }
+  function facSetPrecio() {
+    _fac.manPrecioMin = parseFloat((document.getElementById('facml-pmin') || {}).value) || 0;
+    _fac.manPrecioMax = parseFloat((document.getElementById('facml-pmax') || {}).value) || 0;
+    facRenderOps();
+  }
+  function facLimpiarPrecio() { _fac.manPrecioMin = 0; _fac.manPrecioMax = 0; facRenderOps(); }
   function facSumSelCalc() {
     var ops = _fac.manualOps || [], sel = _fac.manualSel || {}, n = 0, tot = 0;
     ops.forEach(function (o) { if (!o.facturado && sel[o.order_id]) { n++; tot += Number(o.total) || 0; } });
@@ -12766,8 +12775,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var cnt = {}; ops.forEach(function (o) { var k = o.estado || 'sin_envio'; cnt[k] = (cnt[k] || 0) + 1; });
     var vis = facOpsVisibles();
     var css = 'padding:6px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px';
+    var hayFiltroPrecio = (Number(_fac.manPrecioMin) || 0) > 0 || (Number(_fac.manPrecioMax) || 0) > 0;
+    var filtrando = _fac.manEstado || hayFiltroPrecio;
     var h = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">';
-    h += '<div style="font-size:12.5px;color:#6b7280">' + ops.length + ' operaciones traídas' + ((_fac.manualTotal && _fac.manualTotal > ops.length) ? ' de ' + _fac.manualTotal : '') + ' · <b>' + pend.length + ' pendientes</b>' + (_fac.manEstado ? ' · mostrando <b>' + vis.length + '</b>' : '') + '. Tildá las que querés facturar.</div>';
+    h += '<div style="font-size:12.5px;color:#6b7280"><b>' + ops.length + '</b> operaciones para facturar' + (filtrando ? ' · mostrando <b>' + vis.length + '</b>' : '') + '. Tildá las que querés facturar.</div>';
     h += '<label style="font-size:12.5px;color:#374151;margin-left:auto">Estado: <select id="facml-estado" onchange="facSetEstado(this.value)" style="' + css + '">';
     h += '<option value="">Todos (' + ops.length + ')</option>';
     FAC_ESTADOS.forEach(function (e) { if (cnt[e[0]]) h += '<option value="' + e[0] + '"' + (_fac.manEstado === e[0] ? ' selected' : '') + '>' + e[1] + ' (' + cnt[e[0]] + ')</option>'; });
@@ -12779,7 +12790,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       '<option value="monto_asc"' + (_fac.manSort === 'monto_asc' ? ' selected' : '') + '>Monto (menor a mayor)</option>' +
       '</select></label>';
     h += '</div>';
-    if (_fac.manualTrunc) h += '<div style="font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:6px 10px;margin-bottom:8px">Hay más de ' + ops.length + ' ventas en el rango. Acotá las fechas para ver el resto.</div>';
+    // Filtro por precio del ticket
+    h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;font-size:12.5px;color:#374151">';
+    h += 'Precio del ticket: desde <input type="number" id="facml-pmin" value="' + (Number(_fac.manPrecioMin) || 0 ? _fac.manPrecioMin : '') + '" placeholder="0" step="1000" min="0" onchange="facSetPrecio()" style="' + css + ';width:120px">';
+    h += ' hasta <input type="number" id="facml-pmax" value="' + (Number(_fac.manPrecioMax) || 0 ? _fac.manPrecioMax : '') + '" placeholder="sin tope" step="1000" min="0" onchange="facSetPrecio()" style="' + css + ';width:120px">';
+    if (hayFiltroPrecio) h += ' <button onclick="facLimpiarPrecio()" style="padding:5px 10px;border:1px solid #d1d5db;border-radius:7px;background:#fff;color:#374151;font-size:12px;cursor:pointer">Limpiar</button>';
+    h += '</div>';
+    if (_fac.manualOcultas) h += '<div style="font-size:12px;color:#065f46;background:#ecfdf5;border:1px solid #bbf7d0;border-radius:7px;padding:6px 10px;margin-bottom:8px">' + _fac.manualOcultas + ' venta(s) ya facturada(s) no se muestran (no se pueden volver a facturar).</div>';
+    if (_fac.manualTrunc) h += '<div style="font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:6px 10px;margin-bottom:8px">Hay más ventas en el rango de las que se pudieron traer. Acotá las fechas para ver el resto.</div>';
     if (_fac.manualEstadoParcial) h += '<div style="font-size:12px;color:#6b7280;background:#f9fafb;border:1px solid #e5e7eb;border-radius:7px;padding:6px 10px;margin-bottom:8px">Algunas operaciones quedaron con estado “Sin dato” (son muchas para consultar el envío de todas). Acotá las fechas para ver el estado de cada una.</div>';
     // Barra de suma de lo seleccionado
     h += '<div id="facml-sumsel" style="position:sticky;top:0;z-index:2;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:13px;color:#166534"></div>';
@@ -12819,8 +12837,26 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var fchFija = (document.getElementById('facml-fchfija') || {}).value || '';
     var fchEmision = (fchModo === 'fija' && fchFija) ? fchFija.replace(/-/g, '') : '';
     if (amb === 'produccion') { if (!confirm('Vas a emitir ' + sel.length + ' factura(s) REAL(es) con validez fiscal desde ' + _fac.manCuenta + '. ¿Confirmás?')) return; }
-    var box = document.getElementById('facml-result'); if (box) { box.style.display = ''; box.style.background = '#f8fafc'; box.style.color = '#374151'; box.textContent = 'Generando ' + sel.length + ' comprobante(s)…'; }
+    var total = sel.length;
+    var box = document.getElementById('facml-result');
+    var genBtn = (typeof event !== 'undefined' && event && event.target) ? event.target : null;
+    if (genBtn && genBtn.tagName === 'BUTTON') { genBtn.disabled = true; }
     var okc = 0, fail = 0, freno = false, msgs = [];
+    var pintar = function (i) {
+      if (!box) return;
+      var hechos = i; // ya procesados
+      var pct = total > 0 ? Math.round(hechos / total * 100) : 0;
+      box.style.display = ''; box.style.background = '#eff6ff'; box.style.color = '#1e3a8a';
+      box.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<span class="spinner" style="width:16px;height:16px;border-width:2px;flex:0 0 auto"></span>' +
+        '<b style="font-size:14px">Generando ' + Math.min(hechos + 1, total) + ' de ' + total + '…</b>' +
+        '<span style="color:#15803d">✓ ' + okc + '</span>' + (fail ? ' <span style="color:#b91c1c">✗ ' + fail + '</span>' : '') +
+        '</div>' +
+        '<div style="margin-top:7px;height:9px;background:#dbeafe;border-radius:5px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:#2563eb;transition:width .2s"></div></div>' +
+        '<div style="font-size:11px;color:#6b7280;margin-top:3px">' + pct + '% · no cierres esta pantalla</div>';
+    };
+    pintar(0);
     for (var i = 0; i < sel.length; i++) {
       try {
         var r = await fetch('/api/facturacion/emitir-venta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cuenta: _fac.manCuenta, order_id: sel[i], concepto: concepto, fch_emision: fchEmision, saltar_tope: false }) });
@@ -12829,11 +12865,13 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
         else if (d.tope) { freno = true; msgs.push('Tope: ' + d.mensaje); break; }
         else { fail++; msgs.push('#' + sel[i] + ': ' + (d.mensaje || d.error || 'error')); }
       } catch (e) { fail++; }
+      pintar(i + 1);
     }
     if (box) {
       box.style.background = okc ? '#ecfdf5' : '#fef2f2'; box.style.color = okc ? '#065f46' : '#7f1d1d';
-      box.innerHTML = '<b>' + okc + ' comprobante(s) generado(s)</b>' + (fail ? ' · ' + fail + ' con error' : '') + (freno ? ' · frenó por tope' : '') + (msgs.length ? '<br><span style="font-size:12px;color:#b45309">' + escapeHtml(msgs.slice(0, 5).join(' | ')) + '</span>' : '');
+      box.innerHTML = '<b>✓ ' + okc + ' de ' + total + ' comprobante(s) generado(s)</b>' + (fail ? ' · ' + fail + ' con error' : '') + (freno ? ' · frenó por tope' : '') + (msgs.length ? '<br><span style="font-size:12px;color:#b45309">' + escapeHtml(msgs.slice(0, 5).join(' | ')) + (msgs.length > 5 ? ' …(' + (msgs.length - 5) + ' más)' : '') + '</span>' : '');
     }
+    if (genBtn && genBtn.tagName === 'BUTTON') { genBtn.disabled = false; }
     facImportarOps();
   }
 
@@ -13228,7 +13266,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '</div></div>';
     h += '<div style="font-size:13px;color:#374151;line-height:1.7">';
     h += '<b>Origen venta:</b> ' + escapeHtml(r.origen_venta || '—') + ' &nbsp;·&nbsp; <b>Emisor:</b> ' + escapeHtml(r.emisor || r.origen_venta || '—') + ' &nbsp;·&nbsp; <b>Destino:</b> ' + escapeHtml(dst.razon_social || '') + ' (' + facDocTipoLbl(dst.doc_tipo) + ' ' + escapeHtml(dst.cuit || dst.doc_nro || '—') + ')<br>';
-    h += '<b>Rango:</b> ' + rango + ' &nbsp;·&nbsp; <b>Umbral:</b> ' + ((Number(r.umbral) || 0) > 0 ? facMoney(r.umbral) : 'sin umbral (sólo manual)') + ' &nbsp;·&nbsp; <b>Límite diario:</b> ' + ((Number(r.limite_diario) || 0) > 0 ? facMoney(r.limite_diario) : 'sin límite');
+    h += '<b>Rango:</b> ' + rango + ' &nbsp;·&nbsp; <b>Umbral:</b> ' + ((Number(r.umbral) || 0) > 0 ? facMoney(r.umbral) : 'sin umbral (sólo manual)') + ' &nbsp;·&nbsp; <b>Límite diario:</b> ' + ((Number(r.limite_diario) || 0) > 0 ? facMoney(r.limite_diario) : 'sin límite') + ' &nbsp;·&nbsp; <b>Tope x comprobante:</b> ' + ((Number(r.tope_comprobante) || 0) > 0 ? facMoney(r.tope_comprobante) : 'sin tope');
     h += ' &nbsp;·&nbsp; <b>Concepto:</b> ' + facConceptoLbl(r.concepto) + ' &nbsp;·&nbsp; <b>Fecha:</b> ' + ((Number(r.dias_atras) || 0) > 0 ? ('hoy − ' + r.dias_atras + ' días') : 'hoy') + (r.auto_desde ? ' &nbsp;·&nbsp; <b>Trae desde:</b> ' + escapeHtml(r.auto_desde) : '');
     h += '</div>';
     h += '<div id="facs2-prev-' + r.id + '" style="display:none;margin-top:10px"></div>';
@@ -13238,7 +13276,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function facDocTipoLbl(t) { t = parseInt(t, 10); return t === 80 ? 'CUIT' : (t === 96 ? 'DNI' : (t === 99 ? 'Cons. Final' : 'Doc')); }
   function facConceptoLbl(c) { c = parseInt(c, 10) || 1; return c === 2 ? 'Servicios' : (c === 3 ? 'Productos y Servicios' : 'Productos'); }
   function facS2Nueva() {
-    _fac.s2edit = { id: '', nombre: '', origen_venta: '', emisor: '', destino: { doc_tipo: 80, cuit: '', doc_nro: '', razon_social: '', condicion: 'RI', domicilio: '', email: '' }, monto_desde: 0, monto_hasta: 0, umbral: 0, limite_diario: 0, concepto: 1, dias_atras: 0, auto_desde: '', activa: true, _nueva: true };
+    _fac.s2edit = { id: '', nombre: '', origen_venta: '', emisor: '', destino: { doc_tipo: 80, cuit: '', doc_nro: '', razon_social: '', condicion: 'RI', domicilio: '', email: '' }, monto_desde: 0, monto_hasta: 0, umbral: 0, limite_diario: 0, tope_comprobante: 0, concepto: 1, dias_atras: 0, auto_desde: '', activa: true, _nueva: true };
     renderFacturacion();
   }
   function facS2Editar(id) {
@@ -13298,6 +13336,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += facField('Monto hasta ($, 0 = sin tope)', '<input id="s2-mhasta" type="number" value="' + (Number(r.monto_hasta) || 0) + '" step="100" min="0" style="' + css + '">');
     h += facField('Umbral: facturar cuando supera ($)', '<input id="s2-umbral" type="number" value="' + (Number(r.umbral) || 0) + '" step="1000" min="0" style="' + css + '">');
     h += facField('Límite diario ($, 0 = sin límite)', '<input id="s2-limdia" type="number" value="' + (Number(r.limite_diario) || 0) + '" step="1000" min="0" style="' + css + '">');
+    h += facField('Tope por comprobante ($, 0 = sin tope)', '<input id="s2-topecbte" type="number" value="' + (Number(r.tope_comprobante) || 0) + '" step="1000" min="0" title="Si lo del día supera este monto, se parte en varias facturas, cada una por debajo del tope" style="' + css + '">');
     h += facField('Concepto', '<select id="s2-conc" style="' + css + '"><option value="1"' + (parseInt(r.concepto, 10) !== 2 && parseInt(r.concepto, 10) !== 3 ? ' selected' : '') + '>Productos</option><option value="3"' + (parseInt(r.concepto, 10) === 3 ? ' selected' : '') + '>Productos y Servicios</option><option value="2"' + (parseInt(r.concepto, 10) === 2 ? ' selected' : '') + '>Servicios</option></select>');
     h += facField('Días hacia atrás (0 a 10)', '<input id="s2-dias" type="number" value="' + Math.max(0, Math.min(10, parseInt(r.dias_atras, 10) || 0)) + '" min="0" max="10" style="' + css + '">');
     h += facField('Traer ventas desde', '<input id="s2-desde" type="date" value="' + escapeHtml(r.auto_desde || '') + '" style="' + css + '">');
@@ -13324,6 +13363,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       monto_hasta: parseFloat(g('s2-mhasta')) || 0,
       umbral: parseFloat(g('s2-umbral')) || 0,
       limite_diario: parseFloat(g('s2-limdia')) || 0,
+      tope_comprobante: parseFloat(g('s2-topecbte')) || 0,
       concepto: parseInt(g('s2-conc'), 10) || 1,
       dias_atras: Math.max(0, Math.min(10, parseInt(g('s2-dias'), 10) || 0)),
       auto_desde: g('s2-desde'),
@@ -13376,6 +13416,8 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var h = '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;background:#fafafa">';
     h += '<div style="font-size:12.5px;color:#374151;margin-bottom:8px;line-height:1.7">';
     h += '<b>' + ventas.length + '</b> venta(s) lista(s) para facturar · Acumulado: <b>' + facMoney(reg.acumulado) + '</b>';
+    if ((Number(reg.comprobantes) || 0) > 1) h += ' · se emitirían <b>' + reg.comprobantes + ' facturas</b> (tope ' + facMoney(reg.tope_comprobante) + ' c/u)';
+    else if ((Number(reg.tope_comprobante) || 0) > 0 && ventas.length) h += ' · 1 factura (no supera el tope de ' + facMoney(reg.tope_comprobante) + ')';
     if ((Number(reg.umbral) || 0) > 0) h += ' · Umbral: ' + facMoney(reg.umbral) + ' ' + (alcanza ? '<span style="color:#15803d;font-weight:700">✓ alcanzado</span>' : '<span style="color:#b45309">aún no alcanzado</span>');
     if ((Number(reg.limite_diario) || 0) > 0) h += '<br>Límite diario: ' + facMoney(reg.limite_diario) + ' · Facturado hoy: ' + facMoney(reg.facturado_hoy) + (reg.disponible_hoy != null ? ' · Disponible hoy: <b>' + facMoney(reg.disponible_hoy) + '</b>' : '');
     if ((Number(reg.pendientes_total) || 0) > (Number(reg.acumulado) || 0)) h += '<br><span style="color:#6b7280">Total pendiente en rango (sin cap diario): ' + facMoney(reg.pendientes_total) + '</span>';
