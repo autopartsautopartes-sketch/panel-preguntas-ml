@@ -12717,34 +12717,87 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var desde = (document.getElementById('facml-desde') || {}).value;
     var hasta = (document.getElementById('facml-hasta') || {}).value;
     _fac.manCuenta = c;
-    cont.innerHTML = '<div class="loading"><div class="spinner"></div><p>Importando operaciones de ' + c + '…</p></div>';
+    cont.innerHTML = '<div class="loading"><div class="spinner"></div><p>Importando operaciones de ' + c + '… <span style="font-size:12px;color:#9ca3af">(trae todas y consulta el estado de envío, puede tardar unos segundos)</span></p></div>';
     try {
       var r = await fetch('/api/facturacion/ventas?cuenta=' + encodeURIComponent(c) + '&desde=' + desde + '&hasta=' + hasta);
       var d = await r.json();
       if (!d.ok) { cont.innerHTML = '<p style="color:#b91c1c">' + escapeHtml(d.error || 'Error') + '</p>'; return; }
       _fac.manualOps = d.ventas || []; _fac.manualSel = {};
+      _fac.manualTotal = d.total; _fac.manualTrunc = !!d.truncado; _fac.manualEstadoParcial = !!d.estado_parcial;
       facRenderOps();
     } catch (e) { cont.innerHTML = '<p style="color:#b91c1c">Error de red al importar</p>'; }
+  }
+  var FAC_ESTADOS = [['entregado', 'Entregado'], ['en_camino', 'En camino'], ['por_enviar', 'Por enviar'], ['problema', 'Con problema'], ['sin_envio', 'Sin envío'], ['otro', 'Otro'], ['desconocido', 'Sin dato']];
+  function facEstadoColor(k) {
+    return { entregado: '#065f46;background:#ecfdf5', en_camino: '#1d4ed8;background:#eff6ff', por_enviar: '#92400e;background:#fffbeb', problema: '#b91c1c;background:#fef2f2', sin_envio: '#6b7280;background:#f3f4f6', otro: '#374151;background:#f3f4f6', desconocido: '#6b7280;background:#f3f4f6' }[k] || '#374151;background:#f3f4f6';
+  }
+  function facOpsVisibles() {
+    var ops = (_fac.manualOps || []).slice();
+    var est = _fac.manEstado || '';
+    if (est) ops = ops.filter(function (o) { return (o.estado || 'sin_envio') === est; });
+    var s = _fac.manSort || 'fecha_desc';
+    ops.sort(function (a, b) {
+      if (s === 'monto_desc') return (Number(b.total) || 0) - (Number(a.total) || 0);
+      if (s === 'monto_asc') return (Number(a.total) || 0) - (Number(b.total) || 0);
+      var ta = new Date(a.fecha || 0).getTime() || 0, tb = new Date(b.fecha || 0).getTime() || 0;
+      return s === 'fecha_asc' ? ta - tb : tb - ta;
+    });
+    return ops;
+  }
+  function facSetSort(v) { _fac.manSort = v; facRenderOps(); }
+  function facSetEstado(v) { _fac.manEstado = v; facRenderOps(); }
+  function facSumSelCalc() {
+    var ops = _fac.manualOps || [], sel = _fac.manualSel || {}, n = 0, tot = 0;
+    ops.forEach(function (o) { if (!o.facturado && sel[o.order_id]) { n++; tot += Number(o.total) || 0; } });
+    return { n: n, tot: tot };
+  }
+  function facUpdateSumSel() {
+    var el = document.getElementById('facml-sumsel'); if (!el) return;
+    var s = facSumSelCalc();
+    el.innerHTML = 'Seleccionadas: <b>' + s.n + '</b> &nbsp;·&nbsp; Suma de los tickets: <b style="font-size:15px">' + facMoney(s.tot) + '</b>';
   }
   function facRenderOps() {
     var cont = document.getElementById('facml-ops'); if (!cont) return;
     var ops = _fac.manualOps || [];
     if (!ops.length) { cont.innerHTML = '<p style="color:#6b7280;font-size:13px">No hay operaciones pagadas en ese rango.</p>'; return; }
     var pend = ops.filter(function (o) { return !o.facturado; });
-    var h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:6px">' + ops.length + ' operaciones · <b>' + pend.length + ' pendientes</b>. Tildá las que querés facturar.</div>';
+    if (!_fac.manSort) _fac.manSort = 'fecha_desc';
+    // Conteo por estado para las opciones del filtro
+    var cnt = {}; ops.forEach(function (o) { var k = o.estado || 'sin_envio'; cnt[k] = (cnt[k] || 0) + 1; });
+    var vis = facOpsVisibles();
+    var css = 'padding:6px 9px;border:1px solid #d1d5db;border-radius:8px;font-size:13px';
+    var h = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">';
+    h += '<div style="font-size:12.5px;color:#6b7280">' + ops.length + ' operaciones traídas' + ((_fac.manualTotal && _fac.manualTotal > ops.length) ? ' de ' + _fac.manualTotal : '') + ' · <b>' + pend.length + ' pendientes</b>' + (_fac.manEstado ? ' · mostrando <b>' + vis.length + '</b>' : '') + '. Tildá las que querés facturar.</div>';
+    h += '<label style="font-size:12.5px;color:#374151;margin-left:auto">Estado: <select id="facml-estado" onchange="facSetEstado(this.value)" style="' + css + '">';
+    h += '<option value="">Todos (' + ops.length + ')</option>';
+    FAC_ESTADOS.forEach(function (e) { if (cnt[e[0]]) h += '<option value="' + e[0] + '"' + (_fac.manEstado === e[0] ? ' selected' : '') + '>' + e[1] + ' (' + cnt[e[0]] + ')</option>'; });
+    h += '</select></label>';
+    h += '<label style="font-size:12.5px;color:#374151">Ordenar por: <select id="facml-sort" onchange="facSetSort(this.value)" style="' + css + '">' +
+      '<option value="fecha_desc"' + (_fac.manSort === 'fecha_desc' ? ' selected' : '') + '>Fecha (más nueva primero)</option>' +
+      '<option value="fecha_asc"' + (_fac.manSort === 'fecha_asc' ? ' selected' : '') + '>Fecha (más vieja primero)</option>' +
+      '<option value="monto_desc"' + (_fac.manSort === 'monto_desc' ? ' selected' : '') + '>Monto (mayor a menor)</option>' +
+      '<option value="monto_asc"' + (_fac.manSort === 'monto_asc' ? ' selected' : '') + '>Monto (menor a mayor)</option>' +
+      '</select></label>';
+    h += '</div>';
+    if (_fac.manualTrunc) h += '<div style="font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:6px 10px;margin-bottom:8px">Hay más de ' + ops.length + ' ventas en el rango. Acotá las fechas para ver el resto.</div>';
+    if (_fac.manualEstadoParcial) h += '<div style="font-size:12px;color:#6b7280;background:#f9fafb;border:1px solid #e5e7eb;border-radius:7px;padding:6px 10px;margin-bottom:8px">Algunas operaciones quedaron con estado “Sin dato” (son muchas para consultar el envío de todas). Acotá las fechas para ver el estado de cada una.</div>';
+    // Barra de suma de lo seleccionado
+    h += '<div id="facml-sumsel" style="position:sticky;top:0;z-index:2;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:13px;color:#166534"></div>';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
     h += '<thead><tr style="background:#f8fafc;text-align:left;color:#6b7280">';
     h += '<th style="padding:8px 8px"><input type="checkbox" id="facml-todas" onchange="facToggleTodas(this)"></th>';
-    ['Fecha', 'Id Operación', 'Cliente', 'Detalle', 'Total', 'Estado'].forEach(function (x) { h += '<th style="padding:8px 8px;font-weight:700">' + x + '</th>'; });
+    ['Fecha', 'Id Operación', 'Cliente', 'Detalle', 'Envío', 'Total', 'Factura'].forEach(function (x) { h += '<th style="padding:8px 8px;font-weight:700">' + x + '</th>'; });
     h += '</tr></thead><tbody>';
-    ops.forEach(function (o, i) {
+    vis.forEach(function (o) {
+      var oid = o.order_id;
       h += '<tr style="border-bottom:1px solid #f1f5f9">';
       if (o.facturado) h += '<td style="padding:7px 8px"></td>';
-      else h += '<td style="padding:7px 8px"><input type="checkbox" data-i="' + i + '" onchange="facToggleOp(' + i + ',this)"' + (_fac.manualSel && _fac.manualSel[o.order_id] ? ' checked' : '') + '></td>';
+      else h += '<td style="padding:7px 8px"><input type="checkbox" data-oid="' + oid + '" onchange="facToggleOp(\'' + oid + '\',this)"' + (_fac.manualSel && _fac.manualSel[oid] ? ' checked' : '') + '></td>';
       h += '<td style="padding:7px 8px">' + facFechaCorta(o.fecha) + '</td>';
-      h += '<td style="padding:7px 8px">' + o.order_id + '</td>';
+      h += '<td style="padding:7px 8px">' + oid + '</td>';
       h += '<td style="padding:7px 8px">' + escapeHtml(o.comprador || '') + '</td>';
-      h += '<td style="padding:7px 8px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(o.titulo || '') + '</td>';
+      h += '<td style="padding:7px 8px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(o.titulo || '') + '</td>';
+      h += '<td style="padding:7px 8px"><span style="padding:2px 8px;border-radius:7px;font-weight:700;font-size:11px;color:' + facEstadoColor(o.estado) + '">' + escapeHtml(o.estado_label || 'Sin envío') + '</span></td>';
       h += '<td style="padding:7px 8px;font-weight:700">' + facMoney(o.total) + '</td>';
       if (o.facturado) h += '<td style="padding:7px 8px"><span style="padding:2px 8px;border-radius:7px;background:#ecfdf5;color:#065f46;font-weight:700;font-size:11px">✓ ' + (o.factura ? o.factura.cbte + ' N° ' + o.factura.nro : 'Facturado') + '</span></td>';
       else h += '<td style="padding:7px 8px;color:#b45309;font-size:12px">Pendiente</td>';
@@ -12752,9 +12805,11 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     });
     h += '</tbody></table></div>';
     cont.innerHTML = h;
+    facUpdateSumSel();
   }
-  function facToggleTodas(chk) { (_fac.manualOps || []).forEach(function (o) { if (!o.facturado) _fac.manualSel[o.order_id] = chk.checked; }); facRenderOps(); var t = document.getElementById('facml-todas'); if (t) t.checked = chk.checked; }
-  function facToggleOp(i, chk) { var o = (_fac.manualOps || [])[i]; if (o) _fac.manualSel[o.order_id] = chk.checked; }
+  // "Seleccionar todas" aplica sólo a las operaciones visibles (según el filtro de estado).
+  function facToggleTodas(chk) { facOpsVisibles().forEach(function (o) { if (!o.facturado) _fac.manualSel[o.order_id] = chk.checked; }); facRenderOps(); var t = document.getElementById('facml-todas'); if (t) t.checked = chk.checked; }
+  function facToggleOp(oid, chk) { if (!_fac.manualSel) _fac.manualSel = {}; _fac.manualSel[oid] = chk.checked; facUpdateSumSel(); }
   async function facGenerarLote() {
     var sel = Object.keys(_fac.manualSel || {}).filter(function (k) { return _fac.manualSel[k]; });
     if (!sel.length) { showToast('Tildá al menos una operación.', 'error'); return; }
