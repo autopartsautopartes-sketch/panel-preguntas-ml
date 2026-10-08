@@ -15607,6 +15607,16 @@ function facFechaAtras(n) {
   const g = {}; parts.forEach(p => g[p.type] = p.value);
   return (g.year || '') + (g.month || '') + (g.day || '');
 }
+// Día REAL (hora Argentina) en que se emitió una factura, a partir de su timestamp ISO (rec.fecha).
+// Es distinto de cbte_fch cuando se factura con días hacia atrás (la fecha fiscal queda en el pasado).
+function facFechaARGdeISO(iso) {
+  try {
+    const dt = iso ? new Date(iso) : null; if (!dt || isNaN(dt.getTime())) return '';
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(dt);
+    const g = {}; parts.forEach(p => g[p.type] = p.value);
+    return (g.year || '') + (g.month || '') + (g.day || '');
+  } catch (e) { return ''; }
+}
 // Set con TODOS los order_id ya facturados (individuales y agrupados, no anulados).
 function facOrdenesFacturadas(db) {
   const s = new Set();
@@ -15624,9 +15634,21 @@ async function facSector2Juntar(db, regla) {
   let token; try { token = await getValidToken(originAcc); } catch (e) { return { error: 'Sin token de ' + regla.origen_venta, ventas: [], acumulado: 0 }; }
   const yaFact = facOrdenesFacturadas(db);
   const d = Number(regla.monto_desde) || 0, h = Number(regla.monto_hasta) || 0;
-  const params = { seller: originAcc.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 50 };
-  if (/^\d{4}-\d{2}-\d{2}$/.test(String(regla.auto_desde || ''))) params['order.date_created.from'] = regla.auto_desde + 'T00:00:00.000-03:00';
-  let data; try { data = await mlGet('https://api.mercadolibre.com/orders/search', token, params); } catch (e) { return { error: String(e.message || e), ventas: [], acumulado: 0 }; }
+  const desdeISO = /^\d{4}-\d{2}-\d{2}$/.test(String(regla.auto_desde || '')) ? regla.auto_desde + 'T00:00:00.000-03:00' : null;
+  // Paginación completa: ML devuelve máx. 50 por página. Sin esto, sólo veíamos las 50
+  // ventas más nuevas y las pendientes más viejas (p. ej. de septiembre) no aparecían.
+  const MAX_ORDENES = 1000;
+  let resultados = [];
+  for (let offset = 0; offset < MAX_ORDENES; offset += 50) {
+    const params = { seller: originAcc.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 50, offset: offset };
+    if (desdeISO) params['order.date_created.from'] = desdeISO;
+    let page; try { page = await mlGet('https://api.mercadolibre.com/orders/search', token, params); } catch (e) { if (!resultados.length) return { error: String(e.message || e), ventas: [], acumulado: 0 }; break; }
+    const rs = page.results || [];
+    resultados = resultados.concat(rs);
+    if (rs.length < 50) break;
+    if (page.paging && page.paging.total != null && resultados.length >= page.paging.total) break;
+  }
+  const data = { results: resultados };
   const ventas = [];
   for (const o of (data.results || [])) {
     const oid = String(o.id);
@@ -15665,7 +15687,9 @@ function facSector2FacturadoHoy(db, reglaId) {
   for (const fx of (db.facturacion.facturas || [])) {
     if (fx.anulada) continue;
     if (String(fx.regla_id || '') !== String(reglaId)) continue;
-    if (String(fx.cbte_fch || '') !== hoy) continue;
+    // Día REAL de emisión (no la fecha fiscal, que puede estar atrasada por 'días hacia atrás').
+    const diaReal = facFechaARGdeISO(fx.fecha) || String(fx.cbte_fch || '');
+    if (diaReal !== hoy) continue;
     t += Number(fx.importe_total) || 0;
   }
   return t;
