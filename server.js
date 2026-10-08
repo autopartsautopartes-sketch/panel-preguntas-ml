@@ -15244,6 +15244,35 @@ route('POST', '/api/facturacion/emitir-venta', async (req, res) => {
   } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
 });
 
+// DIAGNÓSTICO (solo lectura, NO emite factura): trae los datos fiscales del comprador de una venta de
+// ML y muestra la respuesta CRUDA de Mercado Libre (o el error exacto, ej. 403/PolicyAgent). Sirve para
+// saber por qué una factura sale como "Consumidor Final / nickname". Abrir en el navegador (admin):
+//   /api/facturacion/billing-test?cuenta=MARA&order_id=2000015278315669
+route('GET', '/api/facturacion/billing-test', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const cuenta = String(q.get('cuenta') || '').toUpperCase();
+  const orderId = String(q.get('order_id') || '').replace(/\D/g, '');
+  if (!orderId) return sendJSON(res, 200, { ok: false, error: 'Falta order_id. Uso: /api/facturacion/billing-test?cuenta=MARA&order_id=NUMERO' });
+  const db = facLoad();
+  const account = facFindMLAccount(db, cuenta);
+  if (!account) return sendJSON(res, 200, { ok: false, error: 'No encuentro la cuenta de ML "' + cuenta + '". Cuentas: ' + (db.ml_accounts || []).map(a => a.name).join(', ') });
+  try {
+    const token = await getValidToken(account);
+    // 1) Respuesta CRUDA de ML tal cual (para ver el 403/PolicyAgent o los datos reales).
+    let ml_raw = null, ml_error = null, http_status = null;
+    try {
+      ml_raw = await mlGet('https://api.mercadolibre.com/orders/' + orderId + '/billing_info', token, {}, { 'x-version': '2' });
+    } catch (e) {
+      http_status = (e && e.response && e.response.status) || null;
+      ml_error = (e && e.response && e.response.data) || String((e && e.message) || e);
+    }
+    // 2) Lo que el panel INTERPRETARÍA de esa respuesta (doc, nombre, etc.).
+    const interpretado = await facBillingML(account, token, orderId);
+    sendJSON(res, 200, { ok: true, cuenta, order_id: orderId, http_status, ml_error, ml_raw, interpretado });
+  } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
+});
+
 // Adjuntar (o re-adjuntar) manualmente el PDF de un comprobante ya emitido a su venta de ML.
 route('POST', '/api/facturacion/adjuntar-ml', async (req, res) => {
   if (!facRequireAdmin(req, res)) return;
