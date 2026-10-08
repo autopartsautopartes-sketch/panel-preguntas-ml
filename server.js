@@ -15282,6 +15282,8 @@ route('GET', '/api/facturacion/ventas', async (req, res) => {
   // Set de order_id ya facturados
   const facturados = {};
   for (const fx of (db.facturacion.facturas || [])) if (fx.order_id && !fx.anulada) facturados[String(fx.order_id)] = fx;
+  // Set completo de órdenes ya facturadas (incluye las agrupadas del Sector 2, que guardan order_ids[]).
+  const factSet = facOrdenesFacturadas(db);
   // Rango de fechas opcional (yyyy-mm-dd). Por defecto, últimos 30 días.
   const dISO = (s, endOfDay) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s || ''))) return null; return s + (endOfDay ? 'T23:59:59.999-03:00' : 'T00:00:00.000-03:00'); };
   const desdeQ = dISO(q.get('desde'), false), hastaQ = dISO(q.get('hasta'), true);
@@ -15309,19 +15311,23 @@ route('GET', '/api/facturacion/ventas', async (req, res) => {
       const it = (o.order_items && o.order_items[0]) || {};
       const oid = String(o.id);
       const fx = facturados[oid];
+      const yaFact = !!fx || factSet.has(oid);
       return {
         order_id: oid, fecha: o.date_created, total: Number(o.total_amount) || 0,
         titulo: (it.item && it.item.title) || '', cantidad: it.quantity || 1,
         comprador: (o.buyer && (o.buyer.nickname || ((o.buyer.first_name || '') + ' ' + (o.buyer.last_name || '')).trim())) || '',
-        facturado: !!fx, factura: fx ? { cbte: fx.cbte_letra, nro: fx.nro, cae: fx.cae, total: fx.importe_total } : null,
+        facturado: yaFact, factura: fx ? { cbte: fx.cbte_letra, nro: fx.nro, cae: fx.cae, total: fx.importe_total } : (yaFact ? { cbte: '', nro: '' } : null),
         _shipId: (o.shipping && o.shipping.id) || null,
         estado: 'sin_envio', estado_label: 'Sin envío'
       };
     });
+    // Las ventas YA facturadas no se devuelven: nunca deben aparecer para facturar.
+    const facturadasOcultas = ventas.filter(v => v.facturado).length;
+    const pendientes = ventas.filter(v => !v.facturado);
     // Estado de envío (best-effort, en paralelo con límite para no demorar demasiado).
     // Las que tienen envío pero no alcanzamos a consultar quedan como 'desconocido'.
     const MAX_SHIP = 400, CONC = 8;
-    const conEnvio = ventas.filter(v => v._shipId);
+    const conEnvio = pendientes.filter(v => v._shipId);
     conEnvio.forEach((v, idx) => { if (idx >= MAX_SHIP) { v.estado = 'desconocido'; v.estado_label = 'Sin dato'; } });
     const aConsultar = conEnvio.slice(0, MAX_SHIP);
     for (let i = 0; i < aConsultar.length; i += CONC) {
@@ -15336,8 +15342,8 @@ route('GET', '/api/facturacion/ventas', async (req, res) => {
         } catch (e) { v.estado = 'desconocido'; v.estado_label = 'Sin dato'; }
       }));
     }
-    ventas.forEach(v => { delete v._shipId; });
-    sendJSON(res, 200, { ok: true, ventas, total: (totalML != null ? totalML : ventas.length), truncado: !!truncado, estado_parcial: conEnvio.length > MAX_SHIP });
+    pendientes.forEach(v => { delete v._shipId; delete v.facturado; delete v.factura; });
+    sendJSON(res, 200, { ok: true, ventas: pendientes, total: (totalML != null ? totalML : ventas.length), facturadas_ocultas: facturadasOcultas, truncado: !!truncado, estado_parcial: conEnvio.length > MAX_SHIP });
   } catch (e) { sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
 });
 
