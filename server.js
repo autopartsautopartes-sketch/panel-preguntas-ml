@@ -15028,12 +15028,39 @@ route('POST', '/api/facturacion/cliente', async (req, res) => {
 
 // Resuelve la cuenta de ML a partir del nombre corto (MARA, EXPRESS…). Igual que el resto
 // del panel: coincidencia exacta y, si no, por "el nombre de la cuenta ML incluye el corto".
+// Alias: nombre corto de facturación → apodo(s) reales de la cuenta de ML.
+// Algunas cuentas de ML no contienen el nombre corto (ej.: MARCOS = "AUTOCHAPAUTOPARTES07"),
+// por eso acá los vinculamos a mano. Para una cuenta nueva, se puede mapear sin tocar código
+// cargando "ml_nombre" en la config de esa cuenta (Facturación → Configuración).
+const FAC_ALIAS = {
+  MARCOS: ['AUTOCHAPAUTOPARTES07'],
+  ANTO: ['AUTOPARTESARG'],
+  DARIO: ['RUIZ DARIO', 'RUIZDARIO']
+};
 function facFindMLAccount(db, cuenta) {
   const cu = String(cuenta || '').toUpperCase();
   const accts = db.ml_accounts || [];
-  return accts.find(a => String(a.name || '').toUpperCase() === cu)
-    || accts.find(a => String(a.name || '').toUpperCase().includes(cu))
-    || null;
+  const norm = s => String(s || '').toUpperCase().replace(/\s+/g, '');
+  // 1) Override manual por config: cuentas[CU].ml_nombre apunta al apodo exacto de ML.
+  try {
+    const cfg = ((db.facturacion && db.facturacion.config && db.facturacion.config.cuentas) || {})[cu] || {};
+    if (cfg.ml_nombre) {
+      const want = norm(cfg.ml_nombre);
+      const h = accts.find(a => norm(a.name) === want) || accts.find(a => norm(a.name).includes(want));
+      if (h) return h;
+    }
+  } catch (e) {}
+  // 2) Nombre exacto.
+  let hit = accts.find(a => String(a.name || '').toUpperCase() === cu);
+  if (hit) return hit;
+  // 3) Alias conocidos (apodos reales de ML).
+  const alias = (FAC_ALIAS[cu] || []).map(norm);
+  if (alias.length) {
+    hit = accts.find(a => { const n = norm(a.name); return alias.some(al => al && (n === al || n.includes(al) || al.includes(n))); });
+    if (hit) return hit;
+  }
+  // 4) Coincidencia por substring (comportamiento anterior).
+  return accts.find(a => String(a.name || '').toUpperCase().includes(cu)) || null;
 }
 // ---- Generación de PDF de la factura (formato AFIP completo, sin dependencias) ----
 function _pdfTxt(s) { return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7e]/g, ' ').replace(/([()\\])/g, '\\$1'); }
