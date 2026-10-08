@@ -14594,6 +14594,7 @@ route('POST', '/api/facturacion/sector2/regla', async (req, res) => {
     monto_hasta: Math.max(0, Number(b.monto_hasta) || 0),
     umbral: Math.max(0, Number(b.umbral) || 0),
     limite_diario: Math.max(0, Number(b.limite_diario) || 0),
+    tope_comprobante: Math.max(0, Number(b.tope_comprobante) || 0),
     concepto: ([1, 2, 3].includes(parseInt(b.concepto, 10)) ? parseInt(b.concepto, 10) : 1),
     dias_atras: Math.max(0, Math.min(10, parseInt(b.dias_atras, 10) || 0)),
     auto_desde: /^\d{4}-\d{2}-\d{2}$/.test(String(b.auto_desde || '')) ? String(b.auto_desde) : '',
@@ -14637,10 +14638,12 @@ route('GET', '/api/facturacion/sector2/pendientes', async (req, res) => {
   for (const r of facSector2Reglas(db, false)) {
     if (soloId && String(r.id) !== soloId) continue;
     let info; try { info = await facSector2Juntar(db, r); } catch (e) { info = { error: String(e.message || e), ventas: [] }; }
+    const grupos = facPartirPorTope(info.ventas || [], r.tope_comprobante);
     out.push({
       id: r.id, nombre: r.nombre, origen_venta: r.origen_venta, emisor: r.emisor, activa: r.activa !== false,
-      umbral: Number(r.umbral) || 0, limite_diario: Number(r.limite_diario) || 0,
+      umbral: Number(r.umbral) || 0, limite_diario: Number(r.limite_diario) || 0, tope_comprobante: Number(r.tope_comprobante) || 0,
       cantidad: (info.ventas || []).length, acumulado: info.acumulado || 0,
+      comprobantes: (info.ventas || []).length ? grupos.length : 0,
       total_disponible: info.total_disponible || 0, pendientes_total: info.pendientes_total || 0,
       facturado_hoy: info.facturado_hoy || 0, disponible_hoy: (info.disponible_hoy == null ? null : info.disponible_hoy),
       alcanza_umbral: (Number(r.umbral) || 0) > 0 && (info.acumulado || 0) > (Number(r.umbral) || 0),
@@ -15751,7 +15754,23 @@ async function facSector2Emitir(db, regla, ventas) {
     saltar_tope: !!regla.saltar_tope
   });
 }
+// Parte una lista de ventas en grupos para que el TOTAL de cada factura no supere 'tope'.
+// Mantiene el orden (más viejas primero) y una línea por venta. Si una sola venta ya supera
+// el tope, va sola en su propia factura (una venta no se puede partir).
+function facPartirPorTope(ventas, tope) {
+  const t = Number(tope) || 0;
+  if (!(t > 0)) return [ventas.slice()];
+  const grupos = []; let actual = [], suma = 0;
+  for (const v of ventas) {
+    const val = Number(v.total) || 0;
+    if (actual.length && (suma + val) > t) { grupos.push(actual); actual = []; suma = 0; }
+    actual.push(v); suma += val;
+  }
+  if (actual.length) grupos.push(actual);
+  return grupos;
+}
 // Corre el Sector 2: por cada regla activa, junta y, si supera el umbral (o se fuerza con forceReglaId), emite.
+// Si la regla tiene "tope de comprobante", parte lo del día en varias facturas (cada una ≤ tope).
 async function facSector2Tick(db, forceReglaId) {
   const resumen = { facturadas: 0, detalle: [] };
   for (const regla of facSector2Reglas(db, true)) {
@@ -15761,9 +15780,13 @@ async function facSector2Tick(db, forceReglaId) {
       const umbral = Number(regla.umbral) || 0;
       const forzar = forceReglaId && String(regla.id) === String(forceReglaId);
       if (!(forzar || (umbral > 0 && acumulado > umbral))) continue;
-      const r = await facSector2Emitir(db, regla, ventas);
-      if (r && r.ok) resumen.facturadas++, resumen.detalle.push({ regla: regla.nombre || regla.id, nro: r.factura.nro, cbte: r.factura.cbte_letra, total: r.factura.importe_total, ventas: ventas.length });
-      else if (r) resumen.detalle.push({ regla: regla.nombre || regla.id, error: r.mensaje || r.error || 'rechazado' });
+      const grupos = facPartirPorTope(ventas, regla.tope_comprobante);
+      for (const grupo of grupos) {
+        if (!grupo.length) continue;
+        const r = await facSector2Emitir(db, regla, grupo);
+        if (r && r.ok) { resumen.facturadas++; resumen.detalle.push({ regla: regla.nombre || regla.id, nro: r.factura.nro, cbte: r.factura.cbte_letra, total: r.factura.importe_total, ventas: grupo.length }); }
+        else if (r) { resumen.detalle.push({ regla: regla.nombre || regla.id, error: r.mensaje || r.error || 'rechazado' }); break; } // si una falla (p.ej. tope fiscal), no sigo con las demás
+      }
     } catch (e) { resumen.detalle.push({ regla: regla.nombre || regla.id, error: String(e.message || e) }); }
   }
   return resumen;
