@@ -14440,8 +14440,8 @@ function contOpenPeriod(db, baseDate) {
 // GET estado completo de Contable (config + períodos + registros). Data chica: se envía todo.
 // ==================== FACTURACIÓN (ARCA / AFIP) — solo admin ====================
 // Etapa 1: configuración por cuenta + topes. La emisión (WSAA/WSFEv1) se agrega después.
-const FAC_CUENTAS = ['MARA', 'EXPRESS', 'MARCOS', 'DARIO', 'ANTO', 'JORGE'];
-const FAC_SEED_COND = { MARA: 'RI', EXPRESS: 'RI', MARCOS: 'RI', DARIO: 'RI', ANTO: 'MONO', JORGE: 'MONO' };
+const FAC_CUENTAS = ['MARA', 'EXPRESS', 'MARCOS', 'DARIO', 'ANTO', 'JORGE', 'DANIEL'];
+const FAC_SEED_COND = { MARA: 'RI', EXPRESS: 'RI', MARCOS: 'RI', DARIO: 'RI', ANTO: 'MONO', JORGE: 'MONO', DANIEL: 'RI' };
 // Datos del emisor para el PDF (nombre fantasía, razón social, domicilio, etc.). Editables en Configuración.
 const FAC_PDF_SEED = {
   MARA: { razon_social: 'PRATO MARA VANESA', nombre_fantasia: 'AUTOPARTS ARGENTINA REPUESTOS', domicilio: 'JUAN B JUSTO 1173 RUFINO, CP: 6100 - SANTA FE AR', ing_brutos: '23348130684', inicio_actividad: '01/06/2017' }
