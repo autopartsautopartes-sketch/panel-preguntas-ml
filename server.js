@@ -14465,12 +14465,23 @@ function facLoad() {
         cbte_default: cond === 'RI' ? 'B' : 'C', modo: 'manual',
         tope_mensual: 0, tope_anual: 0, activa: false, adjuntar_ml: true,
         auto_momento: 'camino', auto_nota_credito: true, auto_desde: '',
+        // Sector 1 (auto-factura individual a ML): tope de ticket (solo se facturan ventas MENORES a este
+        // monto; 0 = sin límite), concepto AFIP (1=Productos, 3=Productos y Servicios) y días hacia atrás
+        // para la fecha del comprobante (hoy − N, AFIP permite hasta ~10 para productos).
+        tope_ticket: 0, concepto: 1, dias_atras: 0,
         razon_social: pd.razon_social || '', nombre_fantasia: pd.nombre_fantasia || '',
         domicilio: pd.domicilio || '', ing_brutos: pd.ing_brutos || '', inicio_actividad: pd.inicio_actividad || ''
       };
       changed = true;
     }
+    // Backfill de campos nuevos en cuentas ya existentes (para no romper configs viejas).
+    const cc = f.config.cuentas[c];
+    if (cc.tope_ticket == null) { cc.tope_ticket = 0; changed = true; }
+    if (cc.concepto == null) { cc.concepto = 1; changed = true; }
+    if (cc.dias_atras == null) { cc.dias_atras = 0; changed = true; }
   }
+  // Sector 2: reglas de facturación agrupada a un CUIT (sin adjuntar a ML).
+  if (!Array.isArray(f.config.sector2_reglas)) { f.config.sector2_reglas = []; changed = true; }
   if (changed) { try { saveDB(db); } catch (e) {} }
   return db;
 }
@@ -14503,6 +14514,7 @@ route('GET', '/api/facturacion/config', async (req, res) => {
     cuentas: db.facturacion.config.cuentas,
     acumulado: facAcumulado(db),
     orden: FAC_CUENTAS,
+    sector2_reglas: db.facturacion.config.sector2_reglas || [],
     auto_last: _facAutoLast
   });
 });
@@ -14525,6 +14537,13 @@ route('POST', '/api/facturacion/config', async (req, res) => {
     cur.modo = (x.modo === 'auto') ? 'auto' : 'manual';
     cur.tope_mensual = Math.max(0, Number(x.tope_mensual) || 0);
     cur.tope_anual = Math.max(0, Number(x.tope_anual) || 0);
+    // Sector 1: tope de ticket individual, concepto AFIP y días hacia atrás para la fecha.
+    if (x.tope_ticket != null) cur.tope_ticket = Math.max(0, Number(x.tope_ticket) || 0);
+    else if (cur.tope_ticket == null) cur.tope_ticket = 0;
+    if (x.concepto != null) cur.concepto = ([1, 2, 3].includes(parseInt(x.concepto, 10)) ? parseInt(x.concepto, 10) : 1);
+    else if (cur.concepto == null) cur.concepto = 1;
+    if (x.dias_atras != null) cur.dias_atras = Math.max(0, Math.min(10, parseInt(x.dias_atras, 10) || 0));
+    else if (cur.dias_atras == null) cur.dias_atras = 0;
     cur.activa = !!x.activa;
     if (x.adjuntar_ml != null) cur.adjuntar_ml = !!x.adjuntar_ml;
     else if (cur.adjuntar_ml == null) cur.adjuntar_ml = true;
@@ -14543,6 +14562,102 @@ route('POST', '/api/facturacion/config', async (req, res) => {
   }
   saveDB(db);
   sendJSON(res, 200, { ok: true, cuentas: f.config.cuentas, ambiente: f.config.ambiente });
+});
+// ---- SECTOR 2: alta/edición/borrado de reglas de facturación agrupada ----
+route('POST', '/api/facturacion/sector2/regla', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const b = await parseBody(req);
+  const db = facLoad();
+  if (!Array.isArray(db.facturacion.config.sector2_reglas)) db.facturacion.config.sector2_reglas = [];
+  const reglas = db.facturacion.config.sector2_reglas;
+  if (b.delete && b.id) {
+    db.facturacion.config.sector2_reglas = reglas.filter(r => r.id !== b.id);
+    saveDB(db); return sendJSON(res, 200, { ok: true, sector2_reglas: db.facturacion.config.sector2_reglas });
+  }
+  const up = (s) => String(s || '').toUpperCase();
+  const dst = b.destino || {};
+  const regla = {
+    id: b.id || ('s2_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)),
+    nombre: String(b.nombre || '').slice(0, 60),
+    origen_venta: up(b.origen_venta),
+    emisor: up(b.emisor || b.origen_venta),
+    destino: {
+      doc_tipo: parseInt(dst.doc_tipo || (dst.cuit ? 80 : 99), 10),
+      cuit: String(dst.cuit || '').replace(/\D/g, '').slice(0, 11),
+      doc_nro: String(dst.doc_nro || dst.cuit || '').replace(/\D/g, '').slice(0, 11),
+      razon_social: String(dst.razon_social || '').slice(0, 120),
+      condicion: up(dst.condicion || 'RI'),
+      domicilio: String(dst.domicilio || '').slice(0, 160),
+      email: String(dst.email || '').slice(0, 120)
+    },
+    monto_desde: Math.max(0, Number(b.monto_desde) || 0),
+    monto_hasta: Math.max(0, Number(b.monto_hasta) || 0),
+    umbral: Math.max(0, Number(b.umbral) || 0),
+    limite_diario: Math.max(0, Number(b.limite_diario) || 0),
+    concepto: ([1, 2, 3].includes(parseInt(b.concepto, 10)) ? parseInt(b.concepto, 10) : 1),
+    dias_atras: Math.max(0, Math.min(10, parseInt(b.dias_atras, 10) || 0)),
+    auto_desde: /^\d{4}-\d{2}-\d{2}$/.test(String(b.auto_desde || '')) ? String(b.auto_desde) : '',
+    activa: b.activa !== false
+  };
+  if (!regla.origen_venta) return sendJSON(res, 200, { ok: false, error: 'Falta el origen de venta.' });
+  if (!regla.emisor) return sendJSON(res, 200, { ok: false, error: 'Falta el emisor.' });
+  if (!regla.destino.cuit && !regla.destino.doc_nro) return sendJSON(res, 200, { ok: false, error: 'Falta el CUIT/documento del destino.' });
+  const i = reglas.findIndex(r => r.id === regla.id);
+  if (i >= 0) reglas[i] = regla; else reglas.push(regla);
+  // El CUIT de destino se agrega/actualiza automáticamente en la libreta de clientes
+  // (match por número de documento), así queda disponible en los listados para reusar.
+  const docNro = regla.destino.cuit || regla.destino.doc_nro;
+  if (docNro) {
+    if (!Array.isArray(db.facturacion.clientes)) db.facturacion.clientes = [];
+    const cli = db.facturacion.clientes;
+    const condMap = { RI: 'RI', MONO: 'MONO', EX: 'EX', CF: 'CF' };
+    const j = cli.findIndex(c => String(c.doc_nro || '').replace(/\D/g, '') === String(docNro).replace(/\D/g, ''));
+    const base = {
+      razon_social: regla.destino.razon_social || (j >= 0 ? cli[j].razon_social : '') || ('CUIT ' + docNro),
+      doc_tipo: regla.destino.doc_tipo || (j >= 0 ? cli[j].doc_tipo : 80),
+      doc_nro: String(docNro).replace(/\D/g, ''),
+      cond_iva: condMap[regla.destino.condicion] || (j >= 0 ? cli[j].cond_iva : 'RI'),
+      email: regla.destino.email || (j >= 0 ? cli[j].email : ''),
+      domicilio: regla.destino.domicilio || (j >= 0 ? cli[j].domicilio : ''),
+      cond_pago: (j >= 0 ? cli[j].cond_pago : 'Contado') || 'Contado'
+    };
+    if (j >= 0) { cli[j] = Object.assign({}, cli[j], base); }
+    else { cli.push(Object.assign({ id: 'cli_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) }, base)); }
+  }
+  saveDB(db);
+  sendJSON(res, 200, { ok: true, regla, sector2_reglas: reglas, clientes: db.facturacion.clientes || [] });
+});
+// ---- SECTOR 2: vista previa de lo juntado por cada regla (o una con ?regla=ID) ----
+route('GET', '/api/facturacion/sector2/pendientes', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const soloId = q.get('regla') || '';
+  const db = facLoad();
+  const out = [];
+  for (const r of facSector2Reglas(db, false)) {
+    if (soloId && String(r.id) !== soloId) continue;
+    let info; try { info = await facSector2Juntar(db, r); } catch (e) { info = { error: String(e.message || e), ventas: [] }; }
+    out.push({
+      id: r.id, nombre: r.nombre, origen_venta: r.origen_venta, emisor: r.emisor, activa: r.activa !== false,
+      umbral: Number(r.umbral) || 0, limite_diario: Number(r.limite_diario) || 0,
+      cantidad: (info.ventas || []).length, acumulado: info.acumulado || 0,
+      total_disponible: info.total_disponible || 0, pendientes_total: info.pendientes_total || 0,
+      facturado_hoy: info.facturado_hoy || 0, disponible_hoy: (info.disponible_hoy == null ? null : info.disponible_hoy),
+      alcanza_umbral: (Number(r.umbral) || 0) > 0 && (info.acumulado || 0) > (Number(r.umbral) || 0),
+      error: info.error || null,
+      ventas: (info.ventas || []).map(v => ({ order_id: v.order_id, total: v.total, titulo: v.titulo, fecha: v.fecha }))
+    });
+  }
+  sendJSON(res, 200, { ok: true, reglas: out });
+});
+// ---- SECTOR 2: facturar YA lo acumulado de una regla (ignora umbral; respeta el límite diario) ----
+route('POST', '/api/facturacion/sector2/facturar-ahora', async (req, res) => {
+  if (!facRequireAdmin(req, res)) return;
+  const b = await parseBody(req);
+  if (!b.id) return sendJSON(res, 200, { ok: false, error: 'Falta el id de la regla.' });
+  const db = facLoad();
+  const r = await facSector2Tick(db, b.id);
+  sendJSON(res, 200, { ok: true, resumen: r });
 });
 // ---------- Conector ARCA: WSAA (login) + WSFEv1 ----------
 const _cp = require('child_process');
@@ -14849,7 +14964,10 @@ async function facEmitir(db, cuenta, opts) {
     iva_pct: ivaPct, importe_neto: neto, importe_iva: ivaImp, importe_total: totalFinal,
     cae, cae_vto: caeVto, cbte_fch: fch, fecha: new Date().toISOString(),
     order_id: opts.order_id ? String(opts.order_id) : null,
-    obs: obs.join(' | ') || '', origen: opts.order_id ? 'ml' : 'manual', anulada: false
+    // Para facturas AGRUPADAS (Sector 2): todas las ventas que incluye este comprobante.
+    order_ids: Array.isArray(opts.order_ids) ? opts.order_ids.map(String) : (opts.order_id ? [String(opts.order_id)] : []),
+    sin_ml: !!opts.sin_ml, regla_id: opts.regla_id || null, origen_venta: opts.origen_venta || null,
+    obs: obs.join(' | ') || '', origen: opts.origen || (opts.order_id ? 'ml' : 'manual'), anulada: false
   };
   db.facturacion.facturas.push(rec);
   saveDB(db);
@@ -15380,8 +15498,7 @@ async function facAutoNotasCredito(db, cuenta, account, token, cfg) {
   return hechas;
 }
 async function facAutoFacturar(db, cuenta, account, token, cfg) {
-  const facturados = {};
-  for (const fx of (db.facturacion.facturas || [])) if (fx.order_id && !fx.anulada) facturados[String(fx.order_id)] = true;
+  const facturadosSet = facOrdenesFacturadas(db);
   // Fecha de corte: el automático ignora ventas anteriores a esta fecha (evita facturar el backlog viejo).
   const desdeTs = /^\d{4}-\d{2}-\d{2}$/.test(String(cfg.auto_desde || '')) ? new Date(cfg.auto_desde + 'T00:00:00-03:00').getTime() : 0;
   const params = { seller: account.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 40 };
@@ -15391,26 +15508,163 @@ async function facAutoFacturar(db, cuenta, account, token, cfg) {
   for (const o of (data.results || [])) {
     if (hechas >= 8 || mirados >= 40) break;
     const oid = String(o.id);
-    if (facturados[oid]) continue;
+    if (facturadosSet.has(oid)) continue;
     if (String(o.status).toLowerCase() === 'cancelled') continue;
     if (desdeTs && new Date(o.date_created || 0).getTime() < desdeTs) continue;
     mirados++;
     if (cfg.auto_momento === 'camino') { const enCamino = await facShipEnCamino(o, token); if (!enCamino) continue; }
     const total = Number(o.total_amount) || 0;
     if (!(total > 0)) continue;
+    // TOPE DE TICKET (Sector 1): solo se auto-facturan a ML las ventas MENORES al tope (0 = sin límite).
+    if (Number(cfg.tope_ticket) > 0 && total >= Number(cfg.tope_ticket)) continue;
+    // PRIORIDAD DEL SECTOR 2: si la venta cae en una regla activa, la maneja el Sector 2 (no se factura acá).
+    if (facVentaMatchSector2(db, cuenta, total)) continue;
     const it = (o.order_items && o.order_items[0]) || {};
     const desc = (it.item && it.item.title) || ('Venta ML ' + oid);
     let bill; try { bill = await facBillingML(account, token, oid); } catch (e) { bill = { doc_tipo: 99, doc_nro: '0', receptor_ri: false, nombre: '' }; }
     let r; try {
-      r = await facEmitir(db, cuenta, { doc_tipo: bill.doc_tipo, doc_nro: bill.doc_nro, receptor_ri: bill.receptor_ri, receptor_nombre: bill.nombre || (o.buyer && o.buyer.nickname) || '', receptor_domicilio: bill.domicilio || '', importe_total: total, descripcion: desc, order_id: oid, saltar_tope: false });
+      r = await facEmitir(db, cuenta, { doc_tipo: bill.doc_tipo, doc_nro: bill.doc_nro, receptor_ri: bill.receptor_ri, receptor_nombre: bill.nombre || (o.buyer && o.buyer.nickname) || '', receptor_domicilio: bill.domicilio || '', importe_total: total, descripcion: desc, concepto: cfg.concepto || 1, fch_emision: facFechaAtras(cfg.dias_atras), order_id: oid, saltar_tope: false });
     } catch (e) { continue; }
     if (r.tope) break; // tope alcanzado → frenar esta cuenta
     if (r.ok && r.factura) {
-      facturados[oid] = true; hechas++;
+      facturadosSet.add(oid); hechas++;
       if (cfg.adjuntar_ml !== false) { try { await facAdjuntarML(account, token, oid, r.factura, cfg); const fx = (db.facturacion.facturas || []).find(x => x.id === r.factura.id); if (fx) { fx.ml_adjuntada = true; saveDB(db); } } catch (e) {} }
     }
   }
   return hechas;
+}
+// ============ SECTOR 2: facturación por reglas (agrupada a un CUIT, sin adjuntar a ML) ============
+function facSector2Reglas(db, soloActivas) {
+  const rs = (db.facturacion.config.sector2_reglas || []);
+  return soloActivas ? rs.filter(r => r && r.activa !== false) : rs;
+}
+// ¿El total de una venta de la cuenta 'cuenta' (nombre corto) cae en alguna regla ACTIVA del Sector 2?
+function facVentaMatchSector2(db, cuenta, total) {
+  const cu = String(cuenta || '').toUpperCase();
+  return facSector2Reglas(db, true).find(r => {
+    if (String(r.origen_venta || '').toUpperCase() !== cu) return false;
+    const d = Number(r.monto_desde) || 0, h = Number(r.monto_hasta) || 0;
+    if (total < d) return false;
+    if (h > 0 && total > h) return false;
+    return true;
+  }) || null;
+}
+// YYYYMMDD de hoy − N días (hora Argentina).
+function facFechaAtras(n) {
+  n = Math.max(0, Math.min(15, parseInt(n, 10) || 0));
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(Date.now() - n * 24 * 3600 * 1000));
+  const g = {}; parts.forEach(p => g[p.type] = p.value);
+  return (g.year || '') + (g.month || '') + (g.day || '');
+}
+// Set con TODOS los order_id ya facturados (individuales y agrupados, no anulados).
+function facOrdenesFacturadas(db) {
+  const s = new Set();
+  for (const fx of (db.facturacion.facturas || [])) {
+    if (fx.anulada) continue;
+    if (fx.order_id) s.add(String(fx.order_id));
+    if (Array.isArray(fx.order_ids)) fx.order_ids.forEach(o => s.add(String(o)));
+  }
+  return s;
+}
+// Junta las ventas de ML de UNA regla (pagas, no facturadas, no canceladas, con total en el rango).
+async function facSector2Juntar(db, regla) {
+  const originAcc = facFindMLAccount(db, regla.origen_venta);
+  if (!originAcc) return { error: 'No encuentro la cuenta de origen "' + regla.origen_venta + '".', ventas: [], acumulado: 0 };
+  let token; try { token = await getValidToken(originAcc); } catch (e) { return { error: 'Sin token de ' + regla.origen_venta, ventas: [], acumulado: 0 }; }
+  const yaFact = facOrdenesFacturadas(db);
+  const d = Number(regla.monto_desde) || 0, h = Number(regla.monto_hasta) || 0;
+  const params = { seller: originAcc.seller_id, 'order.status': 'paid', sort: 'date_desc', limit: 50 };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(regla.auto_desde || ''))) params['order.date_created.from'] = regla.auto_desde + 'T00:00:00.000-03:00';
+  let data; try { data = await mlGet('https://api.mercadolibre.com/orders/search', token, params); } catch (e) { return { error: String(e.message || e), ventas: [], acumulado: 0 }; }
+  const ventas = [];
+  for (const o of (data.results || [])) {
+    const oid = String(o.id);
+    if (yaFact.has(oid)) continue;
+    if (String(o.status).toLowerCase() === 'cancelled') continue;
+    const total = Number(o.total_amount) || 0;
+    if (!(total > 0)) continue;
+    if (total < d) continue;
+    if (h > 0 && total > h) continue;
+    const it = (o.order_items && o.order_items[0]) || {};
+    ventas.push({ order_id: oid, total, titulo: (it.item && it.item.title) || ('Venta ML ' + oid), fecha: o.date_created });
+  }
+  ventas.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))); // más viejas primero
+  const fullAcum = ventas.reduce((s, v) => s + v.total, 0);
+  // LÍMITE DIARIO por regla: no facturar más de 'limite_diario' $ por día para esta regla. Recortamos
+  // la lista (de las más viejas) para que el total del día no lo supere; el resto espera a mañana.
+  const limDia = Number(regla.limite_diario) || 0;
+  const factHoy = facSector2FacturadoHoy(db, regla.id);
+  let elegidas = ventas, dispHoy = Infinity;
+  if (limDia > 0) {
+    dispHoy = Math.max(0, limDia - factHoy);
+    elegidas = [];
+    let run = 0;
+    for (const v of ventas) { if (run + v.total <= dispHoy) { elegidas.push(v); run += v.total; } }
+  }
+  return {
+    ventas: elegidas, acumulado: elegidas.reduce((s, v) => s + v.total, 0),
+    total_disponible: fullAcum, pendientes_total: ventas.length,
+    facturado_hoy: factHoy, disponible_hoy: (limDia > 0 ? dispHoy : null)
+  };
+}
+// Total facturado HOY (hora Argentina) por una regla del Sector 2 (para el límite diario).
+function facSector2FacturadoHoy(db, reglaId) {
+  const hoy = facFechaAtras(0);
+  let t = 0;
+  for (const fx of (db.facturacion.facturas || [])) {
+    if (fx.anulada) continue;
+    if (String(fx.regla_id || '') !== String(reglaId)) continue;
+    if (String(fx.cbte_fch || '') !== hoy) continue;
+    t += Number(fx.importe_total) || 0;
+  }
+  return t;
+}
+// Emite UNA factura agrupada para una regla, con las ventas dadas (una línea por venta). NO adjunta a ML.
+async function facSector2Emitir(db, regla, ventas) {
+  if (!ventas || !ventas.length) return { ok: false, error: 'Sin ventas para facturar.' };
+  const emisor = String(regla.emisor || regla.origen_venta || '').toUpperCase();
+  const ecfg = (db.facturacion.config.cuentas || {})[emisor];
+  if (!ecfg) return { ok: false, error: 'La cuenta emisora "' + emisor + '" no existe.' };
+  const esMono = ecfg.condicion === 'MONO';
+  const ivaPct = esMono ? 0 : (Number(ecfg.iva_pct) || 21);
+  const dst = regla.destino || {};
+  // Renglones: una línea por venta. Para A/B el precio es NETO (facEmitir le suma IVA); para C es el total.
+  const items = ventas.map(v => {
+    const pu = esMono ? _facR2(v.total) : _facR2(v.total / (1 + ivaPct / 100));
+    return { cantidad: 1, codigo: '', descripcion: String(v.titulo || 'Venta').slice(0, 200), precio_unit: pu, bonif_pct: 0, iva_pct: ivaPct };
+  });
+  return await facEmitir(db, emisor, {
+    doc_tipo: dst.doc_tipo || (dst.cuit ? 80 : 99),
+    doc_nro: dst.cuit || dst.doc_nro || '0',
+    receptor_ri: String(dst.condicion || '').toUpperCase() === 'RI',
+    receptor_nombre: dst.razon_social || dst.nombre || '',
+    receptor_domicilio: dst.domicilio || '',
+    receptor_cond_iva: dst.condicion || '',
+    items,
+    concepto: regla.concepto || 1,
+    fch_emision: facFechaAtras(regla.dias_atras),
+    order_ids: ventas.map(v => v.order_id),
+    sin_ml: true, regla_id: regla.id, origen_venta: regla.origen_venta, origen: 'sector2',
+    observaciones: 'Agrupado regla "' + (regla.nombre || regla.id) + '" (' + ventas.length + ' ventas, origen ' + regla.origen_venta + ')',
+    saltar_tope: !!regla.saltar_tope
+  });
+}
+// Corre el Sector 2: por cada regla activa, junta y, si supera el umbral (o se fuerza con forceReglaId), emite.
+async function facSector2Tick(db, forceReglaId) {
+  const resumen = { facturadas: 0, detalle: [] };
+  for (const regla of facSector2Reglas(db, true)) {
+    try {
+      const { ventas, acumulado } = await facSector2Juntar(db, regla);
+      if (!ventas || !ventas.length) continue;
+      const umbral = Number(regla.umbral) || 0;
+      const forzar = forceReglaId && String(regla.id) === String(forceReglaId);
+      if (!(forzar || (umbral > 0 && acumulado > umbral))) continue;
+      const r = await facSector2Emitir(db, regla, ventas);
+      if (r && r.ok) resumen.facturadas++, resumen.detalle.push({ regla: regla.nombre || regla.id, nro: r.factura.nro, cbte: r.factura.cbte_letra, total: r.factura.importe_total, ventas: ventas.length });
+      else if (r) resumen.detalle.push({ regla: regla.nombre || regla.id, error: r.mensaje || r.error || 'rechazado' });
+    } catch (e) { resumen.detalle.push({ regla: regla.nombre || regla.id, error: String(e.message || e) }); }
+  }
+  return resumen;
 }
 async function facAutoTick() {
   if (_facAutoRunning) return { skip: true };
@@ -15428,6 +15682,8 @@ async function facAutoTick() {
       if (cfg.auto_nota_credito) { try { resumen.notas += await facAutoNotasCredito(db, cuenta, account, token, cfg) || 0; } catch (e) {} }
       if (cfg.modo === 'auto') { try { resumen.facturadas += await facAutoFacturar(db, cuenta, account, token, cfg) || 0; } catch (e) {} }
     }
+    // SECTOR 2: facturación agrupada por reglas (se dispara por umbral; respeta el límite diario).
+    try { const s2 = await facSector2Tick(db); resumen.sector2 = s2.facturadas; } catch (e) {}
     _facAutoLast = new Date().toISOString();
   } catch (e) {} finally { _facAutoRunning = false; }
   return resumen;
