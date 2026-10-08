@@ -15188,11 +15188,19 @@ async function facBillingML(account, token, orderId) {
     const dn = String(b.doc_number || (b.identification && b.identification.number) || '').replace(/\D/g, '');
     if (dt === 'CUIT' && dn) { out.doc_tipo = 80; out.doc_nro = dn; }
     else if ((dt === 'DNI') && dn) { out.doc_tipo = 96; out.doc_nro = dn; }
-    // Condición fiscal (si viene). Buscamos indicios de Responsable Inscripto.
-    const addl = JSON.stringify(b.additional_info || b || {}).toUpperCase();
-    if (/RESPONSABLE.?INSCRIP|"IVA_RESP|"RI"/.test(addl)) out.receptor_ri = true;
-    out.nombre = ((b.first_name || '') + ' ' + (b.last_name || '')).trim() || b.name || b.doc_number || '';
-    out.domicilio = [b.street_name, b.street_number, b.city, b.state].filter(Boolean).join(' ') || '';
+    // Condición fiscal: ML la manda en taxes.taxpayer_type ({id, description}). "05/Consumidor Final"
+    // es CF; "Responsable Inscripto" → Factura A. (Dejamos también el chequeo viejo por las dudas.)
+    const tt = (b.taxes && b.taxes.taxpayer_type) || {};
+    const ttTxt = String((tt.description || '') + ' ' + (tt.id || '')).toUpperCase();
+    const addl = JSON.stringify(b.additional_info || {}).toUpperCase();
+    if (/RESPONSABLE.?INSCRIP/.test(ttTxt) || /RESPONSABLE.?INSCRIP|"IVA_RESP|"RI"/.test(addl)) out.receptor_ri = true;
+    // Nombre: ML manda "name" (nombre de pila) + "last_name" (apellido). Antes se buscaba "first_name"
+    // (que no existe) y por eso salía SOLO el apellido. Ahora armamos "Nombre Apellido".
+    out.nombre = ((b.name || b.first_name || '') + ' ' + (b.last_name || '')).trim() || b.doc_number || (b.identification && b.identification.number) || '';
+    // Domicilio: ML lo manda ANIDADO en "address" (street_name, street_number, city_name, state.name,
+    // zip_code). Antes se leían campos planos (b.street_name…) que no existen → quedaba vacío.
+    const ad = b.address || {};
+    out.domicilio = [ad.street_name, ad.street_number, (ad.city_name || ad.city), (ad.state && (ad.state.name || ad.state.code)) || (typeof ad.state === 'string' ? ad.state : ''), ad.zip_code ? ('CP ' + ad.zip_code) : ''].filter(Boolean).join(' ');
   } catch (e) {
     // Si falla (p. ej. ML bloquea los datos fiscales del comprador con 403 PolicyAgent),
     // queda como Consumidor Final → Factura B. Registramos el motivo real para diagnóstico.
