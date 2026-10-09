@@ -1640,7 +1640,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const content = document.getElementById('content'); if (!content) return;
     let h = '<h2 style="margin-bottom:14px;color:#2d3277">🪟 Parabrisas</h2>';
     if (_pb.isAdmin) {
-      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Por Pagar'], ['finalizado', 'Finalizada'], ['instalacion', '🔧 Instalación Taller'], ['resumen', 'Resumen'], ['config', 'Configuración']];
+      const tabs = [['taller', 'Carga de Taller'], ['factura', 'Carga de Factura'], ['pago', 'Por Pagar'], ['finalizado', 'Finalizada'], ['instalacion', '🔧 Instalación Taller'], ['comprobantes', '🧾 Comprobantes'], ['resumen', 'Resumen'], ['config', 'Configuración']];
       h += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #eef1f6">';
       for (let i = 0; i < tabs.length; i++) { const k = tabs[i][0], lbl = tabs[i][1], on = _pb.tab === k; h += '<button onclick="pbSetTab(\'' + k + '\')" style="padding:9px 15px;border:none;background:none;font-size:13.5px;font-weight:' + (on ? '800' : '600') + ';color:' + (on ? '#3483fa' : '#8a94a6') + ';border-bottom:3px solid ' + (on ? '#3483fa' : 'transparent') + ';margin-bottom:-2px;cursor:pointer">' + lbl + '</button>'; }
       h += '</div>';
@@ -1659,6 +1659,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     else if (t === 'finalizado') body.innerHTML = pbListHTML('finalizado');
     else if (t === 'resumen') body.innerHTML = pbListHTML('resumen');
     else if (t === 'instalacion') body.innerHTML = pbInstalacionHTML();
+    else if (t === 'comprobantes') { body.innerHTML = pbComprobantesHTML(); pbCargarComprobantes(); }
     else if (t === 'config') body.innerHTML = pbConfigHTML();
   }
   function pbTallerHTML() {
@@ -2024,8 +2025,70 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<label style="font-size:11px;color:#666">Costo Instalación<br><input type="number" step="0.01" id="pbf_cins_' + c.n + '" value="' + (c.costo_colocacion || '') + '" oninput="pbFacturaGan(' + c.n + ')" style="' + inp + ';width:110px"></label>';
     h += '<div style="font-size:11px;color:#666">Ganancia<br><div id="pbf_gan_' + c.n + '" style="' + inp + ';font-weight:800;color:#1a9c53;background:#f3faf6;min-width:100px">' + _pbMoney((Number(c.monto) || 0) - (Number(c.costo_parabrisas) || 0) - (Number(c.costo_colocacion) || 0)) + '</div></div>';
     h += '<button onclick="pbSaveFactura(' + c.n + ')" style="background:#3483fa;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">' + (c.estado === 'taller' ? 'Guardar factura' : 'Actualizar') + '</button>';
+    // Facturar con ARCA (solo SEGURO con compañía). Si ya tiene factura, mostramos el link de descarga.
+    const esSeguro = String(c.modalidad || 'SEGURO') === 'SEGURO';
+    if (c.fac_id) {
+      h += '<a href="/api/facturacion/pdf?id=' + encodeURIComponent(c.fac_id) + '" target="_blank" style="background:#eafaf1;color:#1a7d47;border:1px solid #b7e3c8;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;text-decoration:none">⬇ Descargar factura</a>';
+    } else if (esSeguro) {
+      h += '<button onclick="pbFacturar(' + c.n + ')" style="background:#7c3aed;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">🧾 Facturar</button>';
+    }
     h += '</div>';
+    h += '<div id="pbfac_box_' + c.n + '" style="display:none;margin-top:10px"></div>';
     return h;
+  }
+  // Abre el formulario de facturación ARCA para el caso (descripción precargada, importe editable).
+  function pbFacturar(n) {
+    const c = (_pb.casos || []).find(x => Number(x.n) === Number(n)); if (!c) return;
+    const box = document.getElementById('pbfac_box_' + n); if (!box) return;
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    const cf = ((_pb.cfg && _pb.cfg.companias_fiscal) || {})[c.compania || ''] || null;
+    const facCfg = (_pb.cfg && _pb.cfg.facturacion) || {};
+    const inp = 'padding:7px 10px;border:1px solid #d7dee8;border-radius:7px;font-size:13px';
+    // Descripción precargada: tipo cristal + posición (si corresponde) + marca y modelo + siniestro
+    let desc = [];
+    if (c.tipo_cristal) desc.push(c.tipo_cristal);
+    if (c.posicion && c.posicion !== 'S/L') desc.push(c.posicion);
+    const mm = [c.marca, c.modelo].filter(Boolean).join(' '); if (mm) desc.push(mm);
+    let descTxt = desc.join(' '); if (c.siniestro) descTxt += (descTxt ? ' - ' : '') + 'Siniestro ' + c.siniestro;
+    let h = '<div style="border:1px solid #ddd6fe;background:#faf5ff;border-radius:10px;padding:13px">';
+    h += '<div style="font-weight:800;color:#6d28d9;margin-bottom:8px">🧾 Emitir factura — caso N° ' + c.n + '</div>';
+    if (!cf || !cf.cuit) {
+      h += '<div style="background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca;border-radius:8px;padding:9px 12px;font-size:13px">La compañía <b>' + escapeHtml(c.compania || '(sin compañía)') + '</b> no tiene datos fiscales cargados. Cargá el CUIT en <b>Configuración → Compañías</b> y volvé a intentar.</div>';
+      h += '<div style="margin-top:8px"><button onclick="pbSetTab(\'config\')" style="background:#7c3aed;color:#fff;border:none;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Ir a Configuración</button></div>';
+      h += '</div>'; box.innerHTML = h; box.style.display = ''; return;
+    }
+    if (!facCfg.punto_venta) {
+      h += '<div style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:9px 12px;font-size:13px">Falta el <b>punto de venta de parabrisas</b>. Cargalo en <b>Configuración → Datos de facturación</b>.</div>';
+      h += '<div style="margin-top:8px"><button onclick="pbSetTab(\'config\')" style="background:#7c3aed;color:#fff;border:none;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Ir a Configuración</button></div>';
+      h += '</div>'; box.innerHTML = h; box.style.display = ''; return;
+    }
+    h += '<div style="font-size:12.5px;color:#374151;margin-bottom:8px">Emite <b>' + escapeHtml(facCfg.emisor || 'DANIEL') + '</b> (PV ' + escapeHtml(facCfg.punto_venta) + ') a <b>' + escapeHtml(cf.razon_social || c.compania) + '</b> · CUIT ' + escapeHtml(cf.cuit) + ' · ' + escapeHtml(cf.condicion || 'RI') + (String(cf.condicion || 'RI') === 'RI' ? ' → Factura A' : '') + '</div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">';
+    h += '<label style="font-size:11px;color:#666;flex:1;min-width:280px">Descripción (editable)<br><textarea id="pbfac_desc_' + n + '" style="' + inp + ';width:100%;box-sizing:border-box;min-height:46px">' + escapeHtml(descTxt) + '</textarea></label>';
+    h += '<label style="font-size:11px;color:#666">Importe TOTAL (IVA incl.)<br><input type="number" step="0.01" id="pbfac_imp_' + n + '" value="' + (c.monto || '') + '" style="' + inp + ';width:150px"></label>';
+    h += '</div>';
+    h += '<div style="margin-top:10px;display:flex;gap:8px"><button id="pbfac_btn_' + n + '" onclick="pbFacturarConfirmar(' + n + ')" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer">Emitir factura</button><button onclick="pbFacturar(' + n + ')" style="background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">Cancelar</button></div>';
+    h += '<div id="pbfac_msg_' + n + '" style="margin-top:8px;font-size:12.5px"></div>';
+    h += '</div>';
+    box.innerHTML = h; box.style.display = '';
+  }
+  async function pbFacturarConfirmar(n) {
+    const desc = (document.getElementById('pbfac_desc_' + n) || {}).value || '';
+    const imp = Number((document.getElementById('pbfac_imp_' + n) || {}).value) || 0;
+    const msg = document.getElementById('pbfac_msg_' + n);
+    const btn = document.getElementById('pbfac_btn_' + n);
+    if (!(imp > 0)) { if (msg) { msg.style.color = '#b91c1c'; msg.textContent = 'Cargá el importe a facturar.'; } return; }
+    const amb = (_fac && _fac.data && _fac.data.ambiente) || '';
+    if (!confirm('Vas a emitir una factura' + (amb === 'produccion' ? ' REAL (Producción)' : '') + ' por ' + _pbMoney(imp) + '. ¿Confirmás?')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Emitiendo…'; }
+    if (msg) { msg.style.color = '#6b7280'; msg.textContent = 'Emitiendo con ARCA…'; }
+    try {
+      const r = await fetch('/api/parabrisas/facturar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ n, importe: imp, descripcion: desc }) });
+      const d = await r.json();
+      if (!d.ok) { if (msg) { msg.style.color = '#b91c1c'; msg.innerHTML = '✗ ' + escapeHtml(d.error || 'No se pudo emitir'); } if (btn) { btn.disabled = false; btn.textContent = 'Emitir factura'; } return; }
+      showToast('Factura ' + d.factura.cbte + ' N° ' + d.factura.nro + ' emitida ✓', 'success');
+      await pbLoadCasos(true); pbRenderBody();
+    } catch (e) { if (msg) { msg.style.color = '#b91c1c'; msg.textContent = 'Error de red'; } if (btn) { btn.disabled = false; btn.textContent = 'Emitir factura'; } }
   }
   function pbFacturaGan(n) {
     const g = id => Number((document.getElementById(id) || {}).value) || 0;
@@ -2067,6 +2130,68 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     const payload = Object.assign({ n, finalizar: true }, _pbPagoPart(n) || {});
     try { const r = await fetch('/api/parabrisas/caso-finalizar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) }); const d = await r.json(); if (!r.ok) { alert(d.error || 'Error'); return; } await pbLoadCasos(true); pbRenderBody(); } catch (e) { alert('Error de red'); }
   }
+  // ==================== COMPROBANTES de parabrisas ====================
+  var _pbComp = { items: null, filtros: { desde: '', hasta: '', compania: '', patente: '', q: '' } };
+  function pbComprobantesHTML() {
+    const c = _pb.cfg || {};
+    const inp = 'padding:8px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:13px';
+    let h = '<div style="max-width:1050px">';
+    h += '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:14px 16px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">';
+    h += '<label style="font-size:11px;color:#666">Desde<br><input type="date" id="pbc_desde" style="' + inp + '"></label>';
+    h += '<label style="font-size:11px;color:#666">Hasta<br><input type="date" id="pbc_hasta" style="' + inp + '"></label>';
+    h += '<label style="font-size:11px;color:#666">Compañía<br><select id="pbc_comp" style="' + inp + '"><option value="">Todas</option>' + (c.companias || []).map(x => '<option value="' + escapeHtml(x) + '">' + escapeHtml(x) + '</option>').join('') + '</select></label>';
+    h += '<label style="font-size:11px;color:#666">Patente<br><input type="text" id="pbc_patente" placeholder="patente" style="' + inp + ';width:120px"></label>';
+    h += '<label style="font-size:11px;color:#666">Buscar<br><input type="text" id="pbc_q" placeholder="nombre, CUIT, N°, siniestro…" style="' + inp + ';width:200px"></label>';
+    h += '<button onclick="pbCargarComprobantes()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:700;cursor:pointer">Buscar</button>';
+    h += '</div>';
+    h += '<div id="pbc_lista"><div class="loading"><div class="spinner"></div><p>Cargando comprobantes…</p></div></div>';
+    h += '</div>';
+    return h;
+  }
+  async function pbCargarComprobantes() {
+    const g = id => (document.getElementById(id) || {}).value || '';
+    const p = new URLSearchParams();
+    if (g('pbc_desde')) p.set('desde', g('pbc_desde'));
+    if (g('pbc_hasta')) p.set('hasta', g('pbc_hasta'));
+    if (g('pbc_comp')) p.set('compania', g('pbc_comp'));
+    if (g('pbc_patente')) p.set('patente', g('pbc_patente'));
+    if (g('pbc_q')) p.set('q', g('pbc_q'));
+    const cont = document.getElementById('pbc_lista'); if (cont) cont.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando…</p></div>';
+    try {
+      const r = await fetch('/api/parabrisas/comprobantes?' + p.toString(), { credentials: 'same-origin' });
+      const d = await r.json();
+      if (!d.ok) { if (cont) cont.innerHTML = '<p style="color:#b91c1c">' + escapeHtml(d.error || 'Error') + '</p>'; return; }
+      _pbComp.items = d.comprobantes || [];
+      pbRenderComprobantes();
+    } catch (e) { if (cont) cont.innerHTML = '<p style="color:#b91c1c">Error de red</p>'; }
+  }
+  function pbRenderComprobantes() {
+    const cont = document.getElementById('pbc_lista'); if (!cont) return;
+    const items = _pbComp.items || [];
+    const total = items.reduce((s, x) => s + (Number(x.importe_total) || 0), 0);
+    if (!items.length) { cont.innerHTML = '<div style="padding:22px;text-align:center;color:#9ca3af;border:1px dashed #e5e7eb;border-radius:10px">No hay comprobantes de parabrisas con esos filtros.</div>'; return; }
+    let h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:8px">' + items.length + ' comprobante(s) · Total ' + _pbMoney(total) + '</div>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px;background:#fff;border:1px solid #e6ebf5;border-radius:10px">';
+    h += '<thead><tr style="background:#f8fafc;text-align:left;color:#6b7280">';
+    ['Fecha', 'Comprobante', 'Compañía', 'Patente', 'Siniestro', 'Vehículo', 'Receptor', 'Total', ''].forEach(x => h += '<th style="padding:8px 8px;font-weight:700">' + x + '</th>');
+    h += '</tr></thead><tbody>';
+    items.forEach(f => {
+      const nro = (f.cbte_letra || '') + ' ' + String(f.pto_vta || 0).padStart(4, '0') + '-' + String(f.nro || 0).padStart(8, '0');
+      h += '<tr style="border-top:1px solid #f1f5f9"' + (f.anulada ? ' style="opacity:.5"' : '') + '>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(f.fecha || '') + '</td>';
+      h += '<td style="padding:7px 8px;font-weight:700">' + escapeHtml(nro) + (f.anulada ? ' <span style="color:#b91c1c">(anulada)</span>' : '') + '</td>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(f.compania || '') + '</td>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(f.patente || '') + '</td>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(f.siniestro || '') + '</td>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(((f.marca || '') + ' ' + (f.modelo || '')).trim()) + '</td>';
+      h += '<td style="padding:7px 8px">' + escapeHtml(f.receptor_nombre || '') + (f.doc_nro ? '<br><span style="color:#888">CUIT ' + escapeHtml(f.doc_nro) + '</span>' : '') + '</td>';
+      h += '<td style="padding:7px 8px;font-weight:700">' + _pbMoney(f.importe_total) + '</td>';
+      h += '<td style="padding:7px 8px"><a href="/api/facturacion/pdf?id=' + encodeURIComponent(f.id) + '" target="_blank" style="color:#1a7d47;font-weight:700;text-decoration:none">⬇ PDF</a></td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    cont.innerHTML = h;
+  }
   function pbConfigHTML() {
     const c = _pb.cfg;
     const ta = 'width:100%;box-sizing:border-box;border:1px solid #d7dee8;border-radius:8px;padding:10px;font-size:14px;min-height:110px;resize:vertical';
@@ -2076,6 +2201,10 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += box('Compañías', 'Aseguradoras / compañías.', 'pbcfg_companias', (c.companias || []).join('\n'));
     h += box('Sistemas', 'Sistemas de gestión.', 'pbcfg_sistemas', (c.sistemas || []).join('\n'));
     h += '<button onclick="pbSaveConfigBasico()" style="background:#3483fa;color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:700;cursor:pointer">Guardar compañías y sistemas</button>';
+    // ----- Datos de facturación de parabrisas (emisor + punto de venta) -----
+    h += pbFacCfgHTML(c);
+    // ----- Datos fiscales por compañía (para facturar a la aseguradora) -----
+    h += pbCompFiscalHTML(c);
     h += '<div style="margin-top:24px;font-weight:800;color:#2d3277;font-size:15px;margin-bottom:8px">Avanzado</div>';
     h += box('Tipos de cristal', '', 'pbcfg_tcristal', (c.tipos_cristal || []).join('\n'));
     h += box('Tipos de vehículo', '', 'pbcfg_tveh', (c.tipos_vehiculo || []).join('\n'));
@@ -2092,6 +2221,61 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div id="pb_cfg_msg" style="margin-top:12px"></div>';
     h += '</div>';
     return h;
+  }
+  // Config de emisión de parabrisas (emisor, PV, concepto, días atrás).
+  function pbFacCfgHTML(c) {
+    const f = (c && c.facturacion) || { emisor: 'DANIEL', punto_venta: '', concepto: 3, dias_atras: 0 };
+    const inp = 'padding:8px 10px;border:1px solid #d7dee8;border-radius:8px;font-size:13px';
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:16px;margin-top:22px">';
+    h += '<div style="font-weight:800;color:#6d28d9;margin-bottom:4px">🧾 Datos de facturación (parabrisas)</div>';
+    h += '<div style="font-size:12px;color:#888;margin-bottom:10px">Las facturas de parabrisas se emiten desde esta cuenta y punto de venta (distinto al del panel).</div>';
+    h += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">';
+    h += '<label style="font-size:12px;color:#666">Emisor (cuenta)<br><input type="text" id="pbfac_emisor" value="' + escapeHtml(f.emisor || 'DANIEL') + '" style="' + inp + ';width:120px"></label>';
+    h += '<label style="font-size:12px;color:#666">Punto de venta<br><input type="text" id="pbfac_pv" value="' + escapeHtml(f.punto_venta || '') + '" placeholder="ej: 4" style="' + inp + ';width:100px"></label>';
+    h += '<label style="font-size:12px;color:#666">Concepto<br><select id="pbfac_concepto" style="' + inp + '"><option value="1"' + (Number(f.concepto) === 1 ? ' selected' : '') + '>Productos</option><option value="2"' + (Number(f.concepto) === 2 ? ' selected' : '') + '>Servicios</option><option value="3"' + (Number(f.concepto) !== 1 && Number(f.concepto) !== 2 ? ' selected' : '') + '>Productos y Servicios</option></select></label>';
+    h += '<label style="font-size:12px;color:#666">Días hacia atrás<br><input type="number" min="0" max="10" id="pbfac_dias" value="' + (Number(f.dias_atras) || 0) + '" style="' + inp + ';width:80px"></label>';
+    h += '<button onclick="pbSaveFacCfg()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer">Guardar datos de facturación</button>';
+    h += '</div></div>';
+    return h;
+  }
+  async function pbSaveFacCfg() {
+    const g = id => (document.getElementById(id) || {}).value || '';
+    const fac = { emisor: g('pbfac_emisor') || 'DANIEL', punto_venta: g('pbfac_pv'), concepto: parseInt(g('pbfac_concepto'), 10) || 3, dias_atras: parseInt(g('pbfac_dias'), 10) || 0 };
+    await pbPostConfig({ facturacion: fac }, 'Datos de facturación guardados ✔');
+  }
+  // Datos fiscales por compañía (CUIT, razón social, condición, domicilio, email).
+  function pbCompFiscalHTML(c) {
+    const comps = c.companias || [];
+    const cf = c.companias_fiscal || {};
+    const inp = 'padding:7px 9px;border:1px solid #d7dee8;border-radius:7px;font-size:12.5px;width:100%;box-sizing:border-box';
+    let h = '<div style="background:#fff;border:1px solid #e6ebf5;border-radius:12px;padding:16px;margin-top:16px">';
+    h += '<div style="font-weight:800;color:#6d28d9;margin-bottom:4px">🏢 Datos fiscales de las compañías</div>';
+    h += '<div style="font-size:12px;color:#888;margin-bottom:10px">El CUIT y los datos de cada aseguradora, para que al pulsar “Facturar” en un caso se carguen solos. (Las compañías salen de la lista de arriba — guardá la lista primero.)</div>';
+    if (!comps.length) { h += '<div style="font-size:13px;color:#b45309">Cargá al menos una compañía arriba y guardá, después completá sus datos acá.</div></div>'; return h; }
+    comps.forEach((nom, i) => {
+      const d = cf[nom] || {};
+      h += '<div data-comp="' + escapeHtml(nom) + '" style="border:1px solid #eef1f6;border-radius:9px;padding:10px 12px;margin-bottom:10px">';
+      h += '<div style="font-weight:700;color:#2d3277;margin-bottom:6px">' + escapeHtml(nom) + (d.cuit ? ' <span style="font-size:11px;color:#1a9c53">✓ con CUIT</span>' : ' <span style="font-size:11px;color:#b45309">sin datos</span>') + '</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px">';
+      h += '<label style="font-size:11px;color:#666">CUIT<br><input id="pbcf_cuit_' + i + '" value="' + escapeHtml(d.cuit || '') + '" maxlength="11" placeholder="sin guiones" style="' + inp + '"></label>';
+      h += '<label style="font-size:11px;color:#666">Razón social<br><input id="pbcf_razon_' + i + '" value="' + escapeHtml(d.razon_social || '') + '" style="' + inp + '"></label>';
+      h += '<label style="font-size:11px;color:#666">Condición IVA<br><select id="pbcf_cond_' + i + '" style="' + inp + '"><option value="RI"' + (d.condicion === 'RI' || !d.condicion ? ' selected' : '') + '>Responsable Inscripto</option><option value="MONO"' + (d.condicion === 'MONO' ? ' selected' : '') + '>Monotributo</option><option value="EX"' + (d.condicion === 'EX' ? ' selected' : '') + '>Exento</option><option value="CF"' + (d.condicion === 'CF' ? ' selected' : '') + '>Consumidor Final</option></select></label>';
+      h += '<label style="font-size:11px;color:#666">Domicilio<br><input id="pbcf_dom_' + i + '" value="' + escapeHtml(d.domicilio || '') + '" style="' + inp + '"></label>';
+      h += '<label style="font-size:11px;color:#666">Email (opcional)<br><input id="pbcf_email_' + i + '" value="' + escapeHtml(d.email || '') + '" style="' + inp + '"></label>';
+      h += '</div></div>';
+    });
+    h += '<button onclick="pbSaveCompFiscal()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer">Guardar datos fiscales</button>';
+    h += '</div>';
+    return h;
+  }
+  async function pbSaveCompFiscal() {
+    const comps = (_pb.cfg && _pb.cfg.companias) || [];
+    const g = id => (document.getElementById(id) || {}).value || '';
+    const cf = {};
+    comps.forEach((nom, i) => {
+      cf[nom] = { cuit: g('pbcf_cuit_' + i).replace(/\D/g, ''), razon_social: g('pbcf_razon_' + i), condicion: g('pbcf_cond_' + i) || 'RI', doc_tipo: (g('pbcf_cuit_' + i).replace(/\D/g, '') ? 80 : 99), domicilio: g('pbcf_dom_' + i), email: g('pbcf_email_' + i) };
+    });
+    await pbPostConfig({ companias_fiscal: cf }, 'Datos fiscales guardados ✔');
   }
   function pbLines(id) { const el = document.getElementById(id); if (!el) return []; return el.value.split('\n').map(s => s.trim()).filter(Boolean); }
   function pbCfgMsg(t, err) { const el = document.getElementById('pb_cfg_msg'); if (!el) return; el.innerHTML = '<div style="padding:9px 13px;border-radius:8px;font-size:14px;font-weight:600;' + (err ? 'background:#fdecec;color:#c0392b;border:1px solid #f5c6c6' : 'background:#eafaf1;color:#1a7d47;border:1px solid #b6e6ca') + '">' + escapeHtml(t) + '</div>'; if (!err) setTimeout(() => { const e2 = document.getElementById('pb_cfg_msg'); if (e2) e2.innerHTML = ''; }, 4000); }
@@ -13441,7 +13625,14 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
       var d = await r.json();
       if (!d.ok) { showToast(d.error || 'No se pudo facturar', 'error'); if (btn) { btn.disabled = false; btn.textContent = '⚡ Facturar ahora'; } return; }
       var rs = d.resumen || {};
-      showToast('Listo: ' + (rs.facturadas || 0) + ' factura(s) emitida(s)' + (rs.error ? ' · ' + rs.error : ''), (rs.facturadas ? 'success' : 'info'));
+      if (rs.facturadas) {
+        showToast('Listo: ' + rs.facturadas + ' factura(s) emitida(s)', 'success');
+      } else {
+        // No emitió: mostramos el motivo real (error o info) que devuelve el motor.
+        var det = (rs.detalle || []).filter(function (x) { return x.error || x.info; });
+        var msg = det.length ? det.map(function (x) { return x.error || x.info; }).join(' | ') : 'No se emitió ninguna factura (no hay ventas que cumplan la regla).';
+        showToast(msg, det.some(function (x) { return x.error; }) ? 'error' : 'info');
+      }
       loadFacturacion();
     } catch (e) { showToast('Error de red', 'error'); if (btn) { btn.disabled = false; btn.textContent = '⚡ Facturar ahora'; } }
   }
