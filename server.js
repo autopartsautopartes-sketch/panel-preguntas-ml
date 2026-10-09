@@ -9566,10 +9566,13 @@ function loadPbConfig() {
       if (!Array.isArray(c.tipos_cristal) || !c.tipos_cristal.length) c.tipos_cristal = PB_TIPOS_CRISTAL.slice();
       if (!Array.isArray(c.tipos_vehiculo) || !c.tipos_vehiculo.length) c.tipos_vehiculo = PB_TIPOS_VEHICULO.slice();
       if (!c.vehiculos || typeof c.vehiculos !== 'object') c.vehiculos = PB_VEHICULOS_SEED;
+      // Datos fiscales por compañía (para facturar a la aseguradora) y config de emisión de parabrisas.
+      if (!c.companias_fiscal || typeof c.companias_fiscal !== 'object') c.companias_fiscal = {};
+      if (!c.facturacion || typeof c.facturacion !== 'object') c.facturacion = { emisor: 'DANIEL', punto_venta: '', concepto: 3, dias_atras: 0 };
       return c;
     }
   } catch (e) {}
-  const seed = { sistemas: [], companias: [], tipos_cristal: PB_TIPOS_CRISTAL.slice(), tipos_vehiculo: PB_TIPOS_VEHICULO.slice(), vehiculos: PB_VEHICULOS_SEED, updated: null };
+  const seed = { sistemas: [], companias: [], tipos_cristal: PB_TIPOS_CRISTAL.slice(), tipos_vehiculo: PB_TIPOS_VEHICULO.slice(), vehiculos: PB_VEHICULOS_SEED, companias_fiscal: {}, facturacion: { emisor: 'DANIEL', punto_venta: '', concepto: 3, dias_atras: 0 }, updated: null };
   try { _fsCosts.writeFileSync(pbConfigPath(), JSON.stringify(seed)); } catch (e) {}
   return seed;
 }
@@ -9647,12 +9650,26 @@ function pbGanancia(c) {
   const venta = (c.modalidad === 'PARTICULAR') ? (Number(c.precio_venta) || 0) : (Number(c.monto) || 0);
   return venta - (Number(c.costo_parabrisas) || 0) - (Number(c.costo_colocacion) || 0);
 }
+// Descripción precargada de la factura de un caso: tipo de cristal + posición (si corresponde) + marca y modelo + N° de siniestro.
+function pbDescFactura(c) {
+  const partes = [];
+  if (c.tipo_cristal) partes.push(String(c.tipo_cristal));
+  if (c.posicion && c.posicion !== 'S/L') partes.push(String(c.posicion));
+  const mm = [c.marca, c.modelo].filter(Boolean).join(' ');
+  if (mm) partes.push(mm);
+  let d = partes.join(' ');
+  if (c.siniestro) d += (d ? ' - ' : '') + 'Siniestro ' + c.siniestro;
+  return d.slice(0, 200);
+}
 // CONFIG: leer (can_parabrisas) / editar (solo admin).
 route('GET', '/api/parabrisas/config', async (req, res) => {
   const a = pbConfigOrLocalAuth(req); if (a.err) return sendJSON(res, a.err[0], { error: a.err[1] });
   const c = loadPbConfig();
   const marcas = Object.keys(c.vehiculos || {}).sort();
-  sendJSON(res, 200, { ok: true, is_admin: a.isAdm, sistemas: c.sistemas || [], companias: c.companias || [], tipos_cristal: c.tipos_cristal || [], tipos_vehiculo: c.tipos_vehiculo || [], marcas, vehiculos: c.vehiculos || {} });
+  const out = { ok: true, is_admin: a.isAdm, sistemas: c.sistemas || [], companias: c.companias || [], tipos_cristal: c.tipos_cristal || [], tipos_vehiculo: c.tipos_vehiculo || [], marcas, vehiculos: c.vehiculos || {} };
+  // Los datos fiscales y de emisión solo los ve el admin.
+  if (a.isAdm) { out.companias_fiscal = c.companias_fiscal || {}; out.facturacion = c.facturacion || { emisor: 'DANIEL', punto_venta: '', concepto: 3, dias_atras: 0 }; }
+  sendJSON(res, 200, out);
 });
 route('POST', '/api/parabrisas/config', async (req, res) => {
   const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
@@ -9666,6 +9683,34 @@ route('POST', '/api/parabrisas/config', async (req, res) => {
   if (b.tipos_vehiculo !== undefined) c.tipos_vehiculo = cleanList(b.tipos_vehiculo);
   if (b.vehiculos !== undefined && b.vehiculos && typeof b.vehiculos === 'object') {
     const v = {}; for (const m of Object.keys(b.vehiculos)) { const mk = String(m || '').trim().toUpperCase(); if (!mk) continue; v[mk] = cleanList(b.vehiculos[m]); } c.vehiculos = v;
+  }
+  // Datos fiscales por compañía: { "<nombre compañía>": { cuit, razon_social, condicion, doc_tipo, domicilio, email } }
+  if (b.companias_fiscal !== undefined && b.companias_fiscal && typeof b.companias_fiscal === 'object') {
+    const cf = {};
+    for (const nom of Object.keys(b.companias_fiscal)) {
+      const k = String(nom || '').trim(); if (!k) continue;
+      const d = b.companias_fiscal[nom] || {};
+      const cuit = String(d.cuit || '').replace(/\D/g, '').slice(0, 11);
+      cf[k] = {
+        cuit,
+        razon_social: String(d.razon_social || '').slice(0, 120),
+        condicion: ['RI', 'MONO', 'EX', 'CF'].includes(String(d.condicion || '').toUpperCase()) ? String(d.condicion).toUpperCase() : 'RI',
+        doc_tipo: parseInt(d.doc_tipo || (cuit ? 80 : 99), 10),
+        domicilio: String(d.domicilio || '').slice(0, 160),
+        email: String(d.email || '').slice(0, 120)
+      };
+    }
+    c.companias_fiscal = cf;
+  }
+  // Config de emisión de parabrisas: emisor (cuenta de facturación), punto de venta, concepto, días atrás.
+  if (b.facturacion !== undefined && b.facturacion && typeof b.facturacion === 'object') {
+    const f = b.facturacion;
+    c.facturacion = {
+      emisor: String(f.emisor || 'DANIEL').toUpperCase().slice(0, 20),
+      punto_venta: String(f.punto_venta || '').replace(/\D/g, '').slice(0, 5),
+      concepto: [1, 2, 3].includes(parseInt(f.concepto, 10)) ? parseInt(f.concepto, 10) : 3,
+      dias_atras: Math.max(0, Math.min(10, parseInt(f.dias_atras, 10) || 0))
+    };
   }
   c.updated = new Date().toISOString();
   savePbConfig(c);
@@ -10103,6 +10148,95 @@ route('POST', '/api/parabrisas/caso-delete', async (req, res) => {
   if (store.casos.length === before) return sendJSON(res, 404, { error: 'Caso no encontrado' });
   savePbCasos(store);
   sendJSON(res, 200, { ok: true });
+});
+// FACTURAR un caso de parabrisas → emite comprobante AFIP desde el emisor configurado (DANIEL)
+// con el PV de parabrisas, a la aseguradora (datos fiscales de companias_fiscal). Linkea y autollena casilleros.
+route('POST', '/api/parabrisas/facturar', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  const b = await parseBody(req);
+  const store = loadPbCasos();
+  const caso = store.casos.find(c => Number(c.n) === Number(b.n));
+  if (!caso) return sendJSON(res, 404, { error: 'Caso no encontrado' });
+  if (caso.fac_id) return sendJSON(res, 200, { ok: false, error: 'Este caso ya tiene factura emitida (' + (caso.nro_factura || caso.fac_id) + ').' });
+  const importe = Math.max(0, Number(b.importe) || 0);
+  if (!(importe > 0)) return sendJSON(res, 200, { ok: false, error: 'Falta el importe (precio de venta) a facturar.' });
+  const cfg = loadPbConfig();
+  const fac = cfg.facturacion || {};
+  const emisor = String(fac.emisor || 'DANIEL').toUpperCase();
+  const compania = caso.compania || '';
+  const cf = (cfg.companias_fiscal || {})[compania] || null;
+  if (!cf || !cf.cuit) return sendJSON(res, 200, { ok: false, error: 'La compañía "' + (compania || '(sin compañía)') + '" no tiene datos fiscales cargados. Cargalos en Configuración → Compañías de Parabrisas.' });
+  const db = facLoad();
+  const ecfg = (db.facturacion.config.cuentas || {})[emisor];
+  if (!ecfg) return sendJSON(res, 200, { ok: false, error: 'El emisor "' + emisor + '" no existe en Facturación.' });
+  let desc = String(b.descripcion || '').trim(); if (!desc) desc = pbDescFactura(caso);
+  const ivaPct = ecfg.condicion === 'MONO' ? 0 : (Number(ecfg.iva_pct) || 21);
+  const neto = ecfg.condicion === 'MONO' ? _facR2(importe) : _facR2(importe / (1 + ivaPct / 100));
+  const items = [{ cantidad: 1, codigo: '', descripcion: desc.slice(0, 200), precio_unit: neto, bonif_pct: 0, iva_pct: ivaPct }];
+  const receptorRI = String(cf.condicion || 'RI').toUpperCase() === 'RI';
+  let r;
+  try {
+    r = await facEmitir(db, emisor, {
+      punto_venta: fac.punto_venta || undefined,
+      doc_tipo: cf.doc_tipo || (cf.cuit ? 80 : 99),
+      doc_nro: cf.cuit || '0',
+      receptor_ri: receptorRI,
+      receptor_nombre: cf.razon_social || compania,
+      receptor_domicilio: cf.domicilio || '',
+      receptor_email: cf.email || '',
+      receptor_cond_iva: cf.condicion || 'RI',
+      items,
+      concepto: fac.concepto || 3,
+      fch_emision: facFechaAtras(fac.dias_atras || 0),
+      origen: 'parabrisas', sin_ml: true,
+      observaciones: 'Parabrisas caso #' + caso.n + (caso.patente ? ' · ' + caso.patente : ''),
+      pb: { caso_n: caso.n, patente: caso.patente || '', siniestro: caso.siniestro || '', compania: compania, marca: caso.marca || '', modelo: caso.modelo || '', tipo_cristal: caso.tipo_cristal || '', posicion: caso.posicion || '' }
+    });
+  } catch (e) { return sendJSON(res, 200, { ok: false, error: String(e.message || e) }); }
+  if (!r || !r.ok) return sendJSON(res, 200, { ok: false, error: (r && (r.mensaje || r.error)) || 'No se pudo emitir la factura.' });
+  const f = r.factura;
+  caso.fac_id = f.id;
+  caso.fecha_facturacion = (String(f.cbte_fch).length === 8) ? (f.cbte_fch.slice(0, 4) + '-' + f.cbte_fch.slice(4, 6) + '-' + f.cbte_fch.slice(6, 8)) : new Date().toISOString().slice(0, 10);
+  caso.nro_factura = f.cbte_letra + ' ' + String(f.pto_vta).padStart(4, '0') + '-' + String(f.nro).padStart(8, '0');
+  caso.monto = importe;
+  caso.updated_at = new Date().toISOString();
+  savePbCasos(store);
+  sendJSON(res, 200, { ok: true, factura: { id: f.id, cbte: f.cbte_letra, nro: f.nro, pto_vta: f.pto_vta, total: f.importe_total, cae: f.cae }, caso: { n: caso.n, fecha_facturacion: caso.fecha_facturacion, nro_factura: caso.nro_factura, monto: caso.monto, fac_id: caso.fac_id } });
+});
+// COMPROBANTES de parabrisas (facturas con origen='parabrisas'), con filtros. Solo admin.
+route('GET', '/api/parabrisas/comprobantes', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  if (s.role !== 'admin') return sendJSON(res, 403, { error: 'Solo el administrador' });
+  let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
+  const desde = q.get('desde') || '', hasta = q.get('hasta') || '';
+  const compania = (q.get('compania') || '').toUpperCase().trim();
+  const patente = (q.get('patente') || '').toUpperCase().trim();
+  const texto = (q.get('q') || '').toUpperCase().trim();
+  const db = facLoad();
+  const out = [];
+  for (const f of (db.facturacion.facturas || [])) {
+    if (f.origen !== 'parabrisas') continue;
+    const pb = f.pb || {};
+    const dia = (String(f.cbte_fch).length === 8) ? (f.cbte_fch.slice(0, 4) + '-' + f.cbte_fch.slice(4, 6) + '-' + f.cbte_fch.slice(6, 8)) : '';
+    if (desde && dia && dia < desde) continue;
+    if (hasta && dia && dia > hasta) continue;
+    if (compania && String(pb.compania || '').toUpperCase() !== compania) continue;
+    if (patente && String(pb.patente || '').toUpperCase().indexOf(patente) < 0) continue;
+    if (texto) {
+      const hay = [f.nro, f.receptor_nombre, f.doc_nro, pb.patente, pb.siniestro, pb.compania, pb.marca, pb.modelo, pb.caso_n].join(' ').toUpperCase();
+      if (hay.indexOf(texto) < 0) continue;
+    }
+    out.push({
+      id: f.id, fecha: dia, cbte_letra: f.cbte_letra, nro: f.nro, pto_vta: f.pto_vta,
+      importe_total: f.importe_total, receptor_nombre: f.receptor_nombre || '', doc_nro: f.doc_nro || '',
+      cae: f.cae || '', anulada: !!f.anulada,
+      patente: pb.patente || '', siniestro: pb.siniestro || '', compania: pb.compania || '',
+      marca: pb.marca || '', modelo: pb.modelo || '', caso_n: pb.caso_n || null
+    });
+  }
+  out.sort((a, b2) => String(b2.fecha).localeCompare(String(a.fecha)) || (Number(b2.nro) - Number(a.nro)));
+  sendJSON(res, 200, { ok: true, comprobantes: out });
 });
 
 
@@ -14830,7 +14964,10 @@ async function facEmitir(db, cuenta, opts) {
   const ambiente = db.facturacion.config.ambiente || 'homologacion';
   const cuit = String(cfg.cuit || '').replace(/\D/g, '');
   if (!cuit) throw new Error('Falta el CUIT de ' + cuenta + ' en Configuración.');
-  const ptoVta = parseInt(String(cfg.punto_venta || '').replace(/\D/g, ''), 10);
+  // Punto de venta: por defecto el de la cuenta; se puede pasar opts.punto_venta para usar otro
+  // (ej.: parabrisas factura con DANIEL pero con un PV distinto al del panel).
+  const ptoVta = opts.punto_venta ? parseInt(String(opts.punto_venta).replace(/\D/g, ''), 10)
+    : parseInt(String(cfg.punto_venta || '').replace(/\D/g, ''), 10);
   if (!ptoVta) throw new Error('Falta el punto de venta de ' + cuenta + '.');
   if (!cfg.activa) throw new Error('La cuenta ' + cuenta + ' no está activa. Activala en Configuración.');
 
@@ -14970,6 +15107,8 @@ async function facEmitir(db, cuenta, opts) {
     // Para facturas AGRUPADAS (Sector 2): todas las ventas que incluye este comprobante.
     order_ids: Array.isArray(opts.order_ids) ? opts.order_ids.map(String) : (opts.order_id ? [String(opts.order_id)] : []),
     sin_ml: !!opts.sin_ml, regla_id: opts.regla_id || null, origen_venta: opts.origen_venta || null,
+    // Metadata de PARABRISAS (cuando origen='parabrisas'): patente, siniestro, compañía, nº de caso, etc.
+    pb: (opts.pb && typeof opts.pb === 'object') ? opts.pb : null,
     obs: obs.join(' | ') || '', origen: opts.origen || (opts.order_id ? 'ml' : 'manual'), anulada: false
   };
   db.facturacion.facturas.push(rec);
@@ -15774,20 +15913,34 @@ function facPartirPorTope(ventas, tope) {
 async function facSector2Tick(db, forceReglaId) {
   const resumen = { facturadas: 0, detalle: [] };
   for (const regla of facSector2Reglas(db, true)) {
+    const nombre = regla.nombre || regla.id;
+    const forzar = forceReglaId && String(regla.id) === String(forceReglaId);
     try {
-      const { ventas, acumulado } = await facSector2Juntar(db, regla);
-      if (!ventas || !ventas.length) continue;
+      const info = await facSector2Juntar(db, regla);
+      const ventas = info.ventas || [];
+      const acumulado = info.acumulado || 0;
+      // Si no hay nada para facturar, cuando se forzó la regla explicamos el motivo (si no, seguimos de largo).
+      if (info.error) { if (forzar) resumen.detalle.push({ regla: nombre, error: info.error }); continue; }
+      if (!ventas.length) {
+        if (forzar) {
+          let motivo = 'No hay ventas para facturar. ';
+          if ((Number(regla.monto_desde) || 0) > 0) motivo += 'Revisá que haya ventas de ' + regla.origen_venta + ' de $' + (Number(regla.monto_desde) || 0).toLocaleString('es-AR') + ' o más, ';
+          if ((Number(regla.limite_diario) || 0) > 0 && (info.disponible_hoy === 0)) motivo = 'Ya alcanzaste el límite diario de esta regla (facturado hoy: $' + (info.facturado_hoy || 0).toLocaleString('es-AR') + '). ';
+          motivo += 'pagadas, no facturadas y (si pusiste fecha) posteriores al ' + (regla.auto_desde || 'inicio') + '.';
+          resumen.detalle.push({ regla: nombre, info: motivo });
+        }
+        continue;
+      }
       const umbral = Number(regla.umbral) || 0;
-      const forzar = forceReglaId && String(regla.id) === String(forceReglaId);
       if (!(forzar || (umbral > 0 && acumulado > umbral))) continue;
       const grupos = facPartirPorTope(ventas, regla.tope_comprobante);
       for (const grupo of grupos) {
         if (!grupo.length) continue;
         const r = await facSector2Emitir(db, regla, grupo);
-        if (r && r.ok) { resumen.facturadas++; resumen.detalle.push({ regla: regla.nombre || regla.id, nro: r.factura.nro, cbte: r.factura.cbte_letra, total: r.factura.importe_total, ventas: grupo.length }); }
-        else if (r) { resumen.detalle.push({ regla: regla.nombre || regla.id, error: r.mensaje || r.error || 'rechazado' }); break; } // si una falla (p.ej. tope fiscal), no sigo con las demás
+        if (r && r.ok) { resumen.facturadas++; resumen.detalle.push({ regla: nombre, nro: r.factura.nro, cbte: r.factura.cbte_letra, total: r.factura.importe_total, ventas: grupo.length }); }
+        else if (r) { resumen.detalle.push({ regla: nombre, error: r.mensaje || r.error || 'rechazado' }); break; } // si una falla (p.ej. tope fiscal, cuenta inactiva), no sigo con las demás
       }
-    } catch (e) { resumen.detalle.push({ regla: regla.nombre || regla.id, error: String(e.message || e) }); }
+    } catch (e) { resumen.detalle.push({ regla: nombre, error: String(e.message || e) }); }
   }
   return resumen;
 }
