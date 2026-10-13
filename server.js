@@ -10188,7 +10188,7 @@ route('POST', '/api/parabrisas/facturar', async (req, res) => {
       receptor_cond_iva: cf.condicion || 'RI',
       items,
       concepto: fac.concepto || 3,
-      fch_emision: facFechaAtras(fac.dias_atras || 0),
+      fch_emision: facFchEmisionPorConcepto(fac.dias_atras || 0, fac.concepto || 3),
       origen: 'parabrisas', sin_ml: true,
       observaciones: 'Parabrisas caso #' + caso.n + (caso.patente ? ' · ' + caso.patente : ''),
       pb: { caso_n: caso.n, patente: caso.patente || '', siniestro: caso.siniestro || '', compania: compania, marca: caso.marca || '', modelo: caso.modelo || '', tipo_cristal: caso.tipo_cristal || '', posicion: caso.posicion || '' }
@@ -15643,11 +15643,29 @@ route('GET', '/api/facturacion/comprobantes', async (req, res) => {
   if (!facRequireAdmin(req, res)) return;
   let q; try { q = new URL(req.url, 'http://x').searchParams; } catch (e) { q = new URLSearchParams(); }
   const cuenta = String(q.get('cuenta') || '').toUpperCase();
+  const tipo = String(q.get('tipo') || '').toUpperCase();              // A | B | C
+  const texto = String(q.get('q') || '').toUpperCase().trim();         // receptor / N° / CUIT / CAE / venta ML
+  const desde = String(q.get('desde') || '').replace(/-/g, '');        // YYYYMMDD
+  const hasta = String(q.get('hasta') || '').replace(/-/g, '');        // YYYYMMDD
+  const hayFiltro = !!(tipo || texto || desde || hasta);
   const db = facLoad();
   let list = (db.facturacion.facturas || []).slice();
   if (cuenta) list = list.filter(f => String(f.cuenta).toUpperCase() === cuenta);
+  if (tipo) list = list.filter(f => String(f.cbte_letra || '').toUpperCase() === tipo);
+  if (desde) list = list.filter(f => String(f.cbte_fch || '') >= desde);
+  if (hasta) list = list.filter(f => String(f.cbte_fch || '') <= hasta);
+  if (texto) {
+    list = list.filter(f => {
+      const nroFmt = String(f.pto_vta || '').padStart(5, '0') + '-' + String(f.nro || '').padStart(8, '0');
+      const hay = [f.nro, nroFmt, f.receptor_nombre, f.doc_nro, f.cae, f.order_id, (f.pb && f.pb.patente), (f.pb && f.pb.siniestro)].join(' ').toUpperCase();
+      return hay.indexOf(texto) >= 0;
+    });
+  }
   list.sort((a, b) => new Date(b.fecha || 0) - new Date(a.fecha || 0));
-  sendJSON(res, 200, { ok: true, comprobantes: list.slice(0, 300), acumulado: facAcumulado(db) });
+  const total = list.length;
+  // Sin filtro: mostramos los 300 más nuevos (vista por defecto). Con filtro: todas las coincidencias (tope de seguridad 5000).
+  const out = hayFiltro ? list.slice(0, 5000) : list.slice(0, 300);
+  sendJSON(res, 200, { ok: true, comprobantes: out, total, hay_filtro: hayFiltro, mostrados: out.length, acumulado: facAcumulado(db) });
 });
 
 // PDF de un comprobante (mismo formato que se adjunta a ML).
@@ -15743,7 +15761,7 @@ async function facAutoFacturar(db, cuenta, account, token, cfg) {
     const desc = (it.item && it.item.title) || ('Venta ML ' + oid);
     let bill; try { bill = await facBillingML(account, token, oid); } catch (e) { bill = { doc_tipo: 99, doc_nro: '0', receptor_ri: false, nombre: '' }; }
     let r; try {
-      r = await facEmitir(db, cuenta, { doc_tipo: bill.doc_tipo, doc_nro: bill.doc_nro, receptor_ri: bill.receptor_ri, receptor_nombre: bill.nombre || (o.buyer && o.buyer.nickname) || '', receptor_domicilio: bill.domicilio || '', importe_total: total, descripcion: desc, concepto: cfg.concepto || 1, fch_emision: facFechaAtras(cfg.dias_atras), order_id: oid, saltar_tope: false });
+      r = await facEmitir(db, cuenta, { doc_tipo: bill.doc_tipo, doc_nro: bill.doc_nro, receptor_ri: bill.receptor_ri, receptor_nombre: bill.nombre || (o.buyer && o.buyer.nickname) || '', receptor_domicilio: bill.domicilio || '', importe_total: total, descripcion: desc, concepto: cfg.concepto || 1, fch_emision: facFchEmisionPorConcepto(cfg.dias_atras, cfg.concepto || 1), order_id: oid, saltar_tope: false });
     } catch (e) { continue; }
     if (r.tope) break; // tope alcanzado → frenar esta cuenta
     if (r.ok && r.factura) {
@@ -15775,6 +15793,15 @@ function facFechaAtras(n) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(Date.now() - n * 24 * 3600 * 1000));
   const g = {}; parts.forEach(p => g[p.type] = p.value);
   return (g.year || '') + (g.month || '') + (g.day || '');
+}
+// Fecha de emisión (YYYYMMDD) respetando el límite de AFIP según el concepto: para "Productos" (1)
+// la fecha del comprobante solo puede ir hasta 5 días hacia atrás (N-5); para Servicios (2) y
+// Productos y Servicios (3) hasta 10. Así nunca se dispara "CbteFch debe estar en el rango N-5/N+5".
+function facFchEmisionPorConcepto(dias, concepto) {
+  const c = parseInt(concepto, 10) || 1;
+  const max = (c === 1) ? 5 : 10;
+  const n = Math.max(0, Math.min(max, parseInt(dias, 10) || 0));
+  return facFechaAtras(n);
 }
 // Día REAL (hora Argentina) en que se emitió una factura, a partir de su timestamp ISO (rec.fecha).
 // Es distinto de cbte_fch cuando se factura con días hacia atrás (la fecha fiscal queda en el pasado).
@@ -15886,7 +15913,7 @@ async function facSector2Emitir(db, regla, ventas) {
     receptor_cond_iva: dst.condicion || '',
     items,
     concepto: regla.concepto || 1,
-    fch_emision: facFechaAtras(regla.dias_atras),
+    fch_emision: facFchEmisionPorConcepto(regla.dias_atras, regla.concepto || 1),
     order_ids: ventas.map(v => v.order_id),
     sin_ml: true, regla_id: regla.id, origen_venta: regla.origen_venta, origen: 'sector2',
     observaciones: 'Agrupado regla "' + (regla.nombre || regla.id) + '" (' + ventas.length + ' ventas, origen ' + regla.origen_venta + ')',
