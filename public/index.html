@@ -13645,35 +13645,44 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Cuenta</label><select id="facc-cuenta" style="' + css + '"><option value="">Todas</option>';
     ((_fac.data || {}).orden || []).forEach(function (c) { h += '<option value="' + c + '"' + (_fac.compCuenta === c ? ' selected' : '') + '>' + c + '</option>'; });
     h += '</select></div>';
-    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Buscar (receptor / N°)</label><input id="facc-q" style="' + css + '" placeholder="Nombre, CUIT o N°" oninput="facFiltrarComp()"></div>';
-    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Tipo</label><select id="facc-tipo" onchange="facFiltrarComp()" style="' + css + '"><option value="">Todos</option><option value="A">Factura A</option><option value="B">Factura B</option><option value="C">Factura C</option></select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Buscar (receptor / N° / CUIT)</label><input id="facc-q" style="' + css + '" placeholder="Nombre, CUIT o N°" oninput="facCompBuscarDebounce()"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Tipo</label><select id="facc-tipo" onchange="facCargarComprobantes()" style="' + css + '"><option value="">Todos</option><option value="A">Factura A</option><option value="B">Factura B</option><option value="C">Factura C</option></select></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Desde</label><input type="date" id="facc-desde" onchange="facCargarComprobantes()" style="' + css + '"></div>';
+    h += '<div><label style="display:block;font-size:11px;color:#6b7280;margin-bottom:3px">Hasta</label><input type="date" id="facc-hasta" onchange="facCargarComprobantes()" style="' + css + '"></div>';
     h += '<button onclick="facCargarComprobantes()" style="padding:9px 16px;border:1px solid #16a34a;border-radius:8px;background:#fff;color:#16a34a;font-weight:600;cursor:pointer">🔄 Actualizar</button>';
     h += '</div>';
     h += '<div id="facc-lista"><div class="loading"><div class="spinner"></div><p>Cargando comprobantes…</p></div></div>';
     h += '</div>';
     return h;
   }
+  var _facCompTimer = null;
+  function facCompBuscarDebounce() { if (_facCompTimer) clearTimeout(_facCompTimer); _facCompTimer = setTimeout(facCargarComprobantes, 400); }
   async function facCargarComprobantes() {
     var cont = document.getElementById('facc-lista'); if (!cont) return;
-    var c = (document.getElementById('facc-cuenta') || {}).value || ''; _fac.compCuenta = c;
+    var g = function (id) { return (document.getElementById(id) || {}).value || ''; };
+    var c = g('facc-cuenta'); _fac.compCuenta = c;
+    var p = new URLSearchParams();
+    if (c) p.set('cuenta', c);
+    if (g('facc-q').trim()) p.set('q', g('facc-q').trim());
+    if (g('facc-tipo')) p.set('tipo', g('facc-tipo'));
+    if (g('facc-desde')) p.set('desde', g('facc-desde'));
+    if (g('facc-hasta')) p.set('hasta', g('facc-hasta'));
     cont.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando…</p></div>';
     try {
-      var r = await fetch('/api/facturacion/comprobantes' + (c ? '?cuenta=' + encodeURIComponent(c) : ''));
+      var r = await fetch('/api/facturacion/comprobantes?' + p.toString());
       var d = await r.json(); _fac.comprobantes = d.comprobantes || [];
+      _fac.compMeta = { total: d.total || 0, hayFiltro: !!d.hay_filtro, mostrados: d.mostrados || (d.comprobantes || []).length };
       facFiltrarComp();
     } catch (e) { cont.innerHTML = '<div class="empty"><p>Error al cargar comprobantes</p></div>'; }
   }
   function facFiltrarComp() {
     var cont = document.getElementById('facc-lista'); if (!cont) return;
-    var q = ((document.getElementById('facc-q') || {}).value || '').toLowerCase().trim();
-    var tipo = (document.getElementById('facc-tipo') || {}).value || '';
-    var list = (_fac.comprobantes || []).filter(function (f) {
-      if (tipo && f.cbte_letra !== tipo) return false;
-      if (q) { var hay = (String(f.nro) + ' ' + (f.receptor_nombre || '') + ' ' + (f.doc_nro || '') + ' ' + (f.cae || '') + ' ' + (f.order_id || '')).toLowerCase(); if (hay.indexOf(q) < 0) return false; }
-      return true;
-    });
+    var list = _fac.comprobantes || [];
+    var meta = _fac.compMeta || {};
     if (!list.length) { cont.innerHTML = '<div class="empty" style="padding:30px"><p>No hay comprobantes que coincidan.</p></div>'; return; }
-    var h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:6px">' + list.length + ' comprobante(s)</div>';
+    var aviso = '';
+    if (!meta.hayFiltro && meta.total > list.length) aviso = ' · mostrando los ' + list.length + ' más nuevos de ' + meta.total + ' (usá un filtro para ver los anteriores)';
+    var h = '<div style="font-size:12.5px;color:#6b7280;margin-bottom:6px">' + list.length + ' comprobante(s)' + aviso + '</div>';
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">';
     h += '<thead><tr style="background:#f8fafc;text-align:left">' + ['Fecha', 'Cuenta', 'Cbte', 'N°', 'Venta ML', 'Receptor', 'Neto', 'IVA', 'Total', 'CAE', ''].map(function (x) { return '<th style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:700;color:#374151">' + x + '</th>'; }).join('') + '</tr></thead><tbody>';
     list.forEach(function (f) {
