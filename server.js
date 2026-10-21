@@ -8578,13 +8578,19 @@ route('POST', '/api/compras/pago', async (req, res) => {
   const b = await parseBody(req);
   if (!b.proveedor_id || !b.cuenta_id) return sendJSON(res, 400, { error: 'Elegí proveedor y número de cliente' });
   const importe = _cprMoney(b.importe);
-  if (importe <= 0) return sendJSON(res, 400, { error: 'El importe tiene que ser mayor a 0' });
   const imputaciones = (Array.isArray(b.imputaciones) ? b.imputaciones : [])
     .map(im => ({ comprobante_id: im.comprobante_id, monto: _cprMoney(im.monto) }))
     .filter(im => im.comprobante_id && im.monto > 0);
-  const totalImp = imputaciones.reduce((s, im) => s + im.monto, 0);
-  if (totalImp > importe + 0.01) return sendJSON(res, 400, { error: 'La imputación supera el importe del pago' });
+  // Permitimos importe 0 si hay imputaciones (ej.: una NC que cancela una factura sin efectivo).
+  if (importe <= 0 && !imputaciones.length) return sendJSON(res, 400, { error: 'El importe tiene que ser mayor a 0' });
   const d = loadCompras();
+  // Clasificamos las imputaciones: a FACTURAS consume deuda (Debe), a NOTAS DE CRÉDITO usa crédito (Haber, resta).
+  const _compById = {}; d.comprobantes.forEach(c => { _compById[c.id] = c; });
+  let _sumFact = 0, _sumNC = 0;
+  for (const im of imputaciones) { const c = _compById[im.comprobante_id]; if (c && c.tipo === 'nc') _sumNC += im.monto; else _sumFact += im.monto; }
+  if (_sumNC > _sumFact + 0.01) return sendJSON(res, 400, { error: 'No podés aplicar más notas de crédito que facturas en el pago.' });
+  // El efectivo del pago cubre (facturas imputadas − NC aplicadas). No puede imputar neto más que el importe.
+  if ((_sumFact - _sumNC) > importe + 0.01) return sendJSON(res, 400, { error: 'La imputación neta (facturas − notas de crédito) supera el importe del pago.' });
   const prev = d.pagos.find(x => x.id === (b.id || ''));
   const origen = ['manual', 'masiva', 'migracion'].includes(b.origen) ? b.origen : 'manual';
   const rec = {
@@ -12840,6 +12846,29 @@ function registerAds(deps) {
       saveDB(db);
     } catch (e) {}
     console.log('[ENRICH-AUTO] nuevas:', summary.accounts.map(a => a.account + ':' + a.nuevas).join(' '));
+    // AVISO al chat del panel: detalle por cuenta de cuántas se actualizaron y el motivo.
+    try {
+      if (typeof postSistemaToAdmins === 'function') {
+        const totalMod = summary.accounts.reduce((s, a) => s + (Number(a.enriquecidas) || 0), 0);
+        const totalNew = summary.accounts.reduce((s, a) => s + (Number(a.nuevas) || 0), 0);
+        const lineas = summary.accounts.map(a => {
+          const enr = Number(a.enriquecidas) || 0, nue = Number(a.nuevas) || 0;
+          let motivo;
+          if (a.error) motivo = '⚠ error: ' + String(a.error).slice(0, 120);
+          else if (enr === 0 && nue === 0) motivo = 'sin faltantes (ya estaban todas con costo)';
+          else motivo = 'faltaban costos / publicaciones nuevas';
+          return '• ' + a.account + ': ' + enr + ' actualizada(s)' + (nue ? ' · ' + nue + ' nueva(s)' : '') + ' — ' + motivo;
+        }).join('\n');
+        const ar = arParts();
+        postSistemaToAdmins(
+          '🔄 Enriquecimiento diario (costos reales de ML) — ' + ar.date + ' ~' + ar.hour + 'hs\n' +
+          'Actualicé el costo real (comisión, envío, impuestos) de ' + totalMod + ' publicación(es)' +
+          (totalNew ? ' y descubrí ' + totalNew + ' nueva(s)' : '') + '.\n' +
+          'Motivo: se completan las publicaciones que estaban sin costo o que recién aparecieron.\n' +
+          'Detalle por cuenta:\n' + lineas
+        );
+      }
+    } catch (e) { console.error('[ENRICH-AUTO] aviso chat:', (e && e.message) || e); }
     return summary;
   }
   // Hora y fecha LOCAL de Argentina (UTC-3), sin depender del TZ del server (Render corre en UTC).
@@ -12967,6 +12996,20 @@ function registerAds(deps) {
     if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
     try { const s = await autoEnrichNewJob(); sendJSON(res, 200, { ok: true, summary: s }); }
     catch (e) { sendJSON(res, 500, { error: String((e && e.message) || e) }); }
+  });
+  // ESTADO del enriquecimiento diario: cuándo corrió por última vez + detalle por cuenta de las últimas corridas.
+  route('GET', '/api/ads/enrich-status', async (req, res) => {
+    if (!isAdmin(req)) return sendJSON(res, 403, { error: 'Solo admin' });
+    const db = loadDB();
+    const ar = arParts();
+    sendJSON(res, 200, {
+      ok: true,
+      ahora_ar: ar,
+      corrio_hoy: db.ads_enrich_last_run_ar === ar.date,
+      ultimo_run: db.ads_enrich_last_run || null,
+      ultimo_run_ar: db.ads_enrich_last_run_ar || null,
+      corridas: (db.ads_enrich_log || []).slice().reverse()   // más nueva primero, con detalle por cuenta
+    });
   });
 
   // Helpers compartidos por el actualizador de precios.
