@@ -74,7 +74,7 @@ window.addEventListener('DOMContentLoaded', function () {
 </head>
 <body>
 <header>
-  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v69</span></h1>
+  <h1>🧾 Compras <span style="font-weight:400;color:var(--mut);font-size:13px">· Cuenta corriente</span> <span style="font-weight:600;color:#16a34a;font-size:11px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:6px;padding:2px 7px;vertical-align:middle">v70</span></h1>
   <div style="display:flex;align-items:center;gap:16px">
     <span class="who" id="who"></span>
     <a class="back" href="/">← Volver al panel</a>
@@ -87,7 +87,7 @@ window.addEventListener('DOMContentLoaded', function () {
   <div style="background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h2 id="cpr_m_title" style="margin:0">Editar</h2><button class="mini" onclick="closeCprModal()">✕</button></div>
     <div id="cpr_m_body"></div>
-    <div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end"><button class="btnc gray" onclick="closeCprModal()">Cancelar</button><button class="btnc green" onclick="saveCprEdit()">💾 Guardar cambios</button></div>
+    <div style="margin-top:16px;display:flex;gap:10px;justify-content:space-between;align-items:center"><button id="cpr_m_del" class="btnc" style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;display:none" onclick="deleteFromModal()">🗑 Eliminar</button><div style="display:flex;gap:10px;margin-left:auto"><button class="btnc gray" onclick="closeCprModal()">Cancelar</button><button class="btnc green" onclick="saveCprEdit()">💾 Guardar cambios</button></div></div>
   </div>
 </div>
 <script>
@@ -312,6 +312,14 @@ function renderComprobantes(){
     + '</tbody></table></div>';
 }
 async function delComprobante(id){ if(!confirm('¿Borrar este comprobante? También se quitan las imputaciones de pagos asociadas.'))return; try{ await api('/api/compras/comprobante-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}); await reload(); renderComprobantes(); toast('Borrado','ok'); }catch(e){ toast(String(e),'err'); } }
+// Borra el comprobante que se está editando en el modal (botón Eliminar) y cierra el modal.
+async function deleteFromModal(){
+  if(!(_EDIT&&_EDIT.rec&&_EDIT.rec.id)) return;
+  var c=_EDIT.rec;
+  if(!confirm('¿Eliminar este comprobante ('+(c.tipo==='nc'?'Nota de crédito':'Factura')+' '+(c.numero||'')+' · '+money(c.importe)+')? También se quitan las imputaciones de pagos asociadas. No se puede deshacer.')) return;
+  try{ await api('/api/compras/comprobante-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id})}); closeCprModal(); await reload(); if(TAB==='resumen') viewResumen(); else if(TAB==='cargar') renderComprobantes(); toast('Comprobante eliminado','ok'); }
+  catch(e){ toast(String(e),'err'); }
+}
 // ============================ PAGOS ============================
 function viewPagos(){
   $('main').innerHTML =
@@ -404,6 +412,7 @@ function editComprobante(id){
     + '<div><label>Importe</label><input id="cm_imp" type="number" min="0" step="0.01" value="'+(Number(c.importe)||0)+'"></div></div>'
     + '<div style="margin-top:10px"><label>Notas</label><input id="cm_notas" value="'+esc(c.notas||'')+'"></div>'
     + (descuentoPct(c.proveedor_id)>0?('<div class="hint" style="margin-top:8px">Ojo: el importe va en bruto (como lo facturó el proveedor). El '+descTexto(c.proveedor_id)+' de descuento se aplica solo para el saldo.</div>'):'');
+  var _del=$('cpr_m_del'); if(_del) _del.style.display=(_EDIT&&_EDIT.kind==='comprobante')?'':'none';
   $('cpr_modal').style.display='flex';
 }
 function editPago(id){
@@ -421,6 +430,7 @@ function editPago(id){
     + '<div><label>Importe</label><input id="cm_imp" type="number" min="0" step="0.01" value="'+(Number(p.importe)||0)+'"></div></div>'
     + '<div style="margin-top:10px"><label>Notas</label><input id="cm_notas" value="'+esc(p.notas||'')+'"></div>'
     + (impd>0.01?('<div class="hint" style="margin-top:8px">Este pago tiene '+money(impd)+' imputado a facturas (se conserva). Si bajás el importe por debajo de eso, se rechaza.</div>'):'');
+  var _del=$('cpr_m_del'); if(_del) _del.style.display=(_EDIT&&_EDIT.kind==='comprobante')?'':'none';
   $('cpr_modal').style.display='flex';
 }
 async function saveCprEdit(){
