@@ -12649,7 +12649,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
   function contPeriodById(id) { var c = contD(); return (c.periods || []).find(function (p) { return p.id === id; }) || null; }
   function contCuentas() { return contD().cuentas || []; }
   function _cv(id) { var e = document.getElementById(id); return e ? e.value : ''; }
-  function contTipo(t) { if (t.origen === 'mp') return 'MP'; if (t.forma_pago === 'tarjeta') return 'Tarjeta'; if (t.forma_pago === 'cheque') return 'Cheque'; if (t.forma_pago === 'efectivo') return 'Efectivo'; return '—'; }
+  function contTipo(t) { if (t.origen === 'mp') return 'MP'; if (t.forma_pago === 'tarjeta') return 'Tarjeta'; if (t.forma_pago === 'cheque') return 'Cheque'; if (t.forma_pago === 'efectivo') return 'Efectivo'; if (t.forma_pago === 'banco') return 'Banco'; return '—'; }
   // Clasifica un rubro de Negocio para saber a qué sub-solapa va (por nombre).
   function contNegClass(dest, rubroId) {
     var nom = contRubroNombre(dest, rubroId).toLowerCase();
@@ -14725,7 +14725,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += contField('Fecha', '<input type="date" id="ctx-fecha" value="' + contHoy() + '" style="' + contInputCss() + '">');
     h += contField('Detalle', '<input type="text" id="ctx-detalle" placeholder="Descripción" style="' + contInputCss() + '">');
     h += contField('Monto *', '<input type="text" id="ctx-monto" inputmode="decimal" placeholder="$ 0,00" style="' + contInputCss() + '">');
-    h += contField('Forma de pago *', '<select id="ctx-forma" onchange="contFormaOnChange()" style="' + contInputCss() + '"><option value="">(elegí)</option><option value="tarjeta">Tarjeta</option><option value="cheque">Cheque</option><option value="efectivo">Efectivo</option></select>');
+    h += contField('Forma de pago *', '<select id="ctx-forma" onchange="contFormaOnChange()" style="' + contInputCss() + '"><option value="">(elegí)</option><option value="tarjeta">Tarjeta</option><option value="cheque">Cheque</option><option value="efectivo">Efectivo</option><option value="banco">Banco</option></select>');
     h += '</div>';
     // Panel cheque
     h += '<div id="ctx-cheque-panel" style="display:none;margin-top:10px;padding:10px;background:#f8fafc;border-radius:8px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">Datos del cheque</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">' +
@@ -14935,7 +14935,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     var h = '';
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:12px;background:#f8fafc;padding:10px;border-radius:10px">';
     h += contFiltroSelectOpts(dest, 'cuenta', 'Cuenta', contCuentaOptions(f.cuenta), f.cuenta);
-    h += contFiltroSelect(dest, 'tipo', 'Tipo', [['', 'Todos'], ['MP', 'MP'], ['Efectivo', 'Efectivo'], ['Tarjeta', 'Tarjeta'], ['Cheque', 'Cheque']], f.tipo);
+    h += contFiltroSelect(dest, 'tipo', 'Tipo', [['', 'Todos'], ['MP', 'MP'], ['Efectivo', 'Efectivo'], ['Tarjeta', 'Tarjeta'], ['Cheque', 'Cheque'], ['Banco', 'Banco']], f.tipo);
     h += contFiltroSelectOpts(dest, 'rubro', 'Rubro', contRubroOptions(dest, f.rubro), f.rubro);
     h += contFiltroFecha(dest, f);
     h += contFiltroTexto(dest, 'Nota', f.q);
