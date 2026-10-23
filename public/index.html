@@ -14835,6 +14835,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h3 style="margin:0;color:#6b21a8;font-size:16px">Derivar transacción</h3><button onclick="contDerivarCancel()" style="border:none;background:none;font-size:20px;cursor:pointer;color:#9ca3af">✕</button></div>';
     h += '<div style="font-size:12px;color:#6b7280;margin-bottom:14px">' + contFechaDisp(t.fecha) + ' · ' + escapeHtml(t.detalle || '') + ' · ' + contMoney(t.monto) + (t.cuenta ? ' · ' + escapeHtml(t.cuenta) : '') + '</div>';
     h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">';
+    h += contField('Fecha', '<input type="date" id="cder-fecha" value="' + escapeHtml(String(t.fecha || '').slice(0, 10)) + '" style="' + contInputCss() + '">');
     h += contField('Derivar a', '<select id="cder-dest" onchange="contDerDestChange()" style="' + contInputCss() + '">' + contDestOptions(t.derivado) + '</select>');
     var rubroInner;
     if (t.derivado === 'prestamos') rubroInner = '<select id="cder-rubro" style="' + contInputCss() + '">' + contPrestamoOptions('') + '</select>';
@@ -14866,6 +14867,9 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
     else if (dest) { payload.rubro_id = _cv('cder-rubro') || null; payload.subrubro_id = _cv('cder-sub') || null; }
     var ok = await contMutate('tx.derivar', payload);
     if (!ok) return;
+    // Si cambió la fecha, la actualizamos aparte (editar la transacción).
+    var nuevaFecha = _cv('cder-fecha');
+    if (nuevaFecha && nuevaFecha !== String(t.fecha || '').slice(0, 10)) { await contMutate('tx.save', { id: id, fecha: nuevaFecha }); t.fecha = nuevaFecha; }
     if (dest === 'prestamos' && prestamoId) await contMutate('prestamo.pago', { prestamoId: prestamoId, fecha: t.fecha, monto: t.monto, transaccion_id: id, nota: payload.nota });
     _cont.derivarId = null;
     showToast('Derivada', 'success');
