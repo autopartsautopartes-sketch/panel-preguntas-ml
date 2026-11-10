@@ -49,15 +49,50 @@ if (!DB_BACKUP_ENV) {
     } catch (e) {}
   }
 }
-function loadDB() {
+// ===== DB en memoria (fix de performance) =====
+// Antes: cada loadDB() leía+parseaba TODO el archivo del disco (223 llamadas por
+// request) y cada saveDB() reescribía TODO el archivo con pretty-print. Al crecer
+// los datos, eso bloqueaba el event loop en cada pedido y hacía lento todo el panel.
+// Ahora: los datos viven en memoria; loadDB() devuelve una copia (clona, así se
+// preserva exactamente el comportamiento anterior: mutar sin guardar NO persiste),
+// y saveDB() escribe de forma atómica (tmp + rename) y compacta. Si alguien edita
+// el archivo por fuera, el chequeo de mtime recarga la caché solo.
+let _dbCache = null;
+let _dbMtime = -1;
+function _dbClone(o) {
+  if (o == null) return o;
+  try { return structuredClone(o); } catch (e) { return JSON.parse(JSON.stringify(o)); }
+}
+function _dbReadFromDisk() {
   try {
-    return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    const st = fs.statSync(DB_PATH);
+    _dbCache = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    _dbMtime = st.mtimeMs;
   } catch (e) {
-    return null;
+    _dbCache = null; _dbMtime = -1;
   }
 }
+function loadDB() {
+  try {
+    const st = fs.statSync(DB_PATH);
+    if (_dbCache === null || st.mtimeMs !== _dbMtime) _dbReadFromDisk();
+  } catch (e) {
+    if (_dbCache === null) return null;
+  }
+  return _dbClone(_dbCache);
+}
 function saveDB(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  _dbCache = _dbClone(data);
+  const json = JSON.stringify(data);
+  const tmp = DB_PATH + '.tmp';
+  try {
+    fs.writeFileSync(tmp, json);
+    fs.renameSync(tmp, DB_PATH);
+  } catch (e) {
+    // fallback: escritura directa si falla el rename atómico
+    fs.writeFileSync(DB_PATH, json);
+  }
+  try { _dbMtime = fs.statSync(DB_PATH).mtimeMs; } catch (e) {}
 }
 // On startup: restore from DB_BACKUP env var if data.json doesn't exist or is empty
 let db = loadDB();
