@@ -4924,6 +4924,20 @@ route('POST', '/api/claims/action', async (req, res) => {
 // In-memory caches to speed up repeated requests
 const itemCache = {}; // cache item thumbnail/sku by item id (rarely changes)
 const shipmentCacheGlobal = {}; // cache shipment info by shipping_id
+// Ventas de la TIENDA WEB para la solapa Ventas (bloque aparte, no se mezcla con las órdenes de ML).
+route('GET', '/api/tienda/ventas', async (req, res) => {
+  const sess = requireAuth(req);
+  if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
+  const u = new URL(req.url, 'http://localhost');
+  const hoy = new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 10);
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  const to = re.test(u.searchParams.get('to') || '') ? u.searchParams.get('to') : hoy;
+  const from = re.test(u.searchParams.get('from') || '') ? u.searchParams.get('from') : new Date(new Date(to + 'T12:00:00Z').getTime() - 6 * 864e5).toISOString().slice(0, 10);
+  const db = loadDB(); const user = (db.users || []).find(x => x.id === sess.userId);
+  const pedidos = await tiendaVentas(from, to);
+  const verCosto = user && user.role === 'admin';
+  sendJSON(res, 200, { configurada: !!process.env.TIENDA_TOKEN, from, to, pedidos: verCosto ? pedidos : pedidos.map(p => ({ ...p, costo: undefined, items: (p.items || []).map(x => ({ ...x, costo_unit: undefined })) })) });
+});
 route('GET', '/api/sales', async (req, res) => {
   const sess = requireAuth(req);
   if (!sess) return sendJSON(res, 401, { error: 'No autorizado' });
@@ -5397,6 +5411,16 @@ route('GET', '/api/stats', async (req, res) => {
     }
   }));
   for (const x of _sba) { if (x) salesByAccount.push(x); }
+  if (user?.view_dashboard !== false) {   // TIENDA WEB (canal aparte)
+    const hoyAR = new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 10);
+    const tw = await tiendaVentas(hoyAR, hoyAR);
+    if (tw.length || process.env.TIENDA_TOKEN) {
+      let ts = 0, tr = 0, tu = 0;
+      for (const p of tw) { ts++; tr += Number(p.total) || 0; tu += Number(p.unidades) || 0; }
+      salesToday += ts; revenueToday += tr; unitsSoldToday += tu;
+      salesByAccount.push({ name: TIENDA_NOMBRE, sales: ts, revenue: tr, units: tu, tienda: true });
+    }
+  }
   sendJSON(res, 200, {
     accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered_today: totalAnsweredToday,
     unread_messages: totalUnreadMessages,
@@ -5491,6 +5515,13 @@ route('GET', '/api/dashboard-chart', async (req, res) => {
         if (dayData[key]) dayData[key].questions++;
       }
     } catch(e) {}
+  }
+  if (!accountId || accountId === 'tienda') {   // TIENDA WEB
+    const keys = Object.keys(dayData).sort();
+    if (keys.length) for (const p of await tiendaVentas(keys[0], keys[keys.length - 1])) {
+      const key = _diaAR(p.fecha);
+      if (dayData[key]) { dayData[key].sales++; dayData[key].revenue += Number(p.total) || 0; dayData[key].units += Number(p.unidades) || 0; }
+    }
   }
   const days = Object.keys(dayData).sort();
   sendJSON(res, 200, {
@@ -9555,6 +9586,58 @@ route('POST', '/api/local/delete', async (req, res) => {
 // Si es false, las VENTAS DE LOCAL (mostrador, carga manual) NO se suman al Dashboard ni a Gestión
 // (quedan solo en la sección "Local"). Poner true para volver a incluirlas en las estadísticas de ML.
 const LOCAL_EN_ESTADISTICAS = false;
+// ===========================================================================
+// TIENDA WEB (autochap.com.ar): ventas pagadas de la tienda propia como un canal aparte.
+// Se leen de la tienda (GET {TIENDA_URL}/api/panel con la clave TIENDA_TOKEN). Si no hay
+// variables cargadas o la tienda no responde, simplemente no se suma nada.
+// ===========================================================================
+const TIENDA_NOMBRE = 'TIENDA WEB';
+const _tiendaCache = new Map();   // "desde|hasta" → { t, pedidos }
+async function tiendaVentas(from, to) {
+  const base = String(process.env.TIENDA_URL || 'https://www.autochap.com.ar').replace(/\/$/, '');
+  const tok = process.env.TIENDA_TOKEN;
+  if (!tok) return [];
+  const k = from + '|' + to; const c = _tiendaCache.get(k);
+  if (c && Date.now() - c.t < 60 * 1000) return c.pedidos;
+  try {
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(`${base}/api/panel?desde=${encodeURIComponent(from)}&hasta=${encodeURIComponent(to)}`, { headers: { 'x-panel-token': tok }, signal: ctl.signal });
+    clearTimeout(tm);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(); const pedidos = Array.isArray(j.pedidos) ? j.pedidos : [];
+    _tiendaCache.set(k, { t: Date.now(), pedidos });
+    if (_tiendaCache.size > 60) _tiendaCache.delete(_tiendaCache.keys().next().value);
+    return pedidos;
+  } catch (e) { console.error('[tienda] ' + (e.message || e)); return c ? c.pedidos : []; }
+}
+function _diaAR(iso) { return new Date(new Date(iso).getTime() - 3 * 3600e3).toISOString().slice(0, 10); }
+// Filas con el mismo formato que Gestión (como localSalesRows): facturación = productos (sin envío),
+// "queda" = productos − comisión de Mercado Pago, ganancia = queda − costo.
+function tiendaSalesRows(pedidos) {
+  const rows = [];
+  const T = { facturacion: 0, unidades: 0, quedaTotal: 0, costTotal: 0, costStockTotal: 0, ganancia: 0, gananciaSinFlex: 0, conocidas: 0, factConocida: 0, orders: 0, count: 0, perdida: 0, perdidaMonto: 0, sinCosto: 0, feeTotal: 0 };
+  for (const p of pedidos || []) {
+    const revenue = Number(p.productos) || 0, fee = Number(p.comision) || 0, queda = revenue - fee;
+    const known = p.costo != null; const cost = known ? Number(p.costo) : 0; const net = known ? queda - cost : null;
+    const it = (p.items || [])[0] || {};
+    const titulo = (p.items || []).map(x => `${x.n > 1 ? x.n + ' × ' : ''}${x.titulo}${x.marca ? ' (' + x.marca + ')' : ''}`).join(' + ');
+    rows.push({
+      order_id: 'WEB-' + p.nro, pack_id: 'WEB-' + p.nro, date: _diaAR(p.fecha), datetime: p.fecha,
+      item_id: 'WEB', title: titulo || ('Venta web ' + p.nro), status: p.estado,
+      account_name: TIENDA_NOMBRE, account_id: 'tienda', es_tienda: true, entrega: p.entrega || '', forma_pago: p.pago || '',
+      envio_estado: p.entrega || '', stock: true, frozen: true, qty: Number(p.unidades) || 1, sku: '', proveedor: [it.proveedor, it.codigo].filter(Boolean).join(' '),
+      cuotas: 0, flex: false, pack: (p.items || []).length > 1, bono: 0,
+      revenue, fee, envio: 0, envioReal: null, tax: 0, taxReal: false, factura: 0,
+      queda, cost, net, marginPct: known && revenue > 0 ? (net / revenue) * 100 : null, known,
+      net_sin_flex: net, cost_stock: cost,
+    });
+    T.facturacion += revenue; T.unidades += Number(p.unidades) || 0; T.quedaTotal += queda; T.feeTotal += fee; T.orders += 1; T.count += 1;
+    if (known) { T.costTotal += cost; T.costStockTotal += cost; T.ganancia += net; T.gananciaSinFlex += net; T.conocidas += 1; T.factConocida += revenue; if (net < 0) { T.perdida += 1; T.perdidaMonto += net; } }
+    else T.sinCosto += 1;
+  }
+  return { rows, T };
+}
+
 function localSalesRows(from, to) {
   const db = loadDB();
   const orders = Array.isArray(db.local_sales) ? db.local_sales : [];
@@ -12080,6 +12163,17 @@ function registerAds(deps) {
         gAll.stock.unidades += L.T.unidades; gAll.stock.ganancia += L.T.ganancia; gAll.stock.factConoc += L.T.factConocida;
         if (L.T.count > 0) porCuenta.push({ account_name: 'Venta local', es_local: true, objetivo: 0, facturacion: L.T.facturacion, ganancia: L.T.ganancia, margin: L.T.factConocida > 0 ? (L.T.ganancia / L.T.factConocida) * 100 : null, orders: L.T.orders, perdida: L.T.perdida, proy_mensual: 0, queda: L.T.quedaTotal, fee_total: 0, envio_total: 0, tax_total: 0, unidades: L.T.unidades });
       }
+      if (!soloCanceladas) {   // TIENDA WEB (canal aparte)
+        const W = tiendaSalesRows(await tiendaVentas(from, to));
+        for (const r of W.rows) allRows.push(r);
+        facturacion += W.T.facturacion; ganancia += W.T.ganancia; orders += W.T.orders;
+        conocidas += W.T.conocidas; factConocida += W.T.factConocida; perdida += W.T.perdida; perdidaMonto += W.T.perdidaMonto; sinCosto += W.T.sinCosto;
+        unidades += W.T.unidades; quedaTotal += W.T.quedaTotal; costTotal += W.T.costTotal; costStockTotal += W.T.costStockTotal; feeTotal += W.T.feeTotal;
+        gananciaSinFlex += W.T.gananciaSinFlex;
+        gAll.stock.ventas += W.T.orders; gAll.stock.fact += W.T.facturacion; gAll.stock.queda += W.T.quedaTotal;
+        gAll.stock.unidades += W.T.unidades; gAll.stock.ganancia += W.T.ganancia; gAll.stock.factConoc += W.T.factConocida;
+        if (W.T.count > 0) { const dd = daysBetween(from, to); porCuenta.push({ account_name: TIENDA_NOMBRE, es_tienda: true, objetivo: 0, facturacion: W.T.facturacion, ganancia: W.T.ganancia, margin: W.T.factConocida > 0 ? (W.T.ganancia / W.T.factConocida) * 100 : null, orders: W.T.orders, perdida: W.T.perdida, proy_mensual: dd > 0 ? W.T.facturacion / dd * 30 : 0, queda: W.T.quedaTotal }); }
+      }
       const days = daysBetween(from, to);
       const proyMensual = days > 0 ? facturacion / days * 30 : 0;
       sendJSON(res, 200, {
@@ -12140,6 +12234,11 @@ function registerAds(deps) {
       T.costTotal += L.T.costTotal; T.costStockTotal += L.T.costStockTotal; T.ganancia += L.T.ganancia;
       T.gananciaSinFlex += L.T.gananciaSinFlex; T.conocidas += L.T.conocidas; T.factConocida += L.T.factConocida;
       T.orders += L.T.orders; T.count += L.T.count; T.perdida += L.T.perdida; T.perdidaMonto += L.T.perdidaMonto;
+    }
+    if (!accountId || accountId === 'all' || accountId === 'tienda') {   // TIENDA WEB
+      const W = tiendaSalesRows(await tiendaVentas(date, date));
+      for (const r of W.rows) allRows.push(r);
+      for (const f of ['facturacion', 'unidades', 'quedaTotal', 'costTotal', 'costStockTotal', 'ganancia', 'gananciaSinFlex', 'conocidas', 'factConocida', 'orders', 'count', 'perdida', 'perdidaMonto', 'feeTotal', 'sinCosto']) T[f] = (T[f] || 0) + (W.T[f] || 0);
     }
     T.margin = T.factConocida > 0 ? (T.ganancia / T.factConocida) * 100 : null;
     return { sales: allRows, totals: T };

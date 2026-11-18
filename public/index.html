@@ -5177,6 +5177,30 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           return salesPedidoFilter === 'pedido' ? hasOrder : !hasOrder;
         });
       }
+      // TIENDA WEB: ventas pagadas de la tienda propia (bloque aparte, arriba de las de ML)
+      let tiendaHtml = '';
+      if (!salesAccountFilter) {
+        try {
+          const tq = new URLSearchParams(); if (salesDateFrom) tq.set('from', salesDateFrom); if (salesDateTo) tq.set('to', salesDateTo);
+          const tj = await (await fetch('/api/tienda/ventas?' + tq.toString())).json();
+          const tp = tj.pedidos || [];
+          const $f = n => '$ ' + Math.round(Number(n) || 0).toLocaleString('es-AR');
+          const pagoTxt = { trans: 'Transferencia', mp: 'Mercado Pago', sena: 'Seña MP' };
+          if (tp.length) tiendaHtml = `<div style="margin:0 0 18px"><h3 style="color:#c8102e;margin:0 0 8px;font-size:16px">🛒 Tienda web <span style="color:#999;font-weight:500;font-size:13px">· ${tp.length} venta${tp.length !== 1 ? 's' : ''} (${escapeHtml(tj.from)} a ${escapeHtml(tj.to)})</span></h3>` + tp.map(p => `
+            <div class="sale-card" style="border-left:4px solid #c8102e">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+                <span class="card-account" style="background:#c8102e;color:#fff">TIENDA WEB</span>
+                <span style="font-size:13px;color:#333;font-weight:600">${escapeHtml(p.cliente || '')}${p.localidad ? ' · ' + escapeHtml(p.localidad) : ''}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px;color:#555;margin-bottom:8px">
+                <span><strong>${escapeHtml(p.nro)}</strong> · ${formatSaleDate(p.fecha)} · ${escapeHtml(pagoTxt[p.pago] || p.pago || '')} · <strong>${escapeHtml(p.estado || '')}</strong></span>
+                <span>${escapeHtml(p.entrega || '')}${p.envio ? ' (' + $f(p.envio) + ')' : ''}</span>
+              </div>
+              ${(p.items || []).map(x => `<div style="display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:4px 0;border-top:1px solid #f0f0f0"><span>${x.n} × ${escapeHtml(x.titulo || x.id)} <span style="color:#888">· ${escapeHtml(x.marca || '')} · ${escapeHtml(x.id)}</span>${x.proveedor ? ` <span style="background:#fff4d6;color:#8a6d00;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700">${escapeHtml(x.proveedor)} ${escapeHtml(x.codigo || '')}</span>` : ''}</span><span style="white-space:nowrap">${$f(x.precio)}${x.costo_unit != null ? ` <span style="color:#999;font-size:11px">· costo ${$f(x.costo_unit * x.n)}</span>` : ''}</span></div>`).join('')}
+              <div style="display:flex;justify-content:flex-end;gap:14px;font-size:14px;margin-top:6px"><span>Total <strong>${$f(p.total)}</strong></span>${p.costo != null ? `<span style="color:#1a7f37">Ganancia <strong>${$f((p.productos || 0) - (p.comision || 0) - p.costo)}</strong></span>` : ''}</div>
+            </div>`).join('') + '</div>';
+        } catch (e) {}
+      }
       // Remove loading, rebuild with filters + results
       // Re-render entire content to keep filters
       let fullHtml = `
@@ -5229,6 +5253,7 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           </div>
         </div>
       `;
+      fullHtml += tiendaHtml;
       if (sales.length === 0) {
         fullHtml += '<div class="empty"><p>No hay ventas para los filtros seleccionados</p></div>';
       } else {
