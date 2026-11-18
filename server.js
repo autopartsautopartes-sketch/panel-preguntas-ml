@@ -9816,6 +9816,40 @@ route('GET', '/api/envios/config', async (req, res) => {
   const autoReply = !!(dbx.envios_config && dbx.envios_config.auto_reply);
   sendJSON(res, 200, { ok: true, can_edit: canEdit, transportes: c.transportes, destinos: c.destinos, updated: c.updated, auto_reply: autoReply });
 });
+// EXPORTAR cobertura a CSV (matriz destinos x transportes). Cualquier usuario logueado.
+// Abrir en el navegador: /api/envios/export  -> descarga "envios_cobertura.csv".
+// Valor de cada celda:  X = ciudad tildada individualmente para ese transporte;
+//                       P = cubierta porque el transporte cubre la provincia entera;
+//                       (vacío) = no llega.
+route('GET', '/api/envios/export', async (req, res) => {
+  const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
+  const c = loadEnviosConfig();
+  const dest = Array.isArray(c.destinos) ? c.destinos.slice() : [];
+  const trans = Array.isArray(c.transportes) ? c.transportes : [];
+  const norm = v => String(v == null ? '' : v).trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const destSet = trans.map(t => new Set((Array.isArray(t.destinos) ? t.destinos : []).map(x => String(x))));
+  const provSet = trans.map(t => new Set((Array.isArray(t.provincias) ? t.provincias : []).map(norm)));
+  dest.sort((a, b) => String(a.provincia || '').localeCompare(String(b.provincia || ''), 'es') || String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es'));
+  const esc = v => { v = String(v == null ? '' : v); return /[";\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const header = ['Provincia', 'Ciudad', 'CP'].concat(trans.map(t => t.nombre || ''));
+  const lines = [header.map(esc).join(';')];
+  for (const d of dest) {
+    const row = [d.provincia || '', d.nombre || '', (Array.isArray(d.cps) ? d.cps : []).join(' ')];
+    for (let i = 0; i < trans.length; i++) {
+      const ciudad = destSet[i].has(String(d.id));
+      const prov = provSet[i].has(norm(d.provincia));
+      row.push(ciudad ? 'X' : (prov ? 'P' : ''));
+    }
+    lines.push(row.map(esc).join(';'));
+  }
+  const csv = '﻿' + lines.join('\r\n');
+  const fname = 'envios_cobertura_' + new Date().toISOString().slice(0, 10) + '.csv';
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="' + fname + '"'
+  });
+  res.end(csv);
+});
 // ON/OFF de la respuesta automática de Preguntas (solo admin).
 route('POST', '/api/envios/auto-reply', async (req, res) => {
   const s = requireAuth(req); if (!s) return sendJSON(res, 401, { error: 'No autenticado' });
