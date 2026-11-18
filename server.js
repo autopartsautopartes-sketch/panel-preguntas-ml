@@ -724,6 +724,58 @@ async function getValidToken(account) {
   return account.access_token;
 }
 // ==================== ROUTE HANDLERS ====================
+// ===========================================================================
+// TIENDA WEB (autochap.com.ar): ventas pagadas de la tienda propia como un canal aparte.
+// Se leen de la tienda (GET {TIENDA_URL}/api/panel con la clave TIENDA_TOKEN). Si no hay
+// variables cargadas o la tienda no responde, simplemente no se suma nada.
+// ===========================================================================
+const TIENDA_NOMBRE = 'TIENDA WEB';
+const _tiendaCache = new Map();   // "desde|hasta" → { t, pedidos }
+async function tiendaVentas(from, to) {
+  const base = String(process.env.TIENDA_URL || 'https://www.autochap.com.ar').replace(/\/$/, '');
+  const tok = process.env.TIENDA_TOKEN;
+  if (!tok) return [];
+  const k = from + '|' + to; const c = _tiendaCache.get(k);
+  if (c && Date.now() - c.t < 60 * 1000) return c.pedidos;
+  try {
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(`${base}/api/panel?desde=${encodeURIComponent(from)}&hasta=${encodeURIComponent(to)}`, { headers: { 'x-panel-token': tok }, signal: ctl.signal });
+    clearTimeout(tm);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(); const pedidos = Array.isArray(j.pedidos) ? j.pedidos : [];
+    _tiendaCache.set(k, { t: Date.now(), pedidos });
+    if (_tiendaCache.size > 60) _tiendaCache.delete(_tiendaCache.keys().next().value);
+    return pedidos;
+  } catch (e) { console.error('[tienda] ' + (e.message || e)); return c ? c.pedidos : []; }
+}
+function _diaAR(iso) { return new Date(new Date(iso).getTime() - 3 * 3600e3).toISOString().slice(0, 10); }
+// Filas con el mismo formato que Gestión (como localSalesRows): facturación = productos (sin envío),
+// "queda" = productos − comisión de Mercado Pago, ganancia = queda − costo.
+function tiendaSalesRows(pedidos) {
+  const rows = [];
+  const T = { facturacion: 0, unidades: 0, quedaTotal: 0, costTotal: 0, costStockTotal: 0, ganancia: 0, gananciaSinFlex: 0, conocidas: 0, factConocida: 0, orders: 0, count: 0, perdida: 0, perdidaMonto: 0, sinCosto: 0, feeTotal: 0 };
+  for (const p of pedidos || []) {
+    const revenue = Number(p.productos) || 0, fee = Number(p.comision) || 0, queda = revenue - fee;
+    const known = p.costo != null; const cost = known ? Number(p.costo) : 0; const net = known ? queda - cost : null;
+    const it = (p.items || [])[0] || {};
+    const titulo = (p.items || []).map(x => `${x.n > 1 ? x.n + ' × ' : ''}${x.titulo}${x.marca ? ' (' + x.marca + ')' : ''}`).join(' + ');
+    rows.push({
+      order_id: 'WEB-' + p.nro, pack_id: 'WEB-' + p.nro, date: _diaAR(p.fecha), datetime: p.fecha,
+      item_id: 'WEB', title: titulo || ('Venta web ' + p.nro), status: p.estado,
+      account_name: TIENDA_NOMBRE, account_id: 'tienda', es_tienda: true, entrega: p.entrega || '', forma_pago: p.pago || '',
+      envio_estado: p.entrega || '', stock: true, frozen: true, qty: Number(p.unidades) || 1, sku: '', proveedor: [it.proveedor, it.codigo].filter(Boolean).join(' '),
+      cuotas: 0, flex: false, pack: (p.items || []).length > 1, bono: 0,
+      revenue, fee, envio: 0, envioReal: null, tax: 0, taxReal: false, factura: 0,
+      queda, cost, net, marginPct: known && revenue > 0 ? (net / revenue) * 100 : null, known,
+      net_sin_flex: net, cost_stock: cost,
+    });
+    T.facturacion += revenue; T.unidades += Number(p.unidades) || 0; T.quedaTotal += queda; T.feeTotal += fee; T.orders += 1; T.count += 1;
+    if (known) { T.costTotal += cost; T.costStockTotal += cost; T.ganancia += net; T.gananciaSinFlex += net; T.conocidas += 1; T.factConocida += revenue; if (net < 0) { T.perdida += 1; T.perdidaMonto += net; } }
+    else T.sinCosto += 1;
+  }
+  return { rows, T };
+}
+
 const routes = {};
 function route(method, path, handler) {
   routes[`${method}:${path}`] = handler;
@@ -9586,58 +9638,6 @@ route('POST', '/api/local/delete', async (req, res) => {
 // Si es false, las VENTAS DE LOCAL (mostrador, carga manual) NO se suman al Dashboard ni a Gestión
 // (quedan solo en la sección "Local"). Poner true para volver a incluirlas en las estadísticas de ML.
 const LOCAL_EN_ESTADISTICAS = false;
-// ===========================================================================
-// TIENDA WEB (autochap.com.ar): ventas pagadas de la tienda propia como un canal aparte.
-// Se leen de la tienda (GET {TIENDA_URL}/api/panel con la clave TIENDA_TOKEN). Si no hay
-// variables cargadas o la tienda no responde, simplemente no se suma nada.
-// ===========================================================================
-const TIENDA_NOMBRE = 'TIENDA WEB';
-const _tiendaCache = new Map();   // "desde|hasta" → { t, pedidos }
-async function tiendaVentas(from, to) {
-  const base = String(process.env.TIENDA_URL || 'https://www.autochap.com.ar').replace(/\/$/, '');
-  const tok = process.env.TIENDA_TOKEN;
-  if (!tok) return [];
-  const k = from + '|' + to; const c = _tiendaCache.get(k);
-  if (c && Date.now() - c.t < 60 * 1000) return c.pedidos;
-  try {
-    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 8000);
-    const r = await fetch(`${base}/api/panel?desde=${encodeURIComponent(from)}&hasta=${encodeURIComponent(to)}`, { headers: { 'x-panel-token': tok }, signal: ctl.signal });
-    clearTimeout(tm);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json(); const pedidos = Array.isArray(j.pedidos) ? j.pedidos : [];
-    _tiendaCache.set(k, { t: Date.now(), pedidos });
-    if (_tiendaCache.size > 60) _tiendaCache.delete(_tiendaCache.keys().next().value);
-    return pedidos;
-  } catch (e) { console.error('[tienda] ' + (e.message || e)); return c ? c.pedidos : []; }
-}
-function _diaAR(iso) { return new Date(new Date(iso).getTime() - 3 * 3600e3).toISOString().slice(0, 10); }
-// Filas con el mismo formato que Gestión (como localSalesRows): facturación = productos (sin envío),
-// "queda" = productos − comisión de Mercado Pago, ganancia = queda − costo.
-function tiendaSalesRows(pedidos) {
-  const rows = [];
-  const T = { facturacion: 0, unidades: 0, quedaTotal: 0, costTotal: 0, costStockTotal: 0, ganancia: 0, gananciaSinFlex: 0, conocidas: 0, factConocida: 0, orders: 0, count: 0, perdida: 0, perdidaMonto: 0, sinCosto: 0, feeTotal: 0 };
-  for (const p of pedidos || []) {
-    const revenue = Number(p.productos) || 0, fee = Number(p.comision) || 0, queda = revenue - fee;
-    const known = p.costo != null; const cost = known ? Number(p.costo) : 0; const net = known ? queda - cost : null;
-    const it = (p.items || [])[0] || {};
-    const titulo = (p.items || []).map(x => `${x.n > 1 ? x.n + ' × ' : ''}${x.titulo}${x.marca ? ' (' + x.marca + ')' : ''}`).join(' + ');
-    rows.push({
-      order_id: 'WEB-' + p.nro, pack_id: 'WEB-' + p.nro, date: _diaAR(p.fecha), datetime: p.fecha,
-      item_id: 'WEB', title: titulo || ('Venta web ' + p.nro), status: p.estado,
-      account_name: TIENDA_NOMBRE, account_id: 'tienda', es_tienda: true, entrega: p.entrega || '', forma_pago: p.pago || '',
-      envio_estado: p.entrega || '', stock: true, frozen: true, qty: Number(p.unidades) || 1, sku: '', proveedor: [it.proveedor, it.codigo].filter(Boolean).join(' '),
-      cuotas: 0, flex: false, pack: (p.items || []).length > 1, bono: 0,
-      revenue, fee, envio: 0, envioReal: null, tax: 0, taxReal: false, factura: 0,
-      queda, cost, net, marginPct: known && revenue > 0 ? (net / revenue) * 100 : null, known,
-      net_sin_flex: net, cost_stock: cost,
-    });
-    T.facturacion += revenue; T.unidades += Number(p.unidades) || 0; T.quedaTotal += queda; T.feeTotal += fee; T.orders += 1; T.count += 1;
-    if (known) { T.costTotal += cost; T.costStockTotal += cost; T.ganancia += net; T.gananciaSinFlex += net; T.conocidas += 1; T.factConocida += revenue; if (net < 0) { T.perdida += 1; T.perdidaMonto += net; } }
-    else T.sinCosto += 1;
-  }
-  return { rows, T };
-}
-
 function localSalesRows(from, to) {
   const db = loadDB();
   const orders = Array.isArray(db.local_sales) ? db.local_sales : [];
