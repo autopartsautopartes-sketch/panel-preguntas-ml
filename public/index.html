@@ -3700,6 +3700,17 @@ body{background:var(--ac-bg)!important;color:var(--ac-ink);}
           <div class="stat-card"><div class="label">Ganancia real</div><div class="value" id="dashGanVal" style="font-size:22px">${_dashGanValHTML()}</div></div>
           <div class="stat-card"><div class="label">Margen %</div><div class="value" id="dashMargenVal" style="color:#8e44ad">${_dashMargenValHTML()}</div></div>
         </div>
+        ${stats.web_visitas ? (() => { const w = stats.web_visitas; const conv = w.hoy > 0 ? ((w.ventas_hoy || 0) / w.hoy * 100) : 0; return `
+          <div style="margin-top:16px;background:#fff5f5;border:1px solid #f3c6c9;border-radius:10px;padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;font-size:13px;color:#555">
+            <strong style="color:#c8102e">🌐 Tienda web · tráfico</strong>
+            ${w.error ? `<span style="color:#b45309">${w.error}</span>` : `
+            <span>Hoy: <strong style="color:#2d3277;font-size:16px">${w.hoy}</strong> persona${w.hoy !== 1 ? 's' : ''}</span>
+            <span>${w.paginas_hoy} páginas vistas</span>
+            <span>📱 ${w.hoy ? Math.round(w.movil_hoy / w.hoy * 100) : 0}% desde celular</span>
+            <span>Ayer: <strong>${w.ayer}</strong></span>
+            <span>Últimos 7 días: <strong>${w.semana}</strong></span>
+            <span>Conversión hoy: <strong>${conv.toLocaleString('es-AR', { maximumFractionDigits: 1 })}%</strong></span>`}
+          </div>` })() : ''}
         ${(stats.sales_by_account && stats.sales_by_account.length > 0) ? `
           <div style="margin-top:16px">
             <h4 style="margin-bottom:8px;color:#666;font-size:13px">Detalle por cuenta</h4>

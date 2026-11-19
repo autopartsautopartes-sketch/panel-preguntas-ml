@@ -748,6 +748,24 @@ async function tiendaVentas(from, to) {
     return pedidos;
   } catch (e) { console.error('[tienda] ' + (e.message || e)); return c ? c.pedidos : []; }
 }
+// Visitas de la tienda (personas únicas por día) — GET {TIENDA_URL}/api/panel?visitas=1
+let _tiendaVisCache = null;
+async function tiendaVisitas() {
+  const tok = process.env.TIENDA_TOKEN; if (!tok) return null;
+  if (_tiendaVisCache && Date.now() - _tiendaVisCache.t < 60 * 1000) return _tiendaVisCache.v;
+  const base = String(process.env.TIENDA_URL || 'https://www.autochap.com.ar').replace(/\/$/, '');
+  const dAR = ms => new Date(ms - 3 * 3600e3).toISOString().slice(0, 10);
+  const hoy = dAR(Date.now()), ayer = dAR(Date.now() - 864e5), desde = dAR(Date.now() - 6 * 864e5);
+  try {
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(`${base}/api/panel?visitas=1&desde=${desde}&hasta=${hoy}`, { headers: { 'x-panel-token': tok }, signal: ctl.signal });
+    clearTimeout(tm); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(); const by = Object.fromEntries((j.dias || []).map(d => [String(d.dia).slice(0, 10), d]));
+    const v = { hoy: by[hoy]?.personas || 0, paginas_hoy: by[hoy]?.paginas || 0, movil_hoy: by[hoy]?.movil || 0, ayer: by[ayer]?.personas || 0,
+      semana: (j.dias || []).reduce((s, d) => s + (d.personas || 0), 0), error: j.error || null };
+    _tiendaVisCache = { t: Date.now(), v }; return v;
+  } catch (e) { console.error('[tienda visitas] ' + (e.message || e)); return _tiendaVisCache ? _tiendaVisCache.v : null; }
+}
 function _diaAR(iso) { return new Date(new Date(iso).getTime() - 3 * 3600e3).toISOString().slice(0, 10); }
 // Filas con el mismo formato que Gestión (como localSalesRows): facturación = productos (sin envío),
 // "queda" = productos − comisión de Mercado Pago, ganancia = queda − costo.
@@ -5472,12 +5490,15 @@ route('GET', '/api/stats', async (req, res) => {
       salesToday += ts; revenueToday += tr; unitsSoldToday += tu;
       salesByAccount.push({ name: TIENDA_NOMBRE, sales: ts, revenue: tr, units: tu, tienda: true });
     }
+    var webVisitas = await tiendaVisitas();
+    if (webVisitas) webVisitas.ventas_hoy = tw.length;
   }
   sendJSON(res, 200, {
     accounts: db.ml_accounts.length, unanswered: totalUnanswered, answered_today: totalAnsweredToday,
     unread_messages: totalUnreadMessages,
     sales_today: salesToday, revenue_today: revenueToday, units_sold_today: unitsSoldToday,
     sales_by_account: salesByAccount,
+    web_visitas: (typeof webVisitas !== 'undefined' && webVisitas) || null,
     can_view_dashboard: user?.view_dashboard !== false
   });
 });
