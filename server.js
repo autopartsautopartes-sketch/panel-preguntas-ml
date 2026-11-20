@@ -49,20 +49,17 @@ if (!DB_BACKUP_ENV) {
     } catch (e) {}
   }
 }
-// ===== DB en memoria (fix de performance) =====
-// Antes: cada loadDB() leía+parseaba TODO el archivo del disco (223 llamadas por
-// request) y cada saveDB() reescribía TODO el archivo con pretty-print. Al crecer
-// los datos, eso bloqueaba el event loop en cada pedido y hacía lento todo el panel.
-// Ahora: los datos viven en memoria; loadDB() devuelve una copia (clona, así se
-// preserva exactamente el comportamiento anterior: mutar sin guardar NO persiste),
-// y saveDB() escribe de forma atómica (tmp + rename) y compacta. Si alguien edita
-// el archivo por fuera, el chequeo de mtime recarga la caché solo.
+// ===== DB en memoria — UNA sola copia compartida (fix de performance + memoria) =====
+// Antes (original): cada loadDB() leía+parseaba TODO el archivo del disco (223 por
+// request) y cada saveDB() lo reescribía con pretty-print → lento.
+// Intento intermedio: clonar la DB en cada lectura → llenaba el heap y crasheaba
+// (OOM status 134 con data.json grande). CORRECTO: mantener UNA sola copia viva en
+// memoria y devolver siempre esa misma referencia (no clona, no re-parsea, no duplica
+// RAM). Es lo que ya asumía el código: cargar → mutar → guardar.
+// saveDB escribe de forma atómica (tmp + rename) y compacta. El chequeo de mtime
+// recarga la caché sola si el archivo cambia por fuera (p. ej. restore).
 let _dbCache = null;
 let _dbMtime = -1;
-function _dbClone(o) {
-  if (o == null) return o;
-  try { return structuredClone(o); } catch (e) { return JSON.parse(JSON.stringify(o)); }
-}
 function _dbReadFromDisk() {
   try {
     const st = fs.statSync(DB_PATH);
@@ -79,10 +76,10 @@ function loadDB() {
   } catch (e) {
     if (_dbCache === null) return null;
   }
-  return _dbClone(_dbCache);
+  return _dbCache;   // referencia compartida: una sola copia en RAM
 }
 function saveDB(data) {
-  _dbCache = _dbClone(data);
+  _dbCache = data;   // la caché apunta al objeto vigente (sin copiar → sin OOM)
   const json = JSON.stringify(data);
   const tmp = DB_PATH + '.tmp';
   try {
